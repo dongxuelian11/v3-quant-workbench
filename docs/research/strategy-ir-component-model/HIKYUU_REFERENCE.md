@@ -47,7 +47,7 @@ The main sequence is visible in [`System.cpp`](https://github.com/fasiondog/hiky
 | Phase | Hikyuu behavior | V3 implication | Disposition |
 |---|---|---|---|
 | Construct/configure | Create component instances and mutate named parameters | Draft editing may be mutable, but publish must freeze a canonical semantic snapshot | ADAPT |
-| Clone/reset | Clone parts according to `shared_*` flags; reset cached/position-sensitive state | Never let sharing policy change StrategyVersion semantics; each evaluation gets isolated state | ADAPT |
+| Clone/reset | Clone parts according to `shared_*` flags; reset cached/position-sensitive state | Never let sharing policy change StrategyDefinitionVersion semantics; each evaluation gets isolated state | ADAPT |
 | Bind inputs | `setTO` obtains KData and propagates adjusted/raw series; Environment and MoneyManager receive query | Resolve exact Dataset/Snapshot/Universe before evaluation and supply read-only handles | ADOPT |
 | Prepare | `readyForRun` checks TM/MM/SG and wires TM/SG dependencies | Compile/validate all ports, capabilities and required bindings before dispatch | ADOPT |
 | Bar open | Reject malformed OHLC and process delayed requests | Data-quality diagnostics and delayed execution belong to data/engine stages | ADAPT |

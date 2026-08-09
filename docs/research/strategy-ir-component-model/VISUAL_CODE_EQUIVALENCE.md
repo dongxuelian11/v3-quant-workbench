@@ -16,8 +16,9 @@ There must never be a “current visual strategy” and a separate “current co
 
 | Layer | Contents | Identity effect | Disposition |
 |---|---|---|---|
-| `DraftSemanticIR` | Nodes, typed ports, parameters, exact bindings, outputs and semantics | Creates new draft semantic revision; publishable | ADOPT |
-| `VisualProjection` | Position, size, group, collapsed state, viewport, selection, comments | No StrategyVersion effect | ADOPT |
+| `DraftSemanticIR` | Nodes, typed ports, parameters, required binding slots, outputs and strategy semantics | Creates new draft semantic revision; publishable as StrategyDefinitionVersion | ADOPT |
+| `DraftEvaluationBinding` | Exact Dataset/Snapshot/Universe, calendar, PIT/knowledge context, evaluation clock and environment | Creates a binding revision, never a definition revision | ADOPT |
+| `VisualProjection` | Position, size, group, collapsed state, viewport, selection, comments | No StrategyDefinitionVersion effect | ADOPT |
 | `CodeProjection` | Generated text, formatting preferences, source map, parse diagnostics, pending text buffer | No effect until successfully lowered to semantic IR | ADOPT |
 
 The current `StrategyDraft.mode` remains a presentation preference. It must not enter the canonical hash. **Disposition: ADAPT**.
@@ -68,7 +69,7 @@ strategy(
 | Loops/comprehensions for graph generation | Reject in baseline because identity and source mapping become less transparent | REJECT |
 | Arbitrary imports, I/O, network, DB and engine calls | Reject | REJECT |
 | User algorithm not expressible in DSL | Wrap as a typed `custom_code` node with explicit ports and Worker runtime | ADAPT |
-| Formatting/comments | Preserve in pending/projection artifact; exclude from StrategyVersion identity | ADOPT |
+| Formatting/comments | Preserve in pending/projection artifact; exclude from StrategyDefinitionVersion identity | ADOPT |
 
 ## Source-map requirements
 
@@ -89,7 +90,7 @@ Let `C` be canonicalization, `L_v` visual lowering, `P_c` code parsing/lowering,
 | `C(L_v(G_v(IR))) = C(IR)` | Visual generation/lowering is semantics-preserving | ADOPT |
 | `C(P_c(G_c(IR))) = C(IR)` | Code generation/parsing is semantics-preserving | ADOPT |
 | `G_c(C(P_c(code)))` parses to same IR | Formatting normalization may change text, never semantics | ADOPT |
-| Layout edit leaves `C(IR)` unchanged | Moving/grouping nodes does not create a StrategyVersion | ADOPT |
+| Layout edit leaves `C(IR)` unchanged | Moving/grouping nodes does not create a StrategyDefinitionVersion | ADOPT |
 | Rename display label leaves `C(IR)` unchanged unless referenced semantically | Friendly labels are not identity | ADOPT |
 | Unknown code construct produces no IR mutation | No partial or guessed translation | ADOPT |
 | Registry/compiler upgrade does not reinterpret old IR | Old semantic API/compiler remains pinned; migration creates a new version | ADOPT |
@@ -101,7 +102,7 @@ Monaco text diff is useful for review but cannot be the only authority. V3 shoul
 | Diff behavior | Recommendation | Disposition |
 |---|---|---|
 | Accept/reject hunk | Apply semantic operations to expected draft revision, then regenerate both projections | ADAPT |
-| Formatting-only text change | Mark non-semantic and do not require a new StrategyVersion | ADOPT |
+| Formatting-only text change | Mark non-semantic and do not require a new StrategyDefinitionVersion | ADOPT |
 | Binding change | Always semantic and prominently disclose provenance impact | ADOPT |
 | Component version/default change | Show expanded old/new values, not only friendly type names | ADOPT |
 | Custom code change | Diff source artifact and dependency lock hashes; semantic identity changes | ADOPT |

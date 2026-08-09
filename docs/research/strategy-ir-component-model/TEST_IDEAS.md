@@ -9,11 +9,12 @@ These tests are implementation input. Upstream Hikyuu tests are used as category
 | TIR-001 | Permute JSON object keys, node list and edge list | Canonical bytes/hash remain identical | ADOPT |
 | TIR-002 | Move/resize/group React Flow nodes and change viewport | Strategy semantic hash remains identical | ADOPT |
 | TIR-003 | Reformat code, alter whitespace/comments | Parsed canonical IR/hash remain identical | ADOPT |
-| TIR-004 | Change one expanded parameter, component version or binding hash | StrategyVersion content hash changes | ADOPT |
+| TIR-004 | Change one expanded parameter, component/operator semantic version, compiler/runtime interpretation profile or custom dependency hash | StrategyDefinitionVersion content hash changes | ADOPT |
 | TIR-005 | Upgrade registry default while replaying old IR | Old expanded IR output/hash remains unchanged | ADOPT |
 | TIR-006 | Serialize identity decimals through JS, Python and backend implementation | Canonical bytes are identical | ADOPT |
 | TIR-007 | Duplicate IDs, cycle, dangling edge, incompatible port, unreachable declared output | Compile fails with stable node/port diagnostic | ADOPT |
 | TIR-008 | Validation artifact from IR A supplied to publish IR B | Publish fails closed | ADOPT |
+| TIR-009 | Keep IR/compiler/runtime/code identical but change Dataset/Snapshot/Universe/calendar/decision-time/PIT/environment binding | StrategyDefinitionVersion is identical; StrategyEvaluationBindingVersion and evaluation/run identity change | ADOPT |
 
 ## Visual/Code equivalence properties
 
@@ -59,6 +60,8 @@ These tests are implementation input. Upstream Hikyuu tests are used as category
 | TIN-006 | Missing row under ERROR/DROP/PROPAGATE policies | Distinct expected diagnostics and artifacts | ADOPT |
 | TIN-007 | Adjusted/raw series share display name | Stable field ID and price-basis metadata prevent substitution | ADOPT |
 | TIN-008 | Input membership order is randomized | Canonical output ordering/hash remains stable | ADOPT |
+| TIN-009 | Evaluate the same StrategyDefinitionVersion once with PRE_ALPHA/NOT_FORMAL inputs and once with all required FORMAL-admitted inputs | Definition identity is identical; binding and evaluation/run identities differ; truth ceilings differ; PRE_ALPHA/NOT_FORMAL evaluation cannot publish FORMAL SignalArtifact, SelectionArtifact or PortfolioIntent | ADOPT |
+| TIN-010 | Use PUBLISHED input without complete FORMAL admission, STRICT_PIT alone, or Strategy validation PASS alone | No case upgrades downstream truth to FORMAL | ADOPT |
 
 ## Reproducibility and isolation tests
 
@@ -93,8 +96,8 @@ These tests are implementation input. Upstream Hikyuu tests are used as category
 |---|---|---|---|
 | TSE-001 | Inspect WorkerRequest capabilities | No account, broker, Backtest engine, DB or repository port | ADOPT |
 | TSE-002 | Strategy returns order/fill shape | Output schema rejects it | ADOPT |
-| TSE-003 | Same StrategyVersion evaluated under two slippage/execution profiles downstream | Signal/PortfolioIntent identity stays same; results differ only downstream | ADOPT |
-| TSE-004 | Risk adjusts target | Original StrategyVersion and PortfolioIntent remain immutable and referenced | ADOPT |
+| TSE-003 | Same StrategyDefinitionVersion and StrategyEvaluationBindingVersion evaluated under two slippage/execution profiles downstream | Signal/PortfolioIntent identity stays same; results differ only downstream | ADOPT |
+| TSE-004 | Risk adjusts target | Original StrategyDefinitionVersion and PortfolioIntent remain immutable and referenced | ADOPT |
 | TSE-005 | Backtest handoff references editable draft | Handoff validation fails | ADOPT |
 | TSE-006 | PortfolioStateSnapshot timestamp is later than decision time | PIT validation fails | ADOPT |
 

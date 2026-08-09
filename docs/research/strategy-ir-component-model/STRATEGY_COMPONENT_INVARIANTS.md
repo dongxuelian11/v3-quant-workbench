@@ -7,9 +7,9 @@ These are proposed next-phase invariants, not a formal ASL change. Every rule is
 | ID | Invariant | Disposition |
 |---|---|---|
 | SCI-001 | One canonical Strategy IR is the sole semantic authority. Visual layout and code formatting are projections and cannot add hidden semantics. | ADOPT |
-| SCI-002 | A published StrategyVersion is immutable. Any semantic edit, dependency change, parameter-default change or custom-code change creates a new version. | ADOPT |
-| SCI-003 | StrategyVersion identity is derived from canonical IR bytes plus compiler/profile and referenced code/dependency artifacts; mutable display metadata is excluded. | ADOPT |
-| SCI-004 | Evaluation is a pure function of StrategyVersion, exact input bindings, deterministic runtime profile and explicit evaluation request. | ADOPT |
+| SCI-002 | A published `StrategyDefinitionVersion` is immutable. Any semantic edit, dependency change, parameter-default change or custom-code change creates a new definition version. Existing V3 `StrategyVersion` maps to this definition identity. | ADOPT |
+| SCI-003 | `StrategyDefinitionVersion` identity is derived only from canonical IR bytes, component/operator semantic versions, compiler/runtime interpretation profile and referenced custom-code/dependency hashes; concrete data/time/environment bindings and mutable display metadata are excluded. | ADOPT |
+| SCI-004 | Evaluation is a pure function of `StrategyDefinitionVersion`, exact `StrategyEvaluationBindingVersion` and explicit evaluation request. | ADOPT |
 | SCI-005 | Strategy reads only capability-scoped, read-only input artifacts supplied by the orchestrator. It cannot discover or query a database, filesystem, network or secret store. | ADOPT |
 | SCI-006 | Strategy cannot write cash, holdings, orders, fills or broker state and cannot call a Backtest/Execution engine. | ADOPT |
 | SCI-007 | Strategy emits only schema-valid SignalArtifact, SelectionArtifact and/or PortfolioIntent plus diagnostics and provenance. | ADOPT |
@@ -27,6 +27,8 @@ These are proposed next-phase invariants, not a formal ASL change. Every rule is
 | SCI-014 | Missing, stale, unavailable and not-yet-known values are distinct states; no silent forward fill or fallback is allowed. | ADOPT |
 | SCI-015 | Dataset column references are stable field IDs plus schema/version, not display names. | ADOPT |
 | SCI-016 | Historical replay may use a PortfolioStateSnapshot only when its timestamp and source run are explicit; it is not a live account handle. | ADAPT |
+| SCI-017 | `StrategyEvaluationBindingVersion` immutably binds exact DatasetVersion, DataSnapshotVersion, UniverseVersion, calendar, knowledge/PIT context, evaluation clock and environment. Changing any binding never changes `StrategyDefinitionVersion`. | ADOPT |
+| SCI-018 | Evaluation/run identity includes both `StrategyDefinitionVersion` and `StrategyEvaluationBindingVersion`; the same definition over different bindings creates different evaluation/run identities. | ADOPT |
 
 ## Component port invariants
 
@@ -40,7 +42,7 @@ These are proposed next-phase invariants, not a formal ASL change. Every rule is
 | Sizing/money management | Pure transform of signals, constraints and optional PortfolioStateSnapshot into desired exposure | Mutating an account or consuming fills by callback | ADAPT |
 | Selector | Deterministic selection/ranking from the bound candidate universe, including stable tie-break | Expanding universe or running child strategies with shared mutable state | ADAPT |
 | Allocation | Desired instrument/exposure weights or allocation instructions, cash policy and constraint context | Owning shadow cash accounts | ADAPT |
-| Slippage | Not a Strategy IR semantic component; referenced only by downstream execution/backtest profile | Affecting StrategyVersion identity by default | REJECT |
+| Slippage | Not a Strategy IR semantic component; referenced only by downstream execution/backtest profile | Affecting StrategyDefinitionVersion identity | REJECT |
 
 ## Composition invariants
 
@@ -53,7 +55,7 @@ These are proposed next-phase invariants, not a formal ASL change. Every rule is
 | SCI-024 | Environment/Condition/Signal/Exit precedence is represented by explicit operators or a versioned policy node, not hard-coded runtime order. | ADAPT |
 | SCI-025 | Selector output is materialized before allocation; allocation cannot silently re-rank or add members. | ADOPT |
 | SCI-026 | An allocation result states whether absent instruments mean zero target, unchanged target or out-of-scope. | ADOPT |
-| SCI-027 | Component defaults are expanded into canonical IR; compiler upgrades cannot retroactively change an existing StrategyVersion. | ADOPT |
+| SCI-027 | Component defaults are expanded into canonical IR; compiler upgrades cannot retroactively change an existing StrategyDefinitionVersion. | ADOPT |
 | SCI-028 | Duplicate node IDs, dangling edges, incompatible ports and unreachable declared outputs are compile errors. | ADOPT |
 | SCI-029 | Semantic node IDs survive formatting/layout changes and are used in diagnostics and provenance paths. | ADOPT |
 
@@ -72,12 +74,16 @@ These are proposed next-phase invariants, not a formal ASL change. Every rule is
 
 | ID | Invariant | Disposition |
 |---|---|---|
-| SCI-040 | Every output row carries or inherits `strategy_version_id`, output schema version, evaluation run ID, `as_of`, bound universe and source node path. | ADOPT |
+| SCI-040 | Every output row carries or inherits `strategy_definition_version_id`, `strategy_evaluation_binding_version_id`, output schema version, evaluation run ID, `as_of`, bound universe, truth state and source node path. | ADOPT |
 | SCI-041 | Provenance includes canonical IR hash, compiler profile/hash, custom-code artifact hash, dependency lock hash, worker image/runtime hash and exact input IDs/hashes. | ADOPT |
 | SCI-042 | Selection and signal artifacts preserve exclusion/missing diagnostics so “not selected” is distinguishable from “not evaluated.” | ADOPT |
 | SCI-043 | PortfolioIntent records whether it is absolute or relative, target scope, cash semantics, rebalance semantics and constraint context. | ADOPT |
-| SCI-044 | StrategyVersion identity is not changed by Risk. Risk emits a separately identified transformation from PortfolioIntent/TargetWeightVector to RiskAdjustedWeightVector. | ADOPT |
+| SCI-044 | StrategyDefinitionVersion identity is not changed by Risk. Risk emits a separately identified transformation from PortfolioIntent/TargetWeightVector to RiskAdjustedWeightVector. | ADOPT |
 | SCI-045 | Downstream Backtest/Execution references published intent artifacts; it cannot reach into an editable StrategyDraft. | ADOPT |
+| SCI-046 | Strategy evaluation cannot raise truth. SignalArtifact, SelectionArtifact and PortfolioIntent truth is capped by the least-admitted required upstream Dataset/Snapshot/Universe/calendar/PIT/environment input and by Strategy validation/provenance admission. | ADOPT |
+| SCI-047 | Any required PRE_ALPHA or NOT_FORMAL upstream input caps all evaluation outputs at NOT_FORMAL. | ADOPT |
+| SCI-048 | FORMAL output is eligible only when every required upstream input is FORMAL-admitted and Strategy validation/provenance gates pass. | ADOPT |
+| SCI-049 | `PUBLISHED`, `STRICT_PIT` or Strategy validation `PASS` alone, and any incomplete combination of them, cannot upgrade an artifact to FORMAL. | ADOPT |
 
 ## Custom-code invariants
 
