@@ -1,0 +1,457 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contract_schema_id": "urn:v3:asl-contract-envelope:1.0.0",
+  "contract_id": "urn:v3:asl:dataset:1.0.0",
+  "service": "DatasetService",
+  "api_version": "1.0.0",
+  "compatibility": {
+    "major": "breaking",
+    "minor": "additive only",
+    "patch": "clarification/no wire-shape change"
+  },
+  "domain_owner": "Dataset Domain",
+  "repository_dependencies": [
+    "DatasetRepository",
+    "FactorRepository",
+    "SnapshotRepository",
+    "UniverseRepository",
+    "ArtifactRepository",
+    "TaskRepository",
+    "ProvenanceRepository"
+  ],
+  "transport_binding": {
+    "namespace": "asl.v1.DatasetService",
+    "business_ownership": false
+  },
+  "availability_states": [
+    "FORMAL",
+    "DEMO",
+    "UNAVAILABLE"
+  ],
+  "methods": [
+    {
+      "operation_id": "DatasetService.v1.validateDatasetSpec",
+      "version": "1.0.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "ValidateDatasetSpecRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "dataset_spec"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "dataset_spec": {
+              "type": "object",
+              "description": "FeatureSet, LabelSpec, SplitSpec, purge/embargo and preprocessing contract"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "ValidateDatasetSpecResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON DatasetSpecValidationV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "random time split forbidden in FORMAL",
+        "preprocessors declare fit scope TRAIN_ONLY",
+        "HPO final-test isolation declared"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "DatasetSpecValidationV1"
+      ],
+      "frontend_capabilities": [
+        "DatasetVersion / Label / SplitPlan"
+      ]
+    },
+    {
+      "operation_id": "DatasetService.v1.materializeDataset",
+      "version": "1.0.0",
+      "kind": "ASYNC_COMMAND",
+      "request_dto": {
+        "name": "MaterializeDatasetRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "dataset_spec_id",
+            "snapshot_id",
+            "universe_version_id",
+            "idempotency_key"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "dataset_spec_id": {
+              "type": "string",
+              "description": "Immutable validated spec"
+            },
+            "snapshot_id": {
+              "type": "string",
+              "description": "Published immutable data snapshot identity",
+              "pattern": "^snp_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "universe_version_id": {
+              "type": "string",
+              "description": "Pinned universe version"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "description": "Stable materialization key"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "MaterializeDatasetAcceptedV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "task_id",
+            "run_id",
+            "accepted_state"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "task_id": {
+              "type": "string",
+              "description": "Durable user-work identity",
+              "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "run_id": {
+              "type": "string",
+              "description": "Immutable financial-input run identity",
+              "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "accepted_state": {
+              "type": "string",
+              "description": "Persisted acceptance state",
+              "const": "QUEUED"
+            },
+            "event_cursor": {
+              "type": "integer",
+              "description": "First durable event sequence",
+              "minimum": 1
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": true,
+        "run_identity_inputs": [
+          "dataset spec hash",
+          "snapshot_id",
+          "universe version",
+          "environment profile"
+        ],
+        "artifact_outputs": [
+          "DatasetParquetManifest",
+          "LeakageAuditReport",
+          "DatasetStatistics"
+        ],
+        "cancel": "COOPERATIVE",
+        "retry": "NEW_ATTEMPT_SAME_RUN",
+        "resume": "FROM_SPLIT_PARTITION_CHECKPOINT",
+        "input_change": "MUST_CREATE_NEW_RUN",
+        "attempt_rule": "retry/resume always creates a new TaskAttempt; previous attempts are immutable"
+      },
+      "truth_pit_preconditions": [
+        "snapshot PUBLISHED",
+        "all feature/label rows obey available_time <= sample decision time",
+        "leakage audit must pass before publish"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [],
+      "frontend_capabilities": [
+        "DatasetVersion",
+        "SplitPlan"
+      ]
+    },
+    {
+      "operation_id": "DatasetService.v1.getDatasetVersion",
+      "version": "1.0.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "GetDatasetVersionRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "dataset_version_id"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "dataset_version_id": {
+              "type": "string",
+              "description": "Immutable dataset version"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "GetDatasetVersionResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON DatasetVersionReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists and is not superseded for this request"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "DatasetVersionReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "dataset detail"
+      ]
+    }
+  ],
+  "forbidden_responsibilities": [
+    "random FORMAL time split",
+    "fitting preprocessing outside train",
+    "exposing final test to HPO"
+  ],
+  "global_invariants": [
+    "No generic execute(action,payload)",
+    "No direct renderer access to SQLite, DuckDB or Parquet",
+    "No large tabular/numeric JSON payload; return ArtifactRef",
+    "No worker-owned identity, registry or financial truth",
+    "No silent fallback between Demo, Formal, connector, engine or environment",
+    "Published/versioned objects are immutable"
+  ]
+}

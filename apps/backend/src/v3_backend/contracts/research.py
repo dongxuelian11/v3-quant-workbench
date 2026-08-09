@@ -1,0 +1,481 @@
+from __future__ import annotations
+
+from .common.dto import ClosedDto
+from .common.operation import OperationContract, OperationKind, ServiceContract
+
+CONTRACT_ID = 'urn:v3:asl:research:1.0.0'
+SERVICE = 'ResearchService'
+API_VERSION = '1.0.0'
+METHOD_SPECS = {'ResearchService.v1.submitFactorAnalysis': {'operation_id': 'ResearchService.v1.submitFactorAnalysis',
+                                             'version': '1.0.0',
+                                             'kind': 'ASYNC_COMMAND',
+                                             'request_dto': {'name': 'SubmitFactorAnalysisRequestV1',
+                                                             'schema': {'type': 'object',
+                                                                        'additionalProperties': False,
+                                                                        'required': ['request_id',
+                                                                                     'project_id',
+                                                                                     'project_context_revision_id',
+                                                                                     'expected_api_version',
+                                                                                     'factor_version_ids',
+                                                                                     'universe_version_id',
+                                                                                     'snapshot_id',
+                                                                                     'analysis_spec',
+                                                                                     'idempotency_key'],
+                                                                        'properties': {'request_id': {'type': 'string',
+                                                                                                      'description': 'Caller-generated '
+                                                                                                                     'UUIDv7; '
+                                                                                                                     'transport '
+                                                                                                                     'deduplication '
+                                                                                                                     'only',
+                                                                                                      'format': 'uuid'},
+                                                                                       'project_id': {'type': 'string',
+                                                                                                      'description': 'Stable '
+                                                                                                                     'project '
+                                                                                                                     'identity',
+                                                                                                      'pattern': '^prj_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                       'project_context_revision_id': {'type': 'string',
+                                                                                                                       'description': 'Immutable '
+                                                                                                                                      'project-context '
+                                                                                                                                      'revision '
+                                                                                                                                      'identity',
+                                                                                                                       'pattern': '^pcr_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                       'expected_api_version': {'type': 'string',
+                                                                                                                'description': 'Exact '
+                                                                                                                               'ASL '
+                                                                                                                               'major.minor '
+                                                                                                                               'contract '
+                                                                                                                               'expected '
+                                                                                                                               'by '
+                                                                                                                               'caller',
+                                                                                                                'const': '1.0'},
+                                                                                       'factor_version_ids': {'type': 'array',
+                                                                                                              'description': 'Immutable '
+                                                                                                                             'factor '
+                                                                                                                             'versions',
+                                                                                                              'items': {'type': 'string'},
+                                                                                                              'minItems': 1},
+                                                                                       'universe_version_id': {'type': 'string',
+                                                                                                               'description': 'Pinned '
+                                                                                                                              'universe '
+                                                                                                                              'version'},
+                                                                                       'snapshot_id': {'type': 'string',
+                                                                                                       'description': 'Published '
+                                                                                                                      'immutable '
+                                                                                                                      'data '
+                                                                                                                      'snapshot '
+                                                                                                                      'identity',
+                                                                                                       'pattern': '^snp_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                       'analysis_spec': {'type': 'object',
+                                                                                                         'description': 'Coverage/distribution/IC/decay/grouped-return/correlation/event '
+                                                                                                                        'settings'},
+                                                                                       'idempotency_key': {'type': 'string',
+                                                                                                           'description': 'Stable '
+                                                                                                                          'analysis '
+                                                                                                                          'key'}}}},
+                                             'response_dto': {'name': 'SubmitFactorAnalysisAcceptedV1',
+                                                              'schema': {'type': 'object',
+                                                                         'additionalProperties': False,
+                                                                         'required': ['request_id',
+                                                                                      'task_id',
+                                                                                      'run_id',
+                                                                                      'accepted_state'],
+                                                                         'properties': {'request_id': {'type': 'string',
+                                                                                                       'description': 'Echoed '
+                                                                                                                      'request '
+                                                                                                                      'identity',
+                                                                                                       'format': 'uuid'},
+                                                                                        'task_id': {'type': 'string',
+                                                                                                    'description': 'Durable '
+                                                                                                                   'user-work '
+                                                                                                                   'identity',
+                                                                                                    'pattern': '^tsk_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                        'run_id': {'type': 'string',
+                                                                                                   'description': 'Immutable '
+                                                                                                                  'financial-input '
+                                                                                                                  'run '
+                                                                                                                  'identity',
+                                                                                                   'pattern': '^run_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                        'accepted_state': {'type': 'string',
+                                                                                                           'description': 'Persisted '
+                                                                                                                          'acceptance '
+                                                                                                                          'state',
+                                                                                                           'const': 'QUEUED'},
+                                                                                        'event_cursor': {'type': 'integer',
+                                                                                                         'description': 'First '
+                                                                                                                        'durable '
+                                                                                                                        'event '
+                                                                                                                        'sequence',
+                                                                                                         'minimum': 1}}}},
+                                             'idempotency': {'mode': 'REQUEST_ID',
+                                                             'scope': 'operation_id + project_id + '
+                                                                      'idempotency_key/request_id',
+                                                             'same_key_same_canonical_request': 'return_original_outcome',
+                                                             'same_key_different_canonical_request': 'IDEMPOTENCY_CONFLICT'},
+                                             'async_behavior': {'creates_task_run': True,
+                                                                'run_identity_inputs': ['factor '
+                                                                                        'hashes',
+                                                                                        'universe '
+                                                                                        'version',
+                                                                                        'snapshot_id',
+                                                                                        'analysis '
+                                                                                        'spec'],
+                                                                'artifact_outputs': ['ResearchSeriesParquet',
+                                                                                     'ResearchSummary',
+                                                                                     'ResearchDiagnostics'],
+                                                                'cancel': 'COOPERATIVE',
+                                                                'retry': 'NEW_ATTEMPT_SAME_RUN',
+                                                                'resume': 'FROM_DATE_PARTITION_CHECKPOINT',
+                                                                'input_change': 'MUST_CREATE_NEW_RUN',
+                                                                'attempt_rule': 'retry/resume '
+                                                                                'always creates a '
+                                                                                'new TaskAttempt; '
+                                                                                'previous attempts '
+                                                                                'are immutable'},
+                                             'truth_pit_preconditions': ['all inputs share '
+                                                                         'compatible calendar and '
+                                                                         'PIT policy',
+                                                                         'published snapshot only'],
+                                             'errors': ['INVALID_ARGUMENT',
+                                                        'VERSION_MISMATCH',
+                                                        'NOT_FOUND',
+                                                        'CONFLICT',
+                                                        'IDEMPOTENCY_CONFLICT',
+                                                        'CAPABILITY_UNAVAILABLE',
+                                                        'TRUTH_PRECONDITION_FAILED',
+                                                        'PIT_UNPROVABLE',
+                                                        'ARTIFACT_NOT_PUBLISHED',
+                                                        'RESOURCE_REJECTED',
+                                                        'INTERNAL_ERROR'],
+                                             'provenance_required': ['request_actor',
+                                                                     'project_context_revision_id',
+                                                                     'operation_id',
+                                                                     'contract_version',
+                                                                     'input_object_ids',
+                                                                     'input_content_hashes',
+                                                                     'environment_profile_id',
+                                                                     'code_version'],
+                                             'read_models': [],
+                                             'frontend_capabilities': ['linked time series',
+                                                                       'benchmark',
+                                                                       'distribution',
+                                                                       'coverage',
+                                                                       'IC/decay',
+                                                                       'grouped return',
+                                                                       'correlation/event '
+                                                                       'metadata']},
+ 'ResearchService.v1.getResearchReadModel': {'operation_id': 'ResearchService.v1.getResearchReadModel',
+                                             'version': '1.0.0',
+                                             'kind': 'QUERY',
+                                             'request_dto': {'name': 'GetResearchReadModelRequestV1',
+                                                             'schema': {'type': 'object',
+                                                                        'additionalProperties': False,
+                                                                        'required': ['request_id',
+                                                                                     'project_id',
+                                                                                     'project_context_revision_id',
+                                                                                     'expected_api_version',
+                                                                                     'analysis_run_id',
+                                                                                     'viewport'],
+                                                                        'properties': {'request_id': {'type': 'string',
+                                                                                                      'description': 'Caller-generated '
+                                                                                                                     'UUIDv7; '
+                                                                                                                     'transport '
+                                                                                                                     'deduplication '
+                                                                                                                     'only',
+                                                                                                      'format': 'uuid'},
+                                                                                       'project_id': {'type': 'string',
+                                                                                                      'description': 'Stable '
+                                                                                                                     'project '
+                                                                                                                     'identity',
+                                                                                                      'pattern': '^prj_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                       'project_context_revision_id': {'type': 'string',
+                                                                                                                       'description': 'Immutable '
+                                                                                                                                      'project-context '
+                                                                                                                                      'revision '
+                                                                                                                                      'identity',
+                                                                                                                       'pattern': '^pcr_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                       'expected_api_version': {'type': 'string',
+                                                                                                                'description': 'Exact '
+                                                                                                                               'ASL '
+                                                                                                                               'major.minor '
+                                                                                                                               'contract '
+                                                                                                                               'expected '
+                                                                                                                               'by '
+                                                                                                                               'caller',
+                                                                                                                'const': '1.0'},
+                                                                                       'analysis_run_id': {'type': 'string',
+                                                                                                           'description': 'Immutable '
+                                                                                                                          'financial-input '
+                                                                                                                          'run '
+                                                                                                                          'identity',
+                                                                                                           'pattern': '^run_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                       'viewport': {'type': 'object',
+                                                                                                    'description': 'Downsampling '
+                                                                                                                   'window '
+                                                                                                                   'and '
+                                                                                                                   'series '
+                                                                                                                   'selection'}}}},
+                                             'response_dto': {'name': 'GetResearchReadModelResponseV1',
+                                                              'schema': {'type': 'object',
+                                                                         'additionalProperties': False,
+                                                                         'required': ['request_id',
+                                                                                      'truth_state',
+                                                                                      'read_model'],
+                                                                         'properties': {'request_id': {'type': 'string',
+                                                                                                       'description': 'Echoed '
+                                                                                                                      'request '
+                                                                                                                      'identity',
+                                                                                                       'format': 'uuid'},
+                                                                                        'truth_state': {'type': 'string',
+                                                                                                        'description': 'Explicit '
+                                                                                                                       'capability '
+                                                                                                                       'truth',
+                                                                                                        'enum': ['FORMAL',
+                                                                                                                 'DEMO',
+                                                                                                                 'UNAVAILABLE']},
+                                                                                        'read_model': {'type': 'object',
+                                                                                                       'description': 'Small '
+                                                                                                                      'JSON '
+                                                                                                                      'ResearchAnalysisReadModelV1; '
+                                                                                                                      'any '
+                                                                                                                      'large '
+                                                                                                                      'table '
+                                                                                                                      'is '
+                                                                                                                      'an '
+                                                                                                                      'ArtifactRef'}}}},
+                                             'idempotency': {'mode': 'REQUEST_ID',
+                                                             'scope': 'operation_id + project_id + '
+                                                                      'idempotency_key/request_id',
+                                                             'same_key_same_canonical_request': 'return_original_outcome',
+                                                             'same_key_different_canonical_request': 'IDEMPOTENCY_CONFLICT'},
+                                             'async_behavior': {'creates_task_run': False,
+                                                                'run_identity_inputs': [],
+                                                                'artifact_outputs': [],
+                                                                'cancel': 'NOT_APPLICABLE',
+                                                                'retry': 'NOT_APPLICABLE',
+                                                                'resume': 'NOT_APPLICABLE',
+                                                                'input_change': 'NOT_APPLICABLE',
+                                                                'attempt_rule': 'NOT_APPLICABLE'},
+                                             'truth_pit_preconditions': ['ProjectContextRevision '
+                                                                         'exists and is not '
+                                                                         'superseded for this '
+                                                                         'request'],
+                                             'errors': ['INVALID_ARGUMENT',
+                                                        'VERSION_MISMATCH',
+                                                        'NOT_FOUND',
+                                                        'CONFLICT',
+                                                        'IDEMPOTENCY_CONFLICT',
+                                                        'CAPABILITY_UNAVAILABLE',
+                                                        'TRUTH_PRECONDITION_FAILED',
+                                                        'PIT_UNPROVABLE',
+                                                        'ARTIFACT_NOT_PUBLISHED',
+                                                        'RESOURCE_REJECTED',
+                                                        'INTERNAL_ERROR'],
+                                             'provenance_required': ['request_actor',
+                                                                     'project_context_revision_id',
+                                                                     'operation_id',
+                                                                     'contract_version',
+                                                                     'input_object_ids',
+                                                                     'input_content_hashes',
+                                                                     'environment_profile_id',
+                                                                     'code_version'],
+                                             'read_models': ['ResearchAnalysisReadModelV1'],
+                                             'frontend_capabilities': ['chart-centered Research',
+                                                                       'contextual Inspector']},
+ 'ResearchService.v1.compareFactorVersions': {'operation_id': 'ResearchService.v1.compareFactorVersions',
+                                              'version': '1.0.0',
+                                              'kind': 'QUERY',
+                                              'request_dto': {'name': 'CompareFactorVersionsRequestV1',
+                                                              'schema': {'type': 'object',
+                                                                         'additionalProperties': False,
+                                                                         'required': ['request_id',
+                                                                                      'project_id',
+                                                                                      'project_context_revision_id',
+                                                                                      'expected_api_version',
+                                                                                      'analysis_run_ids'],
+                                                                         'properties': {'request_id': {'type': 'string',
+                                                                                                       'description': 'Caller-generated '
+                                                                                                                      'UUIDv7; '
+                                                                                                                      'transport '
+                                                                                                                      'deduplication '
+                                                                                                                      'only',
+                                                                                                       'format': 'uuid'},
+                                                                                        'project_id': {'type': 'string',
+                                                                                                       'description': 'Stable '
+                                                                                                                      'project '
+                                                                                                                      'identity',
+                                                                                                       'pattern': '^prj_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                        'project_context_revision_id': {'type': 'string',
+                                                                                                                        'description': 'Immutable '
+                                                                                                                                       'project-context '
+                                                                                                                                       'revision '
+                                                                                                                                       'identity',
+                                                                                                                        'pattern': '^pcr_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                        'expected_api_version': {'type': 'string',
+                                                                                                                 'description': 'Exact '
+                                                                                                                                'ASL '
+                                                                                                                                'major.minor '
+                                                                                                                                'contract '
+                                                                                                                                'expected '
+                                                                                                                                'by '
+                                                                                                                                'caller',
+                                                                                                                 'const': '1.0'},
+                                                                                        'analysis_run_ids': {'type': 'array',
+                                                                                                             'description': 'Comparable '
+                                                                                                                            'immutable '
+                                                                                                                            'runs',
+                                                                                                             'items': {'type': 'string',
+                                                                                                                       'description': 'Immutable '
+                                                                                                                                      'financial-input '
+                                                                                                                                      'run '
+                                                                                                                                      'identity',
+                                                                                                                       'pattern': '^run_[0-9A-HJKMNP-TV-Z]{26}$'},
+                                                                                                             'minItems': 2}}}},
+                                              'response_dto': {'name': 'CompareFactorVersionsResponseV1',
+                                                               'schema': {'type': 'object',
+                                                                          'additionalProperties': False,
+                                                                          'required': ['request_id',
+                                                                                       'truth_state',
+                                                                                       'read_model'],
+                                                                          'properties': {'request_id': {'type': 'string',
+                                                                                                        'description': 'Echoed '
+                                                                                                                       'request '
+                                                                                                                       'identity',
+                                                                                                        'format': 'uuid'},
+                                                                                         'truth_state': {'type': 'string',
+                                                                                                         'description': 'Explicit '
+                                                                                                                        'capability '
+                                                                                                                        'truth',
+                                                                                                         'enum': ['FORMAL',
+                                                                                                                  'DEMO',
+                                                                                                                  'UNAVAILABLE']},
+                                                                                         'read_model': {'type': 'object',
+                                                                                                        'description': 'Small '
+                                                                                                                       'JSON '
+                                                                                                                       'FactorComparisonReadModelV1; '
+                                                                                                                       'any '
+                                                                                                                       'large '
+                                                                                                                       'table '
+                                                                                                                       'is '
+                                                                                                                       'an '
+                                                                                                                       'ArtifactRef'}}}},
+                                              'idempotency': {'mode': 'REQUEST_ID',
+                                                              'scope': 'operation_id + project_id '
+                                                                       '+ '
+                                                                       'idempotency_key/request_id',
+                                                              'same_key_same_canonical_request': 'return_original_outcome',
+                                                              'same_key_different_canonical_request': 'IDEMPOTENCY_CONFLICT'},
+                                              'async_behavior': {'creates_task_run': False,
+                                                                 'run_identity_inputs': [],
+                                                                 'artifact_outputs': [],
+                                                                 'cancel': 'NOT_APPLICABLE',
+                                                                 'retry': 'NOT_APPLICABLE',
+                                                                 'resume': 'NOT_APPLICABLE',
+                                                                 'input_change': 'NOT_APPLICABLE',
+                                                                 'attempt_rule': 'NOT_APPLICABLE'},
+                                              'truth_pit_preconditions': ['ProjectContextRevision '
+                                                                          'exists and is not '
+                                                                          'superseded for this '
+                                                                          'request'],
+                                              'errors': ['INVALID_ARGUMENT',
+                                                         'VERSION_MISMATCH',
+                                                         'NOT_FOUND',
+                                                         'CONFLICT',
+                                                         'IDEMPOTENCY_CONFLICT',
+                                                         'CAPABILITY_UNAVAILABLE',
+                                                         'TRUTH_PRECONDITION_FAILED',
+                                                         'PIT_UNPROVABLE',
+                                                         'ARTIFACT_NOT_PUBLISHED',
+                                                         'RESOURCE_REJECTED',
+                                                         'INTERNAL_ERROR'],
+                                              'provenance_required': ['request_actor',
+                                                                      'project_context_revision_id',
+                                                                      'operation_id',
+                                                                      'contract_version',
+                                                                      'input_object_ids',
+                                                                      'input_content_hashes',
+                                                                      'environment_profile_id',
+                                                                      'code_version'],
+                                              'read_models': ['FactorComparisonReadModelV1'],
+                                              'frontend_capabilities': ['factor comparison']}}
+
+class SubmitFactorAnalysisRequestV1(ClosedDto):
+    DTO_NAME = 'SubmitFactorAnalysisRequestV1'
+    OPERATION_ID = 'ResearchService.v1.submitFactorAnalysis'
+    SCHEMA = METHOD_SPECS['ResearchService.v1.submitFactorAnalysis']['request_dto']['schema']
+
+class SubmitFactorAnalysisAcceptedV1(ClosedDto):
+    DTO_NAME = 'SubmitFactorAnalysisAcceptedV1'
+    OPERATION_ID = 'ResearchService.v1.submitFactorAnalysis'
+    SCHEMA = METHOD_SPECS['ResearchService.v1.submitFactorAnalysis']['response_dto']['schema']
+
+class GetResearchReadModelRequestV1(ClosedDto):
+    DTO_NAME = 'GetResearchReadModelRequestV1'
+    OPERATION_ID = 'ResearchService.v1.getResearchReadModel'
+    SCHEMA = METHOD_SPECS['ResearchService.v1.getResearchReadModel']['request_dto']['schema']
+
+class GetResearchReadModelResponseV1(ClosedDto):
+    DTO_NAME = 'GetResearchReadModelResponseV1'
+    OPERATION_ID = 'ResearchService.v1.getResearchReadModel'
+    SCHEMA = METHOD_SPECS['ResearchService.v1.getResearchReadModel']['response_dto']['schema']
+
+class CompareFactorVersionsRequestV1(ClosedDto):
+    DTO_NAME = 'CompareFactorVersionsRequestV1'
+    OPERATION_ID = 'ResearchService.v1.compareFactorVersions'
+    SCHEMA = METHOD_SPECS['ResearchService.v1.compareFactorVersions']['request_dto']['schema']
+
+class CompareFactorVersionsResponseV1(ClosedDto):
+    DTO_NAME = 'CompareFactorVersionsResponseV1'
+    OPERATION_ID = 'ResearchService.v1.compareFactorVersions'
+    SCHEMA = METHOD_SPECS['ResearchService.v1.compareFactorVersions']['response_dto']['schema']
+
+OPERATION_IDS = ('ResearchService.v1.submitFactorAnalysis',
+ 'ResearchService.v1.getResearchReadModel',
+ 'ResearchService.v1.compareFactorVersions')
+OPERATIONS = (
+    OperationContract(
+        operation_id='ResearchService.v1.submitFactorAnalysis',
+        service=SERVICE,
+        version='1.0.0',
+        kind=OperationKind.ASYNC_COMMAND,
+        request_type=SubmitFactorAnalysisRequestV1,
+        response_type=SubmitFactorAnalysisAcceptedV1,
+        metadata=METHOD_SPECS['ResearchService.v1.submitFactorAnalysis'],
+    ),
+    OperationContract(
+        operation_id='ResearchService.v1.getResearchReadModel',
+        service=SERVICE,
+        version='1.0.0',
+        kind=OperationKind.QUERY,
+        request_type=GetResearchReadModelRequestV1,
+        response_type=GetResearchReadModelResponseV1,
+        metadata=METHOD_SPECS['ResearchService.v1.getResearchReadModel'],
+    ),
+    OperationContract(
+        operation_id='ResearchService.v1.compareFactorVersions',
+        service=SERVICE,
+        version='1.0.0',
+        kind=OperationKind.QUERY,
+        request_type=CompareFactorVersionsRequestV1,
+        response_type=CompareFactorVersionsResponseV1,
+        metadata=METHOD_SPECS['ResearchService.v1.compareFactorVersions'],
+    ),
+)
+CONTRACT = ServiceContract(
+    contract_id=CONTRACT_ID,
+    service=SERVICE,
+    api_version=API_VERSION,
+    operations=OPERATIONS,
+)
+
+__all__ = ('CONTRACT_ID',
+ 'SERVICE',
+ 'API_VERSION',
+ 'OPERATION_IDS',
+ 'OPERATIONS',
+ 'CONTRACT',
+ 'SubmitFactorAnalysisRequestV1',
+ 'SubmitFactorAnalysisAcceptedV1',
+ 'GetResearchReadModelRequestV1',
+ 'GetResearchReadModelResponseV1',
+ 'CompareFactorVersionsRequestV1',
+ 'CompareFactorVersionsResponseV1')

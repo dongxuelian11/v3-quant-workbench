@@ -1,0 +1,207 @@
+{
+  "schema_id": "urn:v3:asl-contract-index:1.0.0",
+  "api_major_minor": "1.0",
+  "service_count": 17,
+  "services": [
+    {
+      "service": "ProjectSessionService",
+      "contract_id": "urn:v3:asl:project_session:1.0.0",
+      "path": "project_session.contract.json",
+      "method_count": 4,
+      "method_operation_ids": [
+        "ProjectSessionService.v1.openProject",
+        "ProjectSessionService.v1.getProjectContext",
+        "ProjectSessionService.v1.reviseProjectContext",
+        "ProjectSessionService.v1.restoreSession"
+      ]
+    },
+    {
+      "service": "DataSourceService",
+      "contract_id": "urn:v3:asl:data_source:1.0.0",
+      "path": "data_source.contract.json",
+      "method_count": 4,
+      "method_operation_ids": [
+        "DataSourceService.v1.listConnectorCapabilities",
+        "DataSourceService.v1.preflightSwitch",
+        "DataSourceService.v1.commitSwitch",
+        "DataSourceService.v1.admitConnectorVersion"
+      ]
+    },
+    {
+      "service": "InstrumentService",
+      "contract_id": "urn:v3:asl:instrument:1.0.0",
+      "path": "instrument.contract.json",
+      "method_count": 3,
+      "method_operation_ids": [
+        "InstrumentService.v1.getInstrument",
+        "InstrumentService.v1.resolveProviderAlias",
+        "InstrumentService.v1.publishInstrumentRevision"
+      ]
+    },
+    {
+      "service": "DataSnapshotService",
+      "contract_id": "urn:v3:asl:data_snapshot:1.0.0",
+      "path": "data_snapshot.contract.json",
+      "method_count": 4,
+      "method_operation_ids": [
+        "DataSnapshotService.v1.createSnapshotCandidate",
+        "DataSnapshotService.v1.validateSnapshotCandidate",
+        "DataSnapshotService.v1.publishSnapshot",
+        "DataSnapshotService.v1.listUpgradeCandidates"
+      ]
+    },
+    {
+      "service": "UniverseService",
+      "contract_id": "urn:v3:asl:universe:1.0.0",
+      "path": "universe.contract.json",
+      "method_count": 3,
+      "method_operation_ids": [
+        "UniverseService.v1.validateUniverseDefinition",
+        "UniverseService.v1.publishUniverseDefinition",
+        "UniverseService.v1.resolveUniverseVersion"
+      ]
+    },
+    {
+      "service": "ResearchService",
+      "contract_id": "urn:v3:asl:research:1.0.0",
+      "path": "research.contract.json",
+      "method_count": 3,
+      "method_operation_ids": [
+        "ResearchService.v1.submitFactorAnalysis",
+        "ResearchService.v1.getResearchReadModel",
+        "ResearchService.v1.compareFactorVersions"
+      ]
+    },
+    {
+      "service": "DatasetService",
+      "contract_id": "urn:v3:asl:dataset:1.0.0",
+      "path": "dataset.contract.json",
+      "method_count": 3,
+      "method_operation_ids": [
+        "DatasetService.v1.validateDatasetSpec",
+        "DatasetService.v1.materializeDataset",
+        "DatasetService.v1.getDatasetVersion"
+      ]
+    },
+    {
+      "service": "StrategyService",
+      "contract_id": "urn:v3:asl:strategy:1.0.0",
+      "path": "strategy.contract.json",
+      "method_count": 3,
+      "method_operation_ids": [
+        "StrategyService.v1.validateStrategyDraft",
+        "StrategyService.v1.compileStrategyIr",
+        "StrategyService.v1.publishStrategyVersion"
+      ]
+    },
+    {
+      "service": "ModelService",
+      "contract_id": "urn:v3:asl:model:1.0.0",
+      "path": "model.contract.json",
+      "method_count": 4,
+      "method_operation_ids": [
+        "ModelService.v1.validateTrainingSpec",
+        "ModelService.v1.trainModel",
+        "ModelService.v1.generatePredictionSignals",
+        "ModelService.v1.compareModelVersions"
+      ]
+    },
+    {
+      "service": "StudyService",
+      "contract_id": "urn:v3:asl:study:1.0.0",
+      "path": "study.contract.json",
+      "method_count": 5,
+      "method_operation_ids": [
+        "StudyService.v1.createStudy",
+        "StudyService.v1.enqueueTrialBatch",
+        "StudyService.v1.pauseStudy",
+        "StudyService.v1.resumeStudy",
+        "StudyService.v1.getStudy"
+      ]
+    },
+    {
+      "service": "PortfolioService",
+      "contract_id": "urn:v3:asl:portfolio:1.0.0",
+      "path": "portfolio.contract.json",
+      "method_count": 3,
+      "method_operation_ids": [
+        "PortfolioService.v1.validateConstructionSpec",
+        "PortfolioService.v1.materializePortfolioTargets",
+        "PortfolioService.v1.getPortfolioReadModel"
+      ]
+    },
+    {
+      "service": "RiskService",
+      "contract_id": "urn:v3:asl:risk:1.0.0",
+      "path": "risk.contract.json",
+      "method_count": 3,
+      "method_operation_ids": [
+        "RiskService.v1.buildRiskModel",
+        "RiskService.v1.evaluatePortfolioRisk",
+        "RiskService.v1.runStressTest"
+      ]
+    },
+    {
+      "service": "OptimizationService",
+      "contract_id": "urn:v3:asl:optimization:1.0.0",
+      "path": "optimization.contract.json",
+      "method_count": 3,
+      "method_operation_ids": [
+        "OptimizationService.v1.compileConstraintSet",
+        "OptimizationService.v1.solveOptimization",
+        "OptimizationService.v1.getOptimizationSolution"
+      ]
+    },
+    {
+      "service": "BacktestService",
+      "contract_id": "urn:v3:asl:backtest:1.0.0",
+      "path": "backtest.contract.json",
+      "method_count": 4,
+      "method_operation_ids": [
+        "BacktestService.v1.createExperiment",
+        "BacktestService.v1.expandExperiment",
+        "BacktestService.v1.submitBacktest",
+        "BacktestService.v1.getExperiment"
+      ]
+    },
+    {
+      "service": "ResultService",
+      "contract_id": "urn:v3:asl:result:1.0.0",
+      "path": "result.contract.json",
+      "method_count": 4,
+      "method_operation_ids": [
+        "ResultService.v1.reconcileLedger",
+        "ResultService.v1.finalizeResult",
+        "ResultService.v1.getResult",
+        "ResultService.v1.compareResults"
+      ]
+    },
+    {
+      "service": "TaskService",
+      "contract_id": "urn:v3:asl:task:1.0.0",
+      "path": "task.contract.json",
+      "method_count": 6,
+      "method_operation_ids": [
+        "TaskService.v1.getTask",
+        "TaskService.v1.listTasks",
+        "TaskService.v1.cancelTask",
+        "TaskService.v1.retryTask",
+        "TaskService.v1.resumeTask",
+        "TaskService.v1.getEvents"
+      ]
+    },
+    {
+      "service": "ArtifactService",
+      "contract_id": "urn:v3:asl:artifact:1.0.0",
+      "path": "artifact.contract.json",
+      "method_count": 5,
+      "method_operation_ids": [
+        "ArtifactService.v1.publishArtifact",
+        "ArtifactService.v1.getArtifactDescriptor",
+        "ArtifactService.v1.openArtifactStream",
+        "ArtifactService.v1.exportArtifact",
+        "ArtifactService.v1.planGarbageCollection"
+      ]
+    }
+  ]
+}

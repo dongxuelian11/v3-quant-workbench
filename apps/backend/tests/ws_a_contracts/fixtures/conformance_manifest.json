@@ -1,0 +1,113 @@
+{
+  "schema_id": "urn:v3:ws-a:contract-conformance-fixtures:1.0.0",
+  "source_package": "V3_OSS_REBUILD_BR1_WS_A_CONTRACTS_FOUNDATION_SOL_HIGH_01_TASK_PACKAGE_V1_0",
+  "service_count": 17,
+  "operation_count": 64,
+  "files": [
+    {
+      "path": "00_SOURCE_AUTHORITY_DIGESTS.json",
+      "bytes": 1168,
+      "sha256": "f6780a50223ca8649c80fcb77c3fa23a0d2017bab7f9a73e706ba85f766ea3fa"
+    },
+    {
+      "path": "02_DOMAIN_OBJECT_REGISTRY.json",
+      "bytes": 14187,
+      "sha256": "994c238f678f52aababfc898b4ab34fe64d5312381106bea144f23d45ae93208"
+    },
+    {
+      "path": "WIRE_CONVENTIONS.md",
+      "bytes": 2421,
+      "sha256": "e7e28aecb4474dae1bf7ffcefecf2ed7f7baa372dc5a8b72c08dc3adae5c3f43"
+    },
+    {
+      "path": "asl/artifact.contract.json",
+      "bytes": 23062,
+      "sha256": "1ad3cfc99626c8b43c90b072aca9f3d16dd04b862fa04f491942badc6943c2b4"
+    },
+    {
+      "path": "asl/backtest.contract.json",
+      "bytes": 18991,
+      "sha256": "5e60fb161667e8aea913635dd23fdbf1273e18d288b3b5fede7d0488dd6e357a"
+    },
+    {
+      "path": "asl/data_snapshot.contract.json",
+      "bytes": 19322,
+      "sha256": "de69b835bc771ccb90468d8b57177b5243539a22eeb8e04fe6be82c5398b5ed4"
+    },
+    {
+      "path": "asl/data_source.contract.json",
+      "bytes": 19503,
+      "sha256": "7a85a1982e9555de7547ee37319ebaba49f0e869ad3877cbbf2cc528ea00546d"
+    },
+    {
+      "path": "asl/dataset.contract.json",
+      "bytes": 14373,
+      "sha256": "c63eb1e22b2912bb25710929f0f160bcf3ac62592d92b0a096ff88465f346920"
+    },
+    {
+      "path": "asl/index.json",
+      "bytes": 6657,
+      "sha256": "7cd9ac1ad4f0ccda8c5a7e878692dd9be35bb4c43db687894721d42c6b05cb5b"
+    },
+    {
+      "path": "asl/instrument.contract.json",
+      "bytes": 14099,
+      "sha256": "bd317cc45a87c5823608387546cd2cecf9efa6c3469abcc06f801bd066162c58"
+    },
+    {
+      "path": "asl/model.contract.json",
+      "bytes": 19025,
+      "sha256": "56968c4ed401232d3c2ae19de1ecf7991e36d80953cca5031fa1387ab8d270a7"
+    },
+    {
+      "path": "asl/optimization.contract.json",
+      "bytes": 14558,
+      "sha256": "3c525a64610236d425f1bb3e098bb0a6d5dd4d0858c055cbaf9a1c8bd01250cb"
+    },
+    {
+      "path": "asl/portfolio.contract.json",
+      "bytes": 14408,
+      "sha256": "7bcae8a18c9852b6946da55dee820db9a2df807470e6aead029295cc2308d366"
+    },
+    {
+      "path": "asl/project_session.contract.json",
+      "bytes": 17554,
+      "sha256": "066d3526a889904108d16d3d23124dd05d110dbc3d7ca7b97fb0e2d9193db7e9"
+    },
+    {
+      "path": "asl/research.contract.json",
+      "bytes": 15189,
+      "sha256": "a8406319b881e37583c905e847971ce8121ba208c621835212f500c30b1cc3e2"
+    },
+    {
+      "path": "asl/result.contract.json",
+      "bytes": 19979,
+      "sha256": "3fdfa92fc4397c05e2a5f2feb30db75479180383fa7f8b5e872d12884a0b15b0"
+    },
+    {
+      "path": "asl/risk.contract.json",
+      "bytes": 16298,
+      "sha256": "556a6a57bfedae61da03f41e8bddd70afcfd9533b276c84cda7412a8db0eb672"
+    },
+    {
+      "path": "asl/strategy.contract.json",
+      "bytes": 14999,
+      "sha256": "5a672920a5e4e6eacd22de15008a5245e5f093a682234589b3705ceb7a6e589e"
+    },
+    {
+      "path": "asl/study.contract.json",
+      "bytes": 22637,
+      "sha256": "4e606f191d6e364acc4e1925ec6e872271f125e285c0bdbd0cdb9056f4c9f0ad"
+    },
+    {
+      "path": "asl/task.contract.json",
+      "bytes": 26340,
+      "sha256": "14c964b8aa7903a8ec88626bcb84d25dd84de36f201b7703ff976b5a1bdd145b"
+    },
+    {
+      "path": "asl/universe.contract.json",
+      "bytes": 14881,
+      "sha256": "4bb56893833b6cda33d0c0cf16e69c07bced65b164147db461a6f1fa6fe5b5f4"
+    }
+  ]
+}
