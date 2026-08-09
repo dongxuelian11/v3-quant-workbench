@@ -1,0 +1,732 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contract_schema_id": "urn:v3:asl-contract-envelope:1.0.0",
+  "contract_id": "urn:v3:asl:study:1.0.0",
+  "service": "StudyService",
+  "api_version": "1.0.0",
+  "compatibility": {
+    "major": "breaking",
+    "minor": "additive only",
+    "patch": "clarification/no wire-shape change"
+  },
+  "domain_owner": "Study and Trial Domain",
+  "repository_dependencies": [
+    "StudyRepository",
+    "TrialRepository",
+    "DatasetRepository",
+    "ModelRepository",
+    "ArtifactRepository",
+    "TaskRepository",
+    "ProvenanceRepository"
+  ],
+  "transport_binding": {
+    "namespace": "asl.v1.StudyService",
+    "business_ownership": false
+  },
+  "availability_states": [
+    "FORMAL",
+    "DEMO",
+    "UNAVAILABLE"
+  ],
+  "methods": [
+    {
+      "operation_id": "StudyService.v1.createStudy",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "CreateStudyRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "study_spec",
+            "dataset_version_id",
+            "idempotency_key"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "study_spec": {
+              "type": "object",
+              "description": "Search space, objectives, sampler/pruner adapter, fixed-batch policy and budgets"
+            },
+            "dataset_version_id": {
+              "type": "string",
+              "description": "Pinned dataset"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "description": "Stable create key"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "CreateStudyResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON StudyReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "IDEMPOTENCY_KEY",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "final-test split is hidden from Study/Trial",
+        "search space and fixed batch size bounded"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "StudyReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "Optuna-style Study / Trial / HPO"
+      ]
+    },
+    {
+      "operation_id": "StudyService.v1.enqueueTrialBatch",
+      "version": "1.0.0",
+      "kind": "ASYNC_COMMAND",
+      "request_dto": {
+        "name": "EnqueueTrialBatchRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "study_id",
+            "batch_size",
+            "idempotency_key"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "study_id": {
+              "type": "string",
+              "description": "Persisted Study identity"
+            },
+            "batch_size": {
+              "type": "integer",
+              "description": "Fixed admitted batch size",
+              "minimum": 1,
+              "maximum": 256
+            },
+            "idempotency_key": {
+              "type": "string",
+              "description": "Stable batch key"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "EnqueueTrialBatchAcceptedV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "task_id",
+            "run_id",
+            "accepted_state"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "task_id": {
+              "type": "string",
+              "description": "Durable user-work identity",
+              "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "run_id": {
+              "type": "string",
+              "description": "Immutable financial-input run identity",
+              "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "accepted_state": {
+              "type": "string",
+              "description": "Persisted acceptance state",
+              "const": "QUEUED"
+            },
+            "event_cursor": {
+              "type": "integer",
+              "description": "First durable event sequence",
+              "minimum": 1
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": true,
+        "run_identity_inputs": [
+          "study spec hash",
+          "dataset hash",
+          "batch ordinal",
+          "environment profile"
+        ],
+        "artifact_outputs": [
+          "TrialMetricsParquet",
+          "StudyCheckpoint",
+          "StudyVisualizations"
+        ],
+        "cancel": "FINISH_OR_PRUNE_ACTIVE_TRIALS_THEN_STOP",
+        "retry": "FAILED_TRIALS_AS_NEW_ATTEMPTS",
+        "resume": "FROM_PERSISTED_STUDY_CHECKPOINT",
+        "input_change": "MUST_CREATE_NEW_RUN",
+        "attempt_rule": "retry/resume always creates a new TaskAttempt; previous attempts are immutable"
+      },
+      "truth_pit_preconditions": [
+        "Study state RUNNABLE",
+        "resource governor grants bounded worker slots"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [],
+      "frontend_capabilities": [
+        "pruning",
+        "parallel coordinates",
+        "Pareto",
+        "history/importance/relationships"
+      ]
+    },
+    {
+      "operation_id": "StudyService.v1.pauseStudy",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "PauseStudyRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "study_id",
+            "expected_state_version"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "study_id": {
+              "type": "string",
+              "description": "Study identity"
+            },
+            "expected_state_version": {
+              "type": "integer",
+              "description": "Optimistic state version",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "PauseStudyResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON StudyReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists and is not superseded for this request"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "StudyReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "pause"
+      ]
+    },
+    {
+      "operation_id": "StudyService.v1.resumeStudy",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "ResumeStudyRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "study_id",
+            "checkpoint_artifact_id",
+            "expected_state_version"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "study_id": {
+              "type": "string",
+              "description": "Study identity"
+            },
+            "checkpoint_artifact_id": {
+              "type": "string",
+              "description": "Content-addressed artifact identity",
+              "pattern": "^art_sha256_[0-9a-f]{64}$"
+            },
+            "expected_state_version": {
+              "type": "integer",
+              "description": "Optimistic state version",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "ResumeStudyResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON StudyReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "checkpoint belongs to Study and environment is compatible"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "StudyReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "resume",
+        "persistence-backed reload"
+      ]
+    },
+    {
+      "operation_id": "StudyService.v1.getStudy",
+      "version": "1.0.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "GetStudyRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "study_id"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "study_id": {
+              "type": "string",
+              "description": "Study identity"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "GetStudyResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON StudyReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists and is not superseded for this request"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "StudyReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "Study detail"
+      ]
+    }
+  ],
+  "forbidden_responsibilities": [
+    "delegating Study/Trial identity to Optuna",
+    "accessing final test",
+    "unbounded trial fan-out"
+  ],
+  "global_invariants": [
+    "No generic execute(action,payload)",
+    "No direct renderer access to SQLite, DuckDB or Parquet",
+    "No large tabular/numeric JSON payload; return ArtifactRef",
+    "No worker-owned identity, registry or financial truth",
+    "No silent fallback between Demo, Formal, connector, engine or environment",
+    "Published/versioned objects are immutable"
+  ]
+}

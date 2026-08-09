@@ -1,0 +1,858 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contract_schema_id": "urn:v3:asl-contract-envelope:1.0.0",
+  "contract_id": "urn:v3:asl:task:1.0.0",
+  "service": "TaskService",
+  "api_version": "1.0.0",
+  "compatibility": {
+    "major": "breaking",
+    "minor": "additive only",
+    "patch": "clarification/no wire-shape change"
+  },
+  "domain_owner": "Control Plane Task Domain",
+  "repository_dependencies": [
+    "TaskRepository",
+    "RunRepository",
+    "TaskAttemptRepository",
+    "TaskEventRepository",
+    "WorkerLeaseRepository",
+    "ArtifactRepository",
+    "ProvenanceRepository"
+  ],
+  "transport_binding": {
+    "namespace": "asl.v1.TaskService",
+    "business_ownership": false
+  },
+  "availability_states": [
+    "FORMAL",
+    "DEMO",
+    "UNAVAILABLE",
+    "DEGRADED"
+  ],
+  "methods": [
+    {
+      "operation_id": "TaskService.v1.getTask",
+      "version": "1.0.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "GetTaskRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "task_id"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "task_id": {
+              "type": "string",
+              "description": "Durable user-work identity",
+              "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "GetTaskResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON TaskReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists and is not superseded for this request"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "TaskReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "global task drawer"
+      ]
+    },
+    {
+      "operation_id": "TaskService.v1.listTasks",
+      "version": "1.0.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "ListTasksRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "filter",
+            "page_size"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "filter": {
+              "type": "object",
+              "description": "Project, service, state, time and cursor filters"
+            },
+            "page_size": {
+              "type": "integer",
+              "description": "Bounded page size",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "ListTasksResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON TaskPageReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists and is not superseded for this request"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "TaskPageReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "batch queue",
+        "global task drawer"
+      ]
+    },
+    {
+      "operation_id": "TaskService.v1.cancelTask",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "CancelTaskRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "task_id",
+            "expected_state_version",
+            "reason"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "task_id": {
+              "type": "string",
+              "description": "Durable user-work identity",
+              "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_state_version": {
+              "type": "integer",
+              "description": "Optimistic state version",
+              "minimum": 0
+            },
+            "reason": {
+              "type": "string",
+              "description": "User-visible reason"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "CancelTaskResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON TaskReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "terminal Task cannot be cancelled",
+        "cancellation is persisted before worker signal"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "TaskReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "cancel"
+      ]
+    },
+    {
+      "operation_id": "TaskService.v1.retryTask",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "RetryTaskRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "task_id",
+            "failed_attempt_id",
+            "expected_state_version"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "task_id": {
+              "type": "string",
+              "description": "Durable user-work identity",
+              "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "failed_attempt_id": {
+              "type": "string",
+              "description": "Immutable worker attempt identity",
+              "pattern": "^att_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_state_version": {
+              "type": "integer",
+              "description": "Optimistic state version",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "RetryTaskResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON TaskReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "Run inputs unchanged",
+        "retry policy permits error category",
+        "new Attempt required"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "TaskReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "retry"
+      ]
+    },
+    {
+      "operation_id": "TaskService.v1.resumeTask",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "ResumeTaskRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "task_id",
+            "checkpoint_artifact_id",
+            "expected_state_version"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "task_id": {
+              "type": "string",
+              "description": "Durable user-work identity",
+              "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "checkpoint_artifact_id": {
+              "type": "string",
+              "description": "Content-addressed artifact identity",
+              "pattern": "^art_sha256_[0-9a-f]{64}$"
+            },
+            "expected_state_version": {
+              "type": "integer",
+              "description": "Optimistic state version",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "ResumeTaskResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON TaskReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "checkpoint belongs to same Run",
+        "environment and code compatibility exact",
+        "new Attempt required"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "TaskReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "resume",
+        "checkpoint"
+      ]
+    },
+    {
+      "operation_id": "TaskService.v1.getEvents",
+      "version": "1.0.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "GetEventsRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "after_sequence",
+            "limit"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "after_sequence": {
+              "type": "integer",
+              "description": "Last durable sequence seen",
+              "minimum": 0
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Bounded replay count",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "GetEventsResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON TaskEventPageV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists and is not superseded for this request"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "TaskEventPageV1"
+      ],
+      "frontend_capabilities": [
+        "reconnect/event replay"
+      ]
+    }
+  ],
+  "forbidden_responsibilities": [
+    "performing domain computations",
+    "changing Run inputs on retry/resume",
+    "letting worker own registry"
+  ],
+  "global_invariants": [
+    "No generic execute(action,payload)",
+    "No direct renderer access to SQLite, DuckDB or Parquet",
+    "No large tabular/numeric JSON payload; return ArtifactRef",
+    "No worker-owned identity, registry or financial truth",
+    "No silent fallback between Demo, Formal, connector, engine or environment",
+    "Published/versioned objects are immutable"
+  ]
+}

@@ -1,0 +1,561 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contract_schema_id": "urn:v3:asl-contract-envelope:1.0.0",
+  "contract_id": "urn:v3:asl:project_session:1.0.0",
+  "service": "ProjectSessionService",
+  "api_version": "1.0.0",
+  "compatibility": {
+    "major": "breaking",
+    "minor": "additive only",
+    "patch": "clarification/no wire-shape change"
+  },
+  "domain_owner": "Project Context Domain",
+  "repository_dependencies": [
+    "ProjectRepository",
+    "ProjectContextRevisionRepository",
+    "SessionRepository",
+    "TaskRepository",
+    "ProvenanceRepository"
+  ],
+  "transport_binding": {
+    "namespace": "asl.v1.ProjectSessionService",
+    "business_ownership": false
+  },
+  "availability_states": [
+    "FORMAL",
+    "DEMO",
+    "UNAVAILABLE"
+  ],
+  "methods": [
+    {
+      "operation_id": "ProjectSessionService.v1.openProject",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "OpenProjectRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "project_locator",
+            "session_id"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "project_locator": {
+              "type": "string",
+              "description": "Opaque project locator; never a renderer-readable database path"
+            },
+            "session_id": {
+              "type": "string",
+              "description": "Desktop session UUID",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "OpenProjectResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON ProjectContextReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists and is not superseded for this request"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "ProjectContextReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "Shared ProjectContext",
+        "layout/session restore"
+      ]
+    },
+    {
+      "operation_id": "ProjectSessionService.v1.getProjectContext",
+      "version": "1.0.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "GetProjectContextRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "GetProjectContextResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON ProjectContextReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists and is not superseded for this request"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "ProjectContextReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "all five Labs shared context"
+      ]
+    },
+    {
+      "operation_id": "ProjectSessionService.v1.reviseProjectContext",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "ReviseProjectContextRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "base_revision_id",
+            "patch",
+            "idempotency_key"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "base_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "patch": {
+              "type": "object",
+              "description": "RFC 6902-compatible, allow-listed context fields only"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "description": "Stable command key",
+              "minLength": 8
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "ReviseProjectContextResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON ProjectContextReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "IDEMPOTENCY_KEY",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "base_revision_id is current",
+        "all referenced versioned objects exist and are compatible"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "ProjectContextReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "data source/snapshot/universe upgrade without mutation"
+      ]
+    },
+    {
+      "operation_id": "ProjectSessionService.v1.restoreSession",
+      "version": "1.0.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "RestoreSessionRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "session_id"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "session_id": {
+              "type": "string",
+              "description": "Desktop session UUID",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "RestoreSessionResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Small JSON SessionRestoreReadModelV1; any large table is an ArtifactRef"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists and is not superseded for this request"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "SessionRestoreReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "Dockview layout restoration",
+        "Lab context restoration"
+      ]
+    }
+  ],
+  "forbidden_responsibilities": [
+    "owning Lab-specific business objects",
+    "mutating pinned version objects",
+    "opening database paths supplied by renderer"
+  ],
+  "global_invariants": [
+    "No generic execute(action,payload)",
+    "No direct renderer access to SQLite, DuckDB or Parquet",
+    "No large tabular/numeric JSON payload; return ArtifactRef",
+    "No worker-owned identity, registry or financial truth",
+    "No silent fallback between Demo, Formal, connector, engine or environment",
+    "Published/versioned objects are immutable"
+  ]
+}

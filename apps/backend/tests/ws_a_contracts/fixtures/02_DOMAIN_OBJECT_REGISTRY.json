@@ -1,0 +1,542 @@
+{
+  "schema_id": "urn:v3:domain-object-registry:1.0.0",
+  "scope": "A-share daily/EOD Canonical Backend",
+  "identity_rules": {
+    "ulid": "Crockford uppercase, monotonic per process",
+    "content_address": "sha256 lowercase hex",
+    "provider_code": "never canonical"
+  },
+  "objects": [
+    {
+      "name": "Project",
+      "owner": "Project Context Domain",
+      "repository": "ProjectRepository",
+      "identity": "prj_ ULID",
+      "lifecycle": [
+        "ACTIVE",
+        "ARCHIVED"
+      ],
+      "invariant": "Mutable metadata; context changes only through immutable revisions"
+    },
+    {
+      "name": "ProjectContextRevision",
+      "owner": "Project Context Domain",
+      "repository": "ProjectContextRevisionRepository",
+      "identity": "pcr_ ULID",
+      "lifecycle": [
+        "PUBLISHED"
+      ],
+      "invariant": "Immutable; exact connector/snapshot/universe/environment pins"
+    },
+    {
+      "name": "Session",
+      "owner": "Project Context Domain",
+      "repository": "SessionRepository",
+      "identity": "ses_ UUIDv7",
+      "lifecycle": [
+        "OPEN",
+        "CLOSED"
+      ],
+      "invariant": "Operational only; never financial truth"
+    },
+    {
+      "name": "Connector",
+      "owner": "Connector Catalog Domain",
+      "repository": "ConnectorRepository",
+      "identity": "con_ ULID",
+      "lifecycle": [
+        "REGISTERED",
+        "DISABLED"
+      ],
+      "invariant": "Stable logical plugin identity"
+    },
+    {
+      "name": "ConnectorVersion",
+      "owner": "Connector Catalog Domain",
+      "repository": "ConnectorRepository",
+      "identity": "cov_ ULID",
+      "lifecycle": [
+        "QUARANTINED",
+        "ADMITTED",
+        "REJECTED",
+        "RETIRED"
+      ],
+      "invariant": "Immutable bundle hash and declared capabilities"
+    },
+    {
+      "name": "ConnectorAdmission",
+      "owner": "Connector Catalog Domain",
+      "repository": "ConnectorAdmissionRepository",
+      "identity": "cad_ ULID",
+      "lifecycle": [
+        "PENDING",
+        "RUNNING",
+        "PASSED",
+        "FAILED"
+      ],
+      "invariant": "Result pinned to policy/environment; capability-level"
+    },
+    {
+      "name": "CredentialReference",
+      "owner": "Connector Catalog Domain",
+      "repository": "CredentialReferenceRepository",
+      "identity": "crf_ ULID",
+      "lifecycle": [
+        "ACTIVE",
+        "REVOKED"
+      ],
+      "invariant": "Contains locator/metadata only; never secret bytes"
+    },
+    {
+      "name": "Instrument",
+      "owner": "Instrument Master Domain",
+      "repository": "InstrumentRepository",
+      "identity": "ins_ ULID",
+      "lifecycle": [
+        "ACTIVE",
+        "DELISTED",
+        "MERGED"
+      ],
+      "invariant": "Permanent V3 identity independent of providers"
+    },
+    {
+      "name": "InstrumentAlias",
+      "owner": "Instrument Master Domain",
+      "repository": "InstrumentAliasRepository",
+      "identity": "ial_ ULID",
+      "lifecycle": [
+        "EFFECTIVE",
+        "EXPIRED"
+      ],
+      "invariant": "Provider/version scoped effective interval; no overlap"
+    },
+    {
+      "name": "RawCapture",
+      "owner": "Data Truth Domain",
+      "repository": "RawCaptureRepository",
+      "identity": "raw_ ULID",
+      "lifecycle": [
+        "CAPTURED",
+        "QUARANTINED",
+        "ACCEPTED"
+      ],
+      "invariant": "Immutable provider bytes as ArtifactRef"
+    },
+    {
+      "name": "DataSnapshotVersion",
+      "owner": "Data Truth Domain",
+      "repository": "SnapshotRepository",
+      "identity": "snp_ ULID",
+      "lifecycle": [
+        "CANDIDATE",
+        "VALIDATED",
+        "PUBLISHED",
+        "REJECTED"
+      ],
+      "invariant": "Published snapshots immutable and project-pinned"
+    },
+    {
+      "name": "IndustryTaxonomyVersion",
+      "owner": "Data Truth Domain",
+      "repository": "SnapshotRepository",
+      "identity": "itx_ ULID",
+      "lifecycle": [
+        "PUBLISHED"
+      ],
+      "invariant": "Default SW2021 L1; historical effective intervals"
+    },
+    {
+      "name": "UniverseDefinition",
+      "owner": "Universe Domain",
+      "repository": "UniverseRepository",
+      "identity": "und_ ULID",
+      "lifecycle": [
+        "DRAFT",
+        "PUBLISHED"
+      ],
+      "invariant": "Immutable constructor definition once published"
+    },
+    {
+      "name": "UniverseVersion",
+      "owner": "Universe Domain",
+      "repository": "UniverseRepository",
+      "identity": "unv_ ULID",
+      "lifecycle": [
+        "BUILDING",
+        "PUBLISHED",
+        "REJECTED"
+      ],
+      "invariant": "PIT membership with snapshot and cutoff"
+    },
+    {
+      "name": "FactorDefinition",
+      "owner": "Factor Research Domain",
+      "repository": "FactorRepository",
+      "identity": "fad_ ULID",
+      "lifecycle": [
+        "DRAFT",
+        "PUBLISHED"
+      ],
+      "invariant": "Semantic definition and declared availability rules"
+    },
+    {
+      "name": "FactorVersion",
+      "owner": "Factor Research Domain",
+      "repository": "FactorRepository",
+      "identity": "fav_ ULID",
+      "lifecycle": [
+        "PUBLISHED",
+        "RETIRED"
+      ],
+      "invariant": "Immutable code/spec/content hashes"
+    },
+    {
+      "name": "DatasetSpec",
+      "owner": "Dataset Domain",
+      "repository": "DatasetRepository",
+      "identity": "dss_ ULID",
+      "lifecycle": [
+        "DRAFT",
+        "VALIDATED",
+        "REJECTED"
+      ],
+      "invariant": "Feature/label/split/leakage policy"
+    },
+    {
+      "name": "DatasetVersion",
+      "owner": "Dataset Domain",
+      "repository": "DatasetRepository",
+      "identity": "dsv_ ULID",
+      "lifecycle": [
+        "MATERIALIZING",
+        "PUBLISHED",
+        "REJECTED"
+      ],
+      "invariant": "Immutable Parquet manifest and leakage audit"
+    },
+    {
+      "name": "StrategyDraft",
+      "owner": "Strategy Domain",
+      "repository": "StrategyRepository",
+      "identity": "std_ ULID",
+      "lifecycle": [
+        "EDITABLE",
+        "SUPERSEDED"
+      ],
+      "invariant": "Shared Visual/Code/Split draft; optimistic revision"
+    },
+    {
+      "name": "StrategyVersion",
+      "owner": "Strategy Domain",
+      "repository": "StrategyRepository",
+      "identity": "stv_ ULID",
+      "lifecycle": [
+        "PUBLISHED",
+        "RETIRED"
+      ],
+      "invariant": "Immutable V3 Strategy IR"
+    },
+    {
+      "name": "ModelSpec",
+      "owner": "Model Lifecycle Domain",
+      "repository": "ModelRepository",
+      "identity": "mds_ ULID",
+      "lifecycle": [
+        "DRAFT",
+        "VALIDATED"
+      ],
+      "invariant": "Family/hyperparameter/environment contract"
+    },
+    {
+      "name": "ModelVersion",
+      "owner": "Model Lifecycle Domain",
+      "repository": "ModelRepository",
+      "identity": "mdv_ ULID",
+      "lifecycle": [
+        "TRAINING",
+        "PUBLISHED",
+        "REJECTED"
+      ],
+      "invariant": "V3-owned immutable safe model artifact"
+    },
+    {
+      "name": "PredictionSignalVersion",
+      "owner": "Model Lifecycle Domain",
+      "repository": "SignalRepository",
+      "identity": "sgv_ ULID",
+      "lifecycle": [
+        "GENERATING",
+        "PUBLISHED",
+        "REJECTED"
+      ],
+      "invariant": "Immutable PIT signal Parquet"
+    },
+    {
+      "name": "Study",
+      "owner": "Study and Trial Domain",
+      "repository": "StudyRepository",
+      "identity": "stu_ ULID",
+      "lifecycle": [
+        "CREATED",
+        "RUNNING",
+        "PAUSING",
+        "PAUSED",
+        "COMPLETED",
+        "PARTIAL",
+        "CANCELLED",
+        "FAILED"
+      ],
+      "invariant": "V3-owned persistent HPO aggregate"
+    },
+    {
+      "name": "Trial",
+      "owner": "Study and Trial Domain",
+      "repository": "TrialRepository",
+      "identity": "trl_ ULID",
+      "lifecycle": [
+        "QUEUED",
+        "RUNNING",
+        "PRUNED",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED"
+      ],
+      "invariant": "Immutable params per trial; attempts separate"
+    },
+    {
+      "name": "PortfolioConstructionSpec",
+      "owner": "Portfolio Construction Domain",
+      "repository": "PortfolioRepository",
+      "identity": "pcs_ ULID",
+      "lifecycle": [
+        "DRAFT",
+        "PUBLISHED"
+      ],
+      "invariant": "Selection/weight/rebalance rules"
+    },
+    {
+      "name": "PortfolioVersion",
+      "owner": "Portfolio Construction Domain",
+      "repository": "PortfolioRepository",
+      "identity": "pfv_ ULID",
+      "lifecycle": [
+        "BUILDING",
+        "PUBLISHED",
+        "REJECTED"
+      ],
+      "invariant": "Immutable target weights/holdings ArtifactRef"
+    },
+    {
+      "name": "RiskModelSpec",
+      "owner": "Risk Domain",
+      "repository": "RiskModelRepository",
+      "identity": "rms_ ULID",
+      "lifecycle": [
+        "DRAFT",
+        "VALIDATED"
+      ],
+      "invariant": "Transparent A-share factor model contract"
+    },
+    {
+      "name": "RiskModelVersion",
+      "owner": "Risk Domain",
+      "repository": "RiskModelRepository",
+      "identity": "rmv_ ULID",
+      "lifecycle": [
+        "BUILDING",
+        "PUBLISHED",
+        "REJECTED"
+      ],
+      "invariant": "Immutable B/F/D/Sigma artifacts and validation"
+    },
+    {
+      "name": "ConstraintSetVersion",
+      "owner": "Optimization Domain",
+      "repository": "ConstraintRepository",
+      "identity": "csv_ ULID",
+      "lifecycle": [
+        "PUBLISHED"
+      ],
+      "invariant": "Compiled typed constraints; no silent relaxation"
+    },
+    {
+      "name": "OptimizationProblem",
+      "owner": "Optimization Domain",
+      "repository": "OptimizationRepository",
+      "identity": "opb_ ULID",
+      "lifecycle": [
+        "READY",
+        "INVALID"
+      ],
+      "invariant": "Immutable objective/input/constraint bindings"
+    },
+    {
+      "name": "OptimizationSolution",
+      "owner": "Optimization Domain",
+      "repository": "OptimizationRepository",
+      "identity": "ops_ ULID",
+      "lifecycle": [
+        "OPTIMAL",
+        "INFEASIBLE",
+        "UNBOUNDED",
+        "FAILED",
+        "INVALID"
+      ],
+      "invariant": "Weights only for independently validated optimal state"
+    },
+    {
+      "name": "Experiment",
+      "owner": "Experiment and Backtest Domain",
+      "repository": "ExperimentRepository",
+      "identity": "exp_ ULID",
+      "lifecycle": [
+        "DRAFT",
+        "EXPANDED",
+        "RUNNING",
+        "PARTIAL",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED"
+      ],
+      "invariant": "Matrix owner; child Tasks independent"
+    },
+    {
+      "name": "BacktestRunSpec",
+      "owner": "Experiment and Backtest Domain",
+      "repository": "BacktestRepository",
+      "identity": "brs_ ULID",
+      "lifecycle": [
+        "PUBLISHED"
+      ],
+      "invariant": "Immutable V3-owned financial/run/environment inputs"
+    },
+    {
+      "name": "Task",
+      "owner": "Control Plane Task Domain",
+      "repository": "TaskRepository",
+      "identity": "tsk_ ULID",
+      "lifecycle": [
+        "QUEUED",
+        "RUNNING",
+        "PAUSE_REQUESTED",
+        "PAUSED",
+        "CANCEL_REQUESTED",
+        "SUCCEEDED",
+        "FAILED",
+        "CANCELLED",
+        "PARTIAL"
+      ],
+      "invariant": "User work identity; state machine only through TaskService/Supervisor"
+    },
+    {
+      "name": "Run",
+      "owner": "Control Plane Task Domain",
+      "repository": "RunRepository",
+      "identity": "run_ ULID",
+      "lifecycle": [
+        "SEALED",
+        "ACTIVE",
+        "TERMINAL"
+      ],
+      "invariant": "Immutable canonical input hash; changed input means new Run"
+    },
+    {
+      "name": "TaskAttempt",
+      "owner": "Control Plane Task Domain",
+      "repository": "TaskAttemptRepository",
+      "identity": "att_ ULID",
+      "lifecycle": [
+        "QUEUED",
+        "LEASED",
+        "STARTING",
+        "RUNNING",
+        "CHECKPOINTING",
+        "SUCCEEDED",
+        "FAILED",
+        "CANCELLED",
+        "LOST"
+      ],
+      "invariant": "One worker execution; never overwritten"
+    },
+    {
+      "name": "TaskEvent",
+      "owner": "Control Plane Task Domain",
+      "repository": "TaskEventRepository",
+      "identity": "tev_ ULID",
+      "lifecycle": [
+        "PERSISTED"
+      ],
+      "invariant": "Append-only; per-project monotonic sequence"
+    },
+    {
+      "name": "Result",
+      "owner": "Result and Standard Ledger Domain",
+      "repository": "ResultRepository",
+      "identity": "res_ ULID",
+      "lifecycle": [
+        "PENDING_RECONCILIATION",
+        "VALID",
+        "INVALID"
+      ],
+      "invariant": "Cannot be VALID unless ledger reconciliation passes"
+    },
+    {
+      "name": "Artifact",
+      "owner": "Artifact Identity Domain",
+      "repository": "ArtifactRepository",
+      "identity": "art_sha256_ hash",
+      "lifecycle": [
+        "STAGED",
+        "PUBLISHED",
+        "QUARANTINED",
+        "DELETED"
+      ],
+      "invariant": "Content-addressed immutable bytes"
+    },
+    {
+      "name": "ArtifactReference",
+      "owner": "Artifact Identity Domain",
+      "repository": "ArtifactReferenceRepository",
+      "identity": "arf_ ULID",
+      "lifecycle": [
+        "ACTIVE",
+        "RELEASED"
+      ],
+      "invariant": "Reachability edge from owner object to Artifact"
+    },
+    {
+      "name": "WorkerLease",
+      "owner": "Control Plane Task Domain",
+      "repository": "WorkerLeaseRepository",
+      "identity": "lea_ ULID",
+      "lifecycle": [
+        "GRANTED",
+        "RENEWED",
+        "EXPIRED",
+        "RELEASED",
+        "REVOKED"
+      ],
+      "invariant": "Supervisor-owned bounded resource grant"
+    },
+    {
+      "name": "ProvenanceEntity",
+      "owner": "Provenance Domain",
+      "repository": "ProvenanceRepository",
+      "identity": "prv_ ULID",
+      "lifecycle": [
+        "RECORDED"
+      ],
+      "invariant": "Immutable subject fingerprint"
+    },
+    {
+      "name": "ProvenanceEdge",
+      "owner": "Provenance Domain",
+      "repository": "ProvenanceRepository",
+      "identity": "pre_ ULID",
+      "lifecycle": [
+        "RECORDED"
+      ],
+      "invariant": "Immutable generated_from/used/derived_from relationship"
+    }
+  ]
+}
