@@ -63,6 +63,8 @@ Every formal stage returns either an immutable success artifact or a typed failu
 | Risk output changes source target or StrategyVersion | integrity violation | **REJECT** |
 | Risk returns original target after internal exception | typed failure, never “unchanged” | **REJECT** |
 | Emergency all-cash fallback | separately versioned `REPLACE` policy with high-visibility evidence | **ADAPT** |
+| Risk pass-through aliases/reuses TargetWeightVector identity | hides the mandatory Risk decision and derivative lineage | publish a new RiskAdjustedWeightVector with identical rows, distinct identity and explicit PASS_THROUGH evidence | **ADOPT** |
+| Risk model/optimizer/validation PASS promotes source truth | violates upstream truth ceiling | preserve or lower source truth only | **REJECT** |
 
 ## Execution failures
 
@@ -85,7 +87,10 @@ Every formal stage returns either an immutable success artifact or a typed failu
 |---|---|---|
 | Strategy queries DB or account to choose current holdings | hidden state breaks reproducibility and conflates evaluation with portfolio/execution | **REJECT** |
 | Strategy calls Backtest/Execution | cyclic ownership and nonportable strategy identity | **REJECT** |
+| Strategy/Model/AI directly publishes formal TargetWeightVector | bypasses Portfolio scope/completeness/cash/exposure/constraints/provenance admission | **REJECT** |
+| Portfolio publishes FORMAL target from PRE_ALPHA/NOT_FORMAL source | misrepresents upstream evidence | **REJECT** |
 | Risk mutates Strategy or SignalArtifact | destroys causal comparison | **REJECT** |
+| Execution sometimes consumes TargetWeightVector and sometimes RiskAdjustedWeightVector | creates divergent contracts and bypasses Risk domain on one path | **REJECT** |
 | Backtest recomputes portfolio intent from source code | can diverge from reviewed/published artifacts | **REJECT** |
 | Execution chooses optimizer objectives | policy leak across domains | **REJECT** |
 | One mutable “portfolio” object represents intent, target, orders, fills and holdings | time and ownership become ambiguous | **REJECT** |

@@ -2,16 +2,34 @@
 
 ## Explicit conclusion
 
-**ADOPT:** `TargetWeightVector` should become the stable V3 contract from Strategy/Model/AI into Portfolio/Risk/Backtest/Execution.
+**ADOPT:** `TargetWeightVector` should become the stable V3 contract published by PortfolioService/Portfolio Construction for Risk and, after an explicit Risk stage, Backtest/Execution planning. Strategy, Model and AI never publish a formal `TargetWeightVector` directly.
 
 This is a qualified yes. The contract is a content-addressed, immutable, complete-scope description of a desired portfolio at a stated time. It is not a bare map, not an order list, not current holdings, not a fill promise and not a mutable account view. Producers that express ranks, scores, selected instruments or an optimization objective first emit `SignalArtifact` or `PortfolioIntent`; Portfolio Construction resolves those into the vector.
 
 ```text
+Strategy / Model / AI
+  -> SignalArtifact and/or PortfolioIntent (proposed weights allowed here)
+  -> PortfolioService / Portfolio Construction
+  -> validation: scope + completeness + cash/exposure + constraints + provenance
+  -> TargetWeightVector
+  -> explicit RiskPolicySetVersion
+  -> RiskAdjustedWeightVector
+  -> Backtest or Execution planning
+  -> TargetQuantityVector -> Orders -> Fills -> Holdings
+```
+
+The formal publisher boundary is singular: PortfolioService/Portfolio Construction owns admission and publication of `TargetWeightVector`. A strategy/model/AI producer may express proposed weights only inside `PortfolioIntent`; those weights remain proposals until the Portfolio owner validates and canonicalizes the complete target. **ADOPT:** no alternate direct-publication path.
+
+The formal consumer boundary is also singular: Backtest/Execution planning consumes `RiskAdjustedWeightVector`, never a raw `TargetWeightVector`. When no additional factor risk model or transform is required, an explicit `RiskPolicySetVersion` containing `PASS_THROUGH` / `NO_ADDITIONAL_RISK_TRANSFORM` still publishes a new immutable `RiskAdjustedWeightVector` referencing the source target and recording the no-transform evidence. **ADOPT:** absence of an extra factor RiskModel never means bypassing the Risk domain.
+
+Earlier shorthand can be read only as the following ownership chain:
+
+```text
 SignalArtifact
   -> PortfolioIntent
-  -> Portfolio Construction / Optimizer
+  -> PortfolioService / Portfolio Construction / admitted Optimizer
   -> TargetWeightVector
-  -> ordered Risk policies
+  -> explicit RiskPolicySetVersion
   -> RiskAdjustedWeightVector
   -> Backtest or Execution planning
   -> TargetQuantityVector -> Orders -> Fills -> Holdings
@@ -38,6 +56,8 @@ This is an implementation input, not a formal ASL/schema modification.
 | `schema_version` | required | Determines canonicalization and compatibility rules |
 | `target_weight_vector_id` | required | V3-owned immutable ID; content hash is also stored |
 | `content_sha256` | required | Hash of all semantic fields and canonical rows, excluding mutable storage metadata |
+| `publisher_service` | required | Normatively `PortfolioService` / Portfolio Construction for formal targets |
+| `truth_state` and admission evidence | required | Computed ceiling from every required upstream identity/input/policy; never producer-selected |
 | `target_kind` | required | `ABSOLUTE_COMPLETE`; sparse delta/patch must be another type |
 | `weight_basis` | required | For example `NAV`; defines the denominator, not merely units |
 | `exposure_profile` | required | Pinned profile defining long/short, leverage, budget and cash equations |
@@ -55,6 +75,14 @@ This is an implementation input, not a formal ASL/schema modification.
 | `rows_artifact_ref` | required | Content-addressed rows sorted by canonical `instrument_id` |
 | `diagnostics_ref` | required | Feasibility, normalization, exclusions and warnings; empty artifact is valid |
 | `provenance_manifest_ref` | required | Complete lineage and code/environment identity |
+
+## Truth and admission ceiling
+
+`TargetWeightVector.truth_state` cannot exceed the least-admitted required source SignalArtifact/PortfolioIntent, bound DatasetVersion/DataSnapshotVersion/UniverseVersion, or Portfolio construction input/policy. Portfolio validation can reject or preserve truth; it cannot upgrade it. **ADOPT**.
+
+`RiskAdjustedWeightVector.truth_state` cannot exceed its source `TargetWeightVector.truth_state` or any required Risk-stage input. A risk model, optimizer result or constraint-validation PASS never promotes upstream truth. **ADOPT**.
+
+Any PRE_ALPHA or NOT_FORMAL required upstream input caps both TargetWeightVector and RiskAdjustedWeightVector at NOT_FORMAL. A FORMAL Target requires, at minimum, exact upstream identities, exact UniverseVersion, every required Data Truth admission state, complete provenance, Portfolio construction validation and all relevant policy/admission gates. `PUBLISHED`, `STRICT_PIT`, optimizer success or constraint validation alone is insufficient. **ADOPT**.
 
 ## Canonical row
 
@@ -109,7 +137,7 @@ The same semantic input must produce the same vector bytes and identity. A chang
 
 ## Relationship to PortfolioIntent
 
-`PortfolioIntent` expresses what a strategy/model/AI wants: selected assets, scores/preferences, objective, desired exposure, cash policy, rebalance request and construction constraints. It may contain proposed weights, but it is not admitted as a `TargetWeightVector` until normalization, scope and feasibility checks succeed.
+`PortfolioIntent` expresses what a strategy/model/AI wants: selected assets, scores/preferences, objective, desired exposure, cash policy, rebalance request and construction constraints. It may contain proposed weights, but only PortfolioService/Portfolio Construction can admit and publish them as a `TargetWeightVector` after normalization, scope, completeness, cash/exposure, constraints and provenance checks succeed.
 
 This avoids two bad extremes:
 
@@ -120,7 +148,7 @@ This avoids two bad extremes:
 
 | ID | Decision | Disposition |
 |---|---|---|
-| T-01 | Stable V3 boundary is an immutable target-weight artifact | **ADOPT** |
+| T-01 | Stable V3 boundary is an immutable target-weight artifact published only by PortfolioService/Portfolio Construction | **ADOPT** |
 | T-02 | Keep `PortfolioIntent` as an upstream, possibly under-specified artifact | **ADOPT** |
 | T-03 | Include explicit cash and a named exposure profile | **ADOPT** |
 | T-04 | Include prices/current holdings/orders in vector identity | **REJECT** |
@@ -130,3 +158,7 @@ This avoids two bad extremes:
 | T-08 | Represent sparse updates with a separate typed intent | **ADAPT** |
 | T-09 | Support derivatives/notional/delta profiles in the first slice | **FUTURE** |
 | T-10 | Leave exact decimal scale and tolerance to schema design with golden vectors | **ADAPT** |
+| T-11 | Strategy/Model/AI publishes formal TargetWeightVector directly | **REJECT** |
+| T-12 | Execution consumes raw TargetWeightVector when no factor RiskModel is configured | **REJECT** |
+| T-13 | Explicit PASS_THROUGH Risk policy emits a separately identified RiskAdjustedWeightVector | **ADOPT** |
+| T-14 | Target/RiskAdjusted truth is capped by required upstream admission | **ADOPT** |

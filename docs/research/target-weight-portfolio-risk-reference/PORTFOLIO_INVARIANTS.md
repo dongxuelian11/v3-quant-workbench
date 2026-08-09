@@ -2,7 +2,7 @@
 
 ## Ownership
 
-Portfolio Construction owns the deterministic conversion from `PortfolioIntent` plus pinned construction inputs into `TargetWeightVector`. It may use an optimizer, but it does not own account mutation, orders, fills or the identity of the source Strategy/Model/AI.
+PortfolioService/Portfolio Construction is the only formal publisher of `TargetWeightVector` and owns the deterministic conversion from `PortfolioIntent` plus pinned construction inputs. Strategy, Model and AI may place proposed weights in `PortfolioIntent`, but cannot bypass Portfolio admission. Portfolio may use an optimizer, but it does not own account mutation, orders, fills or the identity of the source Strategy/Model/AI.
 
 | Invariant | Disposition | Required behavior |
 |---|---|---|
@@ -12,6 +12,14 @@ Portfolio Construction owns the deterministic conversion from `PortfolioIntent` 
 | P-04 Pure publication | **ADOPT** | Publication writes a new immutable artifact; it does not trade or modify an account |
 | P-05 No hidden normalization | **REJECT** | Sum/bound errors cannot be silently fixed; any admitted normalization rule is pinned and evidenced |
 | P-06 Stable strategy identity | **ADOPT** | Portfolio construction creates its own artifact identity and references, but does not rewrite StrategyVersion/ModelVersion |
+| P-07 Sole publisher | **ADOPT** | Only PortfolioService/Portfolio Construction issues the formal TargetWeightVector identity after scope/completeness/cash/exposure/constraints/provenance validation |
+| P-08 Truth ceiling | **ADOPT** | Target truth cannot exceed any required Signal/Intent, Dataset/Snapshot/Universe or construction policy/input admission |
+
+## Truth/admission propagation
+
+Portfolio validation is an admission gate, not a truth upgrader. The target ceiling is the minimum of all required upstream truth/admission states. PRE_ALPHA and NOT_FORMAL inputs therefore produce only NOT_FORMAL targets. A FORMAL target requires exact upstream identities, exact UniverseVersion, required Data Truth admission, complete provenance, construction validation and every relevant policy/admission gate. **REJECT:** interpreting `PUBLISHED`, `STRICT_PIT`, optimizer success or constraint validation PASS as independently sufficient for FORMAL.
+
+The published target stores the computed ceiling and the evidence for every gate. Rebinding the same PortfolioIntent to a different admitted input set creates a different construction/run and target identity; it never rewrites the intent.
 
 ## Weight, cash and exposure
 
@@ -106,7 +114,7 @@ An optimizer is a deterministic producer/transformer whose output can be admitte
 
 | Decision | Disposition |
 |---|---|
-| Optimizer outputs feed `TargetWeightVector` admission | **ADOPT** |
+| Optimizer outputs feed Portfolio-owned `TargetWeightVector` admission | **ADOPT** |
 | Optimizer object or `weights_` array is the durable contract | **REJECT** |
 | Explicit approved fallback creates a separately identified candidate | **ADAPT** |
 | Non-converged result silently becomes formal | **REJECT** |

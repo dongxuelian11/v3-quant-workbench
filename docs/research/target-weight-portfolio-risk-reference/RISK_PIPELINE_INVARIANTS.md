@@ -5,10 +5,12 @@
 Risk consumes a published `TargetWeightVector`, pinned risk policies/models and exact risk-state inputs. It returns either:
 
 - a new immutable `RiskAdjustedWeightVector` plus a complete adjustment report;
-- `UNCHANGED`, represented by a distinct admitted result that references the identical weights; or
+- a new immutable pass-through `RiskAdjustedWeightVector` whose rows equal the target and whose evidence records `PASS_THROUGH` / `NO_ADDITIONAL_RISK_TRANSFORM`; or
 - a typed rejection/infeasibility result.
 
 Risk never edits the original vector, changes StrategyVersion/ModelVersion identity, writes the account, emits broker orders or calls a backtest engine.
+
+Every formal route crosses an explicit `RiskPolicySetVersion`. A backtest that requires no factor RiskModel still uses a policy set containing the explicit pass-through policy; “no additional factor risk transform” is not “no Risk stage.” Execution/Backtest planning consumes only `RiskAdjustedWeightVector`, never raw `TargetWeightVector`. **ADOPT**.
 
 ## Identity separation
 
@@ -31,6 +33,8 @@ The risk-adjusted identity includes the original target identity, ordered policy
 | RSK-04 Evidence per adjustment | **ADOPT** | Before/after, rule ID, limit, observed value and reason are recorded |
 | RSK-05 No account mutation | **ADOPT** | Account state is a read-only pinned input when required |
 | RSK-06 No silent safe fallback | **REJECT** | Cash-only or prior weights require an explicit named policy and new identity |
+| RSK-07 Mandatory Risk stage | **ADOPT** | Every target is processed by an exact RiskPolicySetVersion, including explicit pass-through |
+| RSK-08 Truth ceiling | **ADOPT** | RiskAdjusted truth cannot exceed source TargetWeightVector or any required Risk-stage input |
 
 ## Policy composition
 
@@ -44,6 +48,7 @@ Each stage receives the prior stage's immutable candidate and produces a new sta
 - `PROJECT`: solve a constrained projection/optimization;
 - `FREEZE`: retain specified current weights using a pinned portfolio snapshot;
 - `REPLACE`: produce a named emergency/safe target under tightly controlled policy.
+- `PASS_THROUGH`: apply no additional transform, but emit a new derivative with identical canonical rows and explicit no-transform evidence.
 
 **REJECT:** a generic callback that mutates an in-memory dictionary without declaring its algebra, inputs or failure behavior.
 
@@ -88,6 +93,12 @@ Examples:
 
 An approved degraded mode is a separately versioned policy. It changes result identity, carries a prominent truth state and is never selected implicitly.
 
+## Truth and admission ceiling
+
+Risk is monotone with respect to truth: it may preserve or lower truth, never promote it. `RiskAdjustedWeightVector.truth_state <= TargetWeightVector.truth_state`, additionally capped by every required Risk policy/model/state input. PRE_ALPHA or NOT_FORMAL source targets remain NOT_FORMAL after clipping, projection or pass-through. **ADOPT**.
+
+A factor RiskModel PASS, optimizer success, risk constraint validation PASS or a `PASS_THROUGH` policy cannot upgrade upstream truth. Pass-through copies the source ceiling and records the exact policy-set identity and decision evidence. **ADOPT**.
+
 ## Risk versus optimizer
 
 Portfolio optimization can incorporate ex-ante risk objectives while the Risk stage enforces portfolio admission policies. The boundary is ownership, not mathematical technique:
@@ -102,7 +113,7 @@ The same optimization library may implement construction and risk projection, bu
 
 | ID | Decision | Disposition |
 |---|---|---|
-| RP-01 | Persist both pre-risk and post-risk vectors | **ADOPT** |
+| RP-01 | Persist both pre-risk and post-risk vectors, including pass-through derivatives | **ADOPT** |
 | RP-02 | Ordered, versioned risk policy composition | **ADOPT** |
 | RP-03 | Risk changes Strategy identity | **REJECT** |
 | RP-04 | Risk directly writes orders/holdings | **REJECT** |
@@ -110,3 +121,5 @@ The same optimization library may implement construction and risk projection, bu
 | RP-06 | Implicit proportional redistribution | **REJECT** |
 | RP-07 | Stateful circuit-breaker contract in initial slice | **FUTURE** |
 | RP-08 | Use optimization inside Risk with solver provenance | **ADAPT** |
+| RP-09 | Execution bypasses Risk and consumes raw TargetWeightVector | **REJECT** |
+| RP-10 | Explicit PASS_THROUGH/NO_ADDITIONAL_RISK_TRANSFORM policy publishes a new derivative | **ADOPT** |

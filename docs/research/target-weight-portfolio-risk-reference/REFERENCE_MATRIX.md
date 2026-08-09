@@ -55,7 +55,7 @@ Qlib explicitly allows a strategy to focus on a target-weight position while an 
 | ID | Decision | Disposition | Reason |
 |---|---|---|---|
 | R-01 | Preserve Signal/Portfolio Construction/Risk/Execution stages | **ADOPT** | Common strong boundary across LEAN and the other references |
-| R-02 | Make `TargetWeightVector` the stable desired-state handoff | **ADOPT** | Account-neutral enough for Strategy, Model, AI, Risk and simulation consumers |
+| R-02 | Make Portfolio-owned `TargetWeightVector` the stable desired-state handoff | **ADOPT** | Strategy/Model/AI supply SignalArtifact/PortfolioIntent; only Portfolio Construction publishes the admitted vector for Risk |
 | R-03 | Use LEAN `PortfolioTarget` as the V3 contract | **REJECT** | Concrete quantity conversion depends on live account and security state |
 | R-04 | Treat FinRL-X's arbitrary DataFrame as sufficient contract | **REJECT** | Missing identity, exact bindings, cash/profile and failure semantics |
 | R-05 | Preserve explicit residual cash from FinRL-X | **ADAPT** | Generalize to exposure profiles including short/leverage cases |
@@ -64,3 +64,4 @@ Qlib explicitly allows a strategy to focus on a target-weight position while an 
 | R-08 | Adopt skfolio optimizer constraint vocabulary | **ADAPT** | Useful inputs/evidence, but library objects are not cross-domain artifacts |
 | R-09 | Silently renormalize, reuse prior weights or invent prices | **REJECT** | Changes meaning while hiding a failure |
 | R-10 | Add tax-aware lots and prime-broker margin models now | **FUTURE** | Requires product scope and execution/accounting contracts beyond this study |
+| R-11 | Let Execution bypass Risk when no factor RiskModel is required | **REJECT** | Use an explicit PASS_THROUGH RiskPolicySetVersion and uniform RiskAdjustedWeightVector input |

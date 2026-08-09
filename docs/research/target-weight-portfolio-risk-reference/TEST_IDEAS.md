@@ -18,6 +18,8 @@ Use small golden vectors, property tests, metamorphic tests, contract tests and 
 | TW-008 | Change nonsemantic display annotation | content hash unchanged; annotation revision audited separately | **ADAPT** |
 | TW-009 | Rehydrate serialized artifact | byte-for-byte canonical equivalence | **ADOPT** |
 | TW-010 | Unsupported major schema | deterministic incompatibility failure | **ADOPT** |
+| TW-011 | Strategy/Model/AI attempts direct formal TargetWeightVector publication | boundary rejects it; only PortfolioService/Portfolio Construction may issue the formal identity | **ADOPT** |
+| TW-012 | Proposed weights in PortfolioIntent pass all Portfolio admission gates | Portfolio owner publishes the canonical complete target with causal provenance | **ADOPT** |
 
 ## Exposure and cash property tests
 
@@ -64,10 +66,12 @@ Use small golden vectors, property tests, metamorphic tests, contract tests and 
 | RK-002 | Single-name clip sends residual to cash | source target unchanged; adjusted equation valid | **ADOPT** |
 | RK-003 | Reverse two noncommuting policies | different policy-set/result identity and expected different rows | **ADOPT** |
 | RK-004 | Two conflicting policies | infeasible report, not last-writer-wins | **ADOPT** |
-| RK-005 | All policies no-op | deterministic `UNCHANGED` result referencing same weights | **ADOPT** |
+| RK-005 | Explicit PASS_THROUGH/NO_ADDITIONAL_RISK_TRANSFORM policy | new immutable RiskAdjustedWeightVector has identical rows, distinct derivative identity, exact source target and explicit no-transform evidence | **ADOPT** |
 | RK-006 | Risk worker crashes halfway | no partially published adjusted vector; retry is new attempt | **ADOPT** |
 | RK-007 | Stale/missing risk model | reject or explicit degraded policy; no implicit bypass | **ADOPT** |
 | RK-008 | Risk-adjusted target all cash | source StrategyVersion and original target identities remain unchanged | **ADOPT** |
+| RK-009 | Risk receives PRE_ALPHA/NOT_FORMAL TargetWeightVector | pass-through or transforming output remains NOT_FORMAL | **ADOPT** |
+| RK-010 | Factor RiskModel/optimizer/constraint validation passes over a non-formal target | no gate upgrades RiskAdjustedWeightVector to FORMAL | **ADOPT** |
 
 ## Execution adapter golden tests
 
@@ -83,6 +87,7 @@ Use small golden vectors, property tests, metamorphic tests, contract tests and 
 | EX-008 | Partial fill then retry | new attempt reconciles actual holdings/open orders without erasing history | **ADOPT** |
 | EX-009 | Same vector in simulated/live-compatible fixture | same desired semantics; adapter-specific plans remain separately identified | **ADAPT** |
 | EX-010 | Unknown/fuzzy ticker mapping | hard failure | **ADOPT** |
+| EX-011 | Execution receives raw TargetWeightVector on a no-factor-risk path | reject wrong input type; require pass-through RiskAdjustedWeightVector | **ADOPT** |
 
 ## Provenance and boundary tests
 
@@ -94,6 +99,8 @@ Use small golden vectors, property tests, metamorphic tests, contract tests and 
 | PV-004 | Change input after run submission | new run required; old run remains immutable | **ADOPT** |
 | PV-005 | Worker returns unknown identity | main service rejects worker-owned truth | **ADOPT** |
 | PV-006 | DEMO artifact passed to FORMAL pipeline | explicit truth-state rejection | **ADOPT** |
+| PV-007 | Pair the same PortfolioIntent identity with two exact construction bindings: one PRE_ALPHA/NOT_FORMAL upstream and one fully FORMAL-admitted upstream | PortfolioIntent identity stays the same; construction/target identities and truth ceilings differ; neither Target nor RiskAdjusted output from the non-formal binding may be FORMAL | **ADOPT** |
+| PV-008 | PUBLISHED, STRICT_PIT, optimizer success or Portfolio/Risk validation PASS is present alone | formal admission remains denied until all required upstream and policy gates pass | **ADOPT** |
 
 ## Reference-derived coverage
 

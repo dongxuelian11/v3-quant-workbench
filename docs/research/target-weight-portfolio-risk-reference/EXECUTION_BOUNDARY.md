@@ -4,6 +4,8 @@
 
 Backtest and live Execution accept a desired portfolio artifact; Strategy/Model/AI never write an account. Execution planning owns the conversion from a risk-admitted weight vector plus pinned account and market state into target quantities and order deltas. The engine owns order simulation/routing, fills and ledger changes.
 
+The accepted desired-portfolio input type is always `RiskAdjustedWeightVector`. Execution never branches between raw `TargetWeightVector` and risk-adjusted input. A no-additional-risk case is represented upstream by an explicit pass-through `RiskPolicySetVersion` and a new immutable `RiskAdjustedWeightVector` with unchanged rows and recorded evidence. **ADOPT**.
+
 ```text
 RiskAdjustedWeightVector
   + PortfolioStateSnapshot
@@ -82,3 +84,5 @@ This study does not specify fill models or backtest accounting. It only fixes th
 | E-06 | Engine silently drops rows or renormalizes weights | **REJECT** |
 | E-07 | Same semantic contract for backtest and live adapters | **ADAPT** |
 | E-08 | Smart order routing and venue optimization in this phase | **FUTURE** |
+| E-09 | Execution directly consumes raw TargetWeightVector on a “no risk model” path | **REJECT** |
+| E-10 | Pass-through RiskAdjustedWeightVector is the uniform no-additional-transform input | **ADOPT** |
