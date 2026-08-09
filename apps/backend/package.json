@@ -2,6 +2,5 @@
   "name": "@v3/backend-skeleton",
   "version": "0.1.0-recovery.1",
   "private": true,
-  "description": "Future canonical backend package boundary; intentionally not implemented in FR-0 / FR-1."
+  "description": "Canonical Backend Foundation boundary; formal financial-domain backends are not yet rebuilt."
 }
-

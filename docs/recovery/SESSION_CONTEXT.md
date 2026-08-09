@@ -5,7 +5,7 @@ This checkpoint exists so the FR-0 / FR-1 reconstruction can resume after an aut
 ## Current state
 
 - Authority: supplied `V3_OSS_REBUILD_FR0_FR1_REPOSITORY_BOOTSTRAP_ACCEPTED_FRONTEND_RECONSTRUCTION_LUNA_MAX_01_TASK_PACKAGE_V1_1.zip` only.
-- Actual required root from the attachment: `D:\V3OpenSource`.
+- Task-time repository root: the checked-out repository root (historically `D:\V3OpenSource`).
 - Repository status: fresh Git repository initialized on `main`; local baseline commit exists and is clean.
 - Implemented: Electron main/preload/renderer, typed contracts, five Labs, workspace navigation, Inspector, save/reset, truthful unavailable backend state, docs, tests/build scripts.
 - Passed: dependency install, TypeScript typecheck, lint, unit tests, TypeScript build, frontend route/workspace smoke, Electron shell smoke, secret scan, and repository hygiene audit.
@@ -18,7 +18,7 @@ This checkpoint exists so the FR-0 / FR-1 reconstruction can resume after an aut
 - Keep backend strictly at skeleton/interface level; no stdio/research/single-instrument runtime and no formal financial/model output.
 - No remote, push, tag, release, license, or backend continuation.
 - Electron is pinned to the validated `36.9.5` manifest/lock/runtime version.
-- Result ZIP and SHA-256 sidecar are under `D:\V3OpenSource\deliverables`; the final sidecar is regenerated after the final commit.
+- Historical result ZIP and SHA-256 sidecar were generated under the ignored local `deliverables/` directory.
 
 ## Completed actions
 

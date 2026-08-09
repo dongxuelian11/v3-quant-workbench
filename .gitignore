@@ -4,6 +4,12 @@ dist/
 coverage/
 .cache/
 .vite/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Local runtime state and private research data
 .env
@@ -23,21 +29,24 @@ coverage/
 *.pth
 .venv/
 venv/
-runtime/
-data/
-artifacts/
-screenshots-local/
-crash-dumps/
+/runtime/
+/data/
+/artifacts/
+/screenshots-local/
+/crash-dumps/
 
 # Private/user state
-projects-local/
-results-local/
-strategies-local/
-models-local/
+/projects-local/
+/results-local/
+/strategies-local/
+/models-local/
 
 # Task packages and delivery bundles
-.task_package/
-deliverables/
+/.task_package/
+/.codex-task/
+/.codex/context/
+/.agents/
+/deliverables/
 *.zip
 *.sha256
 
@@ -47,4 +56,4 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
-
+*.log

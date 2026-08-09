@@ -1,33 +1,59 @@
-import { readdir, stat } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { stat } from "node:fs/promises";
+import { basename, extname, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
-const forbiddenNames = new Set([".env", ".venv", "venv", "node_modules", "runtime", "data", "projects-local", "results-local", "strategies-local", "models-local"]);
-const excludedGenerated = new Set([".git", "deliverables", "dist", "node_modules"]);
-const forbiddenExtensions = new Set([".db", ".duckdb", ".parquet", ".onnx", ".safetensors", ".pt", ".pth"]);
-const findings = [];
-let bytes = 0;
+const forbiddenTopLevel = new Set([
+  ".agents", ".codex", ".env", ".venv", "artifacts", "crash-dumps", "data",
+  "dist", "models-local", "projects-local", "results-local", "runtime",
+  "strategies-local"
+]);
+const forbiddenAnywhere = new Set([".env", ".venv", "node_modules", "venv"]);
+const forbiddenExtensions = new Set([
+  ".bin", ".db", ".duckdb", ".feather", ".h5", ".onnx", ".parquet",
+  ".pt", ".pth", ".safetensors", ".sha256", ".zip"
+]);
+const maxBytes = 10 * 1024 * 1024;
+const current = execFileSync(
+  "git",
+  ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+  { cwd: root, encoding: "utf8" }
+).split("\0").filter(Boolean);
 
-async function visit(directory) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (excludedGenerated.has(entry.name)) continue;
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      if (forbiddenNames.has(entry.name)) findings.push(`${relative(root, path)}: forbidden directory`);
-      else await visit(path);
-    } else {
-      const info = await stat(path);
-      bytes += info.size;
-      const ext = entry.name.slice(entry.name.lastIndexOf(".")).toLowerCase();
-      if (forbiddenExtensions.has(ext)) findings.push(`${relative(root, path)}: forbidden data/model file`);
-      if (info.size > 50 * 1024 * 1024) findings.push(`${relative(root, path)}: oversized file`);
-    }
+const findings = [];
+let totalBytes = 0;
+for (const relativePath of current) {
+  const components = relativePath.replaceAll("\\", "/").split("/");
+  const extension = extname(relativePath).toLowerCase();
+  if (forbiddenTopLevel.has(components[0]) || components.some((component) => forbiddenAnywhere.has(component))) {
+    findings.push(`${relativePath}: forbidden path component`);
   }
+  if (forbiddenExtensions.has(extension)) findings.push(`${relativePath}: forbidden artifact extension`);
+  let info;
+  try {
+    info = await stat(resolve(root, relativePath));
+  } catch (error) {
+    if (error?.code === "ENOENT") continue;
+    throw error;
+  }
+  totalBytes += info.size;
+  if (info.size > maxBytes) findings.push(`${relativePath}: ${info.size} bytes exceeds 10 MiB`);
+  if (basename(relativePath).toLowerCase() === "kline_v3.db") findings.push(`${relativePath}: forbidden market database`);
 }
 
-await visit(root);
+const historyNames = execFileSync(
+  "git",
+  ["log", "--all", "--name-only", "--format="],
+  { cwd: root, encoding: "utf8" }
+).split(/\r?\n/).filter(Boolean);
+for (const relativePath of historyNames) {
+  const extension = extname(relativePath).toLowerCase();
+  if (forbiddenExtensions.has(extension)) findings.push(`history:${relativePath}: forbidden artifact extension`);
+  if (basename(relativePath).toLowerCase() === "kline_v3.db") findings.push(`history:${relativePath}: forbidden market database`);
+}
+
 if (findings.length) {
-  console.error(findings.join("\n"));
+  console.error([...new Set(findings)].join("\n"));
   process.exit(1);
 }
-console.log(`Repository hygiene audit passed: ${bytes} source bytes, no forbidden local data or oversized files.`);
+console.log(`Repository hygiene audit passed: ${current.length} current files, ${totalBytes} bytes, no forbidden/private or >10 MiB artifact.`);

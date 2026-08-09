@@ -2,7 +2,8 @@
   "name": "v3-oss-rebuild",
   "version": "0.1.0-recovery.1",
   "private": true,
-  "description": "V3 desktop research workbench frontend recovery candidate.",
+  "description": "Pre-alpha V3 quantitative research workbench under active open-source reconstruction.",
+  "packageManager": "npm@11.13.0",
   "main": "dist/apps/desktop/src/main.js",
   "workspaces": [
     "apps/*",
@@ -20,12 +21,17 @@
     "lint": "node scripts/lint.mjs",
     "test": "node --test tests/unit/*.test.mjs",
     "test:unit": "npm run test",
+    "test:backend": "node scripts/backend-foundation-test.mjs",
+    "test:runtime": "node --test tests/ws_e_electron_runtime/cross-language.test.mjs tests/ws_e_electron_runtime/framing-and-boundary.test.mjs tests/ws_e_electron_runtime/supervisor.test.mjs",
     "smoke:electron": "node scripts/run-electron-smoke.mjs",
     "smoke:frontend": "node scripts/frontend-smoke.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
     "repo-audit": "node scripts/repo-audit.mjs",
+    "sbom:generate": "node scripts/generate-sbom.mjs",
+    "sbom:check": "node scripts/generate-sbom.mjs --check",
     "evidence:generate": "node scripts/generate-result.mjs",
-    "validate": "npm run typecheck && npm run lint && npm test && npm run build && npm run smoke:electron && npm run smoke:frontend && npm run secret-scan && npm run repo-audit"
+    "validate": "npm run typecheck && npm run lint && npm test && npm run build && npm run smoke:electron && npm run smoke:frontend && npm run secret-scan && npm run repo-audit",
+    "validate:public": "npm run typecheck && npm run lint && npm test && npm run test:backend && npm run build && npm run test:runtime && npm run smoke:frontend && npm run secret-scan && npm run repo-audit && npm run sbom:check"
   },
   "dependencies": {
     "@tanstack/react-table": "8.21.3",

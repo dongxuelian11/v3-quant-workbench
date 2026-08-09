@@ -1,10 +1,14 @@
 param(
-  [string]$BeforeDirectory = "D:\V3OpenSource\deliverables\apple-refinement-before-evidence\screenshots",
-  [string]$AfterDirectory = "D:\V3OpenSource\deliverables\visual-restoration-screenshots",
-  [string]$OutputDirectory = "D:\V3OpenSource\deliverables\visual-restoration-screenshots"
+  [string]$BeforeDirectory = "",
+  [string]$AfterDirectory = "",
+  [string]$OutputDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
+$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if (-not $BeforeDirectory) { $BeforeDirectory = Join-Path $WorkspaceRoot "deliverables\apple-refinement-before-evidence\screenshots" }
+if (-not $AfterDirectory) { $AfterDirectory = Join-Path $WorkspaceRoot "deliverables\visual-restoration-screenshots" }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $WorkspaceRoot "deliverables\visual-restoration-screenshots" }
 Add-Type -AssemblyName System.Drawing
 
 function New-ContactSheet {

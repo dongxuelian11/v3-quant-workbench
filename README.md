@@ -1,26 +1,49 @@
-# V3 Open Source Rebuild
+# V3 Quantitative Research Workbench
 
-V3 is a desktop quantitative research workbench organized around five connected product Labs: Research, Strategy, Model, Backtest, and Result.
+V3 is a personal/private-origin quantitative research workbench being rebuilt as a public source project. It is organized around five connected Labs: Research, Strategy, Model, Backtest, and Result.
 
-This repository is the same-lineage FR-0 / FR-1 recovery candidate created after the former local worktree was lost. FR-1 now uses a componentized React 19 + Vite renderer inside Electron 39, with Dockview workspaces, linked ECharts research, React Flow, Monaco Editor/Diff, and durable restart persistence. The canonical backend has not been rebuilt. Deterministic Demo providers keep all five product Labs operable and are visibly marked as non-formal output.
+> **Status: PRE-ALPHA / ACTIVE RECONSTRUCTION**
+>
+> The current frontend is an accepted development baseline, not a final UI. The Canonical Backend Foundation is present, but formal Data Truth, Research, Model, Portfolio/Risk, Backtest, and Result capabilities have not been rebuilt. Demo data is illustrative UI input, not formal financial output.
 
-## Run the recovered frontend
+The intended formal market scope is China A-share daily/end-of-day research. Live trading and paper trading are not included. This repository is not production-ready or trading-ready.
+
+## What exists today
+
+- Electron 39 desktop shell with a React 19/Vite presentation system, Dockview workspaces, ECharts, React Flow, Monaco, and persisted local layout/state.
+- A typed Canonical Backend Foundation: contracts, Control Catalog/repositories, artifact plane, task/worker control plane, resource governor, and supervised local transport.
+- Foundation tests covering the 56-table Control Catalog, contract digest, artifact and task boundaries, runtime framing, and ownership invariants.
+- Clearly marked deterministic Demo providers that keep the five Labs explorable while formal domain backends remain unavailable.
+
+The WS-E transport modules are not wired into the current frontend main/preload entrypoints. That integration remains future work.
+
+## Prerequisites
+
+- Node.js 24 (the current baseline was verified with 24.16.0) and npm 11.
+- CPython 3.14.7 for the Canonical Core authority. The Foundation is currently standard-library-only; no optional Qlib/RQData/RQAlpha/GPU environment is required.
+
+## Build and verify
 
 ```text
-npm install
-npm run build
-npm run validate
-npm run smoke:electron
+npm ci
+npm run validate:public
 ```
 
-The application is launched from the compiled Electron main process. Context isolation is enabled, Node integration is disabled in the renderer, and the preload bridge is the only desktop boundary.
+For the full local Electron smoke route, run `npm run validate` from a desktop session. Build output is generated under `dist/` and is not committed.
 
-## Scope and status
+## Repository map
 
-- FR-0 repository bootstrap: implemented locally; no remote, tag, release, or license has been created.
-- FR-1 frontend capability restoration: candidate ready for user UAU; no user result is claimed.
-- Backtest / Result: `RECOVERED_FROM_PRODUCT_DESIGN_NOT_PRIOR_WAVE3_ACCEPTANCE`, with explicit Demo provenance.
-- Backend reconstruction: intentionally out of scope. See `apps/backend/README.md`.
-- License: pending explicit user decision; see `LICENSE_PENDING.md`.
+- `apps/desktop/` — Electron main/preload and React renderer.
+- `apps/backend/src/v3_backend/` — Canonical Backend Foundation source.
+- `apps/backend/tests/` — Foundation conformance and integration tests.
+- `packages/contracts/` — current typed frontend boundary contracts.
+- `docs/architecture/` — implemented boundaries and future capability separation.
+- `docs/status/` — current truthful capability status.
+- `docs/runtime/` — Core Python authority and optional-environment policy.
+- `docs/oss/` and `sbom/` — publication readiness, license inventory, and SBOM.
 
-Recovery and provenance details live in `docs/recovery/`.
+## License and publication status
+
+No project license has been selected. Until the project owner explicitly chooses and adds one, the repository is source-visible but is **not yet legally offered under an open-source license**. See `LICENSE_PENDING.md` and `docs/oss/LICENSE_OPTIONS_FOR_USER.md`.
+
+No GitHub remote, push, tag, or release is created by this baseline-preparation task. Recovery provenance is documented in `docs/recovery/PROVENANCE_AND_DISASTER_REBUILD.md`.

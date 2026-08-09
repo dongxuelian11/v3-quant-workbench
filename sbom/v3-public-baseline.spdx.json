@@ -1,0 +1,3978 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "v3-public-baseline",
+  "documentNamespace": "https://v3.invalid/spdx/v3-public-baseline-c1897bc45c53ac00ee440ddd57ea59782dc34bcc89561537ee21e03f84c97e01",
+  "creationInfo": {
+    "created": "2026-08-09T13:23:53Z",
+    "creators": [
+      "Tool: scripts/generate-sbom.mjs"
+    ]
+  },
+  "documentDescribes": [
+    "SPDXRef-Package-v3-oss-rebuild"
+  ],
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-v3-oss-rebuild",
+      "name": "v3-oss-rebuild",
+      "versionInfo": "0.1.0-recovery.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Project license intentionally unselected pending an explicit user decision. Dependency inventory is derived from package-lock.json; Python Foundation code is currently standard-library-only."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-1--electron-get-2.0.3",
+      "name": "@electron/get",
+      "versionInfo": "2.0.3",
+      "downloadLocation": "https://registry.npmjs.org/@electron/get/-/get-2.0.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "424CE9836B3D1A7555D88D818D192C522E375397BAFB369031C8E8272D02F82E68C5A2A5F9F99C9060D016D469669655D0D41E92E659FAD1B3EC403D4D59D0B5"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@electron/get; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-2--esbuild-aix-ppc64-0.25.12",
+      "name": "@esbuild/aix-ppc64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "1E19B077A0889D9DDDC29B864C5F1F246EB2A169AC4E813EBD8803E27CAD655C5CBB5BA51E9510440075509F3E375026DCCCF8FB1381CA84284997F80FE0A990"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/aix-ppc64; role: transitive; native/runtime concerns: os=aix; cpu=ppc64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-3--esbuild-android-arm-0.25.12",
+      "name": "@esbuild/android-arm",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "549FAC2AF340FC613B09C69C73D0A16BB6E94BC9F2CD5BF48DD560C0D0DA478803302FF64D345CDF7229F2AACD61472990E1D44F9399D1B51C34D55943D44B96"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/android-arm; role: transitive; native/runtime concerns: os=android; cpu=arm"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-4--esbuild-android-arm64-0.25.12",
+      "name": "@esbuild/android-arm64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "E800262C6EF3C03D59D79F6308A3EF03165DE32FD54CED15929AD8CBEDCDD85B49F3E0505855D4F8EC40448C00E3A739B5D0FD4AC28667FD6872A052FE000A1E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/android-arm64; role: transitive; native/runtime concerns: os=android; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-5--esbuild-android-x64-0.25.12",
+      "name": "@esbuild/android-x64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "E636DBFB68610C7C79A61611D81CBC193584CE7E88F54A91D752B07F6DA229B36962BB26441D7C697FFD8AF73971A6DC522013FF033E60867A486F503BA6BC92"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/android-x64; role: transitive; native/runtime concerns: os=android; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-6--esbuild-darwin-arm64-0.25.12",
+      "name": "@esbuild/darwin-arm64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "377CE5FA5C470A27E022570C50FE74D7A11291E4232E3FFDE7D471C4D608B61220F82407227BA316E5DE59B58C8274E8E1CA795D51EA14F9A9CAEF49EB90B562"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/darwin-arm64; role: transitive; native/runtime concerns: os=darwin; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-7--esbuild-darwin-x64-0.25.12",
+      "name": "@esbuild/darwin-x64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "1D0F646B82B1DB5A875F0B654D455B2893809E61B58A95E17564E635788FCCF7D62A95EA01255C59D9DFD9B9CBEF7C208CDAC55C06B7C98BC149DF69CDF108A4"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/darwin-x64; role: transitive; native/runtime concerns: os=darwin; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-8--esbuild-freebsd-arm64-0.25.12",
+      "name": "@esbuild/freebsd-arm64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/freebsd-arm64/-/freebsd-arm64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "800D01C7BE7DFBB26F7B4DCAD52D2F90EBB92E0FFCE5DA2EDC4B1E38651EB3C7E554E1B16E10C387F8996A87A4D7563C9ADC8A3C6177BCFF178679031009B37A"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/freebsd-arm64; role: transitive; native/runtime concerns: os=freebsd; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-9--esbuild-freebsd-x64-0.25.12",
+      "name": "@esbuild/freebsd-x64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/freebsd-x64/-/freebsd-x64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "4C66CEDBA630DB1B07CF1B5B5451845C1147D054403FB82D70F13B3F9C8FEF01B2EDC5CADA83BB4723A12F934B8AA4E5061E3B5E1988517B867225C4A9815F05"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/freebsd-x64; role: transitive; native/runtime concerns: os=freebsd; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-10--esbuild-linux-arm-0.25.12",
+      "name": "@esbuild/linux-arm",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/linux-arm/-/linux-arm-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "94F0C6C82D493C3A2EF2419CCB06346082F35A58619D18DDA1FDD495CA2A6264BD125F35F0B2DF2497373D75E0647AC70802ACFD9D92799B4326BE4CAE4C6D3B"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/linux-arm; role: transitive; native/runtime concerns: os=linux; cpu=arm"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-11--esbuild-linux-arm64-0.25.12",
+      "name": "@esbuild/linux-arm64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "F1BC17EDAF05821220AEEA5CC5BE1A5266032E9F295F4EAB1A1E47A834FB6C1FBC45D7A596CEA61EFAC51C75B624038F6546E78D4A4A4CB83A102CB3BDAB3601"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/linux-arm64; role: transitive; native/runtime concerns: os=linux; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-12--esbuild-linux-ia32-0.25.12",
+      "name": "@esbuild/linux-ia32",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/linux-ia32/-/linux-ia32-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "D32F4AADD5676CC336FEF1BC29F5346F285437E1050A7CBDFBC836D36818A924953289DBB027CB8D43BEAC2722EE933458112DCFEA0AFCF2301E4CF193285AAC"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/linux-ia32; role: transitive; native/runtime concerns: os=linux; cpu=ia32"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-13--esbuild-linux-loong64-0.25.12",
+      "name": "@esbuild/linux-loong64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/linux-loong64/-/linux-loong64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "87FFFF2EBE5AF6B89BFEFD461AA5D51B38CBE1332F553BFEB350CFA3141DCFB97F018BFA2C34B1748C33C64ACF5B8DFCA145E20EDC0CD74A3D3E6C12FFA67436"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/linux-loong64; role: transitive; native/runtime concerns: os=linux; cpu=loong64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-14--esbuild-linux-mips64el-0.25.12",
+      "name": "@esbuild/linux-mips64el",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/linux-mips64el/-/linux-mips64el-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8B246B3353F3CBD1853032EC5E7D621D49B5F2784A9CD316B1C8E6A78FA1A5A7DC663AEBD966D3FFF776D316869635C30581EA45C97C1E7C5B5FAB9A03F78657"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/linux-mips64el; role: transitive; native/runtime concerns: os=linux; cpu=mips64el"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-15--esbuild-linux-ppc64-0.25.12",
+      "name": "@esbuild/linux-ppc64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/linux-ppc64/-/linux-ppc64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "F6678CFE5457C4C8B93D252A117442B558C46411B007B3FF0F8C93F141BF9B021DCDED9A578568E94E600F7F91B281D72A41C27D2C592B3983B2C565463D5040"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/linux-ppc64; role: transitive; native/runtime concerns: os=linux; cpu=ppc64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-16--esbuild-linux-riscv64-0.25.12",
+      "name": "@esbuild/linux-riscv64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/linux-riscv64/-/linux-riscv64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "66BECA478860294A560306F57F7A39CA04F4E0CCEA56B18419718B9E3D796100C912B62EFC11A0FB09859480CE749A743E607494BBF1148397660151ADD8D1D3"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/linux-riscv64; role: transitive; native/runtime concerns: os=linux; cpu=riscv64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-17--esbuild-linux-s390x-0.25.12",
+      "name": "@esbuild/linux-s390x",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/linux-s390x/-/linux-s390x-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "32C2A770E7204CDBDDB6221273F8D9B3F65FF1DD1C97FB77818597F09F6E6C19D53B0964EB9508104BE004E4538A58E5A085A70732ECE2A8733E425C8AD23322"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/linux-s390x; role: transitive; native/runtime concerns: os=linux; cpu=s390x"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-18--esbuild-linux-x64-0.25.12",
+      "name": "@esbuild/linux-x64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "BAA64C4CBAFFCD1FDE7788C81A7C122E468798F8CE8C9BE79BA4D5562B406B4F122D2F59D1533CC08471EE059B241E7F279E18B883089C3AAE5B262F40B66483"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/linux-x64; role: transitive; native/runtime concerns: os=linux; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-19--esbuild-netbsd-arm64-0.25.12",
+      "name": "@esbuild/netbsd-arm64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/netbsd-arm64/-/netbsd-arm64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "C57C1C4EAE0685133B27D03C1AFE5BA1A9C78516BF43D28B5667325C709368CE3029F2295A475788CA20FCAB27C73274035FA70FECE879CBB3A8F9824720468E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/netbsd-arm64; role: transitive; native/runtime concerns: os=netbsd; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-20--esbuild-netbsd-x64-0.25.12",
+      "name": "@esbuild/netbsd-x64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "2DDE694E5CCFCB763019E7383AE1E1D5A095091BCE5DD1FC0E04637C3CBFA2E995A2F9AE4B359F9D2260F95B5A901F429B483134EF41CD6923EA6B4ED4531791"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/netbsd-x64; role: transitive; native/runtime concerns: os=netbsd; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-21--esbuild-openbsd-arm64-0.25.12",
+      "name": "@esbuild/openbsd-arm64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/openbsd-arm64/-/openbsd-arm64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "7C5F7A4FA2AC068FE991023DE74140454F5AA463534A5646B2FD6364102570B2F530B8CB34858F0648F93654B3F1A03360A83E78DAA49EB509DB8401C9B791E4"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/openbsd-arm64; role: transitive; native/runtime concerns: os=openbsd; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-22--esbuild-openbsd-x64-0.25.12",
+      "name": "@esbuild/openbsd-x64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "319C975246478D0C54BF32BBACDF032774919AB56B91EF19C91BAC1E53FE92EC2A4DC7D62F2A8C384DEC49C3CFC9E21737F9832487C65EF70CA8281829E92843"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/openbsd-x64; role: transitive; native/runtime concerns: os=openbsd; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-23--esbuild-openharmony-arm64-0.25.12",
+      "name": "@esbuild/openharmony-arm64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/openharmony-arm64/-/openharmony-arm64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AE6D185ACA94491AE39DC497180ED9BFBF0D6E7C385CBEBF773AF6D1CCAB41FED999172CA2FA5C4417610F8DCDBA4DF2ED72285B63B1315BF0B91BE4F577404A"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/openharmony-arm64; role: transitive; native/runtime concerns: os=openharmony; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-24--esbuild-sunos-x64-0.25.12",
+      "name": "@esbuild/sunos-x64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "DF0192083CAE4C7414CEDD2757B6E8703CBBDABDA5237DD02F78240CD1A4A1DDB612C625D38B0C7F4A8B6FC96E34A4CE9A017F7831033F9045370A01287E38D7"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/sunos-x64; role: transitive; native/runtime concerns: os=sunos; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-25--esbuild-win32-arm64-0.25.12",
+      "name": "@esbuild/win32-arm64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/win32-arm64/-/win32-arm64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "ACC98BAEEAFAE00EFE0CA9674AEC2A51D44AC9DDD413BA0F2599A7963A84A6D7AC28CF30C7D27C831E6ED3EF4FAB47D0416F2FA9E29E6F035775F3B23FEF01B2"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/win32-arm64; role: transitive; native/runtime concerns: os=win32; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-26--esbuild-win32-ia32-0.25.12",
+      "name": "@esbuild/win32-ia32",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/win32-ia32/-/win32-ia32-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "1E4AA79A606809B0B0C5428A34F062C62583182A50195B2B41F26854660B3D3E355D617C947B84E4DE9685589ADA7E28E502B9338B58AF6D7CDBB7CD862E1BC9"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/win32-ia32; role: transitive; native/runtime concerns: os=win32; cpu=ia32"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-27--esbuild-win32-x64-0.25.12",
+      "name": "@esbuild/win32-x64",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "6A5242D2E099A5316B48BD020838DC8257815CF9C2AC40214C120BA5E029ECCFCE160A2AB407AD7C1CD7D31334D0C52C5553E956394FB8C6D112A9D90976939C"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@esbuild/win32-x64; role: transitive; native/runtime concerns: os=win32; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-28--napi-rs-lzma-linux-x64-gnu-1.5.1",
+      "name": "@napi-rs/lzma-linux-x64-gnu",
+      "versionInfo": "1.5.1",
+      "downloadLocation": "https://registry.npmjs.org/@napi-rs/lzma-linux-x64-gnu/-/lzma-linux-x64-gnu-1.5.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A135C42216B84ACB97753038232B248F4929771DB255776177BE5CDAFDF11AB1C57D532C6E14CF654FE730F2F8B162A8E290479B76AE70B6AA1A517AF7A753C9"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@napi-rs/lzma-linux-x64-gnu; role: transitive; native/runtime concerns: os=linux; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-29--radix-ui-primitive-1.1.7",
+      "name": "@radix-ui/primitive",
+      "versionInfo": "1.1.7",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/primitive/-/primitive-1.1.7.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AEA5A79BBEA7613F07A0D36A123A6027B3F0FC3AC18F98814EB9843E8E874D7E7E549C8134EA9376FE20F3D1BADC7B91E60D0068436801C1FB22CE5F176919F1"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/primitive; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-30--radix-ui-react-compose-refs-1.1.5",
+      "name": "@radix-ui/react-compose-refs",
+      "versionInfo": "1.1.5",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-compose-refs/-/react-compose-refs-1.1.5.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "FB8F0F6C001BAB77627632716BE39A598D99C2000AB0D8911B27872ACCDB959310FA472977DA40693D7570C9061227B4BEC3A2DD075E4C4E9DE457B71A7EB590"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-compose-refs; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-31--radix-ui-react-context-1.2.2",
+      "name": "@radix-ui/react-context",
+      "versionInfo": "1.2.2",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-context/-/react-context-1.2.2.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "4470941B02870EBD210C68385FB99AE091B8FFED76AB1C3CAE487940A74395D942BED8DAEA7531D447FFF0756B2737BCD6512C80B425AA3CE318D1DA9ED82740"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-context; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-32--radix-ui-react-dialog-1.1.23",
+      "name": "@radix-ui/react-dialog",
+      "versionInfo": "1.1.23",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-dialog/-/react-dialog-1.1.23.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "2ACC3859E44E90EE2B0BD93FA278A55FF028D82AF592ED6E9CC347F9748270FE2349762EEC70EC83D9F8A2332355BDB65E9623010F6A7EB16555BAEED6F5C350"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-dialog; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-33--radix-ui-react-dismissable-layer-1.1.19",
+      "name": "@radix-ui/react-dismissable-layer",
+      "versionInfo": "1.1.19",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-dismissable-layer/-/react-dismissable-layer-1.1.19.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "F20E297CE2FD1E828A2D61A2CA94FE769855AA315F99C5CEE4606786C1BACC8FA5C40C7FF1F790A6BFB52D237C45EDE1899F9790B352E0EF73B4AD75FCBCD0EB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-dismissable-layer; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-34--radix-ui-react-focus-guards-1.1.6",
+      "name": "@radix-ui/react-focus-guards",
+      "versionInfo": "1.1.6",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-focus-guards/-/react-focus-guards-1.1.6.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "44D3898DF64C4F204CEB162657721519790F8C885C040BAFE3C3CE7AF017C2B189864599F69D6B168212D49168A0FB93D7DDC066646C08F869A15271C7A38FA1"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-focus-guards; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-35--radix-ui-react-focus-scope-1.1.16",
+      "name": "@radix-ui/react-focus-scope",
+      "versionInfo": "1.1.16",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-focus-scope/-/react-focus-scope-1.1.16.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "C26459D9658BBE6B7A287CB6ACD3CE74F523C2AE71387634DBE9BEB9DC094E7D1A348A31FEB92C900BC94F24CB1A13CAE8A82B523949509A609B1FFEC0588521"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-focus-scope; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-36--radix-ui-react-id-1.1.4",
+      "name": "@radix-ui/react-id",
+      "versionInfo": "1.1.4",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-id/-/react-id-1.1.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "4CC429DA5940F91627EC97239EB327CFBC0DE29715B6D3D99D1668E763CB42CA0B54ACCD955C1478799F78F81381196E5C5BE50F7183E60E4C3955532423B4A8"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-id; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-37--radix-ui-react-portal-1.1.17",
+      "name": "@radix-ui/react-portal",
+      "versionInfo": "1.1.17",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-portal/-/react-portal-1.1.17.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "BCA40B716CA9527C1956F7D5ED49066A11F683AC927BC33C47ECD80703EBBF96F267D4005BA71056F34AA3B1A0983FA9F1A61BE83F4906EBF2F3F5A13A7A36C1"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-portal; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-38--radix-ui-react-presence-1.1.10",
+      "name": "@radix-ui/react-presence",
+      "versionInfo": "1.1.10",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-presence/-/react-presence-1.1.10.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "DF0CB3090EBEB9B440F83E2EBFD9BDE4960B5F198E1E9D39AA3AE48DE03BB8A1C7B63A4F82043373A0C06F451197B8FAEE84742B67E83B88A9DBB4E25F4DFB07"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-presence; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-39--radix-ui-react-primitive-2.1.10",
+      "name": "@radix-ui/react-primitive",
+      "versionInfo": "2.1.10",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-primitive/-/react-primitive-2.1.10.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "32E70E9F387A851E6689DE95A646E095100C60C8CA2EA4671816E35E4CE32B9D9FB900DDD6A6E4C7BF1AE4FE349A472755725D115C66DBA13D38F02252AEE706"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-primitive; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-40--radix-ui-react-slot-1.3.3",
+      "name": "@radix-ui/react-slot",
+      "versionInfo": "1.3.3",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-slot/-/react-slot-1.3.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AB1EE8AA761BC672BD91823D9B7D7BAA6166120A3ACB0A96BDB4E881D8FB70BF69DFFCB1E0CE3CA7B467C39CF71FCF7470BFE8C3F11E589B2E4F291E6555CFE5"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-slot; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-41--radix-ui-react-use-callback-ref-1.1.4",
+      "name": "@radix-ui/react-use-callback-ref",
+      "versionInfo": "1.1.4",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-use-callback-ref/-/react-use-callback-ref-1.1.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "47A3946367B67C0E989FAB3E552C7928157A371F0B40486EF9CCFB2C27A3D7CAD0D472F283D3D20BD8CFFD9371D28E850082BD734175907CA5CD2C4AB1D964AD"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-use-callback-ref; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-42--radix-ui-react-use-controllable-state-1.2.6",
+      "name": "@radix-ui/react-use-controllable-state",
+      "versionInfo": "1.2.6",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-use-controllable-state/-/react-use-controllable-state-1.2.6.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "B84409193F7B640FD380FFC7C9DC38EE51EEFBFBD08FACFFD2303E59E4DB2B5A3D471E391889A3A43D2D7375B969DDC3E974D247A7B5C843B416F1AAE9641F55"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-use-controllable-state; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-43--radix-ui-react-use-effect-event-0.0.5",
+      "name": "@radix-ui/react-use-effect-event",
+      "versionInfo": "0.0.5",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-use-effect-event/-/react-use-effect-event-0.0.5.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "EDCB2114BF07192FFB1C48871FEF642FD1C1C29DAC6BDC97D7C2A7C1E93A2985A65F033BA5E80C82D6B6017310288FABAB72677D28FDC7CC18A85313746D4982"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-use-effect-event; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-44--radix-ui-react-use-layout-effect-1.1.4",
+      "name": "@radix-ui/react-use-layout-effect",
+      "versionInfo": "1.1.4",
+      "downloadLocation": "https://registry.npmjs.org/@radix-ui/react-use-layout-effect/-/react-use-layout-effect-1.1.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "2B6D03911914C039F11183013DC83763ABE82E4132E69E50426B336602E780A2A20BB773051FDA12E2B7C35AA5C762560D4347E8596E6A161D811DC13FE41B63"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@radix-ui/react-use-layout-effect; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-45--rollup-rollup-android-arm-eabi-4.62.4",
+      "name": "@rollup/rollup-android-arm-eabi",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "46B3E89006FB7666F116878EDD3968A87C8E8E0C9EF11901852AA6A786893087B1E1CF6BE3A66CB4F9E578340EAB5B78E953958F022EC0DA2022A6E8755D55BE"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-android-arm-eabi; role: transitive; native/runtime concerns: os=android; cpu=arm"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-46--rollup-rollup-android-arm64-4.62.4",
+      "name": "@rollup/rollup-android-arm64",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-android-arm64/-/rollup-android-arm64-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "24AB8973EA67A64B36A63CBB2FF377BFF700919C589679AE6680FCE3495D6CC2392836C2E223BD34AC0F29876360508C008225073612147C48255633468DBFF0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-android-arm64; role: transitive; native/runtime concerns: os=android; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-47--rollup-rollup-darwin-arm64-4.62.4",
+      "name": "@rollup/rollup-darwin-arm64",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-darwin-arm64/-/rollup-darwin-arm64-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "92BC39B92D924E6BC9D36C74B935C76EA40DBB3FBD799D62C3EA9793D7665B682F5788D5ECEDA11283A7BA116BA4E3E27A5D66045B6A6F161966D0B8EA15CB3B"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-darwin-arm64; role: transitive; native/runtime concerns: os=darwin; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-48--rollup-rollup-darwin-x64-4.62.4",
+      "name": "@rollup/rollup-darwin-x64",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-darwin-x64/-/rollup-darwin-x64-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "C2C4F1B600296F83EB3AC349226D056758775AF082FA4F6EC4B27869DEF9860A12E0D8917ACD92A091650C0C8CC22518F08B2C0EA19C1DB5EE374B31D6D7C5D4"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-darwin-x64; role: transitive; native/runtime concerns: os=darwin; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-49--rollup-rollup-freebsd-arm64-4.62.4",
+      "name": "@rollup/rollup-freebsd-arm64",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-freebsd-arm64/-/rollup-freebsd-arm64-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "1943A7425C997B7C805E158EB4E32C9F9424AEFE44E666576B4B616C04568B9122DACCE555724542175D6781DB03387CABDDB0E6DC29F8242FB3F7856A7CFD61"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-freebsd-arm64; role: transitive; native/runtime concerns: os=freebsd; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-50--rollup-rollup-freebsd-x64-4.62.4",
+      "name": "@rollup/rollup-freebsd-x64",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-freebsd-x64/-/rollup-freebsd-x64-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "FD8EDFDD0BB18F33CAB2303FADF1036B7FB4BD7AB28E6279D0B9FC74FA4299690A4EB5285871B5716853A9A00C2E86F69B69C4496B82EF21AB444CF4D7D66DAA"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-freebsd-x64; role: transitive; native/runtime concerns: os=freebsd; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-51--rollup-rollup-linux-arm-gnueabihf-4.62.4",
+      "name": "@rollup/rollup-linux-arm-gnueabihf",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-arm-gnueabihf/-/rollup-linux-arm-gnueabihf-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "F35C22897DEFEDAAB2F93F9B4FAD5327BF3226346ABAA1454D36C03EDD3C8A67D043390F216F2DE9A25B9136A0B420AB5CC35CF43EBAFA07AA94AEF274B3CDA8"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-arm-gnueabihf; role: transitive; native/runtime concerns: os=linux; cpu=arm"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-52--rollup-rollup-linux-arm-musleabihf-4.62.4",
+      "name": "@rollup/rollup-linux-arm-musleabihf",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-arm-musleabihf/-/rollup-linux-arm-musleabihf-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "F6498322F359A9DA0738166036DA5305E2D660EFCB562A4CDC7FE3EB63FCF38F3F97F54F1102FA377BB153DA6F3F5A1902C5F20B63049C53F7A2F463A3B59835"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-arm-musleabihf; role: transitive; native/runtime concerns: os=linux; cpu=arm"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-53--rollup-rollup-linux-arm64-gnu-4.62.4",
+      "name": "@rollup/rollup-linux-arm64-gnu",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-gnu/-/rollup-linux-arm64-gnu-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "09C9D71D69D783AF60F835F95562F7147B6CDEA311376B951075FE059BC62DD774EFF817927DDE3E362D3B52C326FC6418A54731C94A0516B54144C7FBAB6861"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-arm64-gnu; role: transitive; native/runtime concerns: os=linux; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-54--rollup-rollup-linux-arm64-musl-4.62.4",
+      "name": "@rollup/rollup-linux-arm64-musl",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-musl/-/rollup-linux-arm64-musl-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8853A26E21E74D1BA1AD62E546C39015D6492486BB4BC3B0927789AF8A1C00B3F5EAEE7293A9562C8345C211DA12A04532C283519A1F2E41A8B3BF823F3181DE"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-arm64-musl; role: transitive; native/runtime concerns: os=linux; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-55--rollup-rollup-linux-loong64-gnu-4.62.4",
+      "name": "@rollup/rollup-linux-loong64-gnu",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-loong64-gnu/-/rollup-linux-loong64-gnu-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "5E7598308EDEB8795BE5AF3BD713E36BE1A6EC3442154F85191AED4B6B0CABD37C16FAADA5A814CBA803E1839E982E4C464F716E1F3E8D830425B8A0150C2C80"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-loong64-gnu; role: transitive; native/runtime concerns: os=linux; cpu=loong64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-56--rollup-rollup-linux-loong64-musl-4.62.4",
+      "name": "@rollup/rollup-linux-loong64-musl",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-loong64-musl/-/rollup-linux-loong64-musl-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A860C094ED14F3179D09CB1D466F686A8418F03031FD04FBB88C495A109DC7471E2165FBF37502F5049891DA7301EDBDC0D8957E9DB8F9B65D4269F8F68E3949"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-loong64-musl; role: transitive; native/runtime concerns: os=linux; cpu=loong64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-57--rollup-rollup-linux-ppc64-gnu-4.62.4",
+      "name": "@rollup/rollup-linux-ppc64-gnu",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-ppc64-gnu/-/rollup-linux-ppc64-gnu-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AEEE07E9ECC3EF2B00E448842BAAA491A11BE26A1D1FC0937A3EA4532FE0422DB4BB7901DC6ED99FCB275D791E25208E14A1BFADB3CFB4CFFEF5681AB35F7AD7"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-ppc64-gnu; role: transitive; native/runtime concerns: os=linux; cpu=ppc64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-58--rollup-rollup-linux-ppc64-musl-4.62.4",
+      "name": "@rollup/rollup-linux-ppc64-musl",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-ppc64-musl/-/rollup-linux-ppc64-musl-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "D96E0C3B95905499DB25A65DBC36FDAE1043B855359CA21EA4F16925406C4E1DA4D5863683E383562696BB23808D0E5C38FECDBEBBCBCEDDF0BC73A8880BDCEF"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-ppc64-musl; role: transitive; native/runtime concerns: os=linux; cpu=ppc64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-59--rollup-rollup-linux-riscv64-gnu-4.62.4",
+      "name": "@rollup/rollup-linux-riscv64-gnu",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-gnu/-/rollup-linux-riscv64-gnu-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "F9FC637EEA00995302615E50CA3A08A6ED1CA790CE88E4DEA98164D4055AC46AFEFEB6AF58B5FCF577D09A9B6CA1671A572FD319FDA17B1CDB50EAC24082F509"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-riscv64-gnu; role: transitive; native/runtime concerns: os=linux; cpu=riscv64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-60--rollup-rollup-linux-riscv64-musl-4.62.4",
+      "name": "@rollup/rollup-linux-riscv64-musl",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-musl/-/rollup-linux-riscv64-musl-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8D39FC25F1C62F87638C5C4FB8CD3A2E6354243B2CB768DE565B1DF4E9881FACDCE6C0BD2BAAC8B8EE186A35DAB4B52906604A97A6F7E6BA35419A1C2E2FAD70"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-riscv64-musl; role: transitive; native/runtime concerns: os=linux; cpu=riscv64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-61--rollup-rollup-linux-s390x-gnu-4.62.4",
+      "name": "@rollup/rollup-linux-s390x-gnu",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-s390x-gnu/-/rollup-linux-s390x-gnu-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A0224224BE295ECA0370FD9067E25594F4C845CEB6EBACEC21A78926C5889A617B1CED16F276FA1EE4A0665316C49C1A3DFF1E85B4B0F32A34114C3DDB984AB0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-s390x-gnu; role: transitive; native/runtime concerns: os=linux; cpu=s390x"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-62--rollup-rollup-linux-x64-gnu-4.62.4",
+      "name": "@rollup/rollup-linux-x64-gnu",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-x64-gnu/-/rollup-linux-x64-gnu-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "5BAF61BA4859DCA28D44268C204CCABDC1727B8DA1874144D7E62861A7F9F8891A72E7EDA1CA3AC8EFF1A2ECF485CE5DE56FECDF206BA398D18AE104FD0E6F53"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-x64-gnu; role: transitive; native/runtime concerns: os=linux; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-63--rollup-rollup-linux-x64-musl-4.62.4",
+      "name": "@rollup/rollup-linux-x64-musl",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-linux-x64-musl/-/rollup-linux-x64-musl-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AA25DB186DA39235E1CD7A6C159491D97A5BF0337F51AC58B1B6FF4936EE47FE9FA5A0E046699AAB507F2E6B45DB0405385392B0ADA3744D116776B4CC79F840"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-linux-x64-musl; role: transitive; native/runtime concerns: os=linux; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-64--rollup-rollup-openbsd-x64-4.62.4",
+      "name": "@rollup/rollup-openbsd-x64",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-openbsd-x64/-/rollup-openbsd-x64-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "9D678CFFF871BFC988A3A8C3EC7BB8A38F0356657DA5B57A82C29A594FB8345CAA1E83CAC2B91189918B29484E064F2A3660E6A7016D3CA83CD01A3F4E7E3189"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-openbsd-x64; role: transitive; native/runtime concerns: os=openbsd; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-65--rollup-rollup-openharmony-arm64-4.62.4",
+      "name": "@rollup/rollup-openharmony-arm64",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-openharmony-arm64/-/rollup-openharmony-arm64-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "B3AD9243FBE0B114AF3300E43847D3A9F800485D1FDBA64D690B9303A02893996B8A47FCF722365B48051EF65BD89A6073A37C26738A66008ADA27223B70ACC5"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-openharmony-arm64; role: transitive; native/runtime concerns: os=openharmony; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-66--rollup-rollup-win32-arm64-msvc-4.62.4",
+      "name": "@rollup/rollup-win32-arm64-msvc",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-win32-arm64-msvc/-/rollup-win32-arm64-msvc-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "27AC067FC4D519B5C9ABE1C7FADB53BEB71F34A3DBB9979C57A293D41F08D7C042E48511521E64978625E4E10FE5E148528239056C42B3260C845B03C7C91E93"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-win32-arm64-msvc; role: transitive; native/runtime concerns: os=win32; cpu=arm64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-67--rollup-rollup-win32-ia32-msvc-4.62.4",
+      "name": "@rollup/rollup-win32-ia32-msvc",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-win32-ia32-msvc/-/rollup-win32-ia32-msvc-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "CE67EB41DFF4C2EEA826CF15ABC2B063F62DB0A4AC2ED29EFC7C003F85AACBC2E15A3793E797C744090E858435DB02376B24B84EDD76779083443ECDF7A48061"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-win32-ia32-msvc; role: transitive; native/runtime concerns: os=win32; cpu=ia32"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-68--rollup-rollup-win32-x64-gnu-4.62.4",
+      "name": "@rollup/rollup-win32-x64-gnu",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-win32-x64-gnu/-/rollup-win32-x64-gnu-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A8FCC7A9D8FDADF503FB0EFD76D134EF38BF905C0AC8226AA65A792B9CA078B4E9EE32E9028735E8E007DFD1D29910BD529A3369E72C95E23CB807448FABF6CB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-win32-x64-gnu; role: transitive; native/runtime concerns: os=win32; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-69--rollup-rollup-win32-x64-msvc-4.62.4",
+      "name": "@rollup/rollup-win32-x64-msvc",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "CC3E8D75E584072184F5017DBC2AE5279610078A2AF6AF7590F652DFB2708F984E92F475953052A6C2A1283C38209B5B437E4BB134B51C3F4365818A22C854D5"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@rollup/rollup-win32-x64-msvc; role: transitive; native/runtime concerns: os=win32; cpu=x64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-70--sindresorhus-is-4.6.0",
+      "name": "@sindresorhus/is",
+      "versionInfo": "4.6.0",
+      "downloadLocation": "https://registry.npmjs.org/@sindresorhus/is/-/is-4.6.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "B74F6F48DDCC75FB32087A057134421FF894B46ECE2740AC8F307C72302629CFEF6BF90881E0C8FD3C6C8A0767704FF86DEEF7E26D1CBC863035A5788B65EA03"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@sindresorhus/is; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-71--szmarczak-http-timer-4.0.6",
+      "name": "@szmarczak/http-timer",
+      "versionInfo": "4.0.6",
+      "downloadLocation": "https://registry.npmjs.org/@szmarczak/http-timer/-/http-timer-4.0.6.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "E0101F7F29183A03BEE67CC1598C04DD6F74B0180B26850F45659C2FCC25CA233C201F22A49CF750C27D29741DD512905E92A9F13BAD9FCD0766D5ACBB6BBBEB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@szmarczak/http-timer; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-72--tanstack-react-table-8.21.3",
+      "name": "@tanstack/react-table",
+      "versionInfo": "8.21.3",
+      "downloadLocation": "https://registry.npmjs.org/@tanstack/react-table/-/react-table-8.21.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "E6734C4D21133F8CA419E826564863712F2D4CB5BA565E1AC5F10640DDEFD3374761B2B851FA2A7CF0A17254EB2781282BD4329EA02EF6851FF15126AE96795B"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@tanstack/react-table; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-73--tanstack-react-virtual-3.14.9",
+      "name": "@tanstack/react-virtual",
+      "versionInfo": "3.14.9",
+      "downloadLocation": "https://registry.npmjs.org/@tanstack/react-virtual/-/react-virtual-3.14.9.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A99CABD056433FCAC30B858186CAF221998077D6EF789BC5194249B6C91669EC3AFF4753452EB06719D1E954396D8D8AC0BDCB8DEAEB1EA40B9376B418A70F5D"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@tanstack/react-virtual; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-74--tanstack-table-core-8.21.3",
+      "name": "@tanstack/table-core",
+      "versionInfo": "8.21.3",
+      "downloadLocation": "https://registry.npmjs.org/@tanstack/table-core/-/table-core-8.21.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "95D6571213816FC22CEF12ECD357D1DD811CDC31118B3E6C8A58FCB671A4159CADB7569B12F97F1A1526084D0F30B68C3D36B7264E076CA9919479AEFA009FB6"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@tanstack/table-core; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-75--tanstack-virtual-core-3.17.7",
+      "name": "@tanstack/virtual-core",
+      "versionInfo": "3.17.7",
+      "downloadLocation": "https://registry.npmjs.org/@tanstack/virtual-core/-/virtual-core-3.17.7.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "6E9FAFD74CBAE6CA761FB5A959F20CCB14CD7E5F1955FC454CB4633C8151AF28BA155FC9DF7CF8212E7758EE294E4DFA2A5BC9E222E2433FA86B27430B5C5B70"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@tanstack/virtual-core; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-76--types-cacheable-request-6.0.3",
+      "name": "@types/cacheable-request",
+      "versionInfo": "6.0.3",
+      "downloadLocation": "https://registry.npmjs.org/@types/cacheable-request/-/cacheable-request-6.0.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "210DC46D3CC6C488A06F5237A8F65CD6B5899C7D019922AFE506136A5130C1E16FC810CB4807B6E333F495EFE1CA2EDE7067D9565215020E0166A6FC581C0AAB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/cacheable-request; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-77--types-d3-color-3.1.3",
+      "name": "@types/d3-color",
+      "versionInfo": "3.1.3",
+      "downloadLocation": "https://registry.npmjs.org/@types/d3-color/-/d3-color-3.1.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "88EF74B1CB61F5601B9A0BFBA20A2AE7B3BD6292A61416E6A04A021C3076C4C058D3EFCA56BA806820F2084D7A754B2978EBC8C4515123ED2C12DA83AB2D9BE0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/d3-color; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-78--types-d3-drag-3.0.7",
+      "name": "@types/d3-drag",
+      "versionInfo": "3.0.7",
+      "downloadLocation": "https://registry.npmjs.org/@types/d3-drag/-/d3-drag-3.0.7.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "1C4DE354A97353D01A31ACCDB9FA28449E59A5698B22873DD00DFB594D893267AADBCC35150A8266CC07677C51F92BB161FB731EAE9653A2891EFAB12B34F1C5"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/d3-drag; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-79--types-d3-interpolate-3.0.4",
+      "name": "@types/d3-interpolate",
+      "versionInfo": "3.0.4",
+      "downloadLocation": "https://registry.npmjs.org/@types/d3-interpolate/-/d3-interpolate-3.0.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "9A02CF11396BA55575611248825AF8133E3B83B6318E5D658FB60AB223026F6ED5247F56F0D54CE816FD77C924A46FEE0104B90266C0E3CAB6200A2528AA3530"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/d3-interpolate; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-80--types-d3-selection-3.0.11",
+      "name": "@types/d3-selection",
+      "versionInfo": "3.0.11",
+      "downloadLocation": "https://registry.npmjs.org/@types/d3-selection/-/d3-selection-3.0.11.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "6E1017BB6DC3256B2B238E7169F629910E0DB5C28CC169C00BFBCAADDDA5FA7C4C16EBCE4F75CC613223DA8A6FF2FABC00EE5887B41A73F9D278FFF7CE34CAD3"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/d3-selection; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-81--types-d3-transition-3.0.9",
+      "name": "@types/d3-transition",
+      "versionInfo": "3.0.9",
+      "downloadLocation": "https://registry.npmjs.org/@types/d3-transition/-/d3-transition-3.0.9.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "B994B9B217F1CCEDEB1A5BB4702DDB8E63052AC5EFF9299965C829D0A0F6DADB38B865E9E445581B3BBFD1877065E2A675D85C01C718B511092A43DF5E466E0A"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/d3-transition; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-82--types-d3-zoom-3.0.8",
+      "name": "@types/d3-zoom",
+      "versionInfo": "3.0.8",
+      "downloadLocation": "https://registry.npmjs.org/@types/d3-zoom/-/d3-zoom-3.0.8.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8AA302E3F6251424A53BCFB6222D461869620806385DD786EF8F30E6F4146DEBE56C3BB4CD28C7FFE8E88E8AD05412BFB1ED23E8350534F0464AA0F76166270F"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/d3-zoom; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-83--types-estree-1.0.9",
+      "name": "@types/estree",
+      "versionInfo": "1.0.9",
+      "downloadLocation": "https://registry.npmjs.org/@types/estree/-/estree-1.0.9.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "1A174F832D5E978FC898FD395F4E54C38730DBF33DDC10949A712F599352B650B310A304E05924F98A680393A21CD426A12EC269F6FC5DADCFC9AF26D50AF37A"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/estree; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-84--types-http-cache-semantics-4.2.0",
+      "name": "@types/http-cache-semantics",
+      "versionInfo": "4.2.0",
+      "downloadLocation": "https://registry.npmjs.org/@types/http-cache-semantics/-/http-cache-semantics-4.2.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "2F72E08A62C75ED1A45A290A9EC3E0D3F545C7D38665A0BE78DD6EE2BF8E0755D1A87DE6781200542DB3AF559D307F911E69D192A962400387349FC4D23FDED1"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/http-cache-semantics; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-85--types-keyv-3.1.4",
+      "name": "@types/keyv",
+      "versionInfo": "3.1.4",
+      "downloadLocation": "https://registry.npmjs.org/@types/keyv/-/keyv-3.1.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "050E5A64D482A63EC3E8ADA4B2B4424E62912C4A673EF58388B3DFA06CA167EFBC62D88AF5DFF70C128F260AF2DF9F57FCFD4F7EBBB2630BE7BF0163B8488422"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/keyv; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-86--types-node-22.20.1",
+      "name": "@types/node",
+      "versionInfo": "22.20.1",
+      "downloadLocation": "https://registry.npmjs.org/@types/node/-/node-22.20.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "10036A38217D405CAB6BEE297F151C5FD493289A422E331B39B573963209A260164A7B9220402FCB3114E7719A6A36D724481D87488470F2FE0C6BE951DE24D5"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/node; role: direct-development; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-87--types-react-19.2.14",
+      "name": "@types/react",
+      "versionInfo": "19.2.14",
+      "downloadLocation": "https://registry.npmjs.org/@types/react/-/react-19.2.14.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8A57131FF52788290C76D7B192808DD1B23BA4C7090EF99014FBEE3EF98469803F3527C54C081D5122C0A158DA4499BBFBA3EF70CFAAD7360EC12E304D8305F7"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/react; role: direct-development; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-88--types-react-dom-19.2.3",
+      "name": "@types/react-dom",
+      "versionInfo": "19.2.3",
+      "downloadLocation": "https://registry.npmjs.org/@types/react-dom/-/react-dom-19.2.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8E9D8BFDE63A7E7F8A81555000EA9822D6C5D1563F600A5EE4CCF61746B29123BC831DF56D8099CAF49E6310872AFCC71B97998DCFB3C9A4B906B056C9ADBE91"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/react-dom; role: direct-development; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-89--types-responselike-1.0.3",
+      "name": "@types/responselike",
+      "versionInfo": "1.0.3",
+      "downloadLocation": "https://registry.npmjs.org/@types/responselike/-/responselike-1.0.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "1FFF8BF94913577DEE7F8F4F1F9A420140553CD8F69C30574CDFAA4B574EC32CA0DB897709C89C89C080EDC6BE1CCBC9059705825E6BF1EF9147A7A5B1BE0BCB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/responselike; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-90--types-trusted-types-2.0.7",
+      "name": "@types/trusted-types",
+      "versionInfo": "2.0.7",
+      "downloadLocation": "https://registry.npmjs.org/@types/trusted-types/-/trusted-types-2.0.7.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "49C68F767D5D41CCE06E5D101537933A65471542EDDFDE17260390368C95859EABDAF2E730B25F04F779DD2079D93FF71B7E95235FE0D8C65A5F47300EE5EC7F"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/trusted-types; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-91--types-yauzl-2.10.3",
+      "name": "@types/yauzl",
+      "versionInfo": "2.10.3",
+      "downloadLocation": "https://registry.npmjs.org/@types/yauzl/-/yauzl-2.10.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A09A1FB6FD0B4AE683644DCB7B80DB297F8A4BD1B7E8DCCE7926A9F745082B4C8C03F36128986A9521AD3433913516886D07F38D70EB41AD32B49EA63511B3FD"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@types/yauzl; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-92--xyflow-react-12.11.2",
+      "name": "@xyflow/react",
+      "versionInfo": "12.11.2",
+      "downloadLocation": "https://registry.npmjs.org/@xyflow/react/-/react-12.11.2.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "78B0250D625F5A7404849C063239567405CEF5E62594AA6589498F42502638BC73EA61315EECCC54350A2CCAAE8B1824AED98C145B6E8378C62A661895DD7670"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@xyflow/react; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-93--xyflow-system-0.0.79",
+      "name": "@xyflow/system",
+      "versionInfo": "0.0.79",
+      "downloadLocation": "https://registry.npmjs.org/@xyflow/system/-/system-0.0.79.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "7332F23A1F75345D212336CDCF08BC23A1A5A86DB7047876E37E4E75D7C8EAE89A2C7DF176B77280EF7782A807D41BFD9A1CBC5CF15024E067D454EAE0BBC458"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@xyflow/system; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-94-ajv-8.20.0",
+      "name": "ajv",
+      "versionInfo": "8.20.0",
+      "downloadLocation": "https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "4E16E58BE3A53A3FA230F60505505F2773A60809DA4B2367E0CD6FCFD4FA1A46B926DF5B6BF1C8479EA3A32EB9B58EA4C7F142179557341F35F58EFF194AC118"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/ajv; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-95-ajv-formats-3.0.1",
+      "name": "ajv-formats",
+      "versionInfo": "3.0.1",
+      "downloadLocation": "https://registry.npmjs.org/ajv-formats/-/ajv-formats-3.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "F2252A979D04511FAE51C7514371C3A9AE84572A3776870BF20E5627714D7169AEEB621B90652E7BFA44C8B056F1518A2AE7133E0A9E92CE1F214D43038CA8C1"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/ajv-formats; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-96-aria-hidden-1.2.6",
+      "name": "aria-hidden",
+      "versionInfo": "1.2.6",
+      "downloadLocation": "https://registry.npmjs.org/aria-hidden/-/aria-hidden-1.2.6.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8A4DD9802F5D63F95855533EF8E212B1A6037A0D6D6F456D3F9B8BDE8BA1D64A0639A50C0CFA5B1487A2E099058A659414F9FDD2C6CC34C5D000854E96760A24"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/aria-hidden; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-97-atomically-2.1.1",
+      "name": "atomically",
+      "versionInfo": "2.1.1",
+      "downloadLocation": "https://registry.npmjs.org/atomically/-/atomically-2.1.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "3F8C3DA3676A0118E2E8FECC1E9AE495B7E202B6405AFA34EF25BBAACDE97658DBDC15ABD7614807B5BEA74CC98AE895B14A513B48999F590515CA4F7A0834B5"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/atomically; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-98-boolean-3.2.0",
+      "name": "boolean",
+      "versionInfo": "3.2.0",
+      "downloadLocation": "https://registry.npmjs.org/boolean/-/boolean-3.2.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "774208FC63BDB9FF657D41C7D8142C8F1CD125905DB2382C0625B806F85693FDEAA0AC1016320354DD7D3DF5FC1760FFAFD3C2313B4B5A3615085AE9798533B3"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/boolean; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-99-buffer-crc32-0.2.13",
+      "name": "buffer-crc32",
+      "versionInfo": "0.2.13",
+      "downloadLocation": "https://registry.npmjs.org/buffer-crc32/-/buffer-crc32-0.2.13.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "54EF47B7FFA9DD237B48A5AA72B804CE319B4522584F1F90D694D00B4C2B5AA1F1D2FA49ADA43A1AD1F1F2DBDC835AE52B56F2854E6071CC603A08FB0744C391"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/buffer-crc32; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-100-cacheable-lookup-5.0.4",
+      "name": "cacheable-lookup",
+      "versionInfo": "5.0.4",
+      "downloadLocation": "https://registry.npmjs.org/cacheable-lookup/-/cacheable-lookup-5.0.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "DBF90DB1C3E1A5CC6B3A280C6736E2585EDDCFC8A585BFE72075371326625D65E97AAFDABBCA89F1585D7ED324B72DE7EC68FA1C819A9501BCA2204D07700980"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/cacheable-lookup; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-101-cacheable-request-7.0.4",
+      "name": "cacheable-request",
+      "versionInfo": "7.0.4",
+      "downloadLocation": "https://registry.npmjs.org/cacheable-request/-/cacheable-request-7.0.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "BFEA7AA2782CAE9D324C66C95E38313E8C36F832FDDC30123F891708329BF3F6F046DB7D384177C218209240E418DCE0716CB65DA1786BC9D98250BBB8496C72"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/cacheable-request; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-102-classcat-5.0.5",
+      "name": "classcat",
+      "versionInfo": "5.0.5",
+      "downloadLocation": "https://registry.npmjs.org/classcat/-/classcat-5.0.5.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "2616544FB245710CBF1335BAD3993F92D1ED9DCA28F6F9F25BFD86B29358C0594DD42FD69A3B95FF1B52D387BD48E90BDAC4DDC3454067650609C43D951EA9EB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/classcat; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-103-clone-response-1.0.3",
+      "name": "clone-response",
+      "versionInfo": "1.0.3",
+      "downloadLocation": "https://registry.npmjs.org/clone-response/-/clone-response-1.0.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "44EA0BF788C91F675454C2F663FE4F10335A48781E39D48389C5324BB8B3705EB71BAB1373F1538CBB9BE1BF0897D4BC4B46DE39F62DD13680E6ABC52BEC34C0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/clone-response; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-104-cmdk-1.1.1",
+      "name": "cmdk",
+      "versionInfo": "1.1.1",
+      "downloadLocation": "https://registry.npmjs.org/cmdk/-/cmdk-1.1.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "56CBFB9056979BEA6D1C3319EE2CDA46C3FBD0682B5BD341346B30B7D39969504B944D123690EAF1EBBF5465F217DAFB3346B32B75B2ECE9585ECBB260B1731E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/cmdk; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-105-conf-14.0.0",
+      "name": "conf",
+      "versionInfo": "14.0.0",
+      "downloadLocation": "https://registry.npmjs.org/conf/-/conf-14.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "2FA06EB9E1D346E24742F41573A61761946D379BC952D39D0932E7D2D458615E5ACDF6C015C3E0841E73104E34995AD5EB0EEC94C4EA51F903A26BAD20AD787F"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/conf; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-106-csstype-3.2.3",
+      "name": "csstype",
+      "versionInfo": "3.2.3",
+      "downloadLocation": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "CF51C629C632DB103C00641FC2B9F43C0CBE3C1ED7FC64A3DD45495BDA8ACA7E37C566BE825E675E6538AAA2CC4735952C50BC2AEB145FC4FFD240A2398A4021"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/csstype; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-107-d3-color-3.1.0",
+      "name": "d3-color",
+      "versionInfo": "3.1.0",
+      "downloadLocation": "https://registry.npmjs.org/d3-color/-/d3-color-3.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "CE0FDC85B5F2781B4C4352DB0FF592A16D83A42DC8D26A663DD5BECA74538FFC760C0598AC863BA9E6481E2768CF0576E26E226AFAF5E653702302F14663B184"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/d3-color; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-108-d3-dispatch-3.0.1",
+      "name": "d3-dispatch",
+      "versionInfo": "3.0.1",
+      "downloadLocation": "https://registry.npmjs.org/d3-dispatch/-/d3-dispatch-3.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AF35323D4FD2EEBC147E53322DCD444C37818F4351B8728A01CBEE928CF086C86BEA0E9CE5DF338787368108D8D9B6747577862D67353C5D7BE0FDAD56F2A17E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/d3-dispatch; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-109-d3-drag-3.0.0",
+      "name": "d3-drag",
+      "versionInfo": "3.0.0",
+      "downloadLocation": "https://registry.npmjs.org/d3-drag/-/d3-drag-3.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A566D424B7444D503C95034979C331A177C7EB1FA63B6510A3CAD2999F90AB171BC80DE17DEA6B160213FFF1D6DA79470A159E2083304B616AFA010046485392"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/d3-drag; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-110-d3-ease-3.0.1",
+      "name": "d3-ease",
+      "versionInfo": "3.0.1",
+      "downloadLocation": "https://registry.npmjs.org/d3-ease/-/d3-ease-3.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "C11FD72B70F75DC2C8670A5BBD0C10E5F2BEF1891DB358A9EC0D93C5ED32C6771749DAB52FDB24706EDB95C79D90E5FE65C83118098B5F516B4466C00F0CE2D3"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/d3-ease; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-111-d3-interpolate-3.0.1",
+      "name": "d3-interpolate",
+      "versionInfo": "3.0.1",
+      "downloadLocation": "https://registry.npmjs.org/d3-interpolate/-/d3-interpolate-3.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "DDB62CD6B383DF7BA8F1AA897CA3F72563C089B830F199B6F8BF6F04A107276460FAF89347BA39326BF999972278DF854586803965F94890135FA9353D6CFBDA"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/d3-interpolate; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-112-d3-selection-3.0.0",
+      "name": "d3-selection",
+      "versionInfo": "3.0.0",
+      "downloadLocation": "https://registry.npmjs.org/d3-selection/-/d3-selection-3.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "7E64D159B34C9AC996ABAC4957C0F5F54FE0C3F6F0AC77CD5F1AC837E1DF6609F3A931E9F633A628C86C4D48D73899D939D658F50DBCCB8C9E6CACEA0CA97195"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/d3-selection; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-113-d3-timer-3.0.1",
+      "name": "d3-timer",
+      "versionInfo": "3.0.1",
+      "downloadLocation": "https://registry.npmjs.org/d3-timer/-/d3-timer-3.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "9DD7C9FC9C7131DDE7C37D6EC8AA18DA76A2BC5FABDBD57E2DCD2CBD9C5ED49BEF2119A2F2152CACCBDD3B0812D68EAE0479A2CFDD60790D3294F3F46A3D5550"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/d3-timer; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-114-d3-transition-3.0.1",
+      "name": "d3-transition",
+      "versionInfo": "3.0.1",
+      "downloadLocation": "https://registry.npmjs.org/d3-transition/-/d3-transition-3.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "0292AF7E3B1247AB60D3AC6B2F8DF80B45B274BAFB25EC0107757EFF7F51307B1A5D3386D339ADFCE0177A78393392C19B4A239B126BA68990559D5A3EF04BE3"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/d3-transition; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-115-d3-zoom-3.0.0",
+      "name": "d3-zoom",
+      "versionInfo": "3.0.0",
+      "downloadLocation": "https://registry.npmjs.org/d3-zoom/-/d3-zoom-3.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "6FC02657791F41AA9602E69C6CFB8D6CBEAF6A19CE25F94E85EC4BCCC30D2E06BADBEFE7874273BC9D1A3BFE5AE4C560505192EC7BB53FD3F4DE8DDF2640C2CB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/d3-zoom; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-116-debounce-fn-6.0.0",
+      "name": "debounce-fn",
+      "versionInfo": "6.0.0",
+      "downloadLocation": "https://registry.npmjs.org/debounce-fn/-/debounce-fn-6.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AC1316F85D935EBC81C01E7843477C76B34423E4DFA12F49A4D4C0A15A6E91B5848635D0AB8AF248560B6AA5CC157C1DBFAD596F6387B63E5BBE24A88A6AB145"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/debounce-fn; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-117-debug-4.4.3",
+      "name": "debug",
+      "versionInfo": "4.4.3",
+      "downloadLocation": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "446C305A7C10BE455F6AF295B76D8518BC3EC5849DCC04709B4AEEE83853540DEE994E6165CDBC57790EE2CB6062BCAB4E52E9BAF808F468A28E5B408CD6DCA8"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/debug; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-118-decompress-response-6.0.0",
+      "name": "decompress-response",
+      "versionInfo": "6.0.0",
+      "downloadLocation": "https://registry.npmjs.org/decompress-response/-/decompress-response-6.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "696DF9C9933A05BFF8A099599DC307D8B0A866D2574D1C444B5EEF137868462A305369161DA24A1644810E70D1F9C9BD27EF5085799113221FBF4A638BD7A309"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/decompress-response; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-119-defer-to-connect-2.0.1",
+      "name": "defer-to-connect",
+      "versionInfo": "2.0.1",
+      "downloadLocation": "https://registry.npmjs.org/defer-to-connect/-/defer-to-connect-2.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "E2DBEDB5EA571B555A606AD189B93913025DD6DE2E76E9D239531D2D200BEA621DD62C78DFCA0FC0F64C00B638D450A28EE90ED4BD2DC0D706B1DCD2EDD1E00E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/defer-to-connect; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-120-define-data-property-1.1.4",
+      "name": "define-data-property",
+      "versionInfo": "1.1.4",
+      "downloadLocation": "https://registry.npmjs.org/define-data-property/-/define-data-property-1.1.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AC132F23396903CBFA13E489668A3EF87018AAC2EB920ECC49F2229CC3C5866928AF0ED7F9D39754942CF904FAF731A4CCCC9F0E720C3765A2775F8D6CBDD3F8"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/define-data-property; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-121-define-properties-1.2.1",
+      "name": "define-properties",
+      "versionInfo": "1.2.1",
+      "downloadLocation": "https://registry.npmjs.org/define-properties/-/define-properties-1.2.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "F109902AA10048B7799F1D14D41D6890B1256D4BAEB6D27F0276264576DB6C60D687AB92DB4F048C3E17AAAFC8F702BBBB4BFA3B4F178535A7B795ED11B47A0E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/define-properties; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-122-detect-node-2.1.0",
+      "name": "detect-node",
+      "versionInfo": "2.1.0",
+      "downloadLocation": "https://registry.npmjs.org/detect-node/-/detect-node-2.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "4F4348B90A674EF14301336E1CDE6BA0FC12046F37AC5B2E3BE3175C7F7FDCDD5E15B9F8C1C3E3B6DBE330B10F589D11194620404EDC1A04B7B4DC5BA8218CEE"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/detect-node; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-123-detect-node-es-1.1.0",
+      "name": "detect-node-es",
+      "versionInfo": "1.1.0",
+      "downloadLocation": "https://registry.npmjs.org/detect-node-es/-/detect-node-es-1.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "CA9766254FD36C16F2D83C626EEBFB64B5B706CD5012633B9C78C400D7E88492EF1345D5BA38AC9F5A8F25C67183EA83B9CB2BF9B3FA7CB0F5ACF4B702127B11"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/detect-node-es; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-124-dockview-7.0.4",
+      "name": "dockview",
+      "versionInfo": "7.0.4",
+      "downloadLocation": "https://registry.npmjs.org/dockview/-/dockview-7.0.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "9FA9FD5A9619829FD663C4A0BCFE21AFDAA1D35657852188466961A095F1454DDFDF86F0C426C5C8E84102B5785BCAAEA255FC3907B5C8F7C05305148DD9D93C"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/dockview; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-125-dockview-core-7.0.4",
+      "name": "dockview-core",
+      "versionInfo": "7.0.4",
+      "downloadLocation": "https://registry.npmjs.org/dockview-core/-/dockview-core-7.0.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "0222330FAA2FD79DCBFD5BA1A95060E4A0F9A120202461FB2F5C6FCD5FD7FA084810E4C57C441810118D77FCACF998D07DD191A201D2790D2FF4917F2FA26B3E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/dockview-core; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-126-dockview-react-7.0.4",
+      "name": "dockview-react",
+      "versionInfo": "7.0.4",
+      "downloadLocation": "https://registry.npmjs.org/dockview-react/-/dockview-react-7.0.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "794851DC9DE9AE9B8571A3C9C10E2BCDC4408213B7A782555E58F9CDF7504E56F74306BC554A72DCABF257A042B088CD935B684DD77CFCDC800DC65732FA66B4"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/dockview-react; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-127-dompurify-3.4.8",
+      "name": "dompurify",
+      "versionInfo": "3.4.8",
+      "downloadLocation": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.8.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "(MPL-2.0 OR Apache-2.0)",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "C9BD5C12668EBA6EF016F382490C727E0565BF90F8ED1737D22656A0CA5B0C85939C9EA0AC30D0CAED8A149CC1DA4EEED2932E25C435CE9847FFF7C59F0DAD8D"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/dompurify; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-128-dot-prop-9.0.0",
+      "name": "dot-prop",
+      "versionInfo": "9.0.0",
+      "downloadLocation": "https://registry.npmjs.org/dot-prop/-/dot-prop-9.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "D60C4F049A48FE97234212A0214F75208E9691ACBE74B70DDCCEAB7F6BB03FC851BABDC7B505E356B7402B7B230B4A62684BB1CCCC235C285C113889978EE501"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/dot-prop; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-129-echarts-6.1.0",
+      "name": "echarts",
+      "versionInfo": "6.1.0",
+      "downloadLocation": "https://registry.npmjs.org/echarts/-/echarts-6.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AB4C9A14F8200BD15476C587E1B95ABD15859B176B22875B92828D02326E74023A080F6034FC47B55D917193447A9655964E32BC16243A46E4E87215A48C8764"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/echarts; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-130-electron-39.8.10",
+      "name": "electron",
+      "versionInfo": "39.8.10",
+      "downloadLocation": "https://registry.npmjs.org/electron/-/electron-39.8.10.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "CDB62D18F61423B3F3A8B033924DB5464EA3EBB58DD21C67D0CABF9E312B668D5DD0749FDF78ACE1FF08088E5F30BCB9BD87B426D0AD339B18BA734E6A872149"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/electron; role: direct-development; native/runtime concerns: install-script"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-131-electron-store-10.1.0",
+      "name": "electron-store",
+      "versionInfo": "10.1.0",
+      "downloadLocation": "https://registry.npmjs.org/electron-store/-/electron-store-10.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A0BF1B472EE95422E9C21997CB4E5187F2FA3BDDFE93DB7A76A4B0D3E31C9087373A6093666E8CA74E10E1FFC9D2BB6EF382B2EB2C2447C8AFB463A6AEAFB5EB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/electron-store; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-132-end-of-stream-1.4.5",
+      "name": "end-of-stream",
+      "versionInfo": "1.4.5",
+      "downloadLocation": "https://registry.npmjs.org/end-of-stream/-/end-of-stream-1.4.5.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A2810673A1CFDBAC57ABF37E18218E4F424A08B0C6AEAD9B41466B43B832AC989900D27FF180D3C53A5005718C9FE59B2105CD569C96CA69BB2985480909F23A"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/end-of-stream; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-133-env-paths-2.2.1",
+      "name": "env-paths",
+      "versionInfo": "2.2.1",
+      "downloadLocation": "https://registry.npmjs.org/env-paths/-/env-paths-2.2.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "FA1D6590B2A164C4D88E8835544A49346ECD64959CB9CD830E4FEAB2A49345108E5E22E3790D5DD7FB9DAD41A1A8CC5480097028D67471FDAEA9A9F918BB92D8"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/env-paths; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-134-env-paths-3.0.0",
+      "name": "env-paths",
+      "versionInfo": "3.0.0",
+      "downloadLocation": "https://registry.npmjs.org/env-paths/-/env-paths-3.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "76D2544DEA73316DCB9BF34FC517F7C0FE3AE365168632F6B10C5CFB29B660C8F59BF1F6CC33503A57B369FCE41F09FAB0CB2D8C74F01BA89042C72D0D6FDBD4"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/conf/node_modules/env-paths; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-135-es-define-property-1.0.1",
+      "name": "es-define-property",
+      "versionInfo": "1.0.1",
+      "downloadLocation": "https://registry.npmjs.org/es-define-property/-/es-define-property-1.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "7B79D17E07D4678ACD18BDB7DA05205F4E90372C9ECF4E0A76316B17E2D34683979AB3A014A0E0E0109DB235BC1274FAF5EA9D606991A49C223D560DAC2696DE"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/es-define-property; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-136-es-errors-1.3.0",
+      "name": "es-errors",
+      "versionInfo": "1.3.0",
+      "downloadLocation": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "65FE47D8AC6DDB18D3BDB26F3F66562C4202C40EA3FA1026333225CA9CB8C5C060D6F2959F1F3D5B2D066D2FA47F9730095145CDD0858765D20853542D2E9CB3"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/es-errors; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-137-es6-error-4.1.1",
+      "name": "es6-error",
+      "versionInfo": "4.1.1",
+      "downloadLocation": "https://registry.npmjs.org/es6-error/-/es6-error-4.1.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "526FFE17132BF422125A1D1B8B966FD22383FB8705879A8B7A4B35AA1028A4A540270DDDAE029B2B24A2929EF01A10CBD073DE6A36B43F950B66BC4B92789456"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/es6-error; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-138-esbuild-0.25.12",
+      "name": "esbuild",
+      "versionInfo": "0.25.12",
+      "downloadLocation": "https://registry.npmjs.org/esbuild/-/esbuild-0.25.12.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "6DB3C1618AED65B92DE8EB3A1624CB093171BEAE2DB7724A6A5975BD1C2C840DDF755CEDB0B01AB45699A1B864042F3F06B3DEB686B4A24B18A0A5E81B8AF226"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/esbuild; role: transitive; native/runtime concerns: install-script"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-139-escape-string-regexp-4.0.0",
+      "name": "escape-string-regexp",
+      "versionInfo": "4.0.0",
+      "downloadLocation": "https://registry.npmjs.org/escape-string-regexp/-/escape-string-regexp-4.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "4EDA5C349DD7033C771AAF2C591CC96956A346CD2E57103660091D6F58E6D9890FCF81BA7A05050320379F9BED10865E7CF93959AE145DB2AE4B97CA90959D80"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/escape-string-regexp; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-140-extract-zip-2.0.1",
+      "name": "extract-zip",
+      "versionInfo": "2.0.1",
+      "downloadLocation": "https://registry.npmjs.org/extract-zip/-/extract-zip-2.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-2-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "183854F67B70B8AC865DD6415204C87BEBD79D68F47E9A5412D3032F4FA275DE52B5AF131A91ECB27FDEBAC03D9AB3EBF6A343CA6E92C406198CDBC29FFF5106"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/extract-zip; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-141-fancy-canvas-2.1.0",
+      "name": "fancy-canvas",
+      "versionInfo": "2.1.0",
+      "downloadLocation": "https://registry.npmjs.org/fancy-canvas/-/fancy-canvas-2.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "9E27F15C9F7924D2C5476360455E3F33154FE391BDF74F7025310ACF97E0FD3652DB4249640EA17E045587F6C2F5BC25DB306D04D7183E38811389E3407541C1"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/fancy-canvas; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-142-fast-deep-equal-3.1.3",
+      "name": "fast-deep-equal",
+      "versionInfo": "3.1.3",
+      "downloadLocation": "https://registry.npmjs.org/fast-deep-equal/-/fast-deep-equal-3.1.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "7F7A90F68432F63D808417BF1FD542F75C0B98A042094FE00CE9CA340606E61B303BB04B2A3D3D1DCE4760DCFD70623EFB19690C22200DA8AD56CD3701347CE1"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/fast-deep-equal; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-143-fast-uri-3.1.5",
+      "name": "fast-uri",
+      "versionInfo": "3.1.5",
+      "downloadLocation": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.5.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "807C00D4EF4B0C870ABA730A84E6D2FC78A6C2D7A13B59CF50408A02EE53A4A81A3B5F5F716125E1B96259ED635B1545BC85F3B498E34382FC5D0D4453D7FB27"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/fast-uri; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-144-fd-slicer-1.1.0",
+      "name": "fd-slicer",
+      "versionInfo": "1.1.0",
+      "downloadLocation": "https://registry.npmjs.org/fd-slicer/-/fd-slicer-1.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "704D6AB01FD5C32428CD9FAAD5D1B147C2C160D65EA1F84475434648C6D00F71B0DA50335FD65BDEE214E846DCFC59B28E8F405967E79F4014087AAD7AFB3FF2"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/fd-slicer; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-145-fdir-6.5.0",
+      "name": "fdir",
+      "versionInfo": "6.5.0",
+      "downloadLocation": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "B486D8B596EE70EB340511AA3C992C84951874BF920C7EDD54CF208F2F84469DD60148CB105244FB4DA46A7C87B708D63A7C2B298062C0098CD29E242C90275E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/fdir; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-146-fs-extra-8.1.0",
+      "name": "fs-extra",
+      "versionInfo": "8.1.0",
+      "downloadLocation": "https://registry.npmjs.org/fs-extra/-/fs-extra-8.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "CA1950800EA69CE25428EB11505B2025D402BE42A1733F2D9591B91C141F45E619CB8E8EC0B718F9989AD26B5D1EC3A8F72FE13FE0B130DD1353D431A0EB46E2"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/fs-extra; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-147-fsevents-2.3.3",
+      "name": "fsevents",
+      "versionInfo": "2.3.3",
+      "downloadLocation": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "E71A037D7F9F2FB7DA0139DA82658FA5B16DC21FD1EFB5A630CAAA1C64BAE42DEFBC1D181EB805F81D58999DF8E35B4C8F99FADE4D36D765CDA09C339617DF43"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/fsevents; role: transitive; native/runtime concerns: install-script; os=darwin"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-148-get-nonce-1.0.1",
+      "name": "get-nonce",
+      "versionInfo": "1.0.1",
+      "downloadLocation": "https://registry.npmjs.org/get-nonce/-/get-nonce-1.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "1498584680DA89AB5F12450AF072A589C9AEFF7486143E75AB78AD2831A8493CAC4090677CE7315391B19E113513AB2807BE8C6D3D0C06D9CA26E5F2031FBDE9"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/get-nonce; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-149-get-stream-5.2.0",
+      "name": "get-stream",
+      "versionInfo": "5.2.0",
+      "downloadLocation": "https://registry.npmjs.org/get-stream/-/get-stream-5.2.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "9C117E175AC06550AEFE9EEB8F3800F986F895F617AE997B6BA56626B53CC05F48D422AF3FF4303CD6479CE9706D3918E9DBED148CC5312C905DB2E84D03D1A4"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/get-stream; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-150-global-agent-3.0.0",
+      "name": "global-agent",
+      "versionInfo": "3.0.0",
+      "downloadLocation": "https://registry.npmjs.org/global-agent/-/global-agent-3.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "3D3E9745E27E0F4EC9BC6A3140C913EAA8E2FE354D7D7FE1DFAE171D9396791CF2EB8B1216BFB1279397ECB2376F830F43374BE07F18F0CD31CCFA6C54CC00F1"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/global-agent; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-151-globalthis-1.0.4",
+      "name": "globalthis",
+      "versionInfo": "1.0.4",
+      "downloadLocation": "https://registry.npmjs.org/globalthis/-/globalthis-1.0.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "0E92CA6CD5385B2969C49CA442E8DF09CC185A257F2619B9D06A28D30AD520B02FE633ABF5DF87F944773E14820F6AC2084220D2E73E1BE9AE053C03E782610D"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/globalthis; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-152-gopd-1.2.0",
+      "name": "gopd",
+      "versionInfo": "1.2.0",
+      "downloadLocation": "https://registry.npmjs.org/gopd/-/gopd-1.2.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "65429187AFE4505A0089302D4D83D9277870F70371C7E04804E8A39E51BD3E7AC9B027128ECD70CB20FABC9A5A62D827CC3ACA6114AA7F738EE917DAF77C6C46"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/gopd; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-153-got-11.8.6",
+      "name": "got",
+      "versionInfo": "11.8.6",
+      "downloadLocation": "https://registry.npmjs.org/got/-/got-11.8.6.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "EAD7D9F756CEAFB6CE5E72BB3D10C21812DAD47E14D3CD181CD6804362AC30694B13345B938E27B1917613521E45CDEFB491CF55B2826207456DA18EDA58DDF2"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/got; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-154-graceful-fs-4.2.11",
+      "name": "graceful-fs",
+      "versionInfo": "4.2.11",
+      "downloadLocation": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "45B279FE398570D342703579A3D7939C12C9FC7B33595D0FEF76DCF857F89D2FEB263F98692E881B288E2F45680585FE9755AB97793ADE1FCAAC7FA7849D17BD"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/graceful-fs; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-155-has-property-descriptors-1.0.2",
+      "name": "has-property-descriptors",
+      "versionInfo": "1.0.2",
+      "downloadLocation": "https://registry.npmjs.org/has-property-descriptors/-/has-property-descriptors-1.0.2.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "E7924D2AE216FAFAB829ED418CE4E333661CB5022F093EC61731F099F64F1A8E709EB82489DD1842D9C095E152AAE9999B86B3DE7D814BE7AB6F2E62A49760AE"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/has-property-descriptors; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-156-http-cache-semantics-4.2.0",
+      "name": "http-cache-semantics",
+      "versionInfo": "4.2.0",
+      "downloadLocation": "https://registry.npmjs.org/http-cache-semantics/-/http-cache-semantics-4.2.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-2-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "753C5CBCF5EA3EF5C1429AB9754AFA9843095F8A08105BFA6F0A26DC50F02910ECB888E324600DAA106EA009FD73545024874029ABF7DC40FAE44DB2B3EF3B41"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/http-cache-semantics; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-157-http2-wrapper-1.0.3",
+      "name": "http2-wrapper",
+      "versionInfo": "1.0.3",
+      "downloadLocation": "https://registry.npmjs.org/http2-wrapper/-/http2-wrapper-1.0.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "57EDB7B0332BD765A7CFB893703789AF73BA008C659EF4FF6E66800003FF5DD6B7E42F74A7DE7DF69D05D5E1D1FCDD4A20B592A1654088E3058C105769748CC6"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/http2-wrapper; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-158-json-buffer-3.0.1",
+      "name": "json-buffer",
+      "versionInfo": "3.0.1",
+      "downloadLocation": "https://registry.npmjs.org/json-buffer/-/json-buffer-3.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "E1B57905F4769AA7D04C99BE579B4F3DD7FE669BA1888BD3B8007983C91CAD7399A534FF430C15456072C17D68CEBEA512E3DD6C7C70689966F46EA6236B1F49"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/json-buffer; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-159-json-schema-traverse-1.0.0",
+      "name": "json-schema-traverse",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "https://registry.npmjs.org/json-schema-traverse/-/json-schema-traverse-1.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "34CF3F3FD9F75E35E12199F594B86415A0024CE5114178D6855E0103F4673AFF31BE0AADAA9017F483B89914314B1D51968E2DAB37AA6F4B0E96BB9A3B2DDDBA"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/json-schema-traverse; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-160-json-schema-typed-8.0.2",
+      "name": "json-schema-typed",
+      "versionInfo": "8.0.2",
+      "downloadLocation": "https://registry.npmjs.org/json-schema-typed/-/json-schema-typed-8.0.2.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-2-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "7D08685DD72F737576F31EC2EC132CE0FE7E90D96051445EDA39944F54FFFE8051303AEACB540F7A52629B0646A3B1E0F553D5DC4415E419EAE216C5CB6BDEB4"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/json-schema-typed; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-161-json-stringify-safe-5.0.1",
+      "name": "json-stringify-safe",
+      "versionInfo": "5.0.1",
+      "downloadLocation": "https://registry.npmjs.org/json-stringify-safe/-/json-stringify-safe-5.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "642960E80698BDA9AF60413CD9DDC8C9DDEF49222343EA1D823693CD1B8EDECEEDA0274529CCE86F68B4CC287B244F245A7D7BCAF016854571BEA1B051A96C44"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/json-stringify-safe; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-162-jsonfile-4.0.0",
+      "name": "jsonfile",
+      "versionInfo": "4.0.0",
+      "downloadLocation": "https://registry.npmjs.org/jsonfile/-/jsonfile-4.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "9BA175477CFC8E395FDA29901D2D907B3E6C8CA590CDBBAE86E27F14A605459BCF1373EE1DC48C559CDFB0B84654E91F776D286CBE5258405EC394A196AB8DC6"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/jsonfile; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-163-keyv-4.5.4",
+      "name": "keyv",
+      "versionInfo": "4.5.4",
+      "downloadLocation": "https://registry.npmjs.org/keyv/-/keyv-4.5.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A3154790747F1097F608D5E75B144B5BA9A0EC9C82094706D03B441A62F672D528D4F3538A7D4F52297EAFFFB8AF93295600BF7E7D648ECC7B9A34AE8CAA88A7"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/keyv; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-164-lightweight-charts-5.2.0",
+      "name": "lightweight-charts",
+      "versionInfo": "5.2.0",
+      "downloadLocation": "https://registry.npmjs.org/lightweight-charts/-/lightweight-charts-5.2.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "7B2DD56ACF14855D3A9E2F8B4FD4C0D6711EE32F12A38322E822FFA1AACD1C53324E4B73FF1CBC7BCFA8874E10FFF78EDEDE9EB6F15781ACB3D9F0A5C8541BE7"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/lightweight-charts; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-165-lowercase-keys-2.0.0",
+      "name": "lowercase-keys",
+      "versionInfo": "2.0.0",
+      "downloadLocation": "https://registry.npmjs.org/lowercase-keys/-/lowercase-keys-2.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "B6A357AD2EFCA0C384EF734CC4AE0430B42C428C167FC8CAA281FD83BC4F6AF453EF4E91E9B91027A0D8D937BB42E91A66CBA5C5ADF4C10EDB934A66E1788798"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/lowercase-keys; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-166-marked-14.0.0",
+      "name": "marked",
+      "versionInfo": "14.0.0",
+      "downloadLocation": "https://registry.npmjs.org/marked/-/marked-14.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "B888F8F9F690F8C807830516D65D8FB0F82564B38B393D6E12BB74E9D00FB71DA48ED78B0246EC77FD0589883F3064BE8BB64A2DBEF0D960A5C4793338EBABC9"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/marked; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-167-matcher-3.0.0",
+      "name": "matcher",
+      "versionInfo": "3.0.0",
+      "downloadLocation": "https://registry.npmjs.org/matcher/-/matcher-3.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "3A478368067F6D00B1785028CCCE793CA70A534C8930F1A27CBC15E108238ADBBEE4CA007D240DE25B0B25E5D9D5BF30D31FBF12675AE8C6605D2D63BEC6A99E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/matcher; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-168-mimic-function-5.0.1",
+      "name": "mimic-function",
+      "versionInfo": "5.0.1",
+      "downloadLocation": "https://registry.npmjs.org/mimic-function/-/mimic-function-5.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "54FEFD5D43F15760A28183F78D6C005054A4BB668AA811FBB9301AA4558206ABADB1B983A3DE8A639A3CBA1E94FBF612227E4EC499D7A7BDDB795929A8C20684"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/mimic-function; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-169-mimic-response-1.0.1",
+      "name": "mimic-response",
+      "versionInfo": "1.0.1",
+      "downloadLocation": "https://registry.npmjs.org/mimic-response/-/mimic-response-1.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8F911CB67907EDA99F57FAB91E09A86A5D60D901C5251ADA3AD9B1D09A48AA4C6106123F9494A5D67329438E6155AAF03444CEA161229A7759E102B4447C6EC5"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/mimic-response; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-170-mimic-response-3.1.0",
+      "name": "mimic-response",
+      "versionInfo": "3.1.0",
+      "downloadLocation": "https://registry.npmjs.org/mimic-response/-/mimic-response-3.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "CF4C9623EE050EBAF0792F199ADE048F91DD266932D79F8BD9EE96827DFE88AE5F5B36FA4F77E1345AB6F8C79345BD3AE1CE96AF837FC2FD03CD04E33731CD19"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/decompress-response/node_modules/mimic-response; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-171-monaco-editor-0.56.0",
+      "name": "monaco-editor",
+      "versionInfo": "0.56.0",
+      "downloadLocation": "https://registry.npmjs.org/monaco-editor/-/monaco-editor-0.56.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "B176E8466DC178178B9BDDFC79A8B22CC7B43B1CDF5C8959BDBBF88ABFE3560432D730E15A38269F2D16A0DE397EE0CA842090B1831B049AEFFC0EA377C68252"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/monaco-editor; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-172-ms-2.1.3",
+      "name": "ms",
+      "versionInfo": "2.1.3",
+      "downloadLocation": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "E85973B9B4CB646DC9D9AFCD542025784863CEAE68C601F268253DC985EF70BB2FA1568726AFECE715C8EBF5D73FAB73ED1F7100EB479D23BFB57B45DD645394"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/ms; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-173-nanoid-3.3.18",
+      "name": "nanoid",
+      "versionInfo": "3.3.18",
+      "downloadLocation": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.18.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "0D38383096C631691F8BA55915D36DDBF71A31B432E0EBBE3A9FE1250BC611672755FA00D5003EC7344A033C3D8C3EBE19538E798AFF98872E0D276E83A17AFB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/nanoid; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-174-normalize-url-6.1.0",
+      "name": "normalize-url",
+      "versionInfo": "6.1.0",
+      "downloadLocation": "https://registry.npmjs.org/normalize-url/-/normalize-url-6.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "0E52FE5F03B2DCDC4043CC6E0B4A243E02B8EA2B953402B4D5837B46E79806AA85786B018D5F5798203301D82DFBAEBB6C297990F87D12A28A0F09DA3C6D48EC"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/normalize-url; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-175-object-keys-1.1.1",
+      "name": "object-keys",
+      "versionInfo": "1.1.1",
+      "downloadLocation": "https://registry.npmjs.org/object-keys/-/object-keys-1.1.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "36E00449439432B9485CE7C72B30FA6E93EEDED62DDF1BE335D44843E15E4F494D6F82BC591EF409A0F186E360B92D971BE1A39323303B3B0DE5992D2267E12C"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/object-keys; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-176-once-1.4.0",
+      "name": "once",
+      "versionInfo": "1.4.0",
+      "downloadLocation": "https://registry.npmjs.org/once/-/once-1.4.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "94D689808FB643951140191C7042874D038F697754C67659125413658D0C15402E684A9ED44F8DCAF81DCFF688C8D8BA67D3333B976FD47F27E7CFC610BA77FB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/once; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-177-p-cancelable-2.1.1",
+      "name": "p-cancelable",
+      "versionInfo": "2.1.1",
+      "downloadLocation": "https://registry.npmjs.org/p-cancelable/-/p-cancelable-2.1.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "0593ABDE74501CE9ED5234EB1FCF8B879E2C98A1E81F2BABF167B557C0D2315AE5E40DA66A538EC2E2519CA4438D29E4A1E061E1AB7A0701276F923B265DF5C2"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/p-cancelable; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-178-pend-1.2.0",
+      "name": "pend",
+      "versionInfo": "1.2.0",
+      "downloadLocation": "https://registry.npmjs.org/pend/-/pend-1.2.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "1776ACBF8D94B97721773B7EC57A9F5B538695505EFA6C5ADA6A88D29839C801D93EF16663763A76B49FFC643503CE9681610DF4ACE1FD6AE029AEA219C1D72E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/pend; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-179-picocolors-1.1.1",
+      "name": "picocolors",
+      "versionInfo": "1.1.1",
+      "downloadLocation": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "C5C787DAC9E1B5BE4CF658AA0EC984C39EA57B7EFA993664117FE311BFD1C4D1727A036E97B78DB250973FD1438FF2DCBB45FC284C8C71E3F69EDA5A1EB0C454"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/picocolors; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-180-picomatch-4.0.5",
+      "name": "picomatch",
+      "versionInfo": "4.0.5",
+      "downloadLocation": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.5.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "46FC3072BB8D8C8D67713E7145A91EC92F4B7FC95C22DBF7E0A0FE6A27FE547F6476E0327D8062A46875DB6EF8C6D7A720F675D7DFD1F4175305AF200304A1D0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/picomatch; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-181-postcss-8.5.26",
+      "name": "postcss",
+      "versionInfo": "8.5.26",
+      "downloadLocation": "https://registry.npmjs.org/postcss/-/postcss-8.5.26.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "BBCD8DEF82C5CC6F1C6BE743F29B8F9E99535E8187E1F4CFA551AE21BB77E86DEABCD964BDF0F49440194B16A5CB7297F134BF2F503582C0849AF2A605C55B91"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/postcss; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-182-progress-2.0.3",
+      "name": "progress",
+      "versionInfo": "2.0.3",
+      "downloadLocation": "https://registry.npmjs.org/progress/-/progress-2.0.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "ECF887B4B965E4B767288330D74D08FBCC495D1E605B6430598913EA226F6B46D78AD64A6BF5CCAD26DD9A0DEBD979DA89DCFD42E99DD153DA32B66517D57DB0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/progress; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-183-pump-3.0.4",
+      "name": "pump",
+      "versionInfo": "3.0.4",
+      "downloadLocation": "https://registry.npmjs.org/pump/-/pump-3.0.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "552EEC8DCE8A47B7B5BA4445850498E4B336B8158050F88E3DAFC0DE690A9A23304A64455084EDD31BA3FBF95EB209C2BFE74F204625933ADCC9782AB881CC70"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/pump; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-184-quick-lru-5.1.1",
+      "name": "quick-lru",
+      "versionInfo": "5.1.1",
+      "downloadLocation": "https://registry.npmjs.org/quick-lru/-/quick-lru-5.1.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "5AEC802D18D63C31ADB7FC3326269D3B901763EF2167CD215697BA3328AF82B691116EF9D57DD26E146F1B778B28E60DFBC544BEA2DC7F7C1D9EDE386784B848"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/quick-lru; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-185-react-19.2.7",
+      "name": "react",
+      "versionInfo": "19.2.7",
+      "downloadLocation": "https://registry.npmjs.org/react/-/react-19.2.7.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "1CD7BD5AC9536D79852BCA3C726C2001E245481BEDD5B3DD1C254AB5A695F96940377EA6A53E21711A706DFDDF639E9AAF6A085F3B01A4E0222111C0758D0E95"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/react; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-186-react-dom-19.2.7",
+      "name": "react-dom",
+      "versionInfo": "19.2.7",
+      "downloadLocation": "https://registry.npmjs.org/react-dom/-/react-dom-19.2.7.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "B74051557BDB884FE8DB41DFC3AEBDACB6CC0835AD6192EF9898A0CB67F4331B1717EEF5A71851DF13A4B299AC3BC877665373CA26C09AD09ADE5E2560A93A81"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/react-dom; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-187-react-remove-scroll-2.7.2",
+      "name": "react-remove-scroll",
+      "versionInfo": "2.7.2",
+      "downloadLocation": "https://registry.npmjs.org/react-remove-scroll/-/react-remove-scroll-2.7.2.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "22A6FD3630824EDE877FEBCE74D21919D4E21F5412AABDBB1FF124F6CBFF6BDEE07EE788FF9875B37C918B59E783331468E393A229F9748D5D5CA757885FAED1"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/react-remove-scroll; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-188-react-remove-scroll-bar-2.3.8",
+      "name": "react-remove-scroll-bar",
+      "versionInfo": "2.3.8",
+      "downloadLocation": "https://registry.npmjs.org/react-remove-scroll-bar/-/react-remove-scroll-bar-2.3.8.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "F6BFB28BDFA6814DF700A723E886D3F684423BBF16AE24A3EADFDC17C0D605927D68E18F393103BDD503CF51702A29BB4175B0987AAD7479D125F840C441B8E9"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/react-remove-scroll-bar; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-189-react-style-singleton-2.2.3",
+      "name": "react-style-singleton",
+      "versionInfo": "2.2.3",
+      "downloadLocation": "https://registry.npmjs.org/react-style-singleton/-/react-style-singleton-2.2.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "6FA8D2BF1BD59F2A6D0222E36E458B13F94E9D1E257D3B43025F9E502ED1672F9041673AC11CC8576084EB106E3260F1736A888A1B430990F934F38597B7D105"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/react-style-singleton; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-190-require-from-string-2.0.2",
+      "name": "require-from-string",
+      "versionInfo": "2.0.2",
+      "downloadLocation": "https://registry.npmjs.org/require-from-string/-/require-from-string-2.0.2.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "5DFD2759EE91B1ECE214CBBE029F5B8A251B9A996AE92F7FA7EEF0ED85CFFC904786B5030D48706BEBC0372B9BBAA7D9593BDE53FFC36151AC0C6ED128BFEF13"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/require-from-string; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-191-resolve-alpn-1.2.1",
+      "name": "resolve-alpn",
+      "versionInfo": "1.2.1",
+      "downloadLocation": "https://registry.npmjs.org/resolve-alpn/-/resolve-alpn-1.2.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "D1AD45E25EF7FD915939A9099D0DC5BE4276FA0493416CFFAF6284E4E7436344F13E6E61E0692A91659F338ED3EC7B1B9CEB5C255105E1EA42572EAEED0DCAFA"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/resolve-alpn; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-192-responselike-2.0.1",
+      "name": "responselike",
+      "versionInfo": "2.0.1",
+      "downloadLocation": "https://registry.npmjs.org/responselike/-/responselike-2.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "E20974DF09F7863D473F7CB381D23B777942905F79176D4FCF804F1AF2878A7C90CC02D1E426A9C02F32222D11879F0310C43F4A0B82D37C058F693433F98787"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/responselike; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-193-roarr-2.15.4",
+      "name": "roarr",
+      "versionInfo": "2.15.4",
+      "downloadLocation": "https://registry.npmjs.org/roarr/-/roarr-2.15.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "08784F87E50D1C3D864D735884F58B9D4F0E347748FB90C8FB811820039A883EB7AC7798959BF287C3FE8A7E7DF7D4D348581462E294023CD123899D87FA7ED8"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/roarr; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-194-rollup-4.62.4",
+      "name": "rollup",
+      "versionInfo": "4.62.4",
+      "downloadLocation": "https://registry.npmjs.org/rollup/-/rollup-4.62.4.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "4573AAC1A3EC0468CC34C6B8B108C38C789E1C46431688FF45DAF8EA5D8C5390DF12CD7AC0724F0B644F4CF1D684D97E337688E3BD8B2EA16414ABADE126E53A"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/rollup; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-195-scheduler-0.27.0",
+      "name": "scheduler",
+      "versionInfo": "0.27.0",
+      "downloadLocation": "https://registry.npmjs.org/scheduler/-/scheduler-0.27.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "78DBFE5AB55B2AED5FDEF6D8253FF1B62179B320391CF20CB5FF48818FE72A0D2C5AACC0504BEA63FC66ECE71973FA9A7CBC7F88EF4580E99E480A78BF9B62FD"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/scheduler; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-196-semver-6.3.1",
+      "name": "semver",
+      "versionInfo": "6.3.1",
+      "downloadLocation": "https://registry.npmjs.org/semver/-/semver-6.3.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "051ED5BC30951CEFAADB10445AC9314BA0C9135A919DBEC3C7352BA206FBD425A849F89C07162C88019DF8A9749A6ABF329AC6F7202B464CAB4314CEE978CCCC"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/semver; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-197-semver-7.8.5",
+      "name": "semver",
+      "versionInfo": "7.8.5",
+      "downloadLocation": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "63BFCA0EC6FC2E3A28669C1AA86CAE94EE8342592C8029DC7211C693EB19218E1206F52870C044147E54AF57C8E1D57E26F974C3A723BEE71A222E34A6E462A0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/conf/node_modules/semver; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-198-semver-7.8.5",
+      "name": "semver",
+      "versionInfo": "7.8.5",
+      "downloadLocation": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "63BFCA0EC6FC2E3A28669C1AA86CAE94EE8342592C8029DC7211C693EB19218E1206F52870C044147E54AF57C8E1D57E26F974C3A723BEE71A222E34A6E462A0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/global-agent/node_modules/semver; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-199-semver-compare-1.0.0",
+      "name": "semver-compare",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "https://registry.npmjs.org/semver-compare/-/semver-compare-1.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "60CDFF213876309E4CB7368CE36F5A9E1FB1DA388B563A882C5E26E28C90075F16EC681E6BB05FA9D1FFC0630AEDD0E232086FFFA586EF39D6330503CC9897A3"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/semver-compare; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-200-serialize-error-7.0.1",
+      "name": "serialize-error",
+      "versionInfo": "7.0.1",
+      "downloadLocation": "https://registry.npmjs.org/serialize-error/-/serialize-error-7.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "F08F138D6E4A30E2AC6504EFA318EE4886BB7E80303D618EB6CFBAA3BB208F3E35FEA303F55407103C62E8F06F2B6974317526A99C8DA542BE4F6B5069A125BF"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/serialize-error; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-201-source-map-js-1.2.1",
+      "name": "source-map-js",
+      "versionInfo": "1.2.1",
+      "downloadLocation": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "51758C2A12CEC1529BEF6F0852D40F5F17D853EBAC7726ED52B2BFF2E184F0240CBEB84EA70BF30C1C23D108522FB31073BBC8B084811BC550F3E203431A5F40"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/source-map-js; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-202-sprintf-js-1.1.3",
+      "name": "sprintf-js",
+      "versionInfo": "1.1.3",
+      "downloadLocation": "https://registry.npmjs.org/sprintf-js/-/sprintf-js-1.1.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "3A8FB4444155E7DFEBCF781F24D2908819707C7692112975A5C1B200142C9E721F58E16DE89363E600A883653A30B67FFC81980FE9C0F2723E9934A144445E68"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/sprintf-js; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-203-stubborn-fs-2.0.0",
+      "name": "stubborn-fs",
+      "versionInfo": "2.0.0",
+      "downloadLocation": "https://registry.npmjs.org/stubborn-fs/-/stubborn-fs-2.0.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "63402F4B00F0F32FA79523455CC9B683A2F9D6B046740413DB42776123AAC42E772E8DDB8D646DAF604A71F62801FDF9D96629B19493511AC0D2DAA17E0B9D3C"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/stubborn-fs; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-204-stubborn-utils-1.0.2",
+      "name": "stubborn-utils",
+      "versionInfo": "1.0.2",
+      "downloadLocation": "https://registry.npmjs.org/stubborn-utils/-/stubborn-utils-1.0.2.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "CCE87D8CF608FB1ACD3B28AC49E960CA6E2DA2529324241DE460612B4FB4C49BDC60373094EA3117FAE714A4362916649D7486F63580A7AE9FC0FE80C4DF524E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/stubborn-utils; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-205-sumchecker-3.0.1",
+      "name": "sumchecker",
+      "versionInfo": "3.0.1",
+      "downloadLocation": "https://registry.npmjs.org/sumchecker/-/sumchecker-3.0.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "32F8D7CE4CFF04E7F2543906D2814EB41C475F6BB780A6CC1C817F7576E566C803DC158E14B987A2F229658EC1CA425D02372A442062D5660135D102F7223BBE"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/sumchecker; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-206-tinyglobby-0.2.17",
+      "name": "tinyglobby",
+      "versionInfo": "0.2.17",
+      "downloadLocation": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "C1747F758A5CA8A99F5A911D66388A24EC023459DD0F40CC9EB5BF7188D51ADB449017D581C2C51E836B963E3B9A339589CF72C8DBBAE5A96C805E0D4324DADA"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/tinyglobby; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-207-tslib-2.3.0",
+      "name": "tslib",
+      "versionInfo": "2.3.0",
+      "downloadLocation": "https://registry.npmjs.org/tslib/-/tslib-2.3.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "0BSD",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "37CDA8A32C55366EA1D6B88B0A8C92F5EDDFB89DC0306DB3219B3619DD404DC4858D2036DD0D1FCE38D97A1D236C9BD65436747094FCC9A34D69A5C7CEE78D8E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/echarts/node_modules/tslib; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-208-tslib-2.3.0",
+      "name": "tslib",
+      "versionInfo": "2.3.0",
+      "downloadLocation": "https://registry.npmjs.org/tslib/-/tslib-2.3.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "0BSD",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "37CDA8A32C55366EA1D6B88B0A8C92F5EDDFB89DC0306DB3219B3619DD404DC4858D2036DD0D1FCE38D97A1D236C9BD65436747094FCC9A34D69A5C7CEE78D8E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/zrender/node_modules/tslib; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-209-tslib-2.8.1",
+      "name": "tslib",
+      "versionInfo": "2.8.1",
+      "downloadLocation": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "0BSD",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A0916EF781D06FE29576E49440BEF09E99AA9DF98BB0E03F9C087A6FA107D30084A0AD3F98F79753A737C0A0D5F373243AE1CF447B525CA294F7D2016B34BFDB"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/tslib; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-210-type-fest-0.13.1",
+      "name": "type-fest",
+      "versionInfo": "0.13.1",
+      "downloadLocation": "https://registry.npmjs.org/type-fest/-/type-fest-0.13.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "(MIT OR CC0-1.0)",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "DF847B1D39C6D172097014A7E5784377B9CD14F45C5D8459AC10763B68DD2AA60E0E5752CC102ACEC5A865862F76E932EF7B68612FC44AAC4FBE40DFFC5D1732"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/type-fest; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-211-type-fest-4.41.0",
+      "name": "type-fest",
+      "versionInfo": "4.41.0",
+      "downloadLocation": "https://registry.npmjs.org/type-fest/-/type-fest-4.41.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "(MIT OR CC0-1.0)",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "4DE4D243A1F9607BE9A95C0145C9CB0C20670CE1D662EEC8BC66C74FA37C00ECA672BF4F2468DCD464ED896653620D0D0A0630BE761612454285002BF5B8DFC0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/dot-prop/node_modules/type-fest; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-212-type-fest-4.41.0",
+      "name": "type-fest",
+      "versionInfo": "4.41.0",
+      "downloadLocation": "https://registry.npmjs.org/type-fest/-/type-fest-4.41.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "(MIT OR CC0-1.0)",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "4DE4D243A1F9607BE9A95C0145C9CB0C20670CE1D662EEC8BC66C74FA37C00ECA672BF4F2468DCD464ED896653620D0D0A0630BE761612454285002BF5B8DFC0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/electron-store/node_modules/type-fest; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-213-typescript-5.9.3",
+      "name": "typescript",
+      "versionInfo": "5.9.3",
+      "downloadLocation": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8E5D6F6733C38A72EBF5E52DDC9FEDED5E8580D130F508EF04F772B33F4A7D00C3E357D0AC2D98E2F290762694A454F86D795BD511E12E9A7CC2D9BA3394E04B"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/typescript; role: direct-development; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-214-uint8array-extras-1.5.0",
+      "name": "uint8array-extras",
+      "versionInfo": "1.5.0",
+      "downloadLocation": "https://registry.npmjs.org/uint8array-extras/-/uint8array-extras-1.5.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AEF2920620B9CEA08288367D9003ACCD9703BDD007C3020A246DF76248F8DCE29C5AC9E670144BD3D6135389CE78767C6366BB9753204DDD3C4817BD03C423E8"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/uint8array-extras; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-215-undici-types-6.21.0",
+      "name": "undici-types",
+      "versionInfo": "6.21.0",
+      "downloadLocation": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8B00D9AA0D10006AE0F516AFE47E27D0CEB87379A4479F5C27AC10A7EEC2E2723482C984C5A79D6982CD3B8E1E4F802D041C236D38863CC96DD8C7744FD1FD25"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/undici-types; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-216-universalify-0.1.2",
+      "name": "universalify",
+      "versionInfo": "0.1.2",
+      "downloadLocation": "https://registry.npmjs.org/universalify/-/universalify-0.1.2.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "AC125E2390970259B2D6957EEB5ED607D27ADD4E9771ACC71C5D9FD9D6C98B1E17CE9505D114B765B8F414620E080BDAE4FFDDFC604E61A002435C3ED1ACD492"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/universalify; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-217-use-callback-ref-1.3.3",
+      "name": "use-callback-ref",
+      "versionInfo": "1.3.3",
+      "downloadLocation": "https://registry.npmjs.org/use-callback-ref/-/use-callback-ref-1.3.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "8D02F79519E871A16DBB7574D094E8633FF8424356B30C628C368254D6518914CEDC74032EC76ED59B66214BD5E323E9FABBD69B98F4CB44C6FD2EB572E8A34E"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/use-callback-ref; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-218-use-sidecar-1.1.3",
+      "name": "use-sidecar",
+      "versionInfo": "1.1.3",
+      "downloadLocation": "https://registry.npmjs.org/use-sidecar/-/use-sidecar-1.1.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "15E770D1A66F921CA7A0F625039597ACC080326FA7496759B7A973250ECE93C4BA43E56C1E61E94569DD55127C05ED196E47CF7392D1607FB95EBCD770478B45"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/use-sidecar; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-219-use-sync-external-store-1.6.0",
+      "name": "use-sync-external-store",
+      "versionInfo": "1.6.0",
+      "downloadLocation": "https://registry.npmjs.org/use-sync-external-store/-/use-sync-external-store-1.6.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "3E9E864B018FFCDACF22BC551402243907B2C3C9457A73878A34169144EB0EFAC5E002EACA53F60BF28291E4BD76950CDCABD84508676B9BEDEC82FDE7E650F7"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/use-sync-external-store; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-220-vite-6.4.3",
+      "name": "vite",
+      "versionInfo": "6.4.3",
+      "downloadLocation": "https://registry.npmjs.org/vite/-/vite-6.4.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "3532A57108E500AECC950A326FA2E06AA1DCF2CB28FE9572509616330B378E0DB5B93270FCB75DA8814F70FA8FE8FCE981B21C672288F39B051381C1AD00C0F0"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/vite; role: direct-development; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-221-when-exit-2.1.5",
+      "name": "when-exit",
+      "versionInfo": "2.1.5",
+      "downloadLocation": "https://registry.npmjs.org/when-exit/-/when-exit-2.1.5.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "54690A279EB8933B7A32CD5D6E03CFFF2B88A100ABB0502745BA6DA42E70384B0368DB1B081D9B9DF9DA03C8BFBD1B39B6351210EB48BAF97DFCCC95B2F4190A"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/when-exit; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-222-wrappy-1.0.2",
+      "name": "wrappy",
+      "versionInfo": "1.0.2",
+      "downloadLocation": "https://registry.npmjs.org/wrappy/-/wrappy-1.0.2.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "9784A9FC346C7A8AFDC0BE84BD5DBE4EE427EB774C90F8D9FECA7D5E48214C46D5F4A94F4B5C54B19DEEEFF2103B8C31B5C141E1B82940F45C477402BDECCF71"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/wrappy; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-223-yauzl-2.10.0",
+      "name": "yauzl",
+      "versionInfo": "2.10.0",
+      "downloadLocation": "https://registry.npmjs.org/yauzl/-/yauzl-2.10.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A786BD23A5FA9EEE888681A606A01C6C9CB59A50B88F6EEF10F657F45E0BE3FBD94F72F2AB5564147C3F57F3D4701F41BA8F831B7887913D31DD0C9AE7CCDCDE"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/yauzl; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-224-zrender-6.1.0",
+      "name": "zrender",
+      "versionInfo": "6.1.0",
+      "downloadLocation": "https://registry.npmjs.org/zrender/-/zrender-6.1.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "A0418C0C1EA938FD92E8EC114783DD56FEB5D33AE39C0DC187E267486D767D826504A8ED340A046F97D252808E3883651FDE88D9F537F3F03652944AB3AEF161"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/zrender; role: transitive; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-225-zustand-4.5.7",
+      "name": "zustand",
+      "versionInfo": "4.5.7",
+      "downloadLocation": "https://registry.npmjs.org/zustand/-/zustand-4.5.7.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "087394CBB9AEDE56C3EA8E8B24B7E59698E4CE11D7481957F01F7EA8F75D52C21F785E52FD4679AB49260AC9D1A93D541C54197213450C3CCC6D0B2E7AC1D697"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/@xyflow/react/node_modules/zustand; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-226-zustand-5.0.14",
+      "name": "zustand",
+      "versionInfo": "5.0.14",
+      "downloadLocation": "https://registry.npmjs.org/zustand/-/zustand-5.0.14.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "FFCB40B293392CC3EBDBC6F77F02D8AED763EFB102A5F66F89A3FBE423139F03BC212C9A138183206FFDAC30D8ABF707F43D97C360364578252C89E6541401FE"
+        }
+      ],
+      "comment": "npm package-lock v3 path: node_modules/zustand; role: direct-runtime; native/runtime concerns: none declared in package-lock"
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-v3-oss-rebuild"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-72--tanstack-react-table-8.21.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-73--tanstack-react-virtual-3.14.9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-86--types-node-22.20.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-87--types-react-19.2.14"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-88--types-react-dom-19.2.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-92--xyflow-react-12.11.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-94-ajv-8.20.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-104-cmdk-1.1.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-126-dockview-react-7.0.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-129-echarts-6.1.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-130-electron-39.8.10"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-131-electron-store-10.1.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-164-lightweight-charts-5.2.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-171-monaco-editor-0.56.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-185-react-19.2.7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-186-react-dom-19.2.7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-213-typescript-5.9.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-220-vite-6.4.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-225-zustand-4.5.7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-v3-oss-rebuild",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-226-zustand-5.0.14"
+    }
+  ]
+}
