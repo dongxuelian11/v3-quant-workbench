@@ -7,7 +7,7 @@ import { BacktestPanel, ResultPanel } from "./BacktestResultPanels";
 import { useWorkbench } from "../store";
 import { Icon } from "./PresentationSystem";
 
-const LAYOUT_CONTRACT = "precision-workbench-v2";
+const LAYOUT_CONTRACT = "precision-workbench-v3";
 
 const components = {
   researchChart: ResearchChartPanel,
@@ -24,11 +24,11 @@ const components = {
 };
 
 const defaults = {
-  research: ["research-chart", "价格、事件与证据", "researchChart"],
-  strategy: ["strategy-draft", "StrategyDraft · 编辑工作区", "strategyDraft"],
-  model: ["model-workflow", "Model Lab · 分阶段分析", "modelWorkflow"],
-  backtest: ["backtest-surface", "Backtest · 场景与执行复盘", "backtest"],
-  result: ["result-surface", "Result · 绩效与归因", "result"]
+  research: ["research-chart", "Research · Price / Evidence", "researchChart"],
+  strategy: ["strategy-draft", "StrategyDraft · Editor", "strategyDraft"],
+  model: ["model-workflow", "Model · Workflow", "modelWorkflow"],
+  backtest: ["backtest-surface", "Backtest · Execution", "backtest"],
+  result: ["result-surface", "Result · Performance", "result"]
 } as const;
 
 const questions = {
@@ -73,7 +73,7 @@ export function Workbench() {
     const api = apiRef.current;
     if (!api || activeLab !== "research") return;
     api.clear();
-    const chart = api.addPanel({ id: "research-chart", title: "价格、事件与证据", component: "researchChart" });
+    const chart = api.addPanel({ id: "research-chart", title: "Research · Price / Evidence", component: "researchChart" });
     api.addPanel({ id: "research-analytics", title: "二级分析", component: "researchAnalytics", position: { referencePanel: "research-chart", direction: "below" } });
     api.addPanel({ id: "universe-builder", title: "Universe Builder", component: "universeBuilder", position: { referencePanel: "research-analytics" } });
     window.setTimeout(() => chart.api.group.api.setSize({ height: Math.round(api.height * .68) }), 0);
@@ -98,11 +98,11 @@ export function Workbench() {
 
   return <div className="workbench-frame" data-lab-workbench={activeLab}>
     <div className="workbench-contextbar">
-      <div className="workbench-question"><Icon name="focus" size={15}/><div><small>当前分析问题</small><span>{questions[activeLab]}</span></div></div>
+      <div className="workbench-question"><small>{activeLab.toUpperCase()}</small><span>{questions[activeLab]}</span></div>
       <div className="workbench-actions">
-        {activeLab === "research" && <button data-action="dock-preset" onClick={createResearchPreset}><Icon name="research" size={14}/>研究布局</button>}
-        <button data-action="inspector-toggle" onClick={toggleInspector} aria-pressed={inspectorOpen}><Icon name="inspector" size={14}/><span>检查器</span></button>
-        <button data-action="operations-open" onClick={toggleBottom} aria-pressed={bottomOpen}><Icon name="operations" size={14}/><span>任务</span></button>
+        {activeLab === "research" && <button data-action="dock-preset" onClick={createResearchPreset} title="应用研究多面板预设"><Icon name="research" size={14}/><span>研究布局</span></button>}
+        <button data-action="inspector-toggle" onClick={toggleInspector} aria-pressed={inspectorOpen} title="切换上下文检查器"><Icon name="inspector" size={14}/><span>检查器</span></button>
+        <button data-action="operations-open" onClick={toggleBottom} aria-pressed={bottomOpen} title="切换任务与日志"><Icon name="operations" size={14}/><span>任务</span></button>
         <details className="dock-menu"><summary aria-label="工作区布局操作"><Icon name="more" size={16}/></summary><div>
           <small>LAYOUT ACTIONS</small>
           <button data-action="dock-activate" onClick={activateFirst}>激活首面板</button>

@@ -119,7 +119,7 @@ export function ResearchChartPanel() {
         { label: "IC Mean", value: "0.071" },
         { label: "最大回撤", value: "-8.31%", tone: "negative" }
       ]}/>
-      <div className="chart-mode-line"><span><i className="price"/>Price</span><span><i className="momentum"/>Momentum MA</span><span><i className="benchmark"/>Benchmark</span><b role="status" aria-live="polite">{running ? "Demo 研究运行中" : "Coverage 96.8% · 研究就绪"}</b></div>
+      <div className="chart-mode-line"><b role="status" aria-live="polite">{running ? "Demo 研究运行中" : "Coverage 96.8% · 研究就绪"}</b></div>
       <div ref={host} className="echart primary-canvas" data-testid="research-echart" data-primary-canvas />
     </div>
     <div className="event-ledger" aria-label="研究事件带">
