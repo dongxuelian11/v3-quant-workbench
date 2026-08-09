@@ -3,10 +3,12 @@
   "compilerOptions": {
     "module": "ES2022",
     "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "types": ["vite/client", "react", "react-dom"],
+    "noEmit": true,
     "rootDir": ".",
-    "outDir": "dist",
-    "noEmit": false
+    "outDir": "dist"
   },
-  "include": ["apps/desktop/src/renderer/renderer.ts"],
+  "include": ["apps/desktop/src/renderer/**/*.ts", "apps/desktop/src/renderer/**/*.tsx", "packages/contracts/src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

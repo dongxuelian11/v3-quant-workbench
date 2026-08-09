@@ -14,7 +14,9 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "typecheck": "tsc --noEmit",
+    "build:renderer": "vite build",
+    "build:determinism": "node scripts/deterministic-build.mjs",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.renderer.json",
     "lint": "node scripts/lint.mjs",
     "test": "node --test tests/unit/*.test.mjs",
     "test:unit": "npm run test",
@@ -23,11 +25,29 @@
     "secret-scan": "node scripts/secret-scan.mjs",
     "repo-audit": "node scripts/repo-audit.mjs",
     "evidence:generate": "node scripts/generate-result.mjs",
-    "validate": "npm run typecheck && npm run lint && npm test && npm run build && npm run smoke:frontend && npm run smoke:electron && npm run secret-scan && npm run repo-audit"
+    "validate": "npm run typecheck && npm run lint && npm test && npm run build && npm run smoke:electron && npm run smoke:frontend && npm run secret-scan && npm run repo-audit"
+  },
+  "dependencies": {
+    "@tanstack/react-table": "8.21.3",
+    "@tanstack/react-virtual": "3.14.9",
+    "@xyflow/react": "12.11.2",
+    "ajv": "8.20.0",
+    "cmdk": "1.1.1",
+    "dockview-react": "7.0.4",
+    "echarts": "6.1.0",
+    "electron-store": "10.1.0",
+    "lightweight-charts": "5.2.0",
+    "monaco-editor": "0.56.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zustand": "5.0.14"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0",
-    "electron": "36.9.5",
-    "typescript": "^5.8.3"
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "electron": "39.8.10",
+    "typescript": "5.9.3",
+    "vite": "6.4.3"
   }
 }

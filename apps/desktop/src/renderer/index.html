@@ -1,17 +1,14 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta
-      name="description"
-      content="V3 continuous quantitative research workbench frontend recovery candidate"
-    />
-    <title>V3 Workbench</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob:" />
+    <meta name="description" content="V3 Electron quantitative research workbench FR-1 capability candidate" />
+    <title>V3 量化研究工作台</title>
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="./renderer.js"></script>
+    <script type="module" src="./main.tsx"></script>
   </body>
 </html>

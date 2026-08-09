@@ -1,29 +1,13 @@
-import { cp, mkdir, rm } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
-const dist = resolve(root, "dist");
-await rm(dist, { recursive: true, force: true });
-await mkdir(dirname(dist), { recursive: true });
-
-const tsc = spawnSync(process.platform === "win32" ? "tsc.cmd" : "tsc", ["-p", "tsconfig.json"], {
-  cwd: root,
-  stdio: "inherit",
-  shell: process.platform === "win32"
-});
-if (tsc.status !== 0) process.exit(tsc.status ?? 1);
-
-const rendererTsc = spawnSync(process.platform === "win32" ? "tsc.cmd" : "tsc", ["-p", "tsconfig.renderer.json"], {
-  cwd: root,
-  stdio: "inherit",
-  shell: process.platform === "win32"
-});
-if (rendererTsc.status !== 0) process.exit(rendererTsc.status ?? 1);
-
-const sourceRenderer = resolve(root, "apps/desktop/src/renderer");
-const outputRenderer = resolve(dist, "apps/desktop/src/renderer");
-await mkdir(outputRenderer, { recursive: true });
-await cp(resolve(sourceRenderer, "index.html"), resolve(outputRenderer, "index.html"));
-await cp(resolve(sourceRenderer, "styles.css"), resolve(outputRenderer, "styles.css"));
-console.log(`Built Electron shell to ${dist}`);
+await rm(resolve(root, "dist"), { recursive: true, force: true });
+function run(command, args) {
+  const result = spawnSync(command, args, { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}
+run(process.platform === "win32" ? "tsc.cmd" : "tsc", ["-p", "tsconfig.json"]);
+run(process.platform === "win32" ? "vite.cmd" : "vite", ["build", "--config", "vite.config.mjs"]);
+console.log(`Built Electron 39 + React/Vite renderer to ${resolve(root, "dist")}`);

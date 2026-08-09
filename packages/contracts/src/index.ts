@@ -1,70 +1,125 @@
-export const LAB_IDS = [
-  "research",
-  "strategy",
-  "model",
-  "backtest",
-  "result"
-] as const;
-
+export const LAB_IDS = ["research", "strategy", "model", "backtest", "result"] as const;
 export type LabId = (typeof LAB_IDS)[number];
 
-export type BackendAvailability = "unavailable" | "demo" | "formal";
+export type TruthClass = "DEMO" | "FORMAL" | "UNAVAILABLE";
+export type ModelFamily = "LightGBM" | "XGBoost" | "CatBoost" | "sklearn-linear" | "sklearn-tree-ensemble" | "PyTorch-deep" | "custom-plugin";
+export type StudyState = "ready" | "running" | "paused" | "cancelled" | "checkpointed" | "completed";
+export type StrategyMode = "visual" | "code" | "split";
+export type UniverseMode = "all-shares" | "index" | "industry" | "concept" | "custom-symbols" | "nested-condition" | "factor-top-bottom" | "saved-reference" | "csv-tsv-import";
 
-export interface BackendStatus {
-  availability: BackendAvailability;
-  provider: "UnavailableBackendProvider" | "DemoProvider" | "CanonicalBackend";
-  message: string;
-  formalOutputAllowed: boolean;
+export interface StrategyDraft {
+  id: string;
+  version: number;
+  mode: StrategyMode;
+  code: string;
+  acceptedHunks: string[];
+  rejectedHunks: string[];
+  selectedNodeId: string | null;
+  validation: "not-run" | "valid" | "invalid";
+  handoffId: string | null;
 }
 
-export interface DockLayout {
-  leftRail: boolean;
-  inspector: boolean;
-  bottomPanel: boolean;
+export interface ModelState {
+  family: ModelFamily;
+  datasetVersion: string;
+  label: string;
+  splitPlan: "chronological" | "rolling" | "expanding" | "purge-embargo" | "walk-forward";
+  selectedRunIds: string[];
+  studyState: StudyState;
+  checkpoint: number;
+  modelVersion: string | null;
+  predictionSignalVersion: string | null;
 }
 
-export interface WorkspaceState {
+export interface PersistedWorkspace {
   activeLab: LabId;
   inspectorOpen: boolean;
-  layout: DockLayout;
+  bottomOpen: boolean;
   activeProject: string;
   selectedAsset: string | null;
+  selectedUniverseMode: UniverseMode;
+  dockLayouts: Partial<Record<LabId, unknown>>;
+  strategy: StrategyDraft;
+  model: ModelState;
+  executedCommandIds: string[];
+  commandExecutionCount: Record<string, number>;
+  savedAt: string | null;
 }
 
-export interface SaveWorkspaceRequest {
-  state: WorkspaceState;
+export interface DesktopCommandEnvelope {
+  id: string;
+  name: "workspace.save" | "workspace.reset" | "study.resume" | "study.pause" | "study.cancel" | "study.checkpoint" | "strategy.validate" | "strategy.handoff";
+  issuedAt: string;
 }
 
-export type DesktopCommand =
-  | "workspace.save"
-  | "workspace.reset"
-  | "inspector.toggle"
-  | `lab.${LabId}`;
+export interface CommandReceipt {
+  id: string;
+  accepted: boolean;
+  duplicate: boolean;
+  executionCount: number;
+}
+
+export function applyCommandExactlyOnce(current: PersistedWorkspace, command: DesktopCommandEnvelope): { state: PersistedWorkspace; receipt: CommandReceipt } {
+  const previous = current.commandExecutionCount[command.id] ?? 0;
+  if (current.executedCommandIds.includes(command.id)) return { state: structuredClone(current), receipt: { id: command.id, accepted: false, duplicate: true, executionCount: previous } };
+  const state = structuredClone(current);
+  state.executedCommandIds = [...state.executedCommandIds.slice(-199), command.id];
+  state.commandExecutionCount = { ...state.commandExecutionCount, [command.id]: previous + 1 };
+  if (command.name === "study.resume") state.model.studyState = "running";
+  if (command.name === "study.pause") state.model.studyState = "paused";
+  if (command.name === "study.cancel") state.model.studyState = "cancelled";
+  if (command.name === "study.checkpoint") { state.model.studyState = "checkpointed"; state.model.checkpoint += 1; }
+  return { state, receipt: { id: command.id, accepted: true, duplicate: false, executionCount: 1 } };
+}
 
 export interface DesktopBridge {
-  getWorkspaceState(): Promise<WorkspaceState>;
-  saveWorkspaceState(request: SaveWorkspaceRequest): Promise<WorkspaceState>;
-  resetWorkspaceState(): Promise<WorkspaceState>;
-  getBackendStatus(): Promise<BackendStatus>;
-  sendCommand(command: DesktopCommand): Promise<void>;
+  loadWorkspace(): Promise<PersistedWorkspace>;
+  saveWorkspace(state: PersistedWorkspace): Promise<PersistedWorkspace>;
+  resetWorkspace(): Promise<PersistedWorkspace>;
+  executeCommand(command: DesktopCommandEnvelope): Promise<CommandReceipt>;
+  runtimeInfo(): Promise<{ electron: string; platform: string; storePath: string }>;
 }
 
-export const DEFAULT_WORKSPACE_STATE: WorkspaceState = {
+export const DEFAULT_STRATEGY_CODE = `# V3 StrategyDraft · DEMO / NOT FORMAL FINANCIAL OUTPUT\nuniverse = Universe.ref("CN-LARGE-CAP@v12")\nsignal = rank(momentum_12m) * 0.65 + rank(quality) * 0.35\nportfolio = top_n(signal, 50).equal_weight()\nrebalance(portfolio, frequency="monthly")`;
+
+export const DEFAULT_WORKSPACE: PersistedWorkspace = {
   activeLab: "research",
   inspectorOpen: true,
-  layout: {
-    leftRail: true,
-    inspector: true,
-    bottomPanel: true
-  },
+  bottomOpen: true,
   activeProject: "Momentum Research / 2026 Q2",
-  selectedAsset: "Universe / CN Large Cap"
+  selectedAsset: "因子 / Momentum 12M",
+  selectedUniverseMode: "all-shares",
+  dockLayouts: {},
+  strategy: {
+    id: "strategy-draft-demo-001",
+    version: 8,
+    mode: "visual",
+    code: DEFAULT_STRATEGY_CODE,
+    acceptedHunks: [],
+    rejectedHunks: [],
+    selectedNodeId: "factor-momentum",
+    validation: "not-run",
+    handoffId: null
+  },
+  model: {
+    family: "LightGBM",
+    datasetVersion: "DatasetVersion/demo-cn-factor-v12",
+    label: "next_20d_excess_return",
+    splitPlan: "walk-forward",
+    selectedRunIds: ["RUN-018"],
+    studyState: "checkpointed",
+    checkpoint: 18,
+    modelVersion: "ModelVersion/demo-lgbm-v4",
+    predictionSignalVersion: "PredictionSignalVersion/demo-alpha-v3"
+  },
+  executedCommandIds: [],
+  commandExecutionCount: {},
+  savedAt: null
 };
 
-export const UNAVAILABLE_BACKEND_STATUS: BackendStatus = {
-  availability: "unavailable",
-  provider: "UnavailableBackendProvider",
-  message: "Canonical backend reconstruction is not part of FR-0 / FR-1.",
-  formalOutputAllowed: false
+export const DEMO_TRUTH = {
+  classification: "DEMO" as const,
+  label: "DEMO / NOT FORMAL FINANCIAL OUTPUT",
+  provenance: "DeterministicFrontendDemoProvider/v1",
+  wave3: "RECOVERED_FROM_PRODUCT_DESIGN_NOT_PRIOR_WAVE3_ACCEPTANCE"
 };
-

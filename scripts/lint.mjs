@@ -9,7 +9,7 @@ async function visit(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory() && !["node_modules", "dist"].includes(entry.name)) await visit(path);
-    if (entry.isFile() && /\.(ts|mjs|cjs|json|css|html)$/.test(entry.name)) {
+    if (entry.isFile() && /\.(ts|tsx|mjs|cjs|json|css|html)$/.test(entry.name)) {
       const content = await readFile(path, "utf8");
       if (/\r\n/.test(content)) failures.push(`${relative(root, path)}: CRLF line endings`);
       if (/[ \t]+$/m.test(content)) failures.push(`${relative(root, path)}: trailing whitespace`);

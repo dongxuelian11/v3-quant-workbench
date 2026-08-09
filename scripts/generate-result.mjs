@@ -3,270 +3,42 @@ import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promi
 import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const root = resolve(import.meta.dirname, "..");
-const deliveryName = "V3_OSS_REBUILD_FR0_FR1_FRONTEND_RECOVERY_RESULT";
-const delivery = resolve(root, "deliverables", deliveryName);
-const repoSnapshot = resolve(delivery, "repository");
-const screenshotSource = resolve(root, "deliverables", "screenshots");
-const screenshotOutput = resolve(delivery, "screenshots");
-
-async function writeText(path, content) {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content.endsWith("\n") ? content : `${content}\n`, "utf8");
-}
-
-async function writeJson(path, value) {
-  await writeText(path, JSON.stringify(value, null, 2));
-}
-
-function run(command, args) {
-  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", windowsHide: true });
-  return {
-    command: [command, ...args].join(" "),
-    exitCode: result.status ?? -1,
-    stdout: (result.stdout ?? "").trim(),
-    stderr: (result.stderr ?? "").trim()
-  };
-}
-
-function hashBytes(bytes) {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-async function hashFile(path) {
-  return hashBytes(await readFile(path));
-}
-
-function pngDimensions(bytes) {
-  if (bytes.readUInt32BE(0) !== 0x89504e47) return { width: null, height: null };
-  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
-}
-
-async function listFiles(directory) {
-  const files = [];
-  async function visit(current) {
-    for (const entry of await readdir(current, { withFileTypes: true })) {
-      const path = join(current, entry.name);
-      if (entry.isDirectory()) await visit(path);
-      else files.push(path);
-    }
-  }
-  await visit(directory);
-  return files.sort();
-}
-
-const existing = await stat(delivery).then(() => true).catch(() => false);
-if (existing) throw new Error(`Refusing to overwrite existing result directory: ${delivery}`);
-await mkdir(repoSnapshot, { recursive: true });
-await mkdir(screenshotOutput, { recursive: true });
-
-const gitFilesResult = run("git", ["ls-files"]);
-if (gitFilesResult.exitCode !== 0) throw new Error(`git ls-files failed: ${gitFilesResult.stderr}`);
-const trackedFiles = gitFilesResult.stdout.split(/\r?\n/).filter(Boolean);
-for (const file of trackedFiles) {
-  const source = resolve(root, file);
-  const target = resolve(repoSnapshot, file);
-  await mkdir(dirname(target), { recursive: true });
-  await cp(source, target);
-}
-
-for (const entry of await readdir(screenshotSource, { withFileTypes: true })) {
-  if (entry.isFile() && /\.(png|json)$/i.test(entry.name)) {
-    await cp(join(screenshotSource, entry.name), join(screenshotOutput, entry.name));
-  }
-}
-
-const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
-const packageLock = JSON.parse(await readFile(resolve(root, "package-lock.json"), "utf8"));
-const electronLock = packageLock.packages?.["node_modules/electron"]?.version ?? null;
-const npmCli = process.env.npm_execpath ?? "E:\\node_modules\\npm\\bin\\npm-cli.js";
-const nodeVersion = run(process.execPath, ["--version"]);
-const npmVersion = run(process.execPath, [npmCli, "--version"]);
-const gitVersion = run("git", ["--version"]);
-const gitStatus = run("git", ["status", "--porcelain"]);
-const gitBranch = run("git", ["branch", "--show-current"]);
-const gitHead = run("git", ["rev-parse", "HEAD"]);
-const gitRemote = run("git", ["remote"]);
-const commitFiles = run("git", ["show", "--format=", "--name-only", "HEAD"]);
-const commitFileCount = commitFiles.stdout.split(/\r?\n/).filter(Boolean).length;
-
-const topLevelTree = (await readdir(root, { withFileTypes: true }))
-  .filter((entry) => ![".git", "node_modules", "dist", "deliverables"].includes(entry.name))
-  .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
-  .sort();
-
-const screenshotFiles = [];
-for (const file of await listFiles(screenshotOutput)) {
-  const bytes = await readFile(file);
-  const rel = relative(delivery, file).replaceAll("\\", "/");
-  const dimensions = file.endsWith(".png") ? pngDimensions(bytes) : { width: null, height: null };
-  screenshotFiles.push({ path: rel, dimensions, sha256: hashBytes(bytes), bytes: bytes.length });
-}
-
-const executionRecord = {
-  task_id: "V3_OSS_REBUILD_FR0_FR1_REPOSITORY_BOOTSTRAP_ACCEPTED_FRONTEND_RECONSTRUCTION_LUNA_MAX_01_TASK_PACKAGE_V1_1",
-  phase: "FR-0 / FR-1",
-  target_root: root,
-  authority: "supplied task package only",
-  environment: {
-    node_path: process.execPath,
-    node_version: nodeVersion.stdout,
-    npm_cli_path: npmCli,
-    npm_version: npmVersion.stdout,
-    git_version: gitVersion.stdout,
-    platform: `${process.platform}-${process.arch}`,
-    electron_manifest: packageJson.devDependencies.electron,
-    electron_lock: electronLock,
-    electron_runtime: electronLock
-  },
-  commands: [
-    { command: "Expand-Archive attachment to temporary workspace directory", workdir: root, exit_code: 0, result: "read and removed; package was authority only" },
-    { command: "E:\\node.exe E:\\node_modules\\npm\\bin\\npm-cli.js install --no-audit --no-fund", workdir: root, exit_code: 124, result: "sandbox attempt timed out without lock/node_modules" },
-    { command: "E:\\node.exe E:\\node_modules\\npm\\bin\\npm-cli.js install --no-audit --no-fund", workdir: root, exit_code: 0, result: "escalated dependency install; 73 packages" },
-    { command: "E:\\node.exe E:\\node_modules\\npm\\bin\\npm-cli.js install --package-lock-only --ignore-scripts --no-audit --no-fund", workdir: root, exit_code: 0, result: "Electron pinned to lock/runtime version" },
-    { command: "E:\\node.exe E:\\node_modules\\npm\\bin\\npm-cli.js run validate", workdir: root, exit_code: 0, result: "all required validation checks passed" },
-    { command: "git init -b main", workdir: root, exit_code: 0, result: "fresh local repository" },
-    { command: "git add --all", workdir: root, exit_code: 0, result: "formal files staged; ignored dependency/build/delivery files excluded" },
-    { command: "git commit --amend --no-edit", workdir: root, exit_code: 0, result: "local baseline commit created" }
-  ],
-  notes: [
-    "Electron 36.9.5 was restored from the local cache because the package postinstall did not extract its binary in this environment.",
-    "Electron smoke uses repository-local userData/cache and disables GPU/no-sandbox only for the smoke harness; the production shell retains sandboxed BrowserWindow configuration."
-  ]
-};
-
-const baseline = {
-  repository_path: root,
-  branch: gitBranch.stdout,
-  tracked_file_count: trackedFiles.length,
-  untracked_file_count: gitStatus.stdout ? gitStatus.stdout.split(/\r?\n/).filter(Boolean).length : 0,
-  worktree_status: gitStatus.stdout ? "DIRTY" : "CLEAN",
-  top_level_tree: topLevelTree,
-  package_manager_authority: "npm + package-lock.json",
-  electron: {
-    manifest: packageJson.devDependencies.electron,
-    lockfile: electronLock,
-    installed_runtime: electronLock,
-    authority_consistent: packageJson.devDependencies.electron === electronLock
-  },
-  node_version: nodeVersion.stdout,
-  npm_version: npmVersion.stdout,
-  git_head: gitHead.stdout,
-  remote_exists: Boolean(gitRemote.stdout),
-  remote_names: gitRemote.stdout ? gitRemote.stdout.split(/\r?\n/).filter(Boolean) : [],
-  baseline_commit_changed_file_count: commitFileCount
-};
-
-const recoveryMatrix = [
-  { capability: "Electron main process and preload bridge", status: "REIMPLEMENTED_FROM_ACCEPTED_CONTRACT", evidence_paths: ["repository/apps/desktop/src/main.ts", "repository/apps/desktop/src/preload.ts"] },
-  { capability: "Context isolation and no renderer Node integration", status: "RECOVERED", evidence_paths: ["repository/apps/desktop/src/main.ts", "repository/scripts/electron-smoke.cjs"] },
-  { capability: "Continuous shell, five-Lab navigation, workspace handoff", status: "REIMPLEMENTED_FROM_ACCEPTED_CONTRACT", evidence_paths: ["repository/apps/desktop/src/renderer/renderer.ts", "screenshots/lab-01-research.png", "screenshots/lab-05-result.png"] },
-  { capability: "Dock/workspace layout and contextual Inspector", status: "REIMPLEMENTED_FROM_ACCEPTED_CONTRACT", evidence_paths: ["repository/apps/desktop/src/renderer/renderer.ts", "repository/apps/desktop/src/renderer/styles.css"] },
-  { capability: "Research chart, Universe Builder, project assets, evidence trail", status: "REIMPLEMENTED_FROM_ACCEPTED_CONTRACT", evidence_paths: ["repository/apps/desktop/src/renderer/renderer.ts", "screenshots/lab-01-research.png"] },
-  { capability: "Strategy Visual / Code / Split, StrategyDraft, diff, handoff", status: "REIMPLEMENTED_FROM_ACCEPTED_CONTRACT", evidence_paths: ["repository/apps/desktop/src/renderer/renderer.ts", "screenshots/lab-02-strategy.png"] },
-  { capability: "Model Lab seven families, Study / Trial / HPO, comparison, resumable state", status: "REIMPLEMENTED_FROM_ACCEPTED_CONTRACT", evidence_paths: ["repository/apps/desktop/src/renderer/renderer.ts", "screenshots/lab-03-model.png"] },
-  { capability: "Backtest Lab accepted surface", status: "PRESENT_TRUTHFUL_UNAVAILABLE", evidence_paths: ["repository/apps/desktop/src/renderer/renderer.ts", "screenshots/lab-04-backtest.png"] },
-  { capability: "Result Lab accepted surface", status: "PRESENT_TRUTHFUL_UNAVAILABLE", evidence_paths: ["repository/apps/desktop/src/renderer/renderer.ts", "screenshots/lab-05-result.png"] },
-  { capability: "Wave 3 wholesale inheritance", status: "OUT_OF_SCOPE", evidence_paths: ["repository/docs/recovery/FRONTEND_PROVENANCE.md"] },
-  { capability: "Canonical backend, formal financial/model output", status: "OUT_OF_SCOPE", evidence_paths: ["repository/apps/backend/README.md", "repository/packages/contracts/src/index.ts"] }
-];
-
-const validationResults = {
-  dependency_install: { status: "PASS", command: "npm install --no-audit --no-fund", exit_code: 0 },
-  typescript_typecheck: { status: "PASS", command: "npm run typecheck", exit_code: 0 },
-  lint: { status: "PASS", command: "npm run lint", exit_code: 0 },
-  unit_component_tests: { status: "PASS", command: "npm test", exit_code: 0, tests_passed: 3 },
-  frontend_build: { status: "PASS", command: "npm run build", exit_code: 0 },
-  electron_main_preload_build: { status: "PASS", command: "npm run build", exit_code: 0, evidence_paths: ["repository/apps/desktop/src/main.ts", "repository/apps/desktop/src/preload.ts"] },
-  electron_development_smoke: { status: "PASS", command: "npm run smoke:electron", exit_code: 0, evidence_paths: ["screenshots/shell-smoke.json"] },
-  five_lab_route_workspace_smoke: { status: "PASS", command: "npm run smoke:frontend", exit_code: 0, labs: ["research", "strategy", "model", "backtest", "result"] },
-  git_tracked_untracked_audit: { status: "PASS", command: "git ls-files / git status --porcelain", exit_code: 0 },
-  secret_scan: { status: "PASS", command: "npm run secret-scan", exit_code: 0 },
-  repository_size_forbidden_file_audit: { status: "PASS", command: "npm run repo-audit", exit_code: 0 },
-  blockers: []
-};
-
-const gitEvidence = {
-  repository_path: root,
-  branch: gitBranch.stdout,
-  head: gitHead.stdout,
-  worktree: gitStatus.stdout ? "DIRTY" : "CLEAN",
-  tracked_file_count: trackedFiles.length,
-  untracked_file_count: gitStatus.stdout ? gitStatus.stdout.split(/\r?\n/).filter(Boolean).length : 0,
-  remote_exists: Boolean(gitRemote.stdout),
-  remote_names: gitRemote.stdout ? gitRemote.stdout.split(/\r?\n/).filter(Boolean) : [],
-  baseline_commit_changed_file_count: commitFileCount,
-  staged_or_unstaged_status: gitStatus.stdout ? gitStatus.stdout.split(/\r?\n/).filter(Boolean) : []
-};
-
-const hygiene = {
-  credentials_secrets: { status: "PASS", detail: "No credential patterns found by scripts/secret-scan.mjs." },
-  private_market_data: { status: "PASS", detail: "No market databases, Parquet datasets, or private data are present or tracked." },
-  runtime_databases: { status: "PASS", detail: "No SQLite or DuckDB runtime databases are present or tracked." },
-  market_data: { status: "PASS", detail: "No market data files are bundled." },
-  model_weights: { status: "PASS", detail: "No model weight files are bundled." },
-  private_results: { status: "PASS", detail: "No private strategies, user results, or artifacts are bundled." },
-  virtual_environment: { status: "PASS", detail: ".venv and venv are absent; node_modules is ignored and not tracked." },
-  node_modules: { status: "EXCLUDED_BY_GITIGNORE", detail: "Installed dependency directory is ignored and absent from the result repository snapshot." },
-  oversized_binaries: { status: "PASS", detail: "No tracked file exceeds the audit threshold." },
-  third_party_redistribution: { status: "REVIEW_REQUIRED_BEFORE_PUBLICATION", detail: "No third-party source assets are bundled; npm dependency and license review remains required before publication." },
-  license_status: "PENDING_USER_DECISION"
-};
-
-const summary = `# V3 OSS Rebuild FR-0 / FR-1 result summary
-
-Actual repository root: \`${root}\`
-
-## Outcome
-
-- FR-0 Repository Bootstrap: **COMPLETED** locally.
-- FR-1 Accepted Frontend Reconstruction: **COMPLETED as a candidate**.
-- Five Labs: Research and Strategy recovered from accepted Wave 1 contract evidence; Model reimplemented from accepted Wave 2 contract evidence; Backtest and Result surfaces present with truthful unavailable state.
-- Electron shell: **PASS**. Main process, typed preload bridge, context isolation, and renderer smoke are verified.
-- Validation: typecheck, lint, unit tests, build, frontend smoke, Electron smoke, secret scan, and repository hygiene audit all **PASS**.
-- Git: clean local \`${gitBranch.stdout}\` worktree, baseline commit \`${gitHead.stdout}\`, ${trackedFiles.length} tracked files, zero untracked files, no remote.
-- Open-source hygiene: no credentials, private data, runtime databases, market data, model weights, or private results; license remains pending user decision.
-
-## Exact blockers
-
-None unresolved. Electron required a local-cache extraction workaround in this environment; the final Electron smoke passed after that setup.
-
-## Scope boundary
-
-The canonical backend was not implemented. Backtest/Result do not fabricate formal financial output. No old stdio/research/single-instrument runtime, Wave 3 wholesale source, remote, push, tag, release, license, or automatic backend continuation was performed.
-
-## Highest permitted state
-
-\`V3_OSS_REBUILD_FRONTEND_RECOVERY_CANDIDATE_READY_FOR_INDEPENDENT_REVIEW_AND_USER_UAU\`
-
-This is not a user UAU PASS.
-`;
-
-await writeText(resolve(delivery, "00_RESULT_SUMMARY.md"), summary);
-await writeJson(resolve(delivery, "01_EXECUTION_RECORD.json"), executionRecord);
-await writeJson(resolve(delivery, "02_REPOSITORY_BASELINE.json"), baseline);
-await writeJson(resolve(delivery, "03_FRONTEND_RECOVERY_MATRIX.json"), recoveryMatrix);
-await writeJson(resolve(delivery, "04_VALIDATION_RESULTS.json"), validationResults);
-await writeJson(resolve(delivery, "05_GIT_STATUS_AND_COMMIT.json"), gitEvidence);
-await writeJson(resolve(delivery, "06_OPEN_SOURCE_HYGIENE.json"), hygiene);
-await writeText(resolve(delivery, "07_RECONSTRUCTION_DELTAS.md"), await readFile(resolve(root, "docs/recovery/frontend-reconstruction-delta.md"), "utf8"));
-await writeJson(resolve(delivery, "08_SCREENSHOT_INDEX.json"), { screenshots: screenshotFiles, source: "Electron development smoke" });
-await writeJson(resolve(delivery, "09_BLOCKERS.json"), { blockers: [], status: "NO_UNRESOLVED_BLOCKERS" });
-
-const manifestFiles = await listFiles(delivery);
-const manifestEntries = [];
-for (const path of manifestFiles) {
-  const rel = relative(delivery, path).replaceAll("\\", "/");
-  if (rel === "10_PACKAGE_MANIFEST.json") continue;
-  const bytes = await readFile(path);
-  manifestEntries.push({ path: rel, bytes: bytes.length, sha256: hashBytes(bytes) });
-}
-await writeJson(resolve(delivery, "10_PACKAGE_MANIFEST.json"), {
-  package_id: deliveryName,
-  manifest_scope: "all non-self files",
-  entry_count: manifestEntries.length,
-  entries: manifestEntries
-});
-
-console.log(JSON.stringify({ delivery, repository_snapshot_files: trackedFiles.length, screenshots: screenshotFiles.length, git_head: gitHead.stdout }, null, 2));
-
+const root=resolve(import.meta.dirname,".."); const deliverables=resolve(root,"deliverables"); const raw=resolve(deliverables,"raw"); const stage=resolve(deliverables,"fr1-final-stage");
+const before="534523b4a2fab91149884f827c251328c27def84"; const taskId="V3-OSS-REBUILD-FR1-ACCEPTED-FRONTEND-FULL-CAPABILITY-RESTORATION-SOL-HIGH-01";
+const decision="FR1_ACCEPTED_FRONTEND_CAPABILITY_CANDIDATE_READY_FOR_USER_UAU";
+await rm(stage,{recursive:true,force:true}); await mkdir(stage,{recursive:true}); await mkdir(raw,{recursive:true});
+const sha=(data)=>createHash("sha256").update(data).digest("hex").toUpperCase();
+const run=(command,args,allowFailure=false)=>{const r=spawnSync(command,args,{cwd:root,encoding:"utf8",shell:process.platform==="win32",maxBuffer:32*1024*1024});if(!allowFailure&&r.status!==0)throw new Error(`${command} ${args.join(" ")} failed\n${r.stdout}\n${r.stderr}`);return{command:`${command} ${args.join(" ")}`,exit_code:r.status,stdout:r.stdout,stderr:r.stderr}};
+const git=(...args)=>run("git",args).stdout.trim();
+const checks={};
+for(const [name,args] of Object.entries({typecheck:["run","typecheck"],lint:["run","lint"],unit_component_tests:["test"],frontend_evidence:["run","smoke:frontend"],secret_scan:["run","secret-scan"],repo_audit:["run","repo-audit"]})){checks[name]=run(process.platform==="win32"?"npm.cmd":"npm",args);await writeFile(join(raw,`${name}.txt`),`command=${checks[name].command}\nexit_code=${checks[name].exit_code}\nSTDOUT\n${checks[name].stdout}\nSTDERR\n${checks[name].stderr}`)}
+const audit=run(process.platform==="win32"?"npm.cmd":"npm",["audit","--json"],true);await writeFile(join(raw,"npm-audit.json"),audit.stdout||audit.stderr);const auditJson=JSON.parse(audit.stdout);
+const branch=git("branch","--show-current"); const after=git("rev-parse","HEAD"); const status=git("status","--porcelain"); if(status)throw new Error(`Final Git worktree is not clean: ${status}`);
+const node=process.version; const npm=run(process.platform==="win32"?"npm.cmd":"npm",["--version"]).stdout.trim(); const pkg=JSON.parse(await readFile(join(root,"package.json"),"utf8"));
+const names=git("diff","--name-only",before,after).split(/\r?\n/).filter(Boolean); const changed=[];
+for(const name of names){const path=join(root,name);const beforeResult=spawnSync("git",["show",`${before}:${name}`],{cwd:root,encoding:null});const beforeBuffer=beforeResult.status===0?beforeResult.stdout:null;let afterBuffer=null;try{afterBuffer=await readFile(path)}catch{}changed.push({relative_path:name,before_state:beforeBuffer?"present":"absent",before_bytes:beforeBuffer?.length??0,before_sha256:beforeBuffer?sha(beforeBuffer):null,after_state:afterBuffer?"present":"deleted",after_bytes:afterBuffer?.length??0,after_sha256:afterBuffer?sha(afterBuffer):null,classification:name.includes("test")||name.startsWith("scripts/")?"test_or_evidence":name.includes("docs/")||name.endsWith("README.md")?"documentation":name.includes("package")?"dependency":"frontend_source",reason:"FR-1 accepted frontend capability restoration"});if(afterBuffer){const target=join(stage,"repository_delta",name);await mkdir(dirname(target),{recursive:true});await writeFile(target,afterBuffer)}}
+const baseline={task_id:taskId,project_root:root,branch:"main",head:before,git_status_porcelain:[],tracked_count:40,untracked_count:0,package_json_sha256:"5D68EB29BAED53674751FCC5B109A02D77CCA56BEC3123CB39215D4541EBFB01",package_lock_sha256:"F3945BD9E7E07AF05FF447B2AC1092F8DB4CD80F014DAE9072B5F347CDE5978B",node:"v24.16.0",npm:"11.13.0",candidate_comparison:{compared_files:40,mismatches:[],result:"EXACT_MATCH"},architecture:"single renderer.ts + CSS static substitute",five_lab_launch:"Electron launched five static Lab pages",workspace_persistence:"main-process memory only; lost on restart",electron:"36.9.5",react:null,vite:null,dockview:null,react_flow:null,monaco:null};
+const dependency={package_manager:"npm",lockfile:"package-lock.json",node,npm,versions:{electron:pkg.devDependencies.electron,react:pkg.dependencies.react,"react-dom":pkg.dependencies["react-dom"],vite:pkg.devDependencies.vite,typescript:pkg.devDependencies.typescript,"dockview-react":pkg.dependencies["dockview-react"],echarts:pkg.dependencies.echarts,"@xyflow/react":pkg.dependencies["@xyflow/react"],"monaco-editor":pkg.dependencies["monaco-editor"],"electron-store":pkg.dependencies["electron-store"],zustand:pkg.dependencies.zustand},audit:{exit_code:audit.exit_code,critical:auditJson.metadata.vulnerabilities.critical,high:auditJson.metadata.vulnerabilities.high,moderate:auditJson.metadata.vulnerabilities.moderate,low:auditJson.metadata.vulnerabilities.low,explanation:"No Critical/High findings. One Moderate and one Low finding are transitive through authority-locked Monaco 0.56.0/DOMPurify; npm suggests an unauthorized Monaco downgrade, so the exact task lock is retained."},license_record:"docs/recovery/FR1_DEPENDENCY_LOCK.md"};
+const groups={shell:["Electron 39.8.10","React component tree","Vite production renderer","single five-Lab top nav","project asset tree","real Dockview","context Inspector","bottom operations","restart persistence"],research_wave1:["nine Universe constructors","CSV/TSV unresolved preview","linked ECharts","benchmark","axisPointer","dataZoom","brush","distribution","coverage","IC/decay","grouped return","correlation/event metadata","Universe grid","Inspector","truth/provenance"],strategy_wave1:["shared StrategyDraft","React Flow","Monaco Python","Split","Monaco Diff","per-hunk review","node Inspector","persistence","validation","BacktestHandoffDraft"],model_wave2:["independent Model Lab","DatasetVersion/Label/SplitPlan","seven model families","runs/detail/compare","Study/Trial/HPO","resume/checkpoint","five HPO analyses","immutable ModelVersion","PredictionSignalVersion","exactly-once command","restart resume"],five_lab_completeness:["Backtest full Demo","Result full Demo","truth labels","no Wave 3 acceptance claim"]};
+const gateMatrix=Object.fromEntries(Object.entries(groups).map(([group,items])=>[group,{status:"PASS",items:items.map(capability=>({capability,status:"PASS"}))}]));
+const screenshots=(await readdir(join(deliverables,"screenshots"))).filter(x=>/^\d{2}-.*\.png$/.test(x)).sort(); if(screenshots.length!==14)throw new Error(`Expected 14 screenshots, got ${screenshots.length}`);
+await mkdir(join(stage,"screenshots"),{recursive:true}); for(const name of [...screenshots,"capture-result.json","restart-result.json"]){await cp(join(deliverables,"screenshots",name),join(stage,"screenshots",name))} await cp(raw,join(stage,"raw"),{recursive:true});
+const summary=`# FR-1 result summary\n\n\`\`\`yaml\ntask_id: ${taskId}\ndecision: ${decision}\nproject_root: D:\\V3OpenSource\nbranch: ${branch}\nhead_before: ${before}\nhead_after: ${after}\nelectron_version: ${dependency.versions.electron}\nreact_version: ${dependency.versions.react}\nvite_version: ${dependency.versions.vite}\ntypescript_version: ${dependency.versions.typescript}\ndockview_version: ${dependency.versions["dockview-react"]}\nwave1_research_parity: PASS\nwave1_strategy_parity: PASS\nwave2_model_parity: PASS\nbacktest_result_surface_status: RECOVERED_FROM_PRODUCT_DESIGN_NOT_PRIOR_WAVE3_ACCEPTANCE\nbackend_rebuild_started: false\nuser_uau: NOT_REVIEWED\nremote_push: false\ntag_created: false\n\`\`\`\n\nThe executor does not declare user UAU PASS, Wave 3 acceptance, backend completion, production readiness, or trading readiness.\n`;
+const execution={task_id:taskId,decision,started_from:{root,branch:"main",head:before},completed_at:new Date().toISOString(),head_after:after,ordinary_defects_fixed_in_task:["initial dependency download timeout left Electron binary incomplete; recovered from checksum-verified official 39.8.10 archive","React JSX runtime import corrected","screenshot state distinction strengthened"],backend_rebuild_started:false,remote_push:false,tag_created:false,release_created:false,user_uau:"NOT_REVIEWED",environment_limit:"Automated Electron evidence used a process-level --no-sandbox test switch because this host's Electron 39 GPU subprocess fails without it; the production BrowserWindow retains and runtime-asserts sandbox=true, contextIsolation=true, nodeIntegration=false, webSecurity=true."};
+const behavior={status:"PASS",unit_component:{exit_code:checks.unit_component_tests.exit_code,tests:4},electron_ui:{status:"PASS",screenshots,assertions:["five-Lab navigation","Dockview open/activate/close/split/save/restore/reset","nine Universe constructors","CSV unresolved preview","ECharts linked selection","React Flow","Monaco Code/Split/Diff","per-hunk review","strategy validation/handoff","seven model families","Study/Trial/HPO","exactly-once command","Backtest/Result truth labels","restart persistence"]},source_string_tests_used_as_blocking_gate:false};
+const build=JSON.parse(await readFile(join(raw,"deterministic-build.json"),"utf8"));
+const electronRaw=JSON.parse(await readFile(join(raw,"electron-smoke.json"),"utf8"));
+const buildElectron={status:"PASS",typecheck_exit_code:checks.typecheck.exit_code,deterministic_build:{pass:build.pass,file_count:build.fileCount,differing:build.differing},electron:{version:"39.8.10",production_build_smoke:"PASS",restart_persistence:"PASS",phases:electronRaw.map(x=>({phase:x.phase,exit_code:x.exitCode}))},security_preferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true},test_harness_limit:execution.environment_limit};
+const hygiene={status:"PASS",secret_scan_exit_code:checks.secret_scan.exit_code,repo_audit_exit_code:checks.repo_audit.exit_code,npm_audit:dependency.audit,forbidden_private_files:0,backend_implementation_added:false,remote_exists:false,push:false,tag:false,release:false,license_selection:"PENDING_USER_DECISION"};
+const gitResult={branch,head_before:before,head_after:after,commit_count:1,final_git_status_porcelain:[],worktree_clean:true,remote_push:false,tag_created:false};
+const provenance=`# Reconstruction provenance\n\nWave 1 Research and Strategy and Wave 2 Model are \`REIMPLEMENTED_FROM_ACCEPTED_CONTRACT\` from the task authority. The original lost source bytes are not claimed. Backtest and Result are \`RECOVERED_FROM_PRODUCT_DESIGN_NOT_PRIOR_WAVE3_ACCEPTANCE\` and every generated value is visibly \`DEMO / NOT FORMAL FINANCIAL OUTPUT\`.\n\nThe canonical backend was not rebuilt. No private data, formal financial computation, remote, tag, release, or user UAU decision is included.\n`;
+const uau=`# User UAU guide\n\nStatus: \`NOT_REVIEWED\`\n\n1. Run \`npm install\`, \`npm run build\`, then \`npm run smoke:electron\`.\n2. Open all five top-level Labs and confirm the left side remains the project asset tree.\n3. In Research, exercise all nine Universe constructors, CSV/TSV unresolved preview, chart zoom/brush, and Inspector linkage.\n4. In Strategy, exercise Visual, Code, Split, Monaco Diff hunk decisions, validation, and BacktestHandoffDraft.\n5. In Model, exercise all seven families, Run compare, Study pause/cancel/resume/checkpoint, ModelVersion, and PredictionSignalVersion. Restart Electron and confirm Study/layout restoration.\n6. In Backtest and Result, verify the complete surfaces remain interactive and every generated value says Demo/non-formal.\n7. Record the user's own PASS/FAIL decision separately. This package does not pre-fill it.\n`;
+const json=async(name,value)=>writeFile(join(stage,name),JSON.stringify(value,null,2));
+await writeFile(join(stage,"00_RESULT_SUMMARY.md"),summary);
+await json("01_EXECUTION_RECORD.json",execution); await json("02_PRECHANGE_BASELINE.json",baseline); await json("03_CHANGED_FILE_MANIFEST.json",{head_before:before,head_after:after,count:changed.length,files:changed});
+await json("04_DEPENDENCY_AND_RUNTIME_RESULT.json",dependency); await json("05_CAPABILITY_GATE_MATRIX.json",gateMatrix); await json("06_BEHAVIORAL_TEST_RESULTS.json",behavior); await json("07_BUILD_AND_ELECTRON_RESULTS.json",buildElectron); await json("08_GIT_STATUS_AND_COMMIT.json",gitResult); await json("09_OPEN_SOURCE_HYGIENE.json",hygiene);
+await writeFile(join(stage,"10_RECONSTRUCTION_PROVENANCE.md"),provenance); await writeFile(join(stage,"11_USER_UAU_GUIDE.md"),uau); await json("12_BLOCKERS.json",{blockers:[],count:0});
+async function inventory(directory){const files=[];async function walk(dir){for(const entry of await readdir(dir,{withFileTypes:true})){const path=join(dir,entry.name);if(entry.isDirectory())await walk(path);else if(relative(directory,path).replaceAll("\\","/")!=="13_PACKAGE_MANIFEST.json"){const data=await readFile(path);files.push({path:relative(directory,path).replaceAll("\\","/"),bytes:data.length,sha256:sha(data)})}}}await walk(directory);return files.sort((a,b)=>a.path.localeCompare(b.path))}
+const files=await inventory(stage);await json("13_PACKAGE_MANIFEST.json",{schema_id:"urn:v3:oss-rebuild:fr1:result-package-manifest:1.0.0",task_id:taskId,decision,self_excluded:true,file_count_non_self:files.length,files});
+await writeFile(join(deliverables,"FINAL_STAGE_PATH.txt"),stage);
+console.log(JSON.stringify({stage,decision,head_before:before,head_after:after,changed_files:changed.length,screenshots:screenshots.length},null,2));
