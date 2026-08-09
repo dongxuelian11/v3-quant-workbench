@@ -10,10 +10,12 @@ from v3_backend.adapters.sqlite.connection import connect_catalog
 from v3_backend.migrations import (
     EXPECTED_TABLES,
     LegacyDatabaseRefusedError,
+    MigrationError,
     MigrationOrderError,
     apply_migrations,
     discover_migrations,
 )
+from v3_backend.migrations.runner import _apply_one
 
 
 class MigrationTests(unittest.TestCase):
@@ -21,9 +23,9 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog.sqlite3"
             result = apply_migrations(path, application_version="test")
-            self.assertEqual(result.applied, ("0001_control_catalog",))
-            self.assertEqual(result.schema_report.table_count, 56)
-            self.assertEqual(result.schema_report.user_version, 1)
+            self.assertEqual(result.applied, ("0001_control_catalog", "0002_data_truth"))
+            self.assertEqual(result.schema_report.table_count, 67)
+            self.assertEqual(result.schema_report.user_version, 2)
             connection = connect_catalog(path)
             try:
                 tables = {
@@ -92,3 +94,40 @@ class MigrationTests(unittest.TestCase):
                 )
             finally:
                 connection.close()
+
+    def test_existing_v1_catalog_requires_backup_before_data_truth_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            v1_versions = root / "v1"
+            v1_versions.mkdir()
+            source = (
+                Path(__file__).parents[2]
+                / "src"
+                / "v3_backend"
+                / "migrations"
+                / "versions"
+                / "0001_control_catalog.sql"
+            )
+            (v1_versions / source.name).write_bytes(source.read_bytes())
+            path = root / "catalog.sqlite3"
+            connection = sqlite3.connect(path, isolation_level=None)
+            try:
+                connection.execute("PRAGMA foreign_keys = ON")
+                _apply_one(
+                    connection,
+                    discover_migrations(v1_versions)[0],
+                    application_version="v1",
+                    backup=None,
+                )
+            finally:
+                connection.close()
+            with self.assertRaises(MigrationError):
+                apply_migrations(path, application_version="v2")
+            upgraded = apply_migrations(
+                path,
+                application_version="v2",
+                backup_dir=root / "backups",
+            )
+            self.assertEqual(upgraded.applied, ("0002_data_truth",))
+            self.assertEqual(len(upgraded.backups), 1)
+            self.assertEqual(upgraded.schema_report.user_version, 2)

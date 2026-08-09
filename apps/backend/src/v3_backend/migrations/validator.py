@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 
 
-EXPECTED_USER_VERSION = 1
+EXPECTED_USER_VERSION = 2
 EXPECTED_TABLES = frozenset(
     {
         "artifact",
@@ -63,6 +63,17 @@ EXPECTED_TABLES = frozenset(
         "universe_version",
         "worker",
         "worker_lease",
+        "provider_descriptor",
+        "provider_capability",
+        "instrument_classification",
+        "raw_capture_truth_descriptor",
+        "trading_calendar_version",
+        "trading_session",
+        "snapshot_raw_capture",
+        "snapshot_calendar",
+        "corporate_action",
+        "adjustment_factor_version",
+        "universe_membership_interval",
     }
 )
 
@@ -129,6 +140,29 @@ def _invariant_violations(connection: sqlite3.Connection) -> list[str]:
     if bad_universe is not None:
         violations.append("ProjectContext revision references missing or unpublished UniverseVersion")
 
+    bad_snapshot = connection.execute(
+        """
+        SELECT 1 FROM project_context_revision AS revision
+        LEFT JOIN data_snapshot AS snapshot ON snapshot.snapshot_id=revision.snapshot_id
+        WHERE revision.snapshot_id IS NOT NULL
+          AND (snapshot.snapshot_id IS NULL OR snapshot.state<>'PUBLISHED')
+        LIMIT 1
+        """
+    ).fetchone()
+    if bad_snapshot is not None:
+        violations.append("ProjectContext revision references missing or unpublished SnapshotVersion")
+
+    incompatible_pin = connection.execute(
+        """
+        SELECT 1 FROM project_context_revision AS revision
+        JOIN universe_version AS universe ON universe.universe_version_id=revision.universe_version_id
+        WHERE revision.snapshot_id IS NOT NULL AND universe.snapshot_id<>revision.snapshot_id
+        LIMIT 1
+        """
+    ).fetchone()
+    if incompatible_pin is not None:
+        violations.append("ProjectContext Snapshot and Universe pins are incompatible")
+
     for table_row in connection.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
     ):
@@ -138,6 +172,10 @@ def _invariant_violations(connection: sqlite3.Connection) -> list[str]:
         columns = [str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')]
         for column in columns:
             if column == "artifact_id" or column.endswith("_artifact_id"):
+                # Catalog backup evidence predates the WS-C Artifact publication
+                # integration and is explicitly an external boundary in WS-B.
+                if table == "schema_migration" and column == "backup_artifact_id":
+                    continue
                 orphan = connection.execute(
                     f"""
                     SELECT 1 FROM "{table}" AS owner
@@ -171,7 +209,7 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
             "SELECT migration_id FROM schema_migration WHERE state='APPLIED' ORDER BY migration_id"
         )
     )
-    if applied != ("0001_control_catalog",):
+    if applied != ("0001_control_catalog", "0002_data_truth"):
         raise SchemaValidationError(f"unexpected applied migration sequence: {applied!r}")
 
     fk_violations = tuple(tuple(row) for row in connection.execute("PRAGMA foreign_key_check"))

@@ -35,7 +35,7 @@
   "optional_profiles": ["qlib", "rqdata", "rqalpha", "gpu-model"],
   "external_gaps": [
     "Optional profiles are not admitted, locked, or installed by PB0.",
-    "Formal Data Truth and financial-domain workers are not implemented."
+    "External Data provider profiles and downstream Research/Model/Portfolio/Risk/Backtest workers are not implemented."
   ],
   "sources": [
     "https://www.python.org/downloads/release/python-3147/",
