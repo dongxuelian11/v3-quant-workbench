@@ -10,6 +10,28 @@ if (!monaco.languages.getLanguages().some((language) => language.id === "python"
   monaco.languages.setMonarchTokensProvider("python", { keywords: ["from", "import", "def", "return", "if", "else", "for", "in"], tokenizer: { root: [[/[a-zA-Z_]\w*/, { cases: { "@keywords": "keyword", "@default": "identifier" } }], [/#.*$/, "comment"], [/\d+(\.\d+)?/, "number"], [/"[^\"]*"|'[^']*'/, "string"]] } });
 }
 
+monaco.editor.defineTheme("v3-quant", {
+  base: "vs-dark",
+  inherit: true,
+  rules: [
+    { token: "comment", foreground: "697188" },
+    { token: "keyword", foreground: "67C9F3" },
+    { token: "number", foreground: "78D6AF" },
+    { token: "string", foreground: "D8B56D" }
+  ],
+  colors: {
+    "editor.background": "#0D1017",
+    "editor.foreground": "#D9DEE9",
+    "editorLineNumber.foreground": "#525A70",
+    "editorLineNumber.activeForeground": "#99A3B8",
+    "editor.selectionBackground": "#173B52",
+    "editor.lineHighlightBackground": "#111722",
+    "editorCursor.foreground": "#5CC8F5",
+    "diffEditor.insertedTextBackground": "#183D3055",
+    "diffEditor.removedTextBackground": "#512B3355"
+  }
+});
+
 const baseNodes = [
   { id: "universe", type: "strategy", position: { x: 30, y: 92 }, data: { kind: "UNIVERSE", label: "CN Large Cap @v12", detail: "1,842 symbols" } },
   { id: "factor-momentum", type: "strategy", position: { x: 270, y: 28 }, data: { kind: "FACTOR", label: "Momentum 12M", detail: "rank · winsorize" } },
@@ -29,7 +51,7 @@ function VisualEditor() {
   const [edges, , onEdgesChange] = useEdgesState(baseEdges);
   const selectNode = useWorkbench((state) => state.selectNode);
   const nodeTypes = useMemo(() => ({ strategy: StrategyNode }), []);
-  return <div className="flow-editor primary-canvas" data-testid="react-flow" data-primary-canvas><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={(_, node) => selectNode(node.id, `策略节点 · ${String((node.data as { label: string }).label)}`)} fitView snapToGrid snapGrid={[12, 12]} minZoom={.45} maxZoom={1.6}><Background gap={20} color="#242938"/><Controls/></ReactFlow></div>;
+  return <div className="flow-editor primary-canvas" data-testid="react-flow" data-primary-canvas><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={(_, node) => selectNode(node.id, `策略节点 · ${String((node.data as { label: string }).label)}`)} fitView fitViewOptions={{ padding: .12 }} snapToGrid snapGrid={[12, 12]} minZoom={.45} maxZoom={1.6}><Background gap={24} size={1} color="#202634"/><Controls/></ReactFlow></div>;
 }
 
 function MonacoCode({ diff = false }: { diff?: boolean }) {
@@ -39,13 +61,13 @@ function MonacoCode({ diff = false }: { diff?: boolean }) {
   useEffect(() => {
     if (!host.current) return;
     if (diff) {
-      const editor = monaco.editor.createDiffEditor(host.current, { theme: "vs-dark", automaticLayout: true, readOnly: true, renderSideBySide: true, minimap: { enabled: false }, fontSize: 12, lineHeight: 20 });
+      const editor = monaco.editor.createDiffEditor(host.current, { theme: "v3-quant", automaticLayout: true, readOnly: true, renderSideBySide: true, minimap: { enabled: false }, fontSize: 12, lineHeight: 20 });
       const original = monaco.editor.createModel(code, "python");
       const modified = monaco.editor.createModel(code.replace("0.65 + rank(quality) * 0.35", "0.55 + rank(quality) * 0.45").replace("top_n(signal, 50).equal_weight()", "top_n(signal, 40).risk_parity(max_weight=0.04)"), "python");
       editor.setModel({ original, modified });
       return () => { editor.dispose(); original.dispose(); modified.dispose(); };
     }
-    const editor = monaco.editor.create(host.current, { value: code, language: "python", theme: "vs-dark", automaticLayout: true, minimap: { enabled: false }, fontSize: 13, lineHeight: 22, lineNumbersMinChars: 3, padding: { top: 16 } });
+    const editor = monaco.editor.create(host.current, { value: code, language: "python", theme: "v3-quant", automaticLayout: true, minimap: { enabled: false }, fontSize: 13, lineHeight: 22, lineNumbersMinChars: 3, padding: { top: 16, bottom: 16 }, smoothScrolling: false });
     const disposable = editor.onDidBlurEditorText(() => setCode(editor.getValue()));
     return () => { disposable.dispose(); editor.dispose(); };
   }, [diff, code, setCode]);
