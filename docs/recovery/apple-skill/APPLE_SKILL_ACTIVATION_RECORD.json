@@ -1,0 +1,33 @@
+{
+  "schema_id": "urn:v3:oss-rebuild:fr1:apple-skill-activation:1.0.0",
+  "task_id": "V3-OSS-REBUILD-FR1-APPLE-SKILL-ASSISTED-UI-UX-UE-REFINEMENT-SOL-HIGH-03",
+  "activated_at": "2026-08-09T19:30:06.8787587+08:00",
+  "name": "apple-ui-design",
+  "kind": "community_agent_skill",
+  "official_apple_resource": false,
+  "author": "BarisSozen",
+  "skillstore_revision": 1,
+  "source_repository": "aiskillstore/marketplace",
+  "source_commit": "c4231f0153ccd2a2ed62274c5a372bf8f2386d3f",
+  "source_path": "skills/barissozen/apple-ui-design",
+  "tree_hash": "f53c811d8f9ba882456e835ee27e46d63826d801c1f09705b91035e75a704a8d",
+  "artifact_sha256": "D65D5327A7D672841CFDEDC124C9271210C3A29633F183A5D312A4D26116B4F7",
+  "local_path": "D:\\V3OpenSource\\.agents\\skills\\apple-ui-design",
+  "skill_md_sha256": "F5CE5F0D2FC25344559A5C932205F3316A6FF13BDBDA73D87AA87A2CE692C1B3",
+  "manifest": {
+    "url": "https://skillstore.io/api/skills/barissozen-apple-ui-design/manifest",
+    "signed": true,
+    "signature_algorithm": "Ed25519",
+    "signature_key_id": "EP0Myk7rTk_J0RdG1fvpkP",
+    "pinned_fields_match": true
+  },
+  "verification": {
+    "source_commit_match": true,
+    "tree_hash_match": true,
+    "artifact_hash_match": true,
+    "skill_md_hash_match": true,
+    "skill_name_match": true
+  },
+  "activation_status": "VERIFIED_AND_LOADED",
+  "authority_scope": "ADVISORY_BELOW_USER_UAU_AND_V3_PRODUCT_CONTRACTS"
+}

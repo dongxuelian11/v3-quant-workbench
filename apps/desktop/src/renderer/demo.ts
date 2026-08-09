@@ -8,7 +8,7 @@ export const universeModes: { id: UniverseMode; name: string; detail: string }[]
   { id: "custom-symbols", name: "自定义代码", detail: "逐项解析与校验" },
   { id: "nested-condition", name: "嵌套条件", detail: "AND / OR 条件树" },
   { id: "factor-top-bottom", name: "因子 Top/Bottom N", detail: "Momentum Top 50" },
-  { id: "saved-reference", name: "已保存引用/版本", detail: "UniverseVersion/demo-v12" },
+  { id: "saved-reference", name: "已保存引用 / 版本", detail: "UniverseVersion/demo-v12" },
   { id: "csv-tsv-import", name: "CSV/TSV 导入", detail: "预览未解析代码" }
 ];
 
@@ -18,6 +18,21 @@ export const researchSeries = Array.from({ length: 72 }, (_, index) => {
   const wave = Math.sin(index / 5) * 5 + Math.cos(index / 11) * 3;
   return { date: `202${3 + Math.floor(index / 24)}-${String((index % 12) + 1).padStart(2, "0")}`, value: 3160 + index * 17 + wave * 11, benchmark: 3100 + index * 11 + Math.sin(index / 7) * 45 };
 });
+
+export const researchBars = researchSeries.map((point, index) => {
+  const open = point.value + Math.sin(index * 1.7) * 22;
+  const close = point.value + Math.cos(index * 1.13) * 26;
+  const low = Math.min(open, close) - 18 - (index % 5) * 4;
+  const high = Math.max(open, close) + 20 + (index % 7) * 3;
+  const volume = 28 + ((index * 17) % 64) + Math.round(Math.abs(close - open));
+  return { ...point, open: Math.round(open), close: Math.round(close), low: Math.round(low), high: Math.round(high), volume };
+});
+
+export const researchEvents = [
+  { id: "evt-earnings", date: "2025-10", label: "业绩窗口", detail: "超预期 +3.2σ", available: "2025-10-29 18:02" },
+  { id: "evt-rebalance", date: "2025-12", label: "月度调仓", detail: "目标权重 3.8%", available: "2025-12-31 15:05" },
+  { id: "evt-ledger", date: "2026-03", label: "异常成交", detail: "Ledger L-8821", available: "2026-03-18 10:41" }
+];
 
 export const runs = [
   { id: "RUN-018", family: "LightGBM", score: "0.084", state: "BEST", duration: "04:18" },
@@ -33,4 +48,8 @@ export const symbols = [
   ["688981.SH", "中芯国际", "+3.12%", "0.75"], ["INVALID-X", "未解析", "—", "—"]
 ];
 
-export const strategyProposal = `# Deterministic proposal · DEMO\n- signal = rank(momentum_12m) * 0.65 + rank(quality) * 0.35\n+ signal = rank(momentum_12m) * 0.55 + rank(quality) * 0.45\n- portfolio = top_n(signal, 50).equal_weight()\n+ portfolio = top_n(signal, 40).risk_parity(max_weight=0.04)`;
+export const strategyProposal = `# Deterministic proposal · DEMO
+- signal = rank(momentum_12m) * 0.65 + rank(quality) * 0.35
++ signal = rank(momentum_12m) * 0.55 + rank(quality) * 0.45
+- portfolio = top_n(signal, 50).equal_weight()
++ portfolio = top_n(signal, 40).risk_parity(max_weight=0.04)`;

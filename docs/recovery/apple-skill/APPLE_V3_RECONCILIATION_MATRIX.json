@@ -1,0 +1,209 @@
+{
+  "schema_id": "urn:v3:oss-rebuild:fr1:apple-v3-reconciliation:1.0.0",
+  "task_id": "V3-OSS-REBUILD-FR1-APPLE-SKILL-ASSISTED-UI-UX-UE-REFINEMENT-SOL-HIGH-03",
+  "completed_at": "2026-08-09T19:33:15.3475080+08:00",
+  "ui_mutation_started": false,
+  "allowed_classifications": [
+    "ADOPT",
+    "ADAPT_TO_V3",
+    "REJECT_CONFLICTS_WITH_V3",
+    "NOT_APPLICABLE_DESKTOP_QUANT_WORKBENCH"
+  ],
+  "authority_order": [
+    "USER_UAU",
+    "V3_CHART_FIRST_PRODUCT_CONTRACT",
+    "APPLE_HIG",
+    "PINNED_APPLE_UI_DESIGN_SKILL"
+  ],
+  "official_hig_accessed": "2026-08-09",
+  "official_hig_sources": [
+    "https://developer.apple.com/design/human-interface-guidelines/design-principles",
+    "https://developer.apple.com/design/human-interface-guidelines/layout",
+    "https://developer.apple.com/design/human-interface-guidelines/typography",
+    "https://developer.apple.com/design/human-interface-guidelines/toolbars",
+    "https://developer.apple.com/design/human-interface-guidelines/sidebars",
+    "https://developer.apple.com/design/human-interface-guidelines/split-views",
+    "https://developer.apple.com/design/human-interface-guidelines/segmented-controls",
+    "https://developer.apple.com/design/human-interface-guidelines/lists-and-tables",
+    "https://developer.apple.com/design/human-interface-guidelines/color"
+  ],
+  "recommendations": [
+    {
+      "id": "typography-hierarchy",
+      "topic": "typography",
+      "recommendation": "Use type weight, size and color to make information hierarchy legible.",
+      "classification": "ADOPT",
+      "v3_reconciliation": "Strengthen eyebrow/title/body/numeric hierarchy while keeping 11–14px financial text and Chinese-primary readability.",
+      "planned_change": "Normalize heading, context and metric typography without enlarging analytical chrome."
+    },
+    {
+      "id": "typography-sf-pro",
+      "topic": "typography",
+      "recommendation": "Use SF Pro Display as the literal runtime font.",
+      "classification": "REJECT_CONFLICTS_WITH_V3",
+      "v3_reconciliation": "Windows Electron and V3 require a native Segoe UI/Microsoft YaHei stack; no Apple-only dependency.",
+      "planned_change": "Remove the non-guaranteed Inter lead and use the V3 Windows-native stack."
+    },
+    {
+      "id": "spacing-rhythm",
+      "topic": "spacing",
+      "recommendation": "Use a consistent spacing rhythm and generous whitespace.",
+      "classification": "ADAPT_TO_V3",
+      "v3_reconciliation": "Consistency is adopted; generosity is translated to calm 4/6/8/12/16/24px workstation spacing, not low-density marketing layout.",
+      "planned_change": "Introduce compact spacing tokens and align header/control baselines."
+    },
+    {
+      "id": "hierarchy-content-first",
+      "topic": "hierarchy",
+      "recommendation": "Let content dominate chrome through clarity and deference.",
+      "classification": "ADOPT",
+      "v3_reconciliation": "Directly reinforces Chart-First authority.",
+      "planned_change": "Reduce repeated borders, quiet secondary labels and preserve one dominant canvas per Lab."
+    },
+    {
+      "id": "toolbar-context",
+      "topic": "toolbar behavior",
+      "recommendation": "Toolbars should expose frequently used commands for the current content.",
+      "classification": "ADAPT_TO_V3",
+      "v3_reconciliation": "Keep dense desktop toolbars but group commands by current Lab/workflow and disclose workspace operations through the existing menu.",
+      "planned_change": "Add pressed/expanded semantics and reduce competing persistent actions."
+    },
+    {
+      "id": "sidebar-leading-navigation",
+      "topic": "sidebar behavior",
+      "recommendation": "Use a leading sidebar for navigation among top-level collections.",
+      "classification": "ADOPT",
+      "v3_reconciliation": "The asset tree already serves this role and must remain subdued relative to the analytical canvas.",
+      "planned_change": "Improve selected/hover/focus state and preserve the 56/200/220px breakpoint contract."
+    },
+    {
+      "id": "sidebar-apple-chrome",
+      "topic": "sidebar behavior",
+      "recommendation": "Imitate macOS source-list styling and platform window chrome.",
+      "classification": "NOT_APPLICABLE_DESKTOP_QUANT_WORKBENCH",
+      "v3_reconciliation": "V3 is a Windows Electron workstation and must not imitate macOS chrome.",
+      "planned_change": "None."
+    },
+    {
+      "id": "split-adjacent-panes",
+      "topic": "split-view behavior",
+      "recommendation": "Use adjacent panes when each pane has a clear role.",
+      "classification": "ADAPT_TO_V3",
+      "v3_reconciliation": "Preserve Dockview and Strategy Split, but ensure the primary chart/editor retains minimum geometry and contextual panes remain subordinate.",
+      "planned_change": "Improve split focus/labels; do not add permanent panes."
+    },
+    {
+      "id": "inspector-context",
+      "topic": "inspector behavior",
+      "recommendation": "Use a contextual detail region that follows selection.",
+      "classification": "ADOPT",
+      "v3_reconciliation": "Matches V3 deep-interaction and provenance contracts.",
+      "planned_change": "Expose close/expanded semantics, Escape exit and clearer evidence hierarchy while retaining 280–420px geometry."
+    },
+    {
+      "id": "progressive-disclosure",
+      "topic": "progressive disclosure",
+      "recommendation": "Reveal secondary controls and detail only when relevant.",
+      "classification": "ADOPT",
+      "v3_reconciliation": "Directly reinforces V3 contextual drawers, phase navigation and review flows.",
+      "planned_change": "Make Strategy Diff contextual, state-filter Model/Backtest operations and retain Research drawers on demand."
+    },
+    {
+      "id": "primary-actions",
+      "topic": "primary actions",
+      "recommendation": "Provide one clear primary action.",
+      "classification": "ADAPT_TO_V3",
+      "v3_reconciliation": "One primary action applies per active workflow context, not to the entire workstation.",
+      "planned_change": "Contextualize Run Research, validated Handoff, applicable study/queue control and result compare actions."
+    },
+    {
+      "id": "animation-state-linked",
+      "topic": "animation",
+      "recommendation": "Use subtle feedback and smooth transitions.",
+      "classification": "ADAPT_TO_V3",
+      "v3_reconciliation": "Only state-linked 100–240ms transitions are allowed; analytical data does not animate decoratively.",
+      "planned_change": "Add targeted color/background/outline transitions plus `prefers-reduced-motion`."
+    },
+    {
+      "id": "animation-fade-up",
+      "topic": "animation",
+      "recommendation": "Apply fade-up entrance animation to page elements.",
+      "classification": "REJECT_CONFLICTS_WITH_V3",
+      "v3_reconciliation": "Decorative entrance motion distracts from analytical state and can imply data change.",
+      "planned_change": "None."
+    },
+    {
+      "id": "contrast-focus",
+      "topic": "contrast/focus",
+      "recommendation": "Maintain readable contrast and clear interaction focus.",
+      "classification": "ADOPT",
+      "v3_reconciliation": "Use the V3 cyan 2px focus ring, explicit text/icons and non-color encodings.",
+      "planned_change": "Retain focus ring, add selected/pressed semantics and verify keyboard traversal."
+    },
+    {
+      "id": "state-empty-loading-error",
+      "topic": "empty/loading/error states",
+      "recommendation": "Provide intentional loading, empty, error and unavailable states with recovery context.",
+      "classification": "ADOPT",
+      "v3_reconciliation": "States must remain truthful about Demo and BACKEND_UNWIRED boundaries.",
+      "planned_change": "Add reusable state styling/semantics and local receipts without inventing backend behavior."
+    },
+    {
+      "id": "information-density",
+      "topic": "information density",
+      "recommendation": "Increase whitespace and use 44px touch targets throughout.",
+      "classification": "REJECT_CONFLICTS_WITH_V3",
+      "v3_reconciliation": "V3 is a dense professional desktop workstation with 28/34/42px density modes and 44px reserved for recovery primaries.",
+      "planned_change": "Keep dense controls and improve precision through alignment, hierarchy and fewer simultaneous elements."
+    },
+    {
+      "id": "content-width",
+      "topic": "information density",
+      "recommendation": "Cap content width near 680px.",
+      "classification": "REJECT_CONFLICTS_WITH_V3",
+      "v3_reconciliation": "Charts, tables, Dockview and split editors require wide analytical canvases.",
+      "planned_change": "Preserve full-width central canvases and V3 geometry minimums."
+    },
+    {
+      "id": "cards-glass-pills",
+      "topic": "hierarchy",
+      "recommendation": "Use 18px glass cards, blur and pill-shaped buttons as the default visual language.",
+      "classification": "REJECT_CONFLICTS_WITH_V3",
+      "v3_reconciliation": "This would recreate the rejected dashboard/card-pile aesthetic and imitate Apple styling.",
+      "planned_change": "Use low-radius, low-chrome V3 surfaces and compact status tags only where semantically valid."
+    },
+    {
+      "id": "research-chart-first",
+      "topic": "Research Lab",
+      "recommendation": "Defer chrome and reveal secondary analysis contextually.",
+      "classification": "ADOPT",
+      "v3_reconciliation": "Matches the existing chart-first structure and drawer model.",
+      "planned_change": "Refine header grouping, pressed states, feedback and metric/border hierarchy without reducing chart dimensions."
+    },
+    {
+      "id": "strategy-segmented-mode",
+      "topic": "Strategy Lab",
+      "recommendation": "Use a segmented choice for mutually exclusive editor modes.",
+      "classification": "ADAPT_TO_V3",
+      "v3_reconciliation": "Visual/Code/Split are mutually exclusive; Diff is a contextual review flow and not a fourth permanent segment.",
+      "planned_change": "Implement compact work-mode semantics and a separate review action."
+    },
+    {
+      "id": "model-workflow",
+      "topic": "Model Lab",
+      "recommendation": "Use progressive disclosure to keep the current task dominant.",
+      "classification": "ADOPT",
+      "v3_reconciliation": "Supports Dataset/Run → Study/Trial → Version/Signal without an admin dashboard.",
+      "planned_change": "Quiet phase rail, state-applicable operations and evidence-led version review."
+    },
+    {
+      "id": "backtest-result-context",
+      "topic": "Backtest and Result Labs",
+      "recommendation": "Keep actions tied to current content and subordinate secondary detail.",
+      "classification": "ADOPT",
+      "v3_reconciliation": "Preserves the primary analysis/review canvas and compact Demo truth.",
+      "planned_change": "Reduce duplicate action competition, add local feedback and quiet metric/header dividers."
+    }
+  ],
+  "gate": "COMPLETE_BEFORE_UI_MUTATION"
+}

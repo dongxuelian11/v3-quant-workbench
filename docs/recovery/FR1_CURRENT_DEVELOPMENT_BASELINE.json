@@ -1,0 +1,15 @@
+{
+  "schema_id": "urn:v3:oss-rebuild:fr1-current-development-baseline:1.0.0",
+  "status": "ACCEPTED_AS_CURRENT_DEVELOPMENT_BASELINE",
+  "final_ui": false,
+  "future_ui_refinement_allowed": true,
+  "user_uau_final": "NOT_CLAIMED",
+  "backend_formal_output": "NOT_REBUILT",
+  "source_evidence": {
+    "file": "V3_OSS_REBUILD_FR1_FULL_PRESENTATION_SYSTEM_RECONSTRUCTION_RESULT.zip",
+    "sha256": "32655D27587589A7A8D3D8085F4F3CF81E716227B812A63584369B626419BAEE",
+    "verified_live_files": 22,
+    "verified_live_files_matching": 22
+  },
+  "accepted_against_main_head": "97ce15b7548df56312b785a5ce10b0fadb87d81a"
+}

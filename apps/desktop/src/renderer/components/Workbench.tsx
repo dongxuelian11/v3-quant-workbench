@@ -2,57 +2,117 @@ import React, { useCallback, useRef } from "react";
 import { DockviewReact, type DockviewApi, type DockviewReadyEvent } from "dockview-react";
 import { ResearchChartPanel, ResearchAnalyticsPanel, UniverseBuilderPanel } from "./ResearchPanels";
 import { StrategyDraftPanel, StrategyReviewPanel } from "./StrategyPanels";
-import { ModelRunsPanel, ModelStudyPanel, ModelVersionPanel } from "./ModelPanels";
+import { ModelRunsPanel, ModelStudyPanel, ModelVersionPanel, ModelWorkflowPanel } from "./ModelPanels";
 import { BacktestPanel, ResultPanel } from "./BacktestResultPanels";
 import { useWorkbench } from "../store";
+import { Icon } from "./PresentationSystem";
+
+const LAYOUT_CONTRACT = "precision-workbench-v2";
 
 const components = {
-  researchChart: ResearchChartPanel, researchAnalytics: ResearchAnalyticsPanel, universeBuilder: UniverseBuilderPanel,
-  strategyDraft: StrategyDraftPanel, strategyReview: StrategyReviewPanel,
-  modelRuns: ModelRunsPanel, modelStudy: ModelStudyPanel, modelVersion: ModelVersionPanel,
-  backtest: BacktestPanel, result: ResultPanel
+  researchChart: ResearchChartPanel,
+  researchAnalytics: ResearchAnalyticsPanel,
+  universeBuilder: UniverseBuilderPanel,
+  strategyDraft: StrategyDraftPanel,
+  strategyReview: StrategyReviewPanel,
+  modelWorkflow: ModelWorkflowPanel,
+  modelRuns: ModelRunsPanel,
+  modelStudy: ModelStudyPanel,
+  modelVersion: ModelVersionPanel,
+  backtest: BacktestPanel,
+  result: ResultPanel
 };
 
 const defaults = {
-  research: [["research-chart", "研究图表", "researchChart"], ["universe-builder", "Universe Builder", "universeBuilder"], ["research-analytics", "研究分析", "researchAnalytics"]],
-  strategy: [["strategy-draft", "StrategyDraft · Visual / Code / Split", "strategyDraft"], ["strategy-review", "Proposal Diff · Hunk Review", "strategyReview"]],
-  model: [["model-runs", "Run / Dataset / SplitPlan", "modelRuns"], ["model-study", "Study / Trial / HPO", "modelStudy"], ["model-version", "ModelVersion / Signal", "modelVersion"]],
-  backtest: [["backtest-surface", "Backtest Lab · Demo", "backtest"]],
-  result: [["result-surface", "Result Lab · Demo", "result"]]
+  research: ["research-chart", "价格、事件与证据", "researchChart"],
+  strategy: ["strategy-draft", "StrategyDraft · 编辑工作区", "strategyDraft"],
+  model: ["model-workflow", "Model Lab · 分阶段分析", "modelWorkflow"],
+  backtest: ["backtest-surface", "Backtest · 场景与执行复盘", "backtest"],
+  result: ["result-surface", "Result · 绩效与归因", "result"]
+} as const;
+
+const questions = {
+  research: "这只证券发生了什么，哪些证据能够证明？",
+  strategy: "如何把研究假设变成可审阅、可交接的策略草案？",
+  model: "哪个数据、模型与试验链路支持当前信号版本？",
+  backtest: "这个实验在何种约束下产生了怎样的执行结果？",
+  result: "结果表现如何，风险、归因与 lineage 是否一致？"
 } as const;
 
 export function Workbench() {
-  const activeLab = useWorkbench((s) => s.activeLab);
-  const layouts = useWorkbench((s) => s.dockLayouts);
-  const saveDockLayout = useWorkbench((s) => s.saveDockLayout);
-  const toggleInspector = useWorkbench((s) => s.toggleInspector);
+  const activeLab = useWorkbench((state) => state.activeLab);
+  const layouts = useWorkbench((state) => state.dockLayouts);
+  const saveDockLayout = useWorkbench((state) => state.saveDockLayout);
+  const toggleInspector = useWorkbench((state) => state.toggleInspector);
+  const toggleBottom = useWorkbench((state) => state.toggleBottom);
+  const inspectorOpen = useWorkbench((state) => state.inspectorOpen);
+  const bottomOpen = useWorkbench((state) => state.bottomOpen);
   const apiRef = useRef<DockviewApi | null>(null);
 
   const createDefault = useCallback((api: DockviewApi) => {
-    api.clear(); const defs = defaults[activeLab];
-    const first = defs[0]; api.addPanel({ id: first[0], title: first[1], component: first[2] });
-    defs.slice(1).forEach((item, index) => api.addPanel({ id: item[0], title: item[1], component: item[2], position: { referencePanel: first[0], direction: index === 0 ? "right" : "below" } }));
+    api.clear();
+    const panel = defaults[activeLab];
+    api.addPanel({ id: panel[0], title: panel[1], component: panel[2] });
+    window.localStorage.setItem("v3-layout-contract", LAYOUT_CONTRACT);
   }, [activeLab]);
 
   const onReady = useCallback((event: DockviewReadyEvent) => {
     apiRef.current = event.api;
     const saved = layouts[activeLab];
-    try { if (saved) event.api.fromJSON(saved as Parameters<DockviewApi["fromJSON"]>[0]); else createDefault(event.api); } catch { createDefault(event.api); }
+    const layoutContract = window.localStorage.getItem("v3-layout-contract");
+    try {
+      if (saved && layoutContract === LAYOUT_CONTRACT) event.api.fromJSON(saved as Parameters<DockviewApi["fromJSON"]>[0]);
+      else createDefault(event.api);
+    } catch {
+      createDefault(event.api);
+    }
     event.api.onDidLayoutChange(() => { void saveDockLayout(activeLab, event.api.toJSON()); });
   }, [activeLab, layouts, createDefault, saveDockLayout]);
 
-  const split = () => {
-    const api = apiRef.current; if (!api) return;
-    const id = `${activeLab}-notes-${Date.now()}`;
-    api.addPanel({ id, title: "临时诊断", component: activeLab === "research" ? "researchAnalytics" : activeLab === "strategy" ? "strategyReview" : activeLab === "model" ? "modelVersion" : activeLab, position: { direction: "right" } });
+  const createResearchPreset = () => {
+    const api = apiRef.current;
+    if (!api || activeLab !== "research") return;
+    api.clear();
+    const chart = api.addPanel({ id: "research-chart", title: "价格、事件与证据", component: "researchChart" });
+    api.addPanel({ id: "research-analytics", title: "二级分析", component: "researchAnalytics", position: { referencePanel: "research-chart", direction: "below" } });
+    api.addPanel({ id: "universe-builder", title: "Universe Builder", component: "universeBuilder", position: { referencePanel: "research-analytics" } });
+    window.setTimeout(() => chart.api.group.api.setSize({ height: Math.round(api.height * .68) }), 0);
   };
+
+  const split = () => {
+    const api = apiRef.current;
+    if (!api) return;
+    const id = `${activeLab}-secondary-${Date.now()}`;
+    const component = activeLab === "research" ? "researchAnalytics" : activeLab === "strategy" ? "strategyReview" : activeLab === "model" ? "modelVersion" : activeLab;
+    api.addPanel({ id, title: "上下文分析", component, position: { direction: "right" } });
+  };
+
   const activateFirst = () => apiRef.current?.panels[0]?.api.setActive();
   const closeActive = () => apiRef.current?.activePanel?.api.close();
-  const restore = () => { const api = apiRef.current; const saved = layouts[activeLab]; if (api && saved) api.fromJSON(saved as Parameters<DockviewApi["fromJSON"]>[0]); };
+  const restore = () => {
+    const api = apiRef.current;
+    const saved = layouts[activeLab];
+    if (api && saved) api.fromJSON(saved as Parameters<DockviewApi["fromJSON"]>[0]);
+  };
   const reset = () => { if (apiRef.current) createDefault(apiRef.current); };
 
   return <div className="workbench-frame" data-lab-workbench={activeLab}>
-    <div className="workbench-toolbar"><div><b>{activeLab.toUpperCase()} LAB</b><span>Dockview 工作区 · 独立布局</span></div><div><button data-action="dock-activate" onClick={activateFirst}>激活</button><button data-action="dock-split" onClick={split}>分屏/停靠</button><button data-action="dock-close" onClick={closeActive}>关闭活动面板</button><button data-action="dock-restore" onClick={restore}>恢复</button><button data-action="dock-reset" onClick={reset}>重置</button><button onClick={toggleInspector}>检查器</button></div></div>
+    <div className="workbench-contextbar">
+      <div className="workbench-question"><Icon name="focus" size={15}/><div><small>当前分析问题</small><span>{questions[activeLab]}</span></div></div>
+      <div className="workbench-actions">
+        {activeLab === "research" && <button data-action="dock-preset" onClick={createResearchPreset}><Icon name="research" size={14}/>研究布局</button>}
+        <button data-action="inspector-toggle" onClick={toggleInspector} aria-pressed={inspectorOpen}><Icon name="inspector" size={14}/><span>检查器</span></button>
+        <button data-action="operations-open" onClick={toggleBottom} aria-pressed={bottomOpen}><Icon name="operations" size={14}/><span>任务</span></button>
+        <details className="dock-menu"><summary aria-label="工作区布局操作"><Icon name="more" size={16}/></summary><div>
+          <small>LAYOUT ACTIONS</small>
+          <button data-action="dock-activate" onClick={activateFirst}>激活首面板</button>
+          <button data-action="dock-split" onClick={split}>分屏 / 停靠</button>
+          <button data-action="dock-close" onClick={closeActive}>关闭活动面板</button>
+          <button data-action="dock-restore" onClick={restore}>恢复已存布局</button>
+          <button data-action="dock-reset" onClick={reset}>恢复默认布局</button>
+        </div></details>
+      </div>
+    </div>
     <div className="dock-host"><DockviewReact key={activeLab} className="dockview-theme-abyss" components={components} onReady={onReady} /></div>
   </div>;
 }

@@ -80,12 +80,16 @@ export interface DesktopBridge {
   runtimeInfo(): Promise<{ electron: string; platform: string; storePath: string }>;
 }
 
-export const DEFAULT_STRATEGY_CODE = `# V3 StrategyDraft · DEMO / NOT FORMAL FINANCIAL OUTPUT\nuniverse = Universe.ref("CN-LARGE-CAP@v12")\nsignal = rank(momentum_12m) * 0.65 + rank(quality) * 0.35\nportfolio = top_n(signal, 50).equal_weight()\nrebalance(portfolio, frequency="monthly")`;
+export const DEFAULT_STRATEGY_CODE = `# V3 StrategyDraft · DEMO / NOT FORMAL FINANCIAL OUTPUT
+universe = Universe.ref("CN-LARGE-CAP@v12")
+signal = rank(momentum_12m) * 0.65 + rank(quality) * 0.35
+portfolio = top_n(signal, 50).equal_weight()
+rebalance(portfolio, frequency="monthly")`;
 
 export const DEFAULT_WORKSPACE: PersistedWorkspace = {
   activeLab: "research",
-  inspectorOpen: true,
-  bottomOpen: true,
+  inspectorOpen: false,
+  bottomOpen: false,
   activeProject: "Momentum Research / 2026 Q2",
   selectedAsset: "因子 / Momentum 12M",
   selectedUniverseMode: "all-shares",

@@ -62,12 +62,12 @@ function registerIpc(): void {
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1480,
-    height: 940,
-    minWidth: 1100,
-    minHeight: 700,
-    backgroundColor: "#081018",
-    title: "V3 量化研究工作台 · FR-1 Candidate",
+    width: 1536,
+    height: 864,
+    minWidth: 800,
+    minHeight: 600,
+    backgroundColor: "#0B0D14",
+    title: "V3 量化研究工作台 · FR-1 Visual Restoration Candidate",
     webPreferences: {
       preload: join(__dirname, "preload.js"),
       contextIsolation: true,
