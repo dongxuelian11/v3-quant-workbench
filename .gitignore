@@ -1,0 +1,50 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+.cache/
+.vite/
+
+# Local runtime state and private research data
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+*.duckdb
+*.parquet
+*.feather
+*.h5
+*.onnx
+*.safetensors
+*.bin
+*.pt
+*.pth
+.venv/
+venv/
+runtime/
+data/
+artifacts/
+screenshots-local/
+crash-dumps/
+
+# Private/user state
+projects-local/
+results-local/
+strategies-local/
+models-local/
+
+# Task packages and delivery bundles
+.task_package/
+deliverables/
+*.zip
+*.sha256
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+

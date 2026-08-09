@@ -1,0 +1,33 @@
+{
+  "name": "v3-oss-rebuild",
+  "version": "0.1.0-recovery.1",
+  "private": true,
+  "description": "V3 desktop research workbench frontend recovery candidate.",
+  "main": "dist/apps/desktop/src/main.js",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "node scripts/lint.mjs",
+    "test": "node --test tests/unit/*.test.mjs",
+    "test:unit": "npm run test",
+    "smoke:electron": "node scripts/run-electron-smoke.mjs",
+    "smoke:frontend": "node scripts/frontend-smoke.mjs",
+    "secret-scan": "node scripts/secret-scan.mjs",
+    "repo-audit": "node scripts/repo-audit.mjs",
+    "evidence:generate": "node scripts/generate-result.mjs",
+    "validate": "npm run typecheck && npm run lint && npm test && npm run build && npm run smoke:frontend && npm run smoke:electron && npm run secret-scan && npm run repo-audit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "electron": "36.9.5",
+    "typescript": "^5.8.3"
+  }
+}

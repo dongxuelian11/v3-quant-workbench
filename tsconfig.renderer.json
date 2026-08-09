@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "rootDir": ".",
+    "outDir": "dist",
+    "noEmit": false
+  },
+  "include": ["apps/desktop/src/renderer/renderer.ts"],
+  "exclude": ["node_modules", "dist"]
+}
