@@ -10,7 +10,7 @@ The current presentation system is a development baseline, not a final UI or fin
 
 ## Canonical Backend Foundation
 
-The Python Foundation provides contracts, provenance primitives, the Control Catalog/repository layer, artifact boundaries, task/worker supervision, resource governance, and framed local transport. It deliberately stops before financial-domain implementation.
+The Python Foundation provides contracts, provenance primitives, the Control Catalog/repository layer, artifact boundaries, task/worker supervision, resource governance, framed local transport, and the WS-F provider-independent Data Truth layer. It stops before external provider admission and downstream research/execution domains.
 
 ```text
 Desktop development baseline
@@ -18,18 +18,18 @@ Desktop development baseline
 
 Canonical Backend Foundation
   ├─ contracts and provenance
-  ├─ 56-table Control Catalog / repositories
+  ├─ 67-table Control Catalog / repositories
   ├─ artifact plane
   ├─ task / worker / resource control plane
   └─ supervised local transport (not yet wired to the desktop entrypoints)
 
 Future isolated capability profiles
-  ├─ Data Truth
+  ├─ external Data providers
   ├─ Research and Model
   ├─ Portfolio and Risk
   └─ Backtest and Result
 ```
 
-Formal market truth must arrive through a later, independently admitted Data Truth implementation. Demo providers and contract shapes are not substitutes for that implementation.
+WS-F now supplies the provider-independent Data Truth objects and fail-closed Snapshot/PIT/Universe policies. No external market-data provider is admitted, so Demo providers and contract shapes remain non-Formal. See `DATA_TRUTH_V1.md`.
 
 See `PRODUCT_SURFACE.md`, `BACKEND_FUTURE_CONTRACT.md`, `docs/status/CURRENT_STATUS.md`, and `docs/runtime/OPTIONAL_ENVIRONMENT_PROFILE_BOUNDARIES.md`.

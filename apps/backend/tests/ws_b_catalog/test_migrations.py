@@ -10,10 +10,12 @@ from v3_backend.adapters.sqlite.connection import connect_catalog
 from v3_backend.migrations import (
     EXPECTED_TABLES,
     LegacyDatabaseRefusedError,
+    MigrationError,
     MigrationOrderError,
     apply_migrations,
     discover_migrations,
 )
+from v3_backend.migrations.runner import _apply_one
 
 
 class MigrationTests(unittest.TestCase):
@@ -21,9 +23,9 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog.sqlite3"
             result = apply_migrations(path, application_version="test")
-            self.assertEqual(result.applied, ("0001_control_catalog",))
-            self.assertEqual(result.schema_report.table_count, 56)
-            self.assertEqual(result.schema_report.user_version, 1)
+            self.assertEqual(result.applied, ("0001_control_catalog", "0002_data_truth"))
+            self.assertEqual(result.schema_report.table_count, 69)
+            self.assertEqual(result.schema_report.user_version, 2)
             connection = connect_catalog(path)
             try:
                 tables = {
@@ -89,6 +91,126 @@ class MigrationTests(unittest.TestCase):
                     connection.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migration'"
                     ).fetchone()
+                )
+            finally:
+                connection.close()
+
+    def test_existing_v1_catalog_requires_backup_before_data_truth_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            v1_versions = root / "v1"
+            v1_versions.mkdir()
+            source = (
+                Path(__file__).parents[2]
+                / "src"
+                / "v3_backend"
+                / "migrations"
+                / "versions"
+                / "0001_control_catalog.sql"
+            )
+            (v1_versions / source.name).write_bytes(source.read_bytes())
+            path = root / "catalog.sqlite3"
+            connection = sqlite3.connect(path, isolation_level=None)
+            try:
+                connection.execute("PRAGMA foreign_keys = ON")
+                _apply_one(
+                    connection,
+                    discover_migrations(v1_versions)[0],
+                    application_version="v1",
+                    backup=None,
+                )
+                for symbol, role in (("a", "CONNECTOR_BUNDLE"), ("b", "RAW_CAPTURE")):
+                    content_hash = symbol * 64
+                    connection.execute(
+                        """
+                        INSERT INTO artifact(
+                          artifact_id,sha256,byte_size,media_type,semantic_role,
+                          storage_key,state,created_at,published_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            "art_sha256_" + content_hash,
+                            content_hash,
+                            1,
+                            "application/octet-stream",
+                            role,
+                            f"sha256/{content_hash}",
+                            "PUBLISHED",
+                            "2020-01-01T00:00:00Z",
+                            "2020-01-01T00:00:00Z",
+                        ),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO connector(
+                      connector_id,stable_name,publisher,state,created_at
+                    ) VALUES('con_migration','migration-test','V3','REGISTERED',?)
+                    """,
+                    ("2020-01-01T00:00:00Z",),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO connector_version(
+                      connector_version_id,connector_id,semantic_version,
+                      bundle_artifact_id,bundle_sha256,entrypoint,
+                      declared_manifest_json,network_policy,state,created_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "cov_migration",
+                        "con_migration",
+                        "1.0.0",
+                        "art_sha256_" + "a" * 64,
+                        "a" * 64,
+                        "v3:migration",
+                        "{}",
+                        "DENY",
+                        "ADMITTED",
+                        "2020-01-01T00:00:00Z",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO raw_capture(
+                      raw_capture_id,connector_version_id,provider_dataset,
+                      request_fingerprint,available_time,captured_at,ingested_at,
+                      artifact_id,content_hash,state
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "raw_migration_sentinel",
+                        "cov_migration",
+                        "CN_EOD",
+                        "c" * 64,
+                        "UNAVAILABLE",
+                        "2020-01-02T00:00:00Z",
+                        "2020-01-02T00:01:00Z",
+                        "art_sha256_" + "b" * 64,
+                        "b" * 64,
+                        "CAPTURED",
+                    ),
+                )
+            finally:
+                connection.close()
+            with self.assertRaises(MigrationError):
+                apply_migrations(path, application_version="v2")
+            upgraded = apply_migrations(
+                path,
+                application_version="v2",
+                backup_dir=root / "backups",
+            )
+            self.assertEqual(upgraded.applied, ("0002_data_truth",))
+            self.assertEqual(len(upgraded.backups), 1)
+            self.assertEqual(upgraded.schema_report.user_version, 2)
+            connection = connect_catalog(path)
+            try:
+                self.assertIsNone(
+                    connection.execute(
+                        """
+                        SELECT available_time FROM raw_capture
+                        WHERE raw_capture_id='raw_migration_sentinel'
+                        """
+                    ).fetchone()[0]
                 )
             finally:
                 connection.close()

@@ -4,8 +4,16 @@ import json
 import re
 import sqlite3
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
+from v3_backend.domain.data_truth.model import (
+    CapabilityTruthState,
+    ConnectorCapabilityResolution,
+    RevisionSemantics,
+    UniverseResolution,
+)
+from v3_backend.domain.data_truth.pit import PitCapabilityUnavailable
 from v3_backend.errors.exceptions import (
     ArtifactNotPublishedError,
     ConflictError,
@@ -29,7 +37,17 @@ _REPOSITORY_TABLES: dict[str, frozenset[str]] = {
     ),
     "instrument": frozenset({"instrument", "instrument_revision", "instrument_alias"}),
     "snapshot": frozenset(
-        {"data_snapshot", "raw_capture", "snapshot_partition", "snapshot_validation", "industry_taxonomy_version", "industry_membership"}
+        {
+            "data_snapshot",
+            "raw_capture",
+            "snapshot_partition",
+            "snapshot_validation",
+            "snapshot_validation_profile",
+            "snapshot_validation_requirement",
+            "snapshot_validation_binding",
+            "industry_taxonomy_version",
+            "industry_membership",
+        }
     ),
     "universe": frozenset({"universe_definition", "universe_version"}),
     "factor": frozenset({"factor_definition", "factor_version"}),
@@ -45,6 +63,21 @@ _REPOSITORY_TABLES: dict[str, frozenset[str]] = {
     "task": frozenset({"task", "run", "task_attempt", "task_dependency", "task_event", "idempotency_record"}),
     "artifact": frozenset({"artifact", "artifact_reference"}),
     "provenance": frozenset({"provenance_entity", "provenance_edge"}),
+    "data_truth": frozenset(
+        {
+            "provider_descriptor",
+            "connector_data_capability",
+            "raw_capture",
+            "raw_capture_truth_descriptor",
+            "trading_calendar_version",
+            "trading_session",
+            "snapshot_raw_capture",
+            "snapshot_calendar",
+            "corporate_action",
+            "adjustment_factor_version",
+            "universe_membership_interval",
+        }
+    ),
 }
 _IMMUTABLE_TABLES = frozenset(
     {
@@ -67,6 +100,19 @@ _IMMUTABLE_TABLES = frozenset(
         "result_component",
         "provenance_entity",
         "provenance_edge",
+        "provider_descriptor",
+        "connector_data_capability",
+        "raw_capture_truth_descriptor",
+        "snapshot_validation_profile",
+        "snapshot_validation_requirement",
+        "snapshot_validation_binding",
+        "trading_calendar_version",
+        "trading_session",
+        "snapshot_raw_capture",
+        "snapshot_calendar",
+        "corporate_action",
+        "adjustment_factor_version",
+        "universe_membership_interval",
     }
 )
 
@@ -77,6 +123,13 @@ def _row_dict(row: sqlite3.Row | Sequence[Any], columns: Sequence[str] | None = 
     if columns is None:
         raise TypeError("columns are required for tuple rows")
     return dict(zip(columns, row, strict=True))
+
+
+def _parse_instant(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise InvalidArgumentError("PIT timestamps must be timezone-aware")
+    return parsed
 
 
 def _count_numeric_array_items(value: Any) -> int:
@@ -454,6 +507,76 @@ class SQLiteSnapshotRepository(SQLiteDomainRepository):
     def record_validation(self, validation: Mapping[str, Any]) -> dict[str, Any]:
         return self.table("snapshot_validation").add_new(validation, idempotent=True)
 
+    def mark_validated(
+        self,
+        snapshot_id: str,
+        *,
+        validation_profile_id: str,
+        validated_at: str,
+    ) -> dict[str, Any]:
+        repository = self.table("data_snapshot")
+        repository._assert_active(write=True)
+        profile = self.uow.connection.execute(
+            """
+            SELECT admission_state FROM snapshot_validation_profile
+            WHERE validation_profile_id=?
+            """,
+            (validation_profile_id,),
+        ).fetchone()
+        if profile is None:
+            raise ConflictError("Snapshot validation profile is not registered")
+        requirement_count = int(
+            self.uow.connection.execute(
+                """
+                SELECT COUNT(*) FROM snapshot_validation_requirement
+                WHERE validation_profile_id=?
+                """,
+                (validation_profile_id,),
+            ).fetchone()[0]
+        )
+        if requirement_count == 0:
+            raise ConflictError("Snapshot validation profile has no required checks")
+        incomplete = self.uow.connection.execute(
+            """
+            SELECT requirement.check_code
+            FROM snapshot_validation_requirement AS requirement
+            LEFT JOIN snapshot_validation AS result
+              ON result.snapshot_id=?
+             AND result.validation_profile_id=requirement.validation_profile_id
+             AND result.check_code=requirement.check_code
+            WHERE requirement.validation_profile_id=?
+              AND (
+                result.snapshot_validation_id IS NULL
+                OR result.state<>requirement.required_state
+                OR result.severity<>requirement.severity
+              )
+            LIMIT 1
+            """,
+            (snapshot_id, validation_profile_id),
+        ).fetchone()
+        if incomplete is not None:
+            raise ConflictError(
+                f"Snapshot validation requirement is incomplete: {incomplete[0]}"
+            )
+        self.table("snapshot_validation_binding").add_new(
+            {
+                "snapshot_id": snapshot_id,
+                "validation_profile_id": validation_profile_id,
+                "bound_at": validated_at,
+            },
+            idempotent=True,
+        )
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE data_snapshot SET state='VALIDATED', validated_at=?
+            WHERE snapshot_id=? AND state='CANDIDATE'
+            """,
+            (validated_at, snapshot_id),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("Snapshot is not CANDIDATE")
+        return repository.require(snapshot_id)
+
     def publish_validated(
         self,
         snapshot_id: str,
@@ -464,6 +587,7 @@ class SQLiteSnapshotRepository(SQLiteDomainRepository):
     ) -> dict[str, Any]:
         repository = self.table("data_snapshot")
         repository._assert_active(write=True)
+        self._assert_strict_pit_admitted(snapshot_id)
         failed = self.uow.connection.execute(
             """
             SELECT 1 FROM snapshot_validation
@@ -473,6 +597,19 @@ class SQLiteSnapshotRepository(SQLiteDomainRepository):
         ).fetchone()
         if failed is not None:
             raise ConflictError("Snapshot has a non-PASSED validation")
+        manifest = self.uow.connection.execute(
+            "SELECT sha256,state FROM artifact WHERE artifact_id=?",
+            (manifest_artifact_id,),
+        ).fetchone()
+        if (
+            manifest is None
+            or str(manifest[1]) != "PUBLISHED"
+            or str(manifest[0]) != content_hash
+            or manifest_artifact_id != "art_sha256_" + content_hash
+        ):
+            raise ArtifactNotPublishedError(
+                "Snapshot manifest must be PUBLISHED and content-address the snapshot"
+            )
         cursor = self.uow.connection.execute(
             """
             UPDATE data_snapshot
@@ -484,6 +621,79 @@ class SQLiteSnapshotRepository(SQLiteDomainRepository):
         if cursor.rowcount != 1:
             raise ConflictError("Snapshot is not VALIDATED")
         return repository.require(snapshot_id)
+
+    def _assert_strict_pit_admitted(self, snapshot_id: str) -> None:
+        snapshot = self.uow.connection.execute(
+            """
+            SELECT connector_version_id,truth_profile_id
+            FROM data_snapshot WHERE snapshot_id=?
+            """,
+            (snapshot_id,),
+        ).fetchone()
+        if snapshot is None:
+            raise ConflictError("Snapshot does not exist")
+        if str(snapshot[1]) != "STRICT_PIT":
+            return
+
+        connector_version_id = str(snapshot[0])
+        sources = self.uow.connection.execute(
+            """
+            SELECT source.logical_dataset,capture.connector_version_id,
+                   truth.provider_id,truth.provider_available_time,
+                   truth.provenance_complete,policy.provider_id
+            FROM snapshot_raw_capture AS source
+            JOIN raw_capture AS capture
+              ON capture.raw_capture_id=source.raw_capture_id
+            LEFT JOIN raw_capture_truth_descriptor AS truth
+              ON truth.raw_capture_id=source.raw_capture_id
+            LEFT JOIN connector_data_capability AS policy
+              ON policy.connector_version_id=?
+             AND policy.capability_code=source.logical_dataset
+            WHERE source.snapshot_id=?
+            """,
+            (connector_version_id, snapshot_id),
+        ).fetchall()
+        if not sources:
+            raise PitCapabilityUnavailable("RAW_CAPTURE_SOURCE_UNAVAILABLE")
+
+        capability_repository = SQLiteDataTruthRepository(self.uow)
+        for source in sources:
+            logical_dataset = str(source[0])
+            if str(source[1]) != connector_version_id:
+                raise PitCapabilityUnavailable("WRONG_CONNECTOR_VERSION")
+            resolution = capability_repository.resolve_connector_capability(
+                connector_version_id, logical_dataset
+            )
+            if resolution.truth_state is not CapabilityTruthState.FORMAL:
+                raise PitCapabilityUnavailable(resolution.reason_code)
+            if source[2] is None or source[3] is None:
+                raise PitCapabilityUnavailable("PROVIDER_AVAILABLE_TIME_UNAVAILABLE")
+            if int(source[4]) != 1:
+                raise PitCapabilityUnavailable("PROVENANCE_INCOMPLETE")
+            if source[5] is None or str(source[5]) != str(source[2]):
+                raise PitCapabilityUnavailable("PROVIDER_PROVENANCE_MISMATCH")
+
+        missing_partition_time = self.uow.connection.execute(
+            """
+            SELECT 1 FROM snapshot_partition
+            WHERE snapshot_id=? AND max_available_time IS NULL LIMIT 1
+            """,
+            (snapshot_id,),
+        ).fetchone()
+        if missing_partition_time is not None:
+            raise PitCapabilityUnavailable("PARTITION_AVAILABLE_TIME_UNAVAILABLE")
+
+        missing_calendar_time = self.uow.connection.execute(
+            """
+            SELECT 1 FROM snapshot_calendar AS binding
+            JOIN trading_session AS session
+              ON session.calendar_version_id=binding.calendar_version_id
+            WHERE binding.snapshot_id=? AND session.available_time IS NULL LIMIT 1
+            """,
+            (snapshot_id,),
+        ).fetchone()
+        if missing_calendar_time is not None:
+            raise PitCapabilityUnavailable("CALENDAR_AVAILABLE_TIME_UNAVAILABLE")
 
     def list_upgrade_candidates(
         self, connector_version_id: str, *, after_published_at: str
@@ -499,6 +709,343 @@ class SQLiteSnapshotRepository(SQLiteDomainRepository):
             (connector_version_id, after_published_at),
         ).fetchall()
         return tuple(_row_dict(row) for row in rows)
+
+
+class SQLiteDataTruthRepository(SQLiteDomainRepository):
+    """Bounded Data Truth extension of the canonical Catalog registry."""
+
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "data_truth")
+
+    def register_provider(self, descriptor: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("provider_descriptor").add_new(descriptor, idempotent=True)
+
+    def declare_connector_capability_extension(
+        self, capability: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Attach Data Truth policy to the exact canonical capability authority."""
+        return self.table("connector_data_capability").add_new(
+            capability, idempotent=True
+        )
+
+    def resolve_connector_capability(
+        self, connector_version_id: str, capability_code: str
+    ) -> ConnectorCapabilityResolution:
+        self.table("connector_data_capability")._assert_active()
+        row = self.uow.connection.execute(
+            """
+            SELECT authority.declared_state,authority.admitted_truth_state,
+                   policy.revision_semantics,version.state
+            FROM connector_capability AS authority
+            JOIN connector_version AS version
+              ON version.connector_version_id=authority.connector_version_id
+            LEFT JOIN connector_data_capability AS policy
+              ON policy.connector_version_id=authority.connector_version_id
+             AND policy.capability_code=authority.capability_code
+            WHERE authority.connector_version_id=? AND authority.capability_code=?
+            """,
+            (connector_version_id, capability_code),
+        ).fetchone()
+        if row is None:
+            return ConnectorCapabilityResolution(
+                connector_version_id,
+                capability_code,
+                CapabilityTruthState.UNAVAILABLE,
+                "CAPABILITY_NOT_DECLARED_FOR_CONNECTOR_VERSION",
+            )
+        if (
+            str(row[0]) != "DECLARED"
+            or str(row[1]) == "UNAVAILABLE"
+            or str(row[3]) != "ADMITTED"
+        ):
+            return ConnectorCapabilityResolution(
+                connector_version_id,
+                capability_code,
+                CapabilityTruthState.UNAVAILABLE,
+                "CAPABILITY_AUTHORITY_UNAVAILABLE",
+            )
+        if row[2] is None:
+            return ConnectorCapabilityResolution(
+                connector_version_id,
+                capability_code,
+                CapabilityTruthState.UNAVAILABLE,
+                "DATA_TRUTH_POLICY_UNAVAILABLE",
+            )
+        semantics = RevisionSemantics(str(row[2]))
+        if semantics is RevisionSemantics.UNKNOWN:
+            return ConnectorCapabilityResolution(
+                connector_version_id,
+                capability_code,
+                CapabilityTruthState.UNAVAILABLE,
+                "REVISION_SEMANTICS_UNKNOWN",
+                semantics,
+            )
+        return ConnectorCapabilityResolution(
+            connector_version_id,
+            capability_code,
+            CapabilityTruthState(str(row[1])),
+            "EXACT_CONNECTOR_VERSION_ADMITTED",
+            semantics,
+        )
+
+    def submit_raw_capture(self, capture: Mapping[str, Any]) -> dict[str, Any]:
+        if capture.get("state") != "CAPTURED":
+            raise InvalidArgumentError("connector submission requires state=CAPTURED")
+        if capture.get("provider_id") is None or capture.get("source_metadata_json") is None:
+            raise InvalidArgumentError("Raw Capture requires provider and source metadata")
+        content_hash = str(capture.get("content_hash", ""))
+        if capture.get("artifact_id") != "art_sha256_" + content_hash:
+            raise InvalidArgumentError("Raw Capture Artifact identity must match content_hash")
+        row = dict(capture)
+        provider_id = str(row.pop("provider_id"))
+        source_metadata = row.pop("source_metadata_json")
+        provenance_complete = row.pop("provenance_complete", None)
+        if provenance_complete not in {0, 1, False, True}:
+            raise InvalidArgumentError(
+                "Raw Capture requires explicit provenance_complete truth"
+            )
+        provider_available_time = row.get("available_time")
+        recorded = self.table("raw_capture").add_new(row, idempotent=True)
+        self.table("raw_capture_truth_descriptor").add_new(
+            {
+                "raw_capture_id": recorded["raw_capture_id"],
+                "provider_id": provider_id,
+                "source_metadata_json": source_metadata,
+                "provider_available_time": provider_available_time,
+                "provenance_complete": int(bool(provenance_complete)),
+            },
+            idempotent=True,
+        )
+        return recorded
+
+    def accept_raw_capture(self, raw_capture_id: str) -> dict[str, Any]:
+        repository = self.table("raw_capture")
+        repository._assert_active(write=True)
+        cursor = self.uow.connection.execute(
+            "UPDATE raw_capture SET state='ACCEPTED' WHERE raw_capture_id=? AND state='CAPTURED'",
+            (raw_capture_id,),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("Raw Capture is not CAPTURED")
+        return repository.require(raw_capture_id)
+
+    def publish_calendar(self, calendar: Mapping[str, Any]) -> dict[str, Any]:
+        if calendar.get("state") != "PUBLISHED":
+            raise InvalidArgumentError("Trading Calendar version must be PUBLISHED")
+        return self.table("trading_calendar_version").add_new(calendar, idempotent=True)
+
+    def add_session(self, session: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("trading_session").add_new(session, idempotent=True)
+
+    def link_snapshot_source(self, source: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("snapshot_raw_capture").add_new(source, idempotent=True)
+
+    def link_snapshot_calendar(self, binding: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("snapshot_calendar").add_new(binding, idempotent=True)
+
+    def add_membership_interval(self, membership: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("universe_membership_interval").add_new(membership)
+
+    def publish_universe_version(
+        self,
+        universe_version_id: str,
+        *,
+        membership_artifact_id: str,
+        audit_artifact_id: str,
+        content_hash: str,
+        published_at: str,
+    ) -> dict[str, Any]:
+        repository = SQLiteTableRepository(self.uow, "universe_version")
+        repository._assert_active(write=True)
+        for artifact_id in (membership_artifact_id, audit_artifact_id):
+            artifact = self.uow.connection.execute(
+                "SELECT state FROM artifact WHERE artifact_id=?", (artifact_id,)
+            ).fetchone()
+            if artifact is None or str(artifact[0]) != "PUBLISHED":
+                raise ArtifactNotPublishedError("Universe version requires PUBLISHED Artifacts")
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE universe_version
+            SET membership_artifact_id=?,audit_artifact_id=?,content_hash=?,state='PUBLISHED',published_at=?
+            WHERE universe_version_id=? AND state='BUILDING'
+            """,
+            (
+                membership_artifact_id,
+                audit_artifact_id,
+                content_hash,
+                published_at,
+                universe_version_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("UniverseVersion is not BUILDING")
+        return repository.require(universe_version_id)
+
+    def resolve_members_as_of(
+        self,
+        universe_version_id: str,
+        *,
+        as_of: str,
+        decision_time: str,
+        strict: bool = True,
+    ) -> UniverseResolution:
+        repository = self.table("universe_membership_interval")
+        repository._assert_active()
+        version = self.uow.connection.execute(
+            """
+            SELECT universe.snapshot_id,universe.knowledge_cutoff,universe.state,
+                   snapshot.state
+            FROM universe_version AS universe
+            LEFT JOIN data_snapshot AS snapshot
+              ON snapshot.snapshot_id=universe.snapshot_id
+            WHERE universe.universe_version_id=?
+            """,
+            (universe_version_id,),
+        ).fetchone()
+        if (
+            version is None
+            or str(version[2]) != "PUBLISHED"
+            or str(version[3]) != "PUBLISHED"
+        ):
+            raise PitCapabilityUnavailable("UniverseVersion is unavailable or unpublished")
+
+        decision = _parse_instant(decision_time)
+        cutoff = _parse_instant(str(version[1]))
+        if decision > cutoff:
+            raise PitCapabilityUnavailable(
+                "decision_time exceeds UniverseVersion knowledge_cutoff"
+            )
+        visibility_ceiling = min(decision, cutoff).isoformat()
+        missing = self.uow.connection.execute(
+            """
+            SELECT 1 FROM universe_membership_interval
+            WHERE universe_version_id=? AND effective_from<=?
+              AND (effective_to IS NULL OR ?<effective_to)
+              AND available_time IS NULL LIMIT 1
+            """,
+            (universe_version_id, as_of, as_of),
+        ).fetchone()
+        if strict and missing is not None:
+            raise PitCapabilityUnavailable("Universe membership available_time is unavailable")
+        rows = self.uow.connection.execute(
+            """
+            SELECT membership.* FROM universe_membership_interval AS membership
+            JOIN instrument ON instrument.instrument_id=membership.instrument_id
+            WHERE membership.universe_version_id=?
+              AND membership.effective_from<=?
+              AND (membership.effective_to IS NULL OR ?<membership.effective_to)
+              AND membership.available_time IS NOT NULL
+              AND datetime(membership.available_time)<=datetime(?)
+              AND instrument.listing_date<=?
+              AND (instrument.delisting_date IS NULL OR ?<=instrument.delisting_date)
+            ORDER BY membership.membership_fact_id,datetime(membership.available_time) DESC,membership.revision_id
+            """,
+            (universe_version_id, as_of, as_of, visibility_ceiling, as_of, as_of),
+        ).fetchall()
+        by_fact: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            mapped = _row_dict(row)
+            by_fact.setdefault(str(mapped["membership_fact_id"]), []).append(mapped)
+
+        by_instrument: dict[str, list[dict[str, Any]]] = {}
+        selected_revisions: list[dict[str, object]] = []
+        for fact_id, revisions in by_fact.items():
+            latest_time = max(
+                _parse_instant(str(item["available_time"])) for item in revisions
+            )
+            latest = [
+                item
+                for item in revisions
+                if _parse_instant(str(item["available_time"])) == latest_time
+            ]
+            if len(latest) != 1:
+                raise PitCapabilityUnavailable(
+                    f"ambiguous Universe revision for {fact_id}"
+                )
+            selected = latest[0]
+            selected_revisions.append(
+                {
+                    "membership_fact_id": fact_id,
+                    "instrument_id": str(selected["instrument_id"]),
+                    "revision_id": str(selected["revision_id"]),
+                    "available_time": str(selected["available_time"]),
+                    "provenance_artifact_id": str(
+                        selected["provenance_artifact_id"]
+                    ),
+                }
+            )
+            if selected["membership_state"] == "EXCLUDED":
+                continue
+            by_instrument.setdefault(str(selected["instrument_id"]), []).append(selected)
+
+        ambiguous = [key for key, facts in by_instrument.items() if len(facts) != 1]
+        if ambiguous:
+            raise PitCapabilityUnavailable(
+                f"ambiguous active Universe facts for {','.join(sorted(ambiguous))}"
+            )
+        members = tuple(by_instrument[key][0] for key in sorted(by_instrument))
+        return UniverseResolution(
+            members=members,
+            audit={
+                "universe_version_id": universe_version_id,
+                "snapshot_id": str(version[0]),
+                "knowledge_cutoff": str(version[1]),
+                "as_of": as_of,
+                "decision_time": decision_time,
+                "visibility_ceiling": visibility_ceiling,
+                "selected_revisions": tuple(
+                    sorted(
+                        selected_revisions,
+                        key=lambda item: str(item["membership_fact_id"]),
+                    )
+                ),
+            },
+        )
+
+    def resolve_instrument_revision_as_of(
+        self, instrument_id: str, *, as_of: str, decision_time: str
+    ) -> dict[str, Any] | None:
+        self.table("raw_capture")._assert_active()
+        _parse_instant(decision_time)
+        rows = self.uow.connection.execute(
+            """
+            SELECT * FROM instrument_revision
+            WHERE instrument_id=? AND effective_from<=?
+              AND (effective_to IS NULL OR ?<effective_to)
+              AND datetime(available_time)<=datetime(?)
+            ORDER BY effective_from,effective_to,datetime(available_time) DESC,revision_no DESC
+            """,
+            (instrument_id, as_of, as_of, decision_time),
+        ).fetchall()
+        by_fact: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
+        for row in rows:
+            mapped = _row_dict(row)
+            key = (str(mapped["effective_from"]), mapped["effective_to"])
+            by_fact.setdefault(key, []).append(mapped)
+        selected: list[dict[str, Any]] = []
+        for revisions in by_fact.values():
+            latest_time = max(
+                _parse_instant(str(item["available_time"])) for item in revisions
+            )
+            latest = [
+                item
+                for item in revisions
+                if _parse_instant(str(item["available_time"])) == latest_time
+            ]
+            if len(latest) != 1:
+                raise PitCapabilityUnavailable("ambiguous Instrument revision availability")
+            selected.append(latest[0])
+        if len(selected) > 1:
+            raise PitCapabilityUnavailable("ambiguous Instrument effective facts")
+        return None if not selected else selected[0]
+
+    def record_corporate_action(self, action: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("corporate_action").add_new(action, idempotent=True)
+
+    def publish_adjustment_factors(self, version: Mapping[str, Any]) -> dict[str, Any]:
+        if version.get("state") != "PUBLISHED":
+            raise InvalidArgumentError("Adjustment Factor version must be PUBLISHED")
+        return self.table("adjustment_factor_version").add_new(version, idempotent=True)
 
 
 class SQLiteStudyRepository(SQLiteDomainRepository):
@@ -898,3 +1445,4 @@ class SQLiteRepositoryRegistry:
         self.task = SQLiteTaskRepository(unit_of_work)
         self.artifact = SQLiteArtifactRepository(unit_of_work)
         self.provenance = SQLiteProvenanceRepository(unit_of_work)
+        self.data_truth = SQLiteDataTruthRepository(unit_of_work)
