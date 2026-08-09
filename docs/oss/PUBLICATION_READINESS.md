@@ -12,7 +12,7 @@ This document describes the technical public-source baseline and its PB1 publica
 - Production-ready: false.
 - Trading-ready: false.
 - Frontend: current development baseline, not final UI.
-- Backend: Canonical Foundation present; formal Data Truth and financial-domain capabilities not rebuilt.
+- Backend: Canonical Foundation and provider-independent WS-F Data Truth present; external provider admission and downstream financial capabilities are not rebuilt.
 - Demo data: non-formal illustrative output only.
 
 ## Technical controls

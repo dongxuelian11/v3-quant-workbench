@@ -212,12 +212,13 @@ def apply_migrations(
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
         applied_count = _validate_applied_prefix(connection, migrations)
+        upgrading_existing_catalog = applied_count > 0
         # journal_mode mutates the database header. It is deliberately configured only
         # after the database has been admitted as fresh or as a known V3 Catalog.
         connection.execute("PRAGMA journal_mode = WAL")
         for migration in migrations[applied_count:]:
             backup: BackupEvidence | None = None
-            if applied_count:
+            if upgrading_existing_catalog:
                 if backup_dir is None:
                     raise MigrationError("backup_dir is required before upgrading an existing Catalog")
                 backup_path = Path(backup_dir).resolve() / (
