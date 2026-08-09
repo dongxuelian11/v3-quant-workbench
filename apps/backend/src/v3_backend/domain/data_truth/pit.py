@@ -65,7 +65,7 @@ def resolve_universe_as_of(
     """Resolve historical membership; current membership is never backfilled."""
     _aware(decision_time)
     lifecycle = {item.instrument_id: item for item in instruments}
-    selected: dict[str, UniverseMembershipInterval] = {}
+    visible_by_fact: dict[str, list[UniverseMembershipInterval]] = {}
     for membership in memberships:
         if not membership.contains(as_of):
             continue
@@ -77,16 +77,28 @@ def resolve_universe_as_of(
             continue
         if membership.available_time > decision_time:
             continue
-        instrument = lifecycle.get(membership.instrument_id)
+        visible_by_fact.setdefault(membership.membership_fact_id, []).append(membership)
+
+    selected_by_instrument: dict[str, list[UniverseMembershipInterval]] = {}
+    for fact_id, revisions in visible_by_fact.items():
+        latest_time = max(item.available_time for item in revisions)
+        latest = [item for item in revisions if item.available_time == latest_time]
+        if len(latest) != 1:
+            raise PitCapabilityUnavailable(f"ambiguous Universe revision for {fact_id}")
+        resolved = latest[0]
+        if resolved.membership_state == "EXCLUDED":
+            continue
+        instrument = lifecycle.get(resolved.instrument_id)
         if instrument is not None and not instrument.is_listed_on(as_of):
             continue
-        current = selected.get(membership.instrument_id)
-        if current is None or (
-            membership.available_time,
-            membership.revision_id,
-        ) > (current.available_time, current.revision_id):
-            selected[membership.instrument_id] = membership
-    return tuple(sorted(selected))
+        selected_by_instrument.setdefault(resolved.instrument_id, []).append(resolved)
+
+    ambiguous = [key for key, facts in selected_by_instrument.items() if len(facts) != 1]
+    if ambiguous:
+        raise PitCapabilityUnavailable(
+            f"ambiguous active Universe facts for {','.join(sorted(ambiguous))}"
+        )
+    return tuple(sorted(selected_by_instrument))
 
 
 def assert_execution_price_policy(

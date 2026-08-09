@@ -86,17 +86,53 @@ class ProviderDescriptor:
         _hash(self.metadata_hash, "metadata_hash")
 
 
+class RevisionSemantics(str, Enum):
+    REVISION_AWARE = "REVISION_AWARE"
+    SOURCE_IMMUTABLE = "SOURCE_IMMUTABLE"
+    UNKNOWN = "UNKNOWN"
+
+
+class CapabilityTruthState(str, Enum):
+    FORMAL = "FORMAL"
+    DEMO = "DEMO"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
 @dataclass(frozen=True)
-class ProviderCapability:
+class ConnectorDataCapability:
+    connector_version_id: str
     provider_id: str
     capability_code: str
+    logical_dataset: str
     frequency: str
-    supplies_available_time: bool
-    supplies_revisions: bool
+    revision_semantics: RevisionSemantics
 
-    @property
-    def strict_pit_capable(self) -> bool:
-        return self.supplies_available_time
+    def __post_init__(self) -> None:
+        if not self.connector_version_id.startswith("cov_"):
+            raise ValueError("capability must identify an exact ConnectorVersion")
+        if not isinstance(self.revision_semantics, RevisionSemantics):
+            object.__setattr__(
+                self, "revision_semantics", RevisionSemantics(self.revision_semantics)
+            )
+
+
+@dataclass(frozen=True)
+class ConnectorCapabilityResolution:
+    connector_version_id: str
+    capability_code: str
+    truth_state: CapabilityTruthState
+    reason_code: str
+    revision_semantics: RevisionSemantics | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.truth_state, CapabilityTruthState):
+            object.__setattr__(self, "truth_state", CapabilityTruthState(self.truth_state))
+        if self.revision_semantics is not None and not isinstance(
+            self.revision_semantics, RevisionSemantics
+        ):
+            object.__setattr__(
+                self, "revision_semantics", RevisionSemantics(self.revision_semantics)
+            )
 
 
 @dataclass(frozen=True)
@@ -176,11 +212,13 @@ class CanonicalEodRecord:
 @dataclass(frozen=True)
 class UniverseMembershipInterval:
     universe_version_id: str
+    membership_fact_id: str
     instrument_id: str
     effective_from: date
     effective_to: date | None
     available_time: datetime | None
     revision_id: str
+    membership_state: str
     provenance_artifact_id: str
 
     def __post_init__(self) -> None:
@@ -189,12 +227,30 @@ class UniverseMembershipInterval:
             raise ValueError("membership interval is reversed")
         if not self.revision_id or not self.provenance_artifact_id.startswith("art_sha256_"):
             raise ValueError("membership revision and provenance Artifact are required")
+        if not self.membership_fact_id.startswith("umf_"):
+            raise ValueError("membership_fact_id is required")
+        if self.membership_state not in {"INCLUDED", "EXCLUDED"}:
+            raise ValueError("membership_state must be INCLUDED or EXCLUDED")
 
     def contains(self, as_of: date) -> bool:
         return self.effective_from <= as_of and (
             self.effective_to is None or as_of < self.effective_to
         )
 
+
+@dataclass(frozen=True)
+class UniverseResolution:
+    members: tuple[dict[str, object], ...]
+    audit: dict[str, object]
+
+    def __iter__(self):
+        return iter(self.members)
+
+    def __len__(self) -> int:
+        return len(self.members)
+
+    def __getitem__(self, index: int) -> dict[str, object]:
+        return self.members[index]
 
 @dataclass(frozen=True)
 class CorporateAction:

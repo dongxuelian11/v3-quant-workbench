@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
-from .model import ProviderCapability, ProviderDescriptor, RawCaptureEnvelope
+from .model import ConnectorDataCapability, ProviderDescriptor, RawCaptureEnvelope
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class ProviderAdapterPort(Protocol):
     """A provider adapter may describe capabilities and return raw captures only."""
 
     def descriptor(self) -> ProviderDescriptor: ...
-    def capabilities(self) -> tuple[ProviderCapability, ...]: ...
+    def capabilities(self) -> tuple[ConnectorDataCapability, ...]: ...
     def capture(self, request: Mapping[str, Any]) -> RawCaptureSubmission: ...
 
 

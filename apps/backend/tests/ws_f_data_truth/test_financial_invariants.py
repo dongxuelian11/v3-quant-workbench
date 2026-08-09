@@ -87,12 +87,12 @@ class PointInTimeTests(unittest.TestCase):
         evidence = "art_sha256_" + "c" * 64
         memberships = [
             UniverseMembershipInterval(
-                "unv_test", "ins_old", date(2010, 1, 1), date(2021, 1, 1),
-                at("2010-01-01T00:00:00"), "old-v1", evidence,
+                "unv_test", "umf_old", "ins_old", date(2010, 1, 1), date(2021, 1, 1),
+                at("2010-01-01T00:00:00"), "old-v1", "INCLUDED", evidence,
             ),
             UniverseMembershipInterval(
-                "unv_test", "ins_new", date(2021, 1, 1), None,
-                at("2021-01-01T00:00:00"), "new-v1", evidence,
+                "unv_test", "umf_new", "ins_new", date(2021, 1, 1), None,
+                at("2021-01-01T00:00:00"), "new-v1", "INCLUDED", evidence,
             ),
         ]
         lifecycles = [
@@ -116,7 +116,7 @@ class PointInTimeTests(unittest.TestCase):
 
     def test_universe_missing_available_time_fails_closed(self) -> None:
         membership = UniverseMembershipInterval(
-            "unv_test", "ins_test", date(2020, 1, 1), None, None, "r1",
+            "unv_test", "umf_test", "ins_test", date(2020, 1, 1), None, None, "r1", "INCLUDED",
             "art_sha256_" + "d" * 64,
         )
         with self.assertRaises(PitCapabilityUnavailable):

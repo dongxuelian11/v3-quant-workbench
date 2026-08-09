@@ -1,3 +1,61 @@
+-- The v1 Catalog required raw_capture.available_time.  WS-F makes provider
+-- availability explicitly nullable; receipt/ingestion time remains separate.
+CREATE TABLE raw_capture_ws_f (
+  raw_capture_id TEXT PRIMARY KEY CHECK(raw_capture_id GLOB 'raw_*'),
+  connector_version_id TEXT NOT NULL REFERENCES connector_version(connector_version_id),
+  provider_dataset TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint)=64),
+  effective_range_start TEXT,
+  effective_range_end TEXT,
+  available_time TEXT CHECK(available_time IS NULL OR (instr(available_time,'T')=11 AND datetime(available_time) IS NOT NULL)),
+  provider_revision_id TEXT,
+  captured_at TEXT NOT NULL,
+  ingested_at TEXT NOT NULL,
+  artifact_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL CHECK(length(content_hash)=64),
+  state TEXT NOT NULL CHECK(state IN ('CAPTURED','QUARANTINED','ACCEPTED')),
+  UNIQUE(connector_version_id,request_fingerprint,content_hash)
+);
+
+INSERT INTO raw_capture_ws_f SELECT * FROM raw_capture;
+DROP TABLE raw_capture;
+
+CREATE TABLE raw_capture (
+  raw_capture_id TEXT PRIMARY KEY CHECK(raw_capture_id GLOB 'raw_*'),
+  connector_version_id TEXT NOT NULL REFERENCES connector_version(connector_version_id),
+  provider_dataset TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint)=64),
+  effective_range_start TEXT,
+  effective_range_end TEXT,
+  available_time TEXT CHECK(available_time IS NULL OR (instr(available_time,'T')=11 AND datetime(available_time) IS NOT NULL)),
+  provider_revision_id TEXT,
+  captured_at TEXT NOT NULL,
+  ingested_at TEXT NOT NULL,
+  artifact_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL CHECK(length(content_hash)=64),
+  state TEXT NOT NULL CHECK(state IN ('CAPTURED','QUARANTINED','ACCEPTED')),
+  UNIQUE(connector_version_id,request_fingerprint,content_hash)
+);
+
+INSERT INTO raw_capture SELECT * FROM raw_capture_ws_f;
+DROP TABLE raw_capture_ws_f;
+
+CREATE INDEX idx_raw_capture_range ON raw_capture(connector_version_id,provider_dataset,effective_range_start,effective_range_end);
+
+CREATE TRIGGER trg_raw_capture_published_artifact_i
+BEFORE INSERT ON raw_capture
+WHEN NOT EXISTS (SELECT 1 FROM artifact WHERE artifact_id=NEW.artifact_id AND state='PUBLISHED')
+BEGIN
+  SELECT RAISE(ABORT,'Artifact reference must target a PUBLISHED Artifact');
+END;
+
+CREATE TRIGGER trg_raw_capture_published_artifact_u
+BEFORE UPDATE ON raw_capture
+WHEN NOT EXISTS (SELECT 1 FROM artifact WHERE artifact_id=NEW.artifact_id AND state='PUBLISHED')
+BEGIN
+  SELECT RAISE(ABORT,'Artifact reference must target a PUBLISHED Artifact');
+END;
+
 CREATE TABLE provider_descriptor (
   provider_id TEXT PRIMARY KEY CHECK(provider_id GLOB 'pvd_*'),
   stable_name TEXT NOT NULL UNIQUE,
@@ -9,39 +67,53 @@ CREATE TABLE provider_descriptor (
   created_at TEXT NOT NULL
 );
 
-CREATE TABLE provider_capability (
-  provider_id TEXT NOT NULL REFERENCES provider_descriptor(provider_id),
+-- Extension/evidence only. connector_capability remains the single authority.
+CREATE TABLE connector_data_capability (
+  connector_version_id TEXT NOT NULL,
   capability_code TEXT NOT NULL,
+  provider_id TEXT NOT NULL REFERENCES provider_descriptor(provider_id),
+  logical_dataset TEXT NOT NULL,
   frequency TEXT NOT NULL,
-  supplies_available_time INTEGER NOT NULL CHECK(supplies_available_time IN (0,1)),
-  supplies_revisions INTEGER NOT NULL CHECK(supplies_revisions IN (0,1)),
-  declaration_hash TEXT NOT NULL CHECK(length(declaration_hash)=64),
+  revision_semantics TEXT NOT NULL CHECK(revision_semantics IN ('REVISION_AWARE','SOURCE_IMMUTABLE','UNKNOWN')),
+  provenance_required INTEGER NOT NULL CHECK(provenance_required=1),
+  policy_artifact_id TEXT NOT NULL,
   declared_at TEXT NOT NULL,
-  PRIMARY KEY(provider_id,capability_code)
-);
-
-CREATE TABLE instrument_classification (
-  instrument_id TEXT NOT NULL REFERENCES instrument(instrument_id),
-  board TEXT NOT NULL,
-  security_category TEXT NOT NULL,
-  effective_from TEXT NOT NULL,
-  effective_to TEXT,
-  available_time TEXT NOT NULL,
-  evidence_artifact_id TEXT NOT NULL,
-  PRIMARY KEY(instrument_id,effective_from),
-  CHECK(effective_to IS NULL OR effective_to>effective_from)
+  PRIMARY KEY(connector_version_id,capability_code),
+  FOREIGN KEY(connector_version_id,capability_code)
+    REFERENCES connector_capability(connector_version_id,capability_code),
+  UNIQUE(connector_version_id,logical_dataset)
 );
 
 CREATE TABLE raw_capture_truth_descriptor (
   raw_capture_id TEXT PRIMARY KEY REFERENCES raw_capture(raw_capture_id),
   provider_id TEXT NOT NULL REFERENCES provider_descriptor(provider_id),
   source_metadata_json TEXT NOT NULL CHECK(length(source_metadata_json)<=65536),
-  provider_available_time TEXT,
-  strict_pit_capable INTEGER NOT NULL CHECK(strict_pit_capable IN (0,1)),
-  CHECK(strict_pit_capable=0 OR provider_available_time IS NOT NULL)
+  provider_available_time TEXT CHECK(provider_available_time IS NULL OR (instr(provider_available_time,'T')=11 AND datetime(provider_available_time) IS NOT NULL)),
+  provenance_complete INTEGER NOT NULL CHECK(provenance_complete IN (0,1))
 );
 
 CREATE INDEX idx_raw_capture_provider ON raw_capture_truth_descriptor(provider_id,provider_available_time);
+
+CREATE TABLE snapshot_validation_profile (
+  validation_profile_id TEXT PRIMARY KEY,
+  admission_state TEXT NOT NULL CHECK(admission_state IN ('PRE_ALPHA','FORMAL_ADMITTED')),
+  description TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE snapshot_validation_requirement (
+  validation_profile_id TEXT NOT NULL REFERENCES snapshot_validation_profile(validation_profile_id),
+  check_code TEXT NOT NULL,
+  required_state TEXT NOT NULL CHECK(required_state='PASS'),
+  severity TEXT NOT NULL CHECK(severity='BLOCKING'),
+  PRIMARY KEY(validation_profile_id,check_code)
+);
+
+CREATE TABLE snapshot_validation_binding (
+  snapshot_id TEXT PRIMARY KEY REFERENCES data_snapshot(snapshot_id),
+  validation_profile_id TEXT NOT NULL REFERENCES snapshot_validation_profile(validation_profile_id),
+  bound_at TEXT NOT NULL
+);
 
 CREATE TABLE trading_calendar_version (
   calendar_version_id TEXT PRIMARY KEY CHECK(calendar_version_id GLOB 'tcv_*'),
@@ -62,7 +134,7 @@ CREATE TABLE trading_session (
   session_ordinal INTEGER NOT NULL CHECK(session_ordinal>=0),
   open_time TEXT,
   close_time TEXT,
-  available_time TEXT,
+  available_time TEXT CHECK(available_time IS NULL OR (instr(available_time,'T')=11 AND datetime(available_time) IS NOT NULL)),
   evidence_artifact_id TEXT NOT NULL,
   UNIQUE(calendar_version_id,session_date),
   UNIQUE(calendar_version_id,session_ordinal),
@@ -89,7 +161,7 @@ CREATE TABLE corporate_action (
   instrument_id TEXT NOT NULL REFERENCES instrument(instrument_id),
   action_type TEXT NOT NULL CHECK(action_type IN ('CASH_DIVIDEND','STOCK_DIVIDEND','SPLIT','RIGHTS','MERGER','DELISTING')),
   effective_time TEXT NOT NULL,
-  available_time TEXT,
+  available_time TEXT CHECK(available_time IS NULL OR (instr(available_time,'T')=11 AND datetime(available_time) IS NOT NULL)),
   revision_id TEXT NOT NULL,
   provider TEXT NOT NULL,
   raw_capture_id TEXT NOT NULL REFERENCES raw_capture(raw_capture_id),
@@ -112,15 +184,17 @@ CREATE TABLE adjustment_factor_version (
 
 CREATE TABLE universe_membership_interval (
   membership_interval_id TEXT PRIMARY KEY CHECK(membership_interval_id GLOB 'umi_*'),
+  membership_fact_id TEXT NOT NULL CHECK(membership_fact_id GLOB 'umf_*'),
   universe_version_id TEXT NOT NULL REFERENCES universe_version(universe_version_id),
   instrument_id TEXT NOT NULL REFERENCES instrument(instrument_id),
   effective_from TEXT NOT NULL,
   effective_to TEXT,
-  available_time TEXT,
+  available_time TEXT CHECK(available_time IS NULL OR (instr(available_time,'T')=11 AND datetime(available_time) IS NOT NULL)),
   revision_id TEXT NOT NULL,
+  membership_state TEXT NOT NULL CHECK(membership_state IN ('INCLUDED','EXCLUDED')),
   provenance_artifact_id TEXT NOT NULL,
   CHECK(effective_to IS NULL OR effective_to>effective_from),
-  UNIQUE(universe_version_id,instrument_id,effective_from,revision_id)
+  UNIQUE(universe_version_id,membership_fact_id,revision_id)
 );
 
 CREATE INDEX idx_trading_session_order ON trading_session(calendar_version_id,session_ordinal);
@@ -139,41 +213,48 @@ BEGIN
   SELECT RAISE(ABORT,'provider_descriptor is append-only');
 END;
 
-CREATE TRIGGER trg_provider_capability_append_only_u
-BEFORE UPDATE ON provider_capability
+CREATE TRIGGER trg_connector_data_capability_authority_i
+BEFORE INSERT ON connector_data_capability
+WHEN NOT EXISTS (
+  SELECT 1 FROM connector_capability AS authority
+  JOIN connector_version AS version
+    ON version.connector_version_id=authority.connector_version_id
+  WHERE authority.connector_version_id=NEW.connector_version_id
+    AND authority.capability_code=NEW.capability_code
+    AND version.state='ADMITTED'
+)
 BEGIN
-  SELECT RAISE(ABORT,'provider_capability is append-only');
+  SELECT RAISE(ABORT,'Data capability extension requires exact admitted ConnectorVersion authority');
 END;
 
-CREATE TRIGGER trg_provider_capability_append_only_d
-BEFORE DELETE ON provider_capability
+CREATE TRIGGER trg_connector_data_capability_artifact_i
+BEFORE INSERT ON connector_data_capability
+WHEN NOT EXISTS (SELECT 1 FROM artifact WHERE artifact_id=NEW.policy_artifact_id AND state='PUBLISHED')
 BEGIN
-  SELECT RAISE(ABORT,'provider_capability is append-only');
+  SELECT RAISE(ABORT,'Data capability policy must target a PUBLISHED Artifact');
 END;
 
-CREATE TRIGGER trg_instrument_classification_artifact_i
-BEFORE INSERT ON instrument_classification
-WHEN NOT EXISTS (SELECT 1 FROM artifact WHERE artifact_id=NEW.evidence_artifact_id AND state='PUBLISHED')
+CREATE TRIGGER trg_connector_data_capability_append_only_u
+BEFORE UPDATE ON connector_data_capability
 BEGIN
-  SELECT RAISE(ABORT,'Instrument classification must target a PUBLISHED Artifact');
+  SELECT RAISE(ABORT,'connector_data_capability is append-only');
 END;
 
-CREATE TRIGGER trg_instrument_classification_append_only_u BEFORE UPDATE ON instrument_classification BEGIN SELECT RAISE(ABORT,'instrument_classification is append-only'); END;
-CREATE TRIGGER trg_instrument_classification_append_only_d BEFORE DELETE ON instrument_classification BEGIN SELECT RAISE(ABORT,'instrument_classification is append-only'); END;
+CREATE TRIGGER trg_connector_data_capability_append_only_d
+BEFORE DELETE ON connector_data_capability
+BEGIN
+  SELECT RAISE(ABORT,'connector_data_capability is append-only');
+END;
+
 CREATE TRIGGER trg_raw_capture_truth_append_only_u BEFORE UPDATE ON raw_capture_truth_descriptor BEGIN SELECT RAISE(ABORT,'raw_capture_truth_descriptor is append-only'); END;
 CREATE TRIGGER trg_raw_capture_truth_append_only_d BEFORE DELETE ON raw_capture_truth_descriptor BEGIN SELECT RAISE(ABORT,'raw_capture_truth_descriptor is append-only'); END;
 
-CREATE TRIGGER trg_instrument_classification_no_overlap_i
-BEFORE INSERT ON instrument_classification
-WHEN EXISTS (
-  SELECT 1 FROM instrument_classification AS existing
-  WHERE existing.instrument_id=NEW.instrument_id
-    AND (existing.effective_to IS NULL OR existing.effective_to>NEW.effective_from)
-    AND (NEW.effective_to IS NULL OR existing.effective_from<NEW.effective_to)
-)
-BEGIN
-  SELECT RAISE(ABORT,'Instrument classification interval overlap');
-END;
+CREATE TRIGGER trg_snapshot_validation_profile_append_only_u BEFORE UPDATE ON snapshot_validation_profile BEGIN SELECT RAISE(ABORT,'snapshot_validation_profile is append-only'); END;
+CREATE TRIGGER trg_snapshot_validation_profile_append_only_d BEFORE DELETE ON snapshot_validation_profile BEGIN SELECT RAISE(ABORT,'snapshot_validation_profile is append-only'); END;
+CREATE TRIGGER trg_snapshot_validation_requirement_append_only_u BEFORE UPDATE ON snapshot_validation_requirement BEGIN SELECT RAISE(ABORT,'snapshot_validation_requirement is append-only'); END;
+CREATE TRIGGER trg_snapshot_validation_requirement_append_only_d BEFORE DELETE ON snapshot_validation_requirement BEGIN SELECT RAISE(ABORT,'snapshot_validation_requirement is append-only'); END;
+CREATE TRIGGER trg_snapshot_validation_binding_append_only_u BEFORE UPDATE ON snapshot_validation_binding BEGIN SELECT RAISE(ABORT,'snapshot_validation_binding is append-only'); END;
+CREATE TRIGGER trg_snapshot_validation_binding_append_only_d BEFORE DELETE ON snapshot_validation_binding BEGIN SELECT RAISE(ABORT,'snapshot_validation_binding is append-only'); END;
 
 CREATE TRIGGER trg_trading_calendar_artifact_i
 BEFORE INSERT ON trading_calendar_version
@@ -225,17 +306,36 @@ BEGIN
   SELECT RAISE(ABORT,'Universe membership must target a PUBLISHED provenance Artifact');
 END;
 
-CREATE TRIGGER trg_universe_membership_no_overlap_i
-BEFORE INSERT ON universe_membership_interval
-WHEN EXISTS (
-  SELECT 1 FROM universe_membership_interval AS existing
-  WHERE existing.universe_version_id=NEW.universe_version_id
-    AND existing.instrument_id=NEW.instrument_id
-    AND (existing.effective_to IS NULL OR existing.effective_to>NEW.effective_from)
-    AND (NEW.effective_to IS NULL OR existing.effective_from<NEW.effective_to)
+CREATE TRIGGER trg_data_snapshot_validate_complete_i
+BEFORE UPDATE OF state ON data_snapshot
+WHEN NEW.state='VALIDATED' AND (
+  NOT EXISTS (
+    SELECT 1 FROM snapshot_validation_binding
+    WHERE snapshot_id=NEW.snapshot_id
+  )
+  OR EXISTS (
+    SELECT 1
+    FROM snapshot_validation_binding AS binding
+    JOIN snapshot_validation_requirement AS requirement
+      ON requirement.validation_profile_id=binding.validation_profile_id
+    LEFT JOIN snapshot_validation AS result
+      ON result.snapshot_id=binding.snapshot_id
+     AND result.validation_profile_id=binding.validation_profile_id
+     AND result.check_code=requirement.check_code
+    WHERE binding.snapshot_id=NEW.snapshot_id
+      AND (result.snapshot_validation_id IS NULL OR result.state<>requirement.required_state)
+  )
+  OR EXISTS (
+    SELECT 1 FROM snapshot_validation AS result
+    JOIN snapshot_validation_binding AS binding
+      ON binding.snapshot_id=result.snapshot_id
+     AND binding.validation_profile_id=result.validation_profile_id
+    WHERE result.snapshot_id=NEW.snapshot_id
+      AND result.severity='BLOCKING' AND result.state='FAIL'
+  )
 )
 BEGIN
-  SELECT RAISE(ABORT,'Universe membership interval overlap');
+  SELECT RAISE(ABORT,'Snapshot validation profile is incomplete');
 END;
 
 CREATE TRIGGER trg_data_snapshot_publish_truth_i
@@ -244,6 +344,7 @@ WHEN NEW.state='PUBLISHED' AND (
   NOT EXISTS (SELECT 1 FROM snapshot_partition WHERE snapshot_id=NEW.snapshot_id)
   OR NOT EXISTS (SELECT 1 FROM snapshot_raw_capture WHERE snapshot_id=NEW.snapshot_id)
   OR NOT EXISTS (SELECT 1 FROM snapshot_calendar WHERE snapshot_id=NEW.snapshot_id)
+  OR NOT EXISTS (SELECT 1 FROM snapshot_validation_binding WHERE snapshot_id=NEW.snapshot_id)
   OR (NEW.truth_profile_id='STRICT_PIT' AND EXISTS (
       SELECT 1 FROM snapshot_partition WHERE snapshot_id=NEW.snapshot_id AND max_available_time IS NULL
   ))
@@ -254,9 +355,31 @@ WHEN NEW.state='PUBLISHED' AND (
   ))
   OR (NEW.truth_profile_id='STRICT_PIT' AND EXISTS (
       SELECT 1 FROM snapshot_raw_capture AS source
+      JOIN raw_capture AS capture ON capture.raw_capture_id=source.raw_capture_id
       LEFT JOIN raw_capture_truth_descriptor AS truth ON truth.raw_capture_id=source.raw_capture_id
+      LEFT JOIN connector_version AS version
+        ON version.connector_version_id=NEW.connector_version_id
+      LEFT JOIN connector_capability AS authority
+        ON authority.connector_version_id=NEW.connector_version_id
+       AND authority.capability_code=source.logical_dataset
+      LEFT JOIN connector_data_capability AS policy
+        ON policy.connector_version_id=NEW.connector_version_id
+       AND policy.capability_code=source.logical_dataset
       WHERE source.snapshot_id=NEW.snapshot_id
-        AND (truth.raw_capture_id IS NULL OR truth.strict_pit_capable=0)
+        AND (
+          capture.connector_version_id<>NEW.connector_version_id
+          OR version.state<>'ADMITTED'
+          OR truth.raw_capture_id IS NULL
+          OR truth.provider_available_time IS NULL
+          OR truth.provenance_complete=0
+          OR authority.connector_version_id IS NULL
+          OR authority.declared_state<>'DECLARED'
+          OR authority.admitted_truth_state<>'FORMAL'
+          OR policy.connector_version_id IS NULL
+          OR policy.provider_id<>truth.provider_id
+          OR policy.logical_dataset<>source.logical_dataset
+          OR policy.revision_semantics='UNKNOWN'
+        )
   ))
 )
 BEGIN

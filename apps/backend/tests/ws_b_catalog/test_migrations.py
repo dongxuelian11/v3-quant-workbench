@@ -24,7 +24,7 @@ class MigrationTests(unittest.TestCase):
             path = Path(directory) / "catalog.sqlite3"
             result = apply_migrations(path, application_version="test")
             self.assertEqual(result.applied, ("0001_control_catalog", "0002_data_truth"))
-            self.assertEqual(result.schema_report.table_count, 67)
+            self.assertEqual(result.schema_report.table_count, 69)
             self.assertEqual(result.schema_report.user_version, 2)
             connection = connect_catalog(path)
             try:
