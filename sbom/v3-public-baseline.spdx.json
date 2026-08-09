@@ -3,7 +3,7 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "v3-public-baseline",
-  "documentNamespace": "https://v3.invalid/spdx/v3-public-baseline-c1897bc45c53ac00ee440ddd57ea59782dc34bcc89561537ee21e03f84c97e01",
+  "documentNamespace": "https://v3.invalid/spdx/v3-public-baseline-b980bcf6259f272b314646f2716de1263b5f298baac923738639baf3ef9cedc2",
   "creationInfo": {
     "created": "2026-08-09T13:23:53Z",
     "creators": [
@@ -21,9 +21,9 @@
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
-      "comment": "Project license intentionally unselected pending an explicit user decision. Dependency inventory is derived from package-lock.json; Python Foundation code is currently standard-library-only."
+      "comment": "Project license is declared by the root package metadata. Dependency inventory is derived from package-lock.json; Python Foundation code is currently standard-library-only."
     },
     {
       "SPDXID": "SPDXRef-Package-1--electron-get-2.0.3",

@@ -1,6 +1,6 @@
 # Project license options for the owner
 
-No option is selected by PB0. Dependency licenses do not choose the project's license.
+PB0 did not select a license. The owner explicitly selected Apache-2.0 for PB1. Dependency licenses did not choose the project's license.
 
 The current npm lock contains permissive licenses (MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD and `MIT OR CC0-1.0`) plus DOMPurify's `MPL-2.0 OR Apache-2.0` dual license. The Python Foundation currently uses only the standard library. No current dependency requires the V3 project itself to adopt a copyleft license.
 
@@ -12,4 +12,4 @@ The current npm lock contains permissive licenses (MIT, Apache-2.0, BSD-2-Clause
 
 Assets and future dependencies must be reviewed separately. Generated screenshots, fonts, icons, market data, model artifacts, provider SDKs, and future optional environments can introduce rights or redistribution constraints that are not present in the current source baseline.
 
-Owner decision required: choose one license, add its canonical text as root `LICENSE`, update package metadata and README, then independently re-run the license/SBOM gates before public push.
+Owner decision recorded for PB1: Apache-2.0. The canonical root `LICENSE`, package metadata, README, license inventory, and SBOM gates must remain consistent before public push.

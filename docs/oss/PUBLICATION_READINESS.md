@@ -1,6 +1,6 @@
 # Publication readiness
 
-This document describes the technical public-source baseline. It is not a release authorization or a legal license decision.
+This document describes the technical public-source baseline and its PB1 publication controls. It is not a versioned release authorization.
 
 ## Public positioning
 
@@ -23,10 +23,10 @@ This document describes the technical public-source baseline. It is not a releas
 - SPDX 2.3 inventory and an exact dependency-license matrix are generated from committed manifests/lock data.
 - Task packages, local agent state, runtime databases, market datasets, model weights, credentials, dependencies, and build output are ignored and forbidden from the public tree.
 
-## Deliberate blockers before publication
+## PB1 publication controls
 
-1. The owner must select and add the project license.
-2. The owner must explicitly authorize creation of a public remote and push.
-3. The first hosted CI run must be observed after remote creation.
+1. Project license: Apache-2.0, with the canonical text committed as root `LICENSE`.
+2. Authorized public target: `https://github.com/dongxuelian11/v3-quant-workbench`.
+3. The published `main` SHA, first hosted CI conclusion, and branch-protection state must be independently verified through GitHub.
 
-PB0 does not create a remote, authenticate to GitHub, push, tag, publish a release, or claim legal open-source availability.
+PB1 creates no tag or GitHub release. Publication does not change the PRE-ALPHA / ACTIVE RECONSTRUCTION status or claim production/trading readiness.

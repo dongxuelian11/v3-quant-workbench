@@ -3,6 +3,7 @@
   "version": "0.1.0-recovery.1",
   "private": true,
   "description": "Pre-alpha V3 quantitative research workbench under active open-source reconstruction.",
+  "license": "Apache-2.0",
   "packageManager": "npm@11.13.0",
   "main": "dist/apps/desktop/src/main.js",
   "workspaces": [

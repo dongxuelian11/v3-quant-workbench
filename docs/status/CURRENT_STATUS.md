@@ -17,7 +17,7 @@ Status: **PRE-ALPHA / ACTIVE RECONSTRUCTION**
 | Live trading | Not included |
 | Paper trading | Not included |
 | Production/trading readiness | False |
-| Project license | Unselected |
-| GitHub remote / publication | Not created or authorized by PB0 |
+| Project license | Apache-2.0 |
+| GitHub remote / publication | PB1 public target: `dongxuelian11/v3-quant-workbench` |
 
 The Foundation's contract types include future domain shapes. Their presence does not mean the corresponding financial capability is implemented or admitted.

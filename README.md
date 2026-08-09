@@ -44,6 +44,6 @@ For the full local Electron smoke route, run `npm run validate` from a desktop s
 
 ## License and publication status
 
-No project license has been selected. Until the project owner explicitly chooses and adds one, the repository is source-visible but is **not yet legally offered under an open-source license**. See `LICENSE_PENDING.md` and `docs/oss/LICENSE_OPTIONS_FOR_USER.md`.
+V3 is licensed under the **Apache License 2.0** (`Apache-2.0`). See the root `LICENSE` file. Dependency licenses remain separately recorded in `docs/oss/THIRD_PARTY_LICENSE_MATRIX.csv`.
 
-No GitHub remote, push, tag, or release is created by this baseline-preparation task. Recovery provenance is documented in `docs/recovery/PROVENANCE_AND_DISASTER_REBUILD.md`.
+The authorized PB1 public repository target is `https://github.com/dongxuelian11/v3-quant-workbench`. Publication does not create a tag or GitHub release. Recovery provenance is documented in `docs/recovery/PROVENANCE_AND_DISASTER_REBUILD.md`.

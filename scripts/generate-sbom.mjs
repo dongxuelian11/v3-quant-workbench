@@ -151,9 +151,9 @@ const sbom = {
       downloadLocation: "NOASSERTION",
       filesAnalyzed: false,
       licenseConcluded: "NOASSERTION",
-      licenseDeclared: "NOASSERTION",
+      licenseDeclared: normalizedLicense(rootPackage.license),
       copyrightText: "NOASSERTION",
-      comment: "Project license intentionally unselected pending an explicit user decision. Dependency inventory is derived from package-lock.json; Python Foundation code is currently standard-library-only."
+      comment: "Project license is declared by the root package metadata. Dependency inventory is derived from package-lock.json; Python Foundation code is currently standard-library-only."
     },
     ...spdxPackages
   ],
