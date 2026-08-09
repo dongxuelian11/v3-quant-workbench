@@ -38,7 +38,8 @@ const suites = [
   "ws_c_artifact",
   "ws_d_task_workers",
   "ws_e_runtime",
-  "br1_foundation_integration"
+  "br1_foundation_integration",
+  "ws_f_data_truth"
 ];
 
 for (const suite of suites) {
@@ -64,4 +65,4 @@ const compile = spawnSync(
   { cwd: root, env, stdio: "inherit" }
 );
 if (compile.status !== 0) process.exit(compile.status ?? 1);
-console.log("Canonical Backend Foundation: 109 tests and compile gate passed.");
+console.log("Canonical Backend Foundation and WS-F Data Truth: tests and compile gate passed.");
