@@ -20,13 +20,4 @@ jobs:
         with:
           python-version-file: .python-version
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm run lint
-      - run: npm test
-      - run: npm run test:backend
-      - run: npm run build
-      - run: npm run test:runtime
-      - run: npm run smoke:frontend
-      - run: npm run secret-scan
-      - run: npm run repo-audit
-      - run: npm run sbom:check
+      - run: npm run validate:public

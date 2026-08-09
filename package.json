@@ -25,13 +25,14 @@
     "test:backend": "node scripts/backend-foundation-test.mjs",
     "test:runtime": "node --test tests/ws_e_electron_runtime/cross-language.test.mjs tests/ws_e_electron_runtime/framing-and-boundary.test.mjs tests/ws_e_electron_runtime/supervisor.test.mjs",
     "smoke:electron": "node scripts/run-electron-smoke.mjs",
-    "smoke:frontend": "node scripts/frontend-smoke.mjs",
+    "smoke:frontend": "node scripts/public-frontend-smoke.mjs",
+    "smoke:visual-evidence": "node scripts/frontend-smoke.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
     "repo-audit": "node scripts/repo-audit.mjs",
     "sbom:generate": "node scripts/generate-sbom.mjs",
     "sbom:check": "node scripts/generate-sbom.mjs --check",
     "evidence:generate": "node scripts/generate-result.mjs",
-    "validate": "npm run typecheck && npm run lint && npm test && npm run build && npm run smoke:electron && npm run smoke:frontend && npm run secret-scan && npm run repo-audit",
+    "validate": "npm run validate:public && npm run smoke:electron && npm run smoke:visual-evidence",
     "validate:public": "npm run typecheck && npm run lint && npm test && npm run test:backend && npm run build && npm run test:runtime && npm run smoke:frontend && npm run secret-scan && npm run repo-audit && npm run sbom:check"
   },
   "dependencies": {
