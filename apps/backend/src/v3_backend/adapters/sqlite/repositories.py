@@ -545,7 +545,11 @@ class SQLiteSnapshotRepository(SQLiteDomainRepository):
              AND result.validation_profile_id=requirement.validation_profile_id
              AND result.check_code=requirement.check_code
             WHERE requirement.validation_profile_id=?
-              AND (result.snapshot_validation_id IS NULL OR result.state<>'PASS')
+              AND (
+                result.snapshot_validation_id IS NULL
+                OR result.state<>requirement.required_state
+                OR result.severity<>requirement.severity
+              )
             LIMIT 1
             """,
             (snapshot_id, validation_profile_id),

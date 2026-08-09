@@ -464,6 +464,45 @@ class DataTruthCatalogTests(CatalogTestCase):
         ).fetchone()[0]
         self.assertEqual(profile_state, "PRE_ALPHA")
 
+    def test_snapshot_validation_requires_matching_blocking_severity(self) -> None:
+        artifacts = self.seed_truth()
+        with self.assertRaises(ConflictError):
+            with SQLiteUnitOfWork(self.connection) as unit:
+                r = self.registry(unit)
+                r.snapshot.create_candidate(
+                    {
+                        "snapshot_id": "snp_wrong_validation_severity",
+                        "connector_version_id": "cov_truth",
+                        "normalization_spec_version": "canonical-eod-v1",
+                        "truth_profile_id": "STRICT_PIT",
+                        "state": "CANDIDATE",
+                        "created_at": NOW,
+                    }
+                )
+                for suffix, check_code, severity in (
+                    ("pit", "PIT_NO_FUTURE_DATA", "INFO"),
+                    ("artifact", "SNAPSHOT_ARTIFACT_LINKAGE", "BLOCKING"),
+                ):
+                    r.snapshot.record_validation(
+                        {
+                            "snapshot_validation_id": (
+                                f"snv_wrong_severity_{suffix}"
+                            ),
+                            "snapshot_id": "snp_wrong_validation_severity",
+                            "validation_profile_id": "financial-invariants-v1",
+                            "check_code": check_code,
+                            "state": "PASS",
+                            "severity": severity,
+                            "report_artifact_id": artifacts["validation"],
+                            "validated_at": NOW,
+                        }
+                    )
+                r.snapshot.mark_validated(
+                    "snp_wrong_validation_severity",
+                    validation_profile_id="financial-invariants-v1",
+                    validated_at=NOW,
+                )
+
     def test_missing_provider_available_time_blocks_strict_snapshot(self) -> None:
         artifacts = self.seed_truth()
         with SQLiteUnitOfWork(self.connection) as unit:

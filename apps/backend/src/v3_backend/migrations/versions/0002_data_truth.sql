@@ -7,7 +7,7 @@ CREATE TABLE raw_capture_ws_f (
   request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint)=64),
   effective_range_start TEXT,
   effective_range_end TEXT,
-  available_time TEXT CHECK(available_time IS NULL OR (instr(available_time,'T')=11 AND datetime(available_time) IS NOT NULL)),
+  available_time TEXT,
   provider_revision_id TEXT,
   captured_at TEXT NOT NULL,
   ingested_at TEXT NOT NULL,
@@ -17,7 +17,17 @@ CREATE TABLE raw_capture_ws_f (
   UNIQUE(connector_version_id,request_fingerprint,content_hash)
 );
 
-INSERT INTO raw_capture_ws_f SELECT * FROM raw_capture;
+INSERT INTO raw_capture_ws_f(
+  raw_capture_id,connector_version_id,provider_dataset,request_fingerprint,
+  effective_range_start,effective_range_end,available_time,provider_revision_id,
+  captured_at,ingested_at,artifact_id,content_hash,state
+)
+SELECT
+  raw_capture_id,connector_version_id,provider_dataset,request_fingerprint,
+  effective_range_start,effective_range_end,
+  CASE WHEN available_time='UNAVAILABLE' THEN NULL ELSE available_time END,
+  provider_revision_id,captured_at,ingested_at,artifact_id,content_hash,state
+FROM raw_capture;
 DROP TABLE raw_capture;
 
 CREATE TABLE raw_capture (
@@ -37,7 +47,17 @@ CREATE TABLE raw_capture (
   UNIQUE(connector_version_id,request_fingerprint,content_hash)
 );
 
-INSERT INTO raw_capture SELECT * FROM raw_capture_ws_f;
+INSERT INTO raw_capture(
+  raw_capture_id,connector_version_id,provider_dataset,request_fingerprint,
+  effective_range_start,effective_range_end,available_time,provider_revision_id,
+  captured_at,ingested_at,artifact_id,content_hash,state
+)
+SELECT
+  raw_capture_id,connector_version_id,provider_dataset,request_fingerprint,
+  effective_range_start,effective_range_end,
+  CASE WHEN available_time='UNAVAILABLE' THEN NULL ELSE available_time END,
+  provider_revision_id,captured_at,ingested_at,artifact_id,content_hash,state
+FROM raw_capture_ws_f;
 DROP TABLE raw_capture_ws_f;
 
 CREATE INDEX idx_raw_capture_range ON raw_capture(connector_version_id,provider_dataset,effective_range_start,effective_range_end);
@@ -323,7 +343,11 @@ WHEN NEW.state='VALIDATED' AND (
      AND result.validation_profile_id=binding.validation_profile_id
      AND result.check_code=requirement.check_code
     WHERE binding.snapshot_id=NEW.snapshot_id
-      AND (result.snapshot_validation_id IS NULL OR result.state<>requirement.required_state)
+      AND (
+        result.snapshot_validation_id IS NULL
+        OR result.state<>requirement.required_state
+        OR result.severity<>requirement.severity
+      )
   )
   OR EXISTS (
     SELECT 1 FROM snapshot_validation AS result
