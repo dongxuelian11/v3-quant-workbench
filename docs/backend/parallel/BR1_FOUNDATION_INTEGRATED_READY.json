@@ -1,0 +1,92 @@
+{
+  "schema_id": "urn:v3:oss-rebuild:br1-foundation-integrated-ready:1.0.0",
+  "task_id": "V3-OSS-REBUILD-BR1-FOUNDATION-INTEGRATION-SOL-HIGH-06",
+  "status": "BR1_FOUNDATION_INTEGRATED_READY_FOR_WS_F_DATA_TRUTH",
+  "branch": "rebuild/br1-foundation-integrated",
+  "integrated_head": "8d57422317c960abcd8609f087301fcc21eb259d",
+  "integrated_head_semantics": "B/C/D/E integration HEAD before the one bounded final integration-and-evidence commit; exact final branch HEAD is recorded in the result package",
+  "component_commits": {
+    "ws_a": "1f598ace73bbd1fe2c43e7253a7b9fcbe1f1658a",
+    "ws_b": "6313e302eabdbc81d69f87c72d91823780cecd1b",
+    "ws_c": "37808289edde07e95303c195b5049abb7b548c77",
+    "ws_d": "8a2693430a1e3be2b1d3cc934ab3391627532cd5",
+    "ws_e": "05ff59ab905a3d35ce39df520806c7b3be029a06"
+  },
+  "local_integration_commits": {
+    "ws_b": "ffa07badfe1a5133b530f1f7aa99b0bd1954b176",
+    "ws_c": "93c43ac55d44ae777a7ffaafd0605476f9337848",
+    "ws_d": "d416f8983320933370c6f07ac2157368acb25ab7",
+    "ws_e": "8d57422317c960abcd8609f087301fcc21eb259d"
+  },
+  "integration_order": ["WS-B", "WS-C", "WS-D", "WS-E"],
+  "conflicts": [],
+  "contract_digest": "99476cfd4d6768397c5ee2df2f2cdadaee4b499244a31213d179a9755f009f80",
+  "contract_digest_unchanged": true,
+  "catalog": {
+    "table_count": 56,
+    "user_version": 1,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "invariant_violations": 0
+  },
+  "combined_test_counts": {
+    "ws_a_contracts": 15,
+    "ws_b_catalog": 19,
+    "ws_c_artifact_data_plane": 36,
+    "ws_d_task_workers": 23,
+    "ws_e_python_runtime": 8,
+    "br1_cross_foundation": 8,
+    "desktop_unit": 4,
+    "ws_e_electron_runtime": 12,
+    "total_tests": 125
+  },
+  "build_gates": {
+    "backend_compile": "PASS",
+    "desktop_typecheck": "PASS",
+    "desktop_lint": "PASS",
+    "desktop_build": "PASS"
+  },
+  "cross_case_ids": [
+    "BR1-X-001",
+    "BR1-X-002",
+    "BR1-X-003",
+    "BR1-X-004",
+    "BR1-X-005",
+    "BR1-X-006",
+    "BR1-X-007",
+    "BR1-X-008"
+  ],
+  "ws_c_source_review_closure": {
+    "status": "CLOSED",
+    "exact_commit": "37808289edde07e95303c195b5049abb7b548c77",
+    "parent": "1f598ace73bbd1fe2c43e7253a7b9fcbe1f1658a",
+    "committed_files_hashed": 21,
+    "source_files_read_from_exact_commit": true,
+    "diff_inside_ws_c_write_set": true,
+    "forbidden_files": 0,
+    "actual_committed_source_tests": 36,
+    "actual_committed_source_tests_status": "PASS",
+    "full_hash_matrix": "result-package/ws_c_source_review_closure.json"
+  },
+  "ownership_audit": {
+    "artifact_owner": "ArtifactService plus v3_backend.domain.artifacts",
+    "catalog_owner": "SQLiteRepositoryRegistry",
+    "task_run_attempt_owner": "TaskService plus v3_backend.control_plane",
+    "runtime_owner": "v3_backend.runtime plus desktop backendRuntime",
+    "registry_class_count": 1,
+    "legacy_launcher_count": 0,
+    "backtest_core_count": 0,
+    "large_payload_catalog_or_transport": false
+  },
+  "scope_guards": {
+    "public_contract_schema_modified": false,
+    "control_catalog_schema_modified": false,
+    "data_truth_added": false,
+    "financial_domain_capability_added": false,
+    "main_merged": false,
+    "pushed": false,
+    "tagged": false,
+    "destructive_git": false
+  },
+  "blockers": []
+}
