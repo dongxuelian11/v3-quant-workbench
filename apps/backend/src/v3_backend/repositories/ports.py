@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol
+
+
+Row = Mapping[str, Any]
+
+
+class CatalogRepository(Protocol):
+    def get(self, identity: str) -> dict[str, Any] | None: ...
+    def require(self, identity: str) -> dict[str, Any]: ...
+    def add_new(self, aggregate: Row, *, idempotent: bool = False) -> dict[str, Any]: ...
+    def save(
+        self, identity: str, changes: Row, *, expected_version: int
+    ) -> dict[str, Any]: ...
+    def list_page(
+        self,
+        filters: Row | None = None,
+        *,
+        cursor: Sequence[Any] | None = None,
+        limit: int = 100,
+    ) -> tuple[dict[str, Any], ...]: ...
+
+
+class ProjectRepository(CatalogRepository, Protocol):
+    def get_current_revision(self, project_id: str) -> dict[str, Any] | None: ...
+    def append_revision(
+        self, revision: Row, *, base_revision_id: str | None
+    ) -> dict[str, Any]: ...
+
+
+class ConnectorRepository(Protocol):
+    def table(self, table_name: str) -> CatalogRepository: ...
+    def list_versions(self, connector_id: str) -> tuple[dict[str, Any], ...]: ...
+    def record_admission(self, admission: Row) -> dict[str, Any]: ...
+    def set_capability_state(self, capability: Row) -> dict[str, Any]: ...
+    def resolve_credential_reference(self, connector_id: str) -> dict[str, Any] | None: ...
+
+
+class InstrumentRepository(Protocol):
+    def add_alias(self, alias: Row) -> dict[str, Any]: ...
+    def resolve_alias(
+        self, connector_version_id: str, provider_code: str, as_of: str
+    ) -> dict[str, Any] | None: ...
+
+
+class TaskRepository(Protocol):
+    def create_task_and_run(self, task: Row, run: Row) -> tuple[dict[str, Any], dict[str, Any]]: ...
+    def create_attempt(self, attempt: Row) -> dict[str, Any]: ...
+    def append_event(self, event: Row, *, expected_stream_sequence: int) -> dict[str, Any]: ...
+    def list_replay(
+        self, project_id: str, *, after_sequence: int = 0, limit: int = 1_000
+    ) -> tuple[dict[str, Any], ...]: ...
+
+
+class ArtifactRepository(Protocol):
+    def declare_staged(self, artifact: Row) -> dict[str, Any]: ...
+    def publish_verified(self, artifact_id: str, *, sha256: str, published_at: str) -> dict[str, Any]: ...
+    def add_reference(self, reference: Row) -> dict[str, Any]: ...
+    def bind_artifact(
+        self,
+        *,
+        artifact_reference_id: str,
+        owner_type: str,
+        owner_id: str,
+        role: str,
+        artifact_id: str,
+        created_at: str,
+    ) -> dict[str, Any]: ...
+    def reachable_set(self) -> frozenset[str]: ...
+
+
+class ProvenanceRepository(Protocol):
+    def record_entity_once(self, entity: Row) -> dict[str, Any]: ...
+    def record_edge_once(self, edge: Row) -> dict[str, Any]: ...
+    def walk_ancestors(self, entity_id: str) -> tuple[dict[str, Any], ...]: ...
+
+
+class SnapshotRepository(Protocol):
+    def create_candidate(self, snapshot: Row) -> dict[str, Any]: ...
+    def record_validation(self, validation: Row) -> dict[str, Any]: ...
+    def publish_validated(
+        self,
+        snapshot_id: str,
+        *,
+        manifest_artifact_id: str,
+        content_hash: str,
+        published_at: str,
+    ) -> dict[str, Any]: ...
+
+
+class VersionRepository(Protocol):
+    def table(self, table_name: str) -> CatalogRepository: ...
+    def publish_version(self, table_name: str, aggregate: Row) -> dict[str, Any]: ...
+
+
+UniverseRepository = VersionRepository
+FactorRepository = VersionRepository
+DatasetRepository = VersionRepository
+StrategyRepository = VersionRepository
+ModelRepository = VersionRepository
+StudyRepository = VersionRepository
+PortfolioRepository = VersionRepository
+RiskRepository = VersionRepository
+OptimizationRepository = VersionRepository
+BacktestRepository = VersionRepository
+ResultRepository = VersionRepository

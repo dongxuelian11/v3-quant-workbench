@@ -1,0 +1,900 @@
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from v3_backend.errors.exceptions import (
+    ArtifactNotPublishedError,
+    ConflictError,
+    InvalidArgumentError,
+    NotFoundError,
+)
+from v3_backend.provenance.canonical_hash import canonical_json
+from v3_backend.repositories.unit_of_work import TransactionMode
+
+from .unit_of_work import SQLiteUnitOfWork
+
+
+MAX_JSON_BYTES = 64 * 1024
+MAX_INLINE_NUMERIC_ITEMS = 256
+_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
+
+_REPOSITORY_TABLES: dict[str, frozenset[str]] = {
+    "project": frozenset({"project", "project_context_revision", "desktop_session"}),
+    "connector": frozenset(
+        {"connector", "connector_version", "connector_capability", "connector_admission", "credential_reference"}
+    ),
+    "instrument": frozenset({"instrument", "instrument_revision", "instrument_alias"}),
+    "snapshot": frozenset(
+        {"data_snapshot", "raw_capture", "snapshot_partition", "snapshot_validation", "industry_taxonomy_version", "industry_membership"}
+    ),
+    "universe": frozenset({"universe_definition", "universe_version"}),
+    "factor": frozenset({"factor_definition", "factor_version"}),
+    "dataset": frozenset({"dataset_spec", "dataset_version"}),
+    "strategy": frozenset({"strategy_draft", "strategy_version"}),
+    "model": frozenset({"model_spec", "model_version", "prediction_signal_version"}),
+    "study": frozenset({"study", "trial", "checkpoint"}),
+    "portfolio": frozenset({"portfolio_construction_spec", "portfolio_version"}),
+    "risk": frozenset({"risk_model_spec", "risk_model_version"}),
+    "optimization": frozenset({"constraint_set_version", "optimization_problem", "optimization_solution"}),
+    "backtest": frozenset({"experiment", "backtest_run_spec"}),
+    "result": frozenset({"result", "result_component"}),
+    "task": frozenset({"task", "run", "task_attempt", "task_dependency", "task_event", "idempotency_record"}),
+    "artifact": frozenset({"artifact", "artifact_reference"}),
+    "provenance": frozenset({"provenance_entity", "provenance_edge"}),
+}
+_IMMUTABLE_TABLES = frozenset(
+    {
+        "project_context_revision",
+        "connector_version",
+        "instrument_revision",
+        "instrument_alias",
+        "raw_capture",
+        "snapshot_partition",
+        "snapshot_validation",
+        "industry_taxonomy_version",
+        "industry_membership",
+        "factor_version",
+        "constraint_set_version",
+        "backtest_run_spec",
+        "task_dependency",
+        "task_event",
+        "idempotency_record",
+        "checkpoint",
+        "result_component",
+        "provenance_entity",
+        "provenance_edge",
+    }
+)
+
+
+def _row_dict(row: sqlite3.Row | Sequence[Any], columns: Sequence[str] | None = None) -> dict[str, Any]:
+    if isinstance(row, sqlite3.Row):
+        return {key: row[key] for key in row.keys()}
+    if columns is None:
+        raise TypeError("columns are required for tuple rows")
+    return dict(zip(columns, row, strict=True))
+
+
+def _count_numeric_array_items(value: Any) -> int:
+    if isinstance(value, list):
+        if value and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value):
+            return len(value)
+        return sum(_count_numeric_array_items(item) for item in value)
+    if isinstance(value, Mapping):
+        return sum(_count_numeric_array_items(item) for item in value.values())
+    return 0
+
+
+def canonical_bounded_json(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise InvalidArgumentError("JSON metadata is not valid") from exc
+    if _count_numeric_array_items(value) > MAX_INLINE_NUMERIC_ITEMS:
+        raise InvalidArgumentError(
+            "variable-length numerical payload must be stored as an ArtifactRef",
+            details={"max_inline_numeric_items": MAX_INLINE_NUMERIC_ITEMS},
+        )
+    text = canonical_json(value)
+    size = len(text.encode("utf-8"))
+    if size > MAX_JSON_BYTES:
+        raise InvalidArgumentError(
+            "Catalog JSON metadata exceeds the 64 KiB limit",
+            details={"max_bytes": MAX_JSON_BYTES, "actual_bytes": size},
+        )
+    return text
+
+
+class SQLiteTableRepository:
+    def __init__(self, unit_of_work: SQLiteUnitOfWork, table_name: str) -> None:
+        if _IDENTIFIER.fullmatch(table_name) is None:
+            raise ValueError(f"invalid table name: {table_name!r}")
+        self.uow = unit_of_work
+        self.connection = unit_of_work.connection
+        self.table_name = table_name
+        table_exists = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
+        ).fetchone()
+        if table_exists is None:
+            raise ValueError(f"unknown Catalog table: {table_name}")
+        info = tuple(self.connection.execute(f'PRAGMA table_info("{table_name}")'))
+        self.columns = tuple(str(row[1]) for row in info)
+        self.primary_key = tuple(
+            str(row[1]) for row in sorted((row for row in info if int(row[5]) > 0), key=lambda row: int(row[5]))
+        )
+        self.version_column = "row_version" if "row_version" in self.columns else (
+            "state_version" if "state_version" in self.columns else None
+        )
+        self.order_columns = (
+            ("created_at", self.primary_key[0])
+            if "created_at" in self.columns and len(self.primary_key) == 1
+            else self.primary_key
+        )
+
+    def _assert_active(self, *, write: bool = False) -> None:
+        if not self.uow.active:
+            raise RuntimeError("repository access requires an active UnitOfWork")
+        if write and self.uow.mode is TransactionMode.READ_ONLY:
+            raise RuntimeError("writes are forbidden in READ_ONLY mode")
+
+    def _identity_clause(self, identity: str | Mapping[str, Any]) -> tuple[str, tuple[Any, ...]]:
+        if isinstance(identity, Mapping):
+            if set(identity) != set(self.primary_key):
+                raise ValueError(f"identity must provide composite key {self.primary_key!r}")
+            return (
+                " AND ".join(f'"{column}"=?' for column in self.primary_key),
+                tuple(identity[column] for column in self.primary_key),
+            )
+        if len(self.primary_key) != 1:
+            raise ValueError(f"{self.table_name} uses a composite primary key")
+        return f'"{self.primary_key[0]}"=?', (identity,)
+
+    def _normalize(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        unknown = set(row) - set(self.columns)
+        if unknown:
+            raise InvalidArgumentError(
+                f"unknown fields for {self.table_name}",
+                details={"fields": sorted(unknown)},
+            )
+        normalized = dict(row)
+        for column, value in tuple(normalized.items()):
+            if column.endswith("_json") and value is not None:
+                normalized[column] = canonical_bounded_json(value)
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                raise InvalidArgumentError("binary payloads are forbidden in the Control Catalog")
+        return normalized
+
+    def get(self, identity: str | Mapping[str, Any]) -> dict[str, Any] | None:
+        self._assert_active()
+        clause, parameters = self._identity_clause(identity)
+        row = self.connection.execute(
+            f'SELECT * FROM "{self.table_name}" WHERE {clause}', parameters
+        ).fetchone()
+        return None if row is None else _row_dict(row, self.columns)
+
+    def require(self, identity: str | Mapping[str, Any]) -> dict[str, Any]:
+        row = self.get(identity)
+        if row is None:
+            raise NotFoundError(
+                f"{self.table_name} not found", details={"identity": dict(identity) if isinstance(identity, Mapping) else identity}
+            )
+        return row
+
+    def add_new(
+        self, aggregate: Mapping[str, Any], *, idempotent: bool = False
+    ) -> dict[str, Any]:
+        self._assert_active(write=True)
+        row = self._normalize(aggregate)
+        if not row:
+            raise InvalidArgumentError("cannot insert an empty aggregate")
+        columns = tuple(row)
+        sql = (
+            f'INSERT INTO "{self.table_name}" ('
+            + ",".join(f'"{column}"' for column in columns)
+            + ") VALUES ("
+            + ",".join("?" for _ in columns)
+            + ")"
+        )
+        try:
+            self.connection.execute(sql, tuple(row[column] for column in columns))
+        except sqlite3.IntegrityError as exc:
+            if idempotent and self.primary_key and all(column in row for column in self.primary_key):
+                identity = {column: row[column] for column in self.primary_key}
+                existing = self.get(identity)
+                if existing is not None and all(existing.get(key) == value for key, value in row.items()):
+                    return existing
+            raise ConflictError(
+                f"cannot insert {self.table_name}", details={"sqlite_error": str(exc)}
+            ) from exc
+        identity = {column: row[column] for column in self.primary_key}
+        return self.require(identity)
+
+    def save(
+        self,
+        identity: str | Mapping[str, Any],
+        changes: Mapping[str, Any],
+        *,
+        expected_version: int,
+    ) -> dict[str, Any]:
+        self._assert_active(write=True)
+        if self.table_name in _IMMUTABLE_TABLES:
+            raise ConflictError(f"{self.table_name} is append-only")
+        if self.version_column is None:
+            raise ConflictError(f"{self.table_name} has no optimistic version column")
+        normalized = self._normalize(changes)
+        for primary in self.primary_key:
+            if primary in normalized:
+                raise InvalidArgumentError("primary key mutation is forbidden")
+        normalized.pop(self.version_column, None)
+        if not normalized:
+            raise InvalidArgumentError("save requires at least one changed field")
+        clause, identity_values = self._identity_clause(identity)
+        assignments = ",".join(f'"{column}"=?' for column in normalized)
+        sql = (
+            f'UPDATE "{self.table_name}" SET {assignments},'
+            f'"{self.version_column}"="{self.version_column}"+1 '
+            f'WHERE {clause} AND "{self.version_column}"=?'
+        )
+        cursor = self.connection.execute(
+            sql,
+            tuple(normalized.values()) + identity_values + (expected_version,),
+        )
+        if cursor.rowcount != 1:
+            if self.get(identity) is None:
+                raise NotFoundError(f"{self.table_name} not found")
+            raise ConflictError(
+                "optimistic concurrency conflict",
+                details={"expected_version": expected_version},
+            )
+        return self.require(identity)
+
+    def list_page(
+        self,
+        filters: Mapping[str, Any] | None = None,
+        *,
+        cursor: Sequence[Any] | None = None,
+        limit: int = 100,
+    ) -> tuple[dict[str, Any], ...]:
+        self._assert_active()
+        if not 1 <= limit <= 1_000:
+            raise InvalidArgumentError("limit must be between 1 and 1000")
+        filters = dict(filters or {})
+        if set(filters) - set(self.columns):
+            raise InvalidArgumentError("filter contains an unknown column")
+        clauses = [f'"{column}"=?' for column in filters]
+        parameters: list[Any] = list(filters.values())
+        if cursor is not None:
+            if not self.order_columns or len(cursor) != len(self.order_columns):
+                raise InvalidArgumentError("invalid keyset cursor")
+            tuple_columns = ",".join(f'"{column}"' for column in self.order_columns)
+            clauses.append(f"({tuple_columns}) > ({','.join('?' for _ in cursor)})")
+            parameters.extend(cursor)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        order = ",".join(f'"{column}"' for column in self.order_columns) or "rowid"
+        rows = self.connection.execute(
+            f'SELECT * FROM "{self.table_name}"{where} ORDER BY {order} LIMIT ?',
+            tuple(parameters) + (limit,),
+        ).fetchall()
+        return tuple(_row_dict(row, self.columns) for row in rows)
+
+
+class SQLiteDomainRepository:
+    def __init__(self, unit_of_work: SQLiteUnitOfWork, domain: str) -> None:
+        self.uow = unit_of_work
+        try:
+            self.allowed_tables = _REPOSITORY_TABLES[domain]
+        except KeyError as exc:
+            raise ValueError(f"unknown repository domain: {domain}") from exc
+
+    def table(self, table_name: str) -> SQLiteTableRepository:
+        if table_name not in self.allowed_tables:
+            raise ValueError(f"{table_name} is outside this repository boundary")
+        return SQLiteTableRepository(self.uow, table_name)
+
+    def publish_version(
+        self,
+        table_name: str,
+        aggregate: Mapping[str, Any],
+        *,
+        provenance_entities: Sequence[Mapping[str, Any]] = (),
+        provenance_edges: Sequence[Mapping[str, Any]] = (),
+    ) -> dict[str, Any]:
+        repository = self.table(table_name)
+        if "state" in repository.columns and aggregate.get("state") != "PUBLISHED":
+            raise InvalidArgumentError("publish_version requires state=PUBLISHED")
+        published = repository.add_new(aggregate, idempotent=True)
+        provenance = SQLiteProvenanceRepository(self.uow)
+        for entity in provenance_entities:
+            provenance.record_entity_once(entity)
+        for edge in provenance_edges:
+            provenance.record_edge_once(edge)
+        return published
+
+
+class SQLiteProjectRepository(SQLiteDomainRepository):
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "project")
+
+    def get(self, project_id: str) -> dict[str, Any] | None:
+        return self.table("project").get(project_id)
+
+    def require(self, project_id: str) -> dict[str, Any]:
+        return self.table("project").require(project_id)
+
+    def add_new(self, aggregate: Mapping[str, Any], *, idempotent: bool = False) -> dict[str, Any]:
+        return self.table("project").add_new(aggregate, idempotent=idempotent)
+
+    def save(
+        self, project_id: str, changes: Mapping[str, Any], *, expected_version: int
+    ) -> dict[str, Any]:
+        return self.table("project").save(project_id, changes, expected_version=expected_version)
+
+    def get_current_revision(self, project_id: str) -> dict[str, Any] | None:
+        self.table("project_context_revision")._assert_active()
+        row = self.uow.connection.execute(
+            """
+            SELECT * FROM project_context_revision
+            WHERE project_id=? ORDER BY revision_no DESC LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        return None if row is None else _row_dict(row)
+
+    def append_revision(
+        self, revision: Mapping[str, Any], *, base_revision_id: str | None
+    ) -> dict[str, Any]:
+        current = self.get_current_revision(str(revision["project_id"]))
+        if current is None:
+            if base_revision_id is not None:
+                raise ConflictError("first ProjectContext revision must have no base")
+            expected_no = 1
+            expected_parent = None
+        else:
+            if current["project_context_revision_id"] != base_revision_id:
+                raise ConflictError("ProjectContext base revision is stale")
+            expected_no = int(current["revision_no"]) + 1
+            expected_parent = base_revision_id
+        if int(revision.get("revision_no", expected_no)) != expected_no:
+            raise ConflictError("ProjectContext revision number is not append-only")
+        row = dict(revision)
+        row["revision_no"] = expected_no
+        row["parent_revision_id"] = expected_parent
+        return self.table("project_context_revision").add_new(row)
+
+
+class SQLiteInstrumentRepository(SQLiteDomainRepository):
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "instrument")
+
+    def add_alias(self, alias: Mapping[str, Any]) -> dict[str, Any]:
+        repository = self.table("instrument_alias")
+        repository._assert_active(write=True)
+        start = str(alias["effective_from"])
+        end = alias.get("effective_to")
+        overlap = self.uow.connection.execute(
+            """
+            SELECT instrument_alias_id FROM instrument_alias
+            WHERE connector_version_id=? AND provider_code=?
+              AND (effective_to IS NULL OR effective_to > ?)
+              AND (? IS NULL OR effective_from < ?)
+            LIMIT 1
+            """,
+            (
+                alias["connector_version_id"],
+                alias["provider_code"],
+                start,
+                end,
+                end,
+            ),
+        ).fetchone()
+        if overlap is not None:
+            raise ConflictError("provider alias interval overlaps an existing alias")
+        return repository.add_new(alias)
+
+    def resolve_alias(
+        self, connector_version_id: str, provider_code: str, as_of: str
+    ) -> dict[str, Any] | None:
+        repository = self.table("instrument_alias")
+        repository._assert_active()
+        rows = self.uow.connection.execute(
+            """
+            SELECT * FROM instrument_alias
+            WHERE connector_version_id=? AND provider_code=?
+              AND effective_from<=?
+              AND (effective_to IS NULL OR ?<effective_to)
+            ORDER BY effective_from DESC
+            """,
+            (connector_version_id, provider_code, as_of, as_of),
+        ).fetchall()
+        if len(rows) > 1:
+            raise ConflictError("ambiguous provider alias resolution")
+        return None if not rows else _row_dict(rows[0])
+
+
+class SQLiteConnectorRepository(SQLiteDomainRepository):
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "connector")
+
+    def list_versions(self, connector_id: str) -> tuple[dict[str, Any], ...]:
+        return self.table("connector_version").list_page(
+            {"connector_id": connector_id}, limit=1_000
+        )
+
+    def record_admission(self, admission: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("connector_admission").add_new(admission, idempotent=True)
+
+    def set_capability_state(self, capability: Mapping[str, Any]) -> dict[str, Any]:
+        # Capability evidence is version-scoped. Changed evidence/state is a conflict,
+        # never an in-place rewrite of the admission decision.
+        return self.table("connector_capability").add_new(capability, idempotent=True)
+
+    def resolve_credential_reference(self, connector_id: str) -> dict[str, Any] | None:
+        rows = self.table("credential_reference").list_page(
+            {"connector_id": connector_id, "state": "ACTIVE"}, limit=2
+        )
+        if len(rows) > 1:
+            raise ConflictError("multiple ACTIVE credential references for one Connector")
+        return None if not rows else rows[0]
+
+
+class SQLiteSnapshotRepository(SQLiteDomainRepository):
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "snapshot")
+
+    def create_candidate(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+        if snapshot.get("state") != "CANDIDATE":
+            raise InvalidArgumentError("create_candidate requires state=CANDIDATE")
+        return self.table("data_snapshot").add_new(snapshot)
+
+    def record_validation(self, validation: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("snapshot_validation").add_new(validation, idempotent=True)
+
+    def publish_validated(
+        self,
+        snapshot_id: str,
+        *,
+        manifest_artifact_id: str,
+        content_hash: str,
+        published_at: str,
+    ) -> dict[str, Any]:
+        repository = self.table("data_snapshot")
+        repository._assert_active(write=True)
+        failed = self.uow.connection.execute(
+            """
+            SELECT 1 FROM snapshot_validation
+            WHERE snapshot_id=? AND state='FAIL' AND severity='BLOCKING' LIMIT 1
+            """,
+            (snapshot_id,),
+        ).fetchone()
+        if failed is not None:
+            raise ConflictError("Snapshot has a non-PASSED validation")
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE data_snapshot
+            SET state='PUBLISHED', manifest_artifact_id=?, content_hash=?, published_at=?
+            WHERE snapshot_id=? AND state='VALIDATED'
+            """,
+            (manifest_artifact_id, content_hash, published_at, snapshot_id),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("Snapshot is not VALIDATED")
+        return repository.require(snapshot_id)
+
+    def list_upgrade_candidates(
+        self, connector_version_id: str, *, after_published_at: str
+    ) -> tuple[dict[str, Any], ...]:
+        repository = self.table("data_snapshot")
+        repository._assert_active()
+        rows = self.uow.connection.execute(
+            """
+            SELECT * FROM data_snapshot
+            WHERE connector_version_id=? AND state='PUBLISHED' AND published_at>?
+            ORDER BY published_at,snapshot_id
+            """,
+            (connector_version_id, after_published_at),
+        ).fetchall()
+        return tuple(_row_dict(row) for row in rows)
+
+
+class SQLiteStudyRepository(SQLiteDomainRepository):
+    _TERMINAL = frozenset({"PRUNED", "COMPLETED", "FAILED", "CANCELLED"})
+
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "study")
+
+    def reserve_trial_batch(
+        self, trials: Sequence[Mapping[str, Any]]
+    ) -> tuple[dict[str, Any], ...]:
+        repository = self.table("trial")
+        return tuple(repository.add_new(trial, idempotent=True) for trial in trials)
+
+    def append_trial_state(
+        self,
+        trial_id: str,
+        *,
+        from_state: str,
+        to_state: str,
+        finished_at: str | None = None,
+        objective_summary: Mapping[str, Any] | None = None,
+        metrics_artifact_id: str | None = None,
+    ) -> dict[str, Any]:
+        repository = self.table("trial")
+        repository._assert_active(write=True)
+        if from_state in self._TERMINAL:
+            raise ConflictError("terminal Trial cannot transition")
+        objective_json = (
+            None if objective_summary is None else canonical_bounded_json(objective_summary)
+        )
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE trial
+            SET state=?, finished_at=?, objective_summary_json=COALESCE(?,objective_summary_json),
+                metrics_artifact_id=COALESCE(?,metrics_artifact_id)
+            WHERE trial_id=? AND state=?
+            """,
+            (to_state, finished_at, objective_json, metrics_artifact_id, trial_id, from_state),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("Trial state compare-and-swap failed")
+        return repository.require(trial_id)
+
+    def load_resume_checkpoint(self, attempt_id: str) -> dict[str, Any] | None:
+        repository = self.table("checkpoint")
+        repository._assert_active()
+        row = self.uow.connection.execute(
+            "SELECT * FROM checkpoint WHERE attempt_id=? ORDER BY ordinal DESC LIMIT 1",
+            (attempt_id,),
+        ).fetchone()
+        return None if row is None else _row_dict(row)
+
+
+class SQLiteTaskRepository(SQLiteDomainRepository):
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "task")
+
+    def create_task_and_run(
+        self, task: Mapping[str, Any], run: Mapping[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if run.get("task_id") != task.get("task_id"):
+            raise ConflictError("Run must belong to the newly created Task")
+        task_row = self.table("task").add_new(task)
+        run_row = self.table("run").add_new(run)
+        return task_row, run_row
+
+    def create_attempt(self, attempt: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("task_attempt").add_new(attempt)
+
+    def append_event(
+        self, event: Mapping[str, Any], *, expected_stream_sequence: int
+    ) -> dict[str, Any]:
+        repository = self.table("task_event")
+        repository._assert_active(write=True)
+        current = int(
+            self.uow.connection.execute(
+                "SELECT COALESCE(MAX(project_sequence),0) FROM task_event WHERE project_id=?",
+                (event["project_id"],),
+            ).fetchone()[0]
+        )
+        if current != expected_stream_sequence:
+            raise ConflictError(
+                "event stream sequence conflict",
+                details={"expected": expected_stream_sequence, "observed": current},
+            )
+        row = dict(event)
+        row["project_sequence"] = current + 1
+        return repository.add_new(row)
+
+    def list_replay(
+        self, project_id: str, *, after_sequence: int = 0, limit: int = 1_000
+    ) -> tuple[dict[str, Any], ...]:
+        repository = self.table("task_event")
+        repository._assert_active()
+        if not 1 <= limit <= 10_000:
+            raise InvalidArgumentError("replay limit must be between 1 and 10000")
+        rows = self.uow.connection.execute(
+            """
+            SELECT * FROM task_event
+            WHERE project_id=? AND project_sequence>?
+            ORDER BY project_sequence LIMIT ?
+            """,
+            (project_id, after_sequence, limit),
+        ).fetchall()
+        return tuple(_row_dict(row) for row in rows)
+
+    def record_idempotency(self, outcome: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("idempotency_record").add_new(outcome, idempotent=True)
+
+    def get_idempotency(self, scope_key: str) -> dict[str, Any] | None:
+        return self.table("idempotency_record").get(scope_key)
+
+
+class SQLiteArtifactRepository(SQLiteDomainRepository):
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "artifact")
+
+    def declare_staged(self, artifact: Mapping[str, Any]) -> dict[str, Any]:
+        if artifact.get("state") != "STAGED":
+            raise InvalidArgumentError("declare_staged requires state=STAGED")
+        return self.table("artifact").add_new(artifact, idempotent=True)
+
+    def publish_verified(
+        self, artifact_id: str, *, sha256: str, published_at: str
+    ) -> dict[str, Any]:
+        repository = self.table("artifact")
+        repository._assert_active(write=True)
+        if artifact_id != "art_sha256_" + sha256:
+            raise InvalidArgumentError("Artifact ID does not match verified SHA-256")
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE artifact SET state='PUBLISHED', published_at=?
+            WHERE artifact_id=? AND sha256=? AND state='STAGED'
+            """,
+            (published_at, artifact_id, sha256),
+        )
+        if cursor.rowcount != 1:
+            existing = repository.get(artifact_id)
+            if (
+                existing is not None
+                and existing["state"] == "PUBLISHED"
+                and existing["sha256"] == sha256
+            ):
+                return existing
+            raise ArtifactNotPublishedError("staged Artifact verification or state precondition failed")
+        return repository.require(artifact_id)
+
+    def add_reference(self, reference: Mapping[str, Any]) -> dict[str, Any]:
+        artifact = self.table("artifact").get(str(reference["artifact_id"]))
+        if artifact is None or artifact["state"] != "PUBLISHED":
+            raise ArtifactNotPublishedError("Artifact reference target is not PUBLISHED")
+        if reference.get("state") != "ACTIVE":
+            raise InvalidArgumentError("new Artifact references must be ACTIVE")
+        return self.table("artifact_reference").add_new(reference, idempotent=True)
+
+    def bind_artifact(
+        self,
+        *,
+        artifact_reference_id: str,
+        owner_type: str,
+        owner_id: str,
+        role: str,
+        artifact_id: str,
+        created_at: str,
+    ) -> dict[str, Any]:
+        return self.add_reference(
+            {
+                "artifact_reference_id": artifact_reference_id,
+                "owner_type": owner_type,
+                "owner_id": owner_id,
+                "role": role,
+                "artifact_id": artifact_id,
+                "state": "ACTIVE",
+                "created_at": created_at,
+            }
+        )
+
+    def release_reference(self, reference_id: str, *, released_at: str) -> dict[str, Any]:
+        repository = self.table("artifact_reference")
+        repository._assert_active(write=True)
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE artifact_reference SET state='RELEASED', released_at=?
+            WHERE artifact_reference_id=? AND state='ACTIVE'
+            """,
+            (released_at, reference_id),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("Artifact reference is not ACTIVE")
+        return repository.require(reference_id)
+
+    def reachable_set(self) -> frozenset[str]:
+        repository = self.table("artifact_reference")
+        repository._assert_active()
+        return frozenset(
+            str(row[0])
+            for row in self.uow.connection.execute(
+                "SELECT DISTINCT artifact_id FROM artifact_reference WHERE state='ACTIVE'"
+            )
+        )
+
+    def mark_deleted(
+        self, artifact_id: str, *, deleted_at: str, confirmed_gc_plan_artifact_id: str
+    ) -> dict[str, Any]:
+        repository = self.table("artifact")
+        repository._assert_active(write=True)
+        if not confirmed_gc_plan_artifact_id.startswith("art_sha256_"):
+            raise InvalidArgumentError("a confirmed GC plan Artifact ID is required")
+        gc_plan = repository.get(confirmed_gc_plan_artifact_id)
+        if gc_plan is None or gc_plan["state"] != "PUBLISHED":
+            raise ArtifactNotPublishedError("confirmed GC plan Artifact is not PUBLISHED")
+        active = self.uow.connection.execute(
+            "SELECT 1 FROM artifact_reference WHERE artifact_id=? AND state='ACTIVE' LIMIT 1",
+            (artifact_id,),
+        ).fetchone()
+        if active is not None:
+            raise ConflictError("reachable Artifact cannot be marked DELETED")
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE artifact SET state='DELETED', deleted_at=?
+            WHERE artifact_id=? AND state IN ('PUBLISHED','QUARANTINED')
+            """,
+            (deleted_at, artifact_id),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("Artifact is not deletable")
+        return repository.require(artifact_id)
+
+
+class SQLiteProvenanceRepository(SQLiteDomainRepository):
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "provenance")
+
+    def record_entity_once(self, entity: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("provenance_entity").add_new(entity, idempotent=True)
+
+    def record_edge_once(self, edge: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("provenance_edge").add_new(edge, idempotent=True)
+
+    def walk_ancestors(self, entity_id: str) -> tuple[dict[str, Any], ...]:
+        repository = self.table("provenance_edge")
+        repository._assert_active()
+        rows = self.uow.connection.execute(
+            """
+            WITH RECURSIVE ancestors(entity_id, depth) AS (
+              SELECT from_entity_id, 1 FROM provenance_edge WHERE to_entity_id=?
+              UNION
+              SELECT edge.from_entity_id, ancestors.depth+1
+              FROM provenance_edge AS edge
+              JOIN ancestors ON edge.to_entity_id=ancestors.entity_id
+              WHERE ancestors.depth < 100
+            )
+            SELECT entity.*, MIN(ancestors.depth) AS depth
+            FROM ancestors JOIN provenance_entity AS entity
+              ON entity.provenance_entity_id=ancestors.entity_id
+            GROUP BY entity.provenance_entity_id
+            ORDER BY depth, entity.provenance_entity_id
+            """,
+            (entity_id,),
+        ).fetchall()
+        return tuple(_row_dict(row) for row in rows)
+
+
+class SQLiteOptimizationRepository(SQLiteDomainRepository):
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "optimization")
+
+    def publish_solution(
+        self,
+        solution: Mapping[str, Any],
+        *,
+        residual_validation_passed: bool | None = None,
+    ) -> dict[str, Any]:
+        status = solution.get("status")
+        weights = solution.get("weights_artifact_id")
+        residual = solution.get("residual_validation_artifact_id")
+        if status == "OPTIMAL":
+            if weights is None or residual is None or residual_validation_passed is not True:
+                raise InvalidArgumentError(
+                    "OPTIMAL solution requires weights and independently PASSED residual validation"
+                )
+        elif weights is not None:
+            raise InvalidArgumentError("non-OPTIMAL solution cannot bind weights")
+        return self.table("optimization_solution").add_new(solution, idempotent=True)
+
+    def publish_problem(self, problem: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("optimization_problem").add_new(problem, idempotent=True)
+
+
+class SQLiteBacktestRepository(SQLiteDomainRepository):
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "backtest")
+
+    def expand_matrix_once(
+        self, experiment_id: str, *, expansion_manifest_artifact_id: str, updated_at: str
+    ) -> dict[str, Any]:
+        repository = self.table("experiment")
+        repository._assert_active(write=True)
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE experiment
+            SET state='EXPANDED', expansion_manifest_artifact_id=?, updated_at=?
+            WHERE experiment_id=? AND state='DRAFT' AND expansion_manifest_artifact_id IS NULL
+            """,
+            (expansion_manifest_artifact_id, updated_at, experiment_id),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("Experiment matrix was already expanded or is not DRAFT")
+        return repository.require(experiment_id)
+
+    def bind_child_task(
+        self, task_id: str, child_task_id: str, *, required_terminal_state: str = "SUCCEEDED"
+    ) -> dict[str, Any]:
+        return SQLiteTableRepository(self.uow, "task_dependency").add_new(
+            {
+                "task_id": task_id,
+                "depends_on_task_id": child_task_id,
+                "required_terminal_state": required_terminal_state,
+            },
+            idempotent=True,
+        )
+
+    def publish_run_spec(self, run_spec: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("backtest_run_spec").add_new(run_spec, idempotent=True)
+
+
+class SQLiteResultRepository(SQLiteDomainRepository):
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        super().__init__(unit_of_work, "result")
+
+    def publish_result(
+        self,
+        result: Mapping[str, Any],
+        *,
+        reconciliation_passed: bool | None = None,
+    ) -> dict[str, Any]:
+        if result.get("state") == "VALID" and (
+            result.get("reconciliation_artifact_id") is None
+            or reconciliation_passed is not True
+        ):
+            raise InvalidArgumentError("VALID Result requires independently PASSED reconciliation")
+        return self.table("result").add_new(result, idempotent=True)
+
+    def record_reconciliation(
+        self,
+        result_id: str,
+        *,
+        reconciliation_artifact_id: str,
+        reconciliation_passed: bool,
+        state: str,
+        finalized_at: str,
+        invalid_reason_code: str | None = None,
+    ) -> dict[str, Any]:
+        if state not in {"VALID", "INVALID"}:
+            raise InvalidArgumentError("reconciliation must finalize Result as VALID or INVALID")
+        if state == "VALID" and not reconciliation_passed:
+            raise InvalidArgumentError("VALID Result requires independently PASSED reconciliation")
+        repository = self.table("result")
+        repository._assert_active(write=True)
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE result
+            SET reconciliation_artifact_id=?, state=?, finalized_at=?, invalid_reason_code=?
+            WHERE result_id=? AND state='PENDING_RECONCILIATION'
+            """,
+            (
+                reconciliation_artifact_id,
+                state,
+                finalized_at,
+                invalid_reason_code,
+                result_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("Result is not pending reconciliation")
+        return repository.require(result_id)
+
+
+class SQLiteRepositoryRegistry:
+    def __init__(self, unit_of_work: SQLiteUnitOfWork) -> None:
+        self.project = SQLiteProjectRepository(unit_of_work)
+        self.connector = SQLiteConnectorRepository(unit_of_work)
+        self.instrument = SQLiteInstrumentRepository(unit_of_work)
+        self.snapshot = SQLiteSnapshotRepository(unit_of_work)
+        self.universe = SQLiteDomainRepository(unit_of_work, "universe")
+        self.factor = SQLiteDomainRepository(unit_of_work, "factor")
+        self.dataset = SQLiteDomainRepository(unit_of_work, "dataset")
+        self.strategy = SQLiteDomainRepository(unit_of_work, "strategy")
+        self.model = SQLiteDomainRepository(unit_of_work, "model")
+        self.study = SQLiteStudyRepository(unit_of_work)
+        self.portfolio = SQLiteDomainRepository(unit_of_work, "portfolio")
+        self.risk = SQLiteDomainRepository(unit_of_work, "risk")
+        self.optimization = SQLiteOptimizationRepository(unit_of_work)
+        self.backtest = SQLiteBacktestRepository(unit_of_work)
+        self.result = SQLiteResultRepository(unit_of_work)
+        self.task = SQLiteTaskRepository(unit_of_work)
+        self.artifact = SQLiteArtifactRepository(unit_of_work)
+        self.provenance = SQLiteProvenanceRepository(unit_of_work)
