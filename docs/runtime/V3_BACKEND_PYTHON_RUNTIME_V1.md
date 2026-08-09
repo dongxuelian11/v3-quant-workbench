@@ -28,7 +28,7 @@ Because both candidates satisfy the dependency intersection, the newer 3.14 line
 
 ## Foundation dependency boundary
 
-The merged Backend Foundation remains standard-library-only. NumPy, pandas, DuckDB, PyArrow/Polars, scikit-learn, Qlib, RQData, RQAlpha, and GPU frameworks are not current committed Python runtime dependencies.
+The merged Backend Foundation and provider-independent WS-F Data Truth layer remain standard-library-only. NumPy, pandas, DuckDB, PyArrow/Polars, scikit-learn, Qlib, RQData, RQAlpha, and GPU frameworks are not current committed Python runtime dependencies.
 
 Data and Model workers may later receive isolated, locked Environment Profiles. Optional or externally blocked adapters cannot force a downgrade of the Canonical Core ABI.
 

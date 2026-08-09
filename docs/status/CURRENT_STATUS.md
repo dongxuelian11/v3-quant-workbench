@@ -7,7 +7,7 @@ Status: **PRE-ALPHA / ACTIVE RECONSTRUCTION**
 | Frontend | Accepted current development baseline; not final UI |
 | Canonical Backend Foundation | Implemented and merged: contracts, catalog/repositories, artifact plane, task/workers/resource governor, supervised transport |
 | Desktop ↔ backend wiring | Not performed in this baseline; reserved for later integration work |
-| Data Truth | Not rebuilt |
+| Data Truth | WS-F provider-independent canonical layer implemented; no external provider admitted |
 | Formal Research backend | Not rebuilt |
 | Formal Model backend | Not rebuilt |
 | Portfolio / Risk backend | Not rebuilt |

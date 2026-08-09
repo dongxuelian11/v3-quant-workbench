@@ -5,7 +5,7 @@ The Canonical Core runtime and optional capability environments are separate aut
 ## Core
 
 - Runtime: CPython 3.14.7 x86-64, standard GIL build.
-- Current dependency profile: Python standard library only.
+- Current dependency profile: Python standard library only, including provider-independent WS-F Data Truth policies.
 - Owns contracts, provenance, catalog/repositories, artifact coordination, task/worker control, resource governance, and local transport.
 
 ## Optional profiles
@@ -24,4 +24,4 @@ An optional profile may use a different Python minor when required. It must comm
 
 ## PB0 status
 
-No optional profile is installed or admitted. DuckDB and Parquet ports remain fail-closed/unavailable in the Foundation. Data Truth and all financial-domain implementations remain future work.
+No optional profile is installed or admitted. DuckDB and Parquet ports remain fail-closed/unavailable in the Foundation. RQData, TuShare, and other external Data provider profiles remain unavailable; WS-F never converts provider unavailability into Formal output.
