@@ -108,3 +108,18 @@ Snapshot → Universe → Factor → FeatureSet/Label/Split → Dataset
 `REJECT_NOT_V3_FIT`：外部 recorder 不得创建 canonical V3 IDs、决定 retry 是否同一 Run、直接标记 V3 success、绕过 Artifact publication，或成为唯一 metrics/models/predictions 存储。
 
 `FUTURE_ONLY`：双向 MLflow federation、remote experiment catalog、跨 workspace run import/export 在本地 Run/Attempt/Artifact closure 稳定后再设计。
+
+## E-11 — Experiment、Run 与 Prediction 继承 truth ceiling
+
+`ADOPT_INVARIANT`：Experiment/Run/Attempt 的执行成功、Artifact closure完整与truth admission是不同维度。它们可以证明“按spec成功执行并完整发布”，但不能把upstream `PRE_ALPHA / NOT_FORMAL` 输入提升为Formal。聚合对象的truth state不得高于任一required child/input：
+
+```text
+Run/Result truth_state <= minimum(all exact input truth states, run admission result)
+Experiment truth_state <= minimum(all required child Run truth states, experiment admission result)
+Prediction truth_state <= minimum(ModelVersion truth, inference DatasetVersion truth, prediction admission result)
+Signal truth_state <= minimum(Prediction truth, SignalSpec inputs, signal admission result)
+```
+
+`ADOPT_INVARIANT`：`PUBLISHED + STRICT_PIT != FORMAL_ADMITTED` 同样横切Research、Model、Prediction、Signal、Backtest与Result。只有upstream exact Snapshot validation profile已经Formal-admitted且后续每层required gates/provenance均通过，才有资格继续Formal admission；任何层都不能自行提权。
+
+`REJECT_NOT_V3_FIT`：Prediction即使来自成功Run、完整Artifact与Formal模型，也不得高于其Dataset truth ceiling；它仍不能自动升级为Signal。Signal promotion是独立语义与admission boundary，但也只能保持或降低truth state。

@@ -38,6 +38,8 @@
 | LF-30 | Evaluation feedback mutation | IC/backtest Result 被写回已发布 feature/dataset或 processor state | provenance graph只允许新 version derived-from，不允许 upstream descriptor rewrite | `ADOPT_INVARIANT` |
 | LF-31 | Provider standardization mistaken for truth | OpenBB标准 Data/metadata便于消费，但不证明 revision completeness/PIT | adapter result必须进入 snapshot validation/publication；provider name/metadata不等于 provenance closure | `ADAPT_TO_V3` |
 | LF-32 | Executable artifact/config injection | Qlib/vnpy expressions或pickle在运行/加载时执行代码 | closed AST与safe-format allow-list；pickle/executable默认拒绝或隔离，不进入formal chain | `REJECT_NOT_V3_FIT` |
+| LF-33 | Definition/evaluation identity collision | Snapshot、Universe或knowledge cutoff被写入FactorDefinition identity，或数据输入变化却复用同一evaluation ID | definition hash只覆盖“怎么算”；evaluation/materialization identity强制绑定exact data inputs，分别做正反mutation tests | `ADOPT_INVARIANT` |
+| LF-34 | Truth escalation | `PUBLISHED + STRICT_PIT`、leakage PASS、Run success或Artifact完整被误当`FORMAL_ADMITTED` | 持久化upstream truth states并计算minimum ceiling；任何PRE_ALPHA/NOT_FORMAL input阻止downstream Formal | `ADOPT_INVARIANT` |
 
 ## Failure disposition
 

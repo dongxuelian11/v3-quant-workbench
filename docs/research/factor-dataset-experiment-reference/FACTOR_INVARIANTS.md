@@ -2,18 +2,34 @@
 
 ## 结论对象：`FactorDefinitionVersion`
 
-`ADOPT_INVARIANT`：Factor 不是一个列名、Python 类、表达式字符串或缓存条目。V3 formal factor 的最小 authority 单元是不可变 `FactorDefinitionVersion`，建议至少包含：
+`ADOPT_INVARIANT`：Factor 不是一个列名、Python 类、表达式字符串或缓存条目。描述“因子怎么算”的最小 authority 单元是不可变 `FactorDefinitionVersion`；描述“这一定义在什么精确数据上算了一次”的 authority 单元是 `FactorEvaluation`（批量持久化时也可称 `FeatureMaterialization`）。两者 identity 必须分离。
+
+`FactorDefinitionVersion` 建议至少包含：
 
 | 字段组 | 必需语义 |
 |---|---|
 | Identity | `factor_definition_id`、`factor_definition_version_id`、stable display name、canonical hash、publication state |
 | Expression | closed normalized AST、root output、operator registry ID、每个 operator semantic version |
-| Data | source field IDs、field schema fingerprints、frequency/calendar、adjustment/view spec、`PublishedSnapshotId` 由求值请求绑定 |
+| Data semantics | logical input field IDs/semantics、frequency/calendar basis、adjustment/view semantics；不绑定某次 Snapshot |
 | Time | observation time、available-time policy、decision-time convention、left lookback、right lookahead、warm-up |
-| Universe | universe dependency kind：per-instrument / cross-sectional / membership-derived；求值时绑定 `UniverseVersion` |
+| Universe semantics | universe dependency kind：per-instrument / cross-sectional / membership-derived；不绑定某次 UniverseVersion |
 | Output | dtype、unit、shape/index contract、nullability、missing-reason vocabulary |
-| Execution | deterministic/nondeterministic declaration、seed policy、engine compatibility profile；engine 不拥有 identity |
+| Definition execution semantics | deterministic/compiler semantics、numeric/tie-break contract、seed policy（若定义级）；不绑定某次 runtime environment |
+| Definition admission | AST/operator allow-list、dependency proof schema、definition-level review/evidence versions；不声明数据truth |
 | Provenance | author/actor、code/operator artifacts、review/admission artifact、supersedes/revision edges |
+
+一次 `FactorEvaluation` / `FeatureMaterialization` identity 必须绑定：
+
+- `FactorDefinitionVersion`；
+- exact `DataSnapshotVersion` 与 content hash；
+- exact `UniverseVersion`、historical membership resolution 与 membership hash；
+- `knowledge_cutoff`、exact calendar version；
+- materialization-time schema/fingerprints；
+- environment/engine fingerprint与time range。
+
+`ADOPT_INVARIANT`：producer ResearchRun/Attempt作为求值provenance记录；retry产生新Attempt，但在canonical inputs与semantics完全相同时，不应仅因Attempt ID不同而强制改变FactorEvaluation semantic identity。
+
+`ADOPT_INVARIANT`：Snapshot、UniverseVersion、historical membership、knowledge cutoff、calendar version或 runtime engine变化时，`FactorDefinitionVersion` identity 保持不变；`FactorEvaluation` / `FeatureMaterialization` / `ResearchRun` identity、cache key、output semantic hash与provenance必须改变。只有“怎么算”的语义变化才创建新的FactorDefinitionVersion。
 
 ## F-01 — 表达式图必须 canonical、封闭且可审计
 
@@ -43,7 +59,7 @@
 
 ## F-04 — 数据依赖必须指向已发布事实
 
-`ADOPT_INVARIANT`：FactorDefinitionVersion 声明逻辑字段依赖；一次 materialization/evaluation 还必须绑定：
+`ADOPT_INVARIANT`：FactorDefinitionVersion 只声明逻辑字段与时间/缺失/输出语义；一次 `FactorEvaluation` / `FeatureMaterialization` 还必须绑定：
 
 - 精确 `PublishedSnapshotId` 与 content hash；
 - 精确 `UniverseVersionId` 与 membership artifact hash；
@@ -55,7 +71,7 @@
 
 ## F-05 — Universe dependency 必须显式
 
-`ADOPT_INVARIANT`：逐标的时序算子也要绑定 UniverseVersion，以确定 row membership 与 coverage；cross-sectional rank/z-score/neutralization 则必须将每个 timestamp 的精确成员集合纳入语义依赖。Universe membership 或 knowledge cutoff 改变时，cross-sectional factor identity/output hash 必须改变。
+`ADOPT_INVARIANT`：逐标的时序求值也要绑定 UniverseVersion，以确定 row membership 与 coverage；cross-sectional rank/z-score/neutralization 则必须将每个 timestamp 的精确成员集合纳入求值依赖。Universe membership 或 knowledge cutoff 改变时，FactorDefinitionVersion identity 不变，但 cross-sectional FactorEvaluation/materialization identity、cache key、output hash与provenance必须改变。
 
 `REJECT_NOT_V3_FIT`：禁止用“有数据的标的集合”反推 universe，禁止以全样本期是否存在数据过滤标的，禁止用今天的 constituents 回填历史截面。这覆盖 Qlib `TimeRangeFlt` 自己警告的 leakage 类型。
 
@@ -69,9 +85,9 @@
 
 ## F-07 — Cache 不是 authority
 
-`ADOPT_INVARIANT`：factor cache key 必须来自 canonical execution input，至少覆盖：
+`ADOPT_INVARIANT`：factor evaluation cache key 必须来自 canonical execution input，至少覆盖：
 
-`snapshot hash + universe membership hash + factor version hash + time range/calendar + field schema + operator/engine fingerprint + missing policy + output schema`。
+`snapshot hash + universe membership hash + knowledge cutoff + factor definition version hash + time range/calendar version + materialized field schema + runtime engine/environment fingerprint`。
 
 cache entry 必须有 checksum、producer attempt、coverage、schema fingerprint 与 provenance。命中后仍执行 manifest/identity 校验；损坏、陈旧或缺字段时 discard/recompute，不得发布 cache key 为 V3 object ID。
 
@@ -94,3 +110,20 @@ cache entry 必须有 checksum、producer attempt、coverage、schema fingerprin
 `ADAPT_TO_V3`：Qlib 可实现 AST 子集、窗口计算与 feature evaluation，vnpy.alpha/Polars 可做研究期 reference implementation；adapter 输出只能进入 V3 staging。
 
 `REJECT_NOT_V3_FIT`：框架的 feature name、provider state、cache、pickle、experiment ID、recorder status 或本地文件路径均不能成为 V3 authority。适配器必须接收冻结输入、禁止外部读取，并由 V3 验证输出后发布。
+
+## F-11 — 显式继承 Data Truth truth ceiling
+
+`ADOPT_INVARIANT`：`PUBLISHED + STRICT_PIT` 不等于 `FORMAL_ADMITTED`。`PUBLISHED` 是生命周期状态，Strict PIT 是可见性/修订证明，upstream validation profile 的 admission state 才定义其 truth ceiling。Factor dependency/lookahead proof PASS 只能证明因子求值自身的必要条件，不能提升上游数据权威。
+
+`ADOPT_INVARIANT`：任何 FactorEvaluation / FeatureMaterialization 均满足：
+
+```text
+output truth_state <= minimum(
+  Snapshot validation/admission truth,
+  Universe resolution truth,
+  required field/calendar/revision truth,
+  Factor evaluation admission gates
+)
+```
+
+若 exact Snapshot 或 Universe upstream truth 是 `PRE_ALPHA / NOT_FORMAL`，即使 Strict PIT、dependency、lookahead、coverage 全部 PASS，输出最多仍是 `PRE_ALPHA / NOT_FORMAL`。只有 exact upstream Snapshot profile 已 `FORMAL_ADMITTED`、Universe/PIT/revision/knowledge-cutoff gates满足、factor proof PASS且provenance完整，才有资格继续下游Formal admission；“有资格继续”仍不等于自动成为Formal。

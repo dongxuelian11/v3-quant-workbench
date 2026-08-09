@@ -17,11 +17,12 @@
 | TF-05 | 未知、递归、expanding或无法证明window | formal admission=`UNAVAILABLE/REJECTED`，无求值 | `ADOPT_INVARIANT` |
 | TF-06 | feature root含future Ref | FeatureSet validation失败；同AST可作为LabelSpec候选 | `ADOPT_INVARIANT` |
 | TF-07 | expression含import/attribute/call未登记operator | parser拒绝且不执行副作用 | `REJECT_NOT_V3_FIT` |
-| TF-08 | Snapshot、UniverseVersion、missing policy、operator engine逐一mutation | 每个semantic mutation均改变execution/cache key | `ADOPT_INVARIANT` |
-| TF-09 | 相同bytes但universe membership不同的cross-sectional rank | output/semantic identity不同，denominator正确 | `ADOPT_INVARIANT` |
-| TF-10 | missing reasons混合：warm-up/suspended/source absent/not-in-universe | NaN可相同但reason counts与policy输出正确 | `ADOPT_INVARIANT` |
-| TF-11 | parallel重复执行、ties、NaN/inf/float edge | semantic output hash稳定或明确声明non-deterministic | `ADOPT_INVARIANT` |
-| TF-12 | cache poison/corrupt/schema mismatch | cache被拒绝并重算，不发布错误output | `ADOPT_INVARIANT` |
+| TF-08 | AST、operator semantic version、input field/timing/missing/output或definition compiler semantics逐一mutation | “怎么算”变化，FactorDefinitionVersion ID/hash改变 | `ADOPT_INVARIANT` |
+| TF-09 | 同一FactorDefinitionVersion：Run A=`Snapshot S1 + Universe U1`；Run B=`Snapshot S2`或`Universe U2` | FactorDefinitionVersion ID相同；FactorEvaluation/Materialization/ResearchRun ID、cache key、output semantic hash与provenance不同 | `ADOPT_INVARIANT` |
+| TF-10 | 相同source values但historical membership或knowledge cutoff不同的cross-sectional rank | definition ID相同；evaluation/output identity不同，denominator与membership lineage正确 | `ADOPT_INVARIANT` |
+| TF-11 | missing reasons混合：warm-up/suspended/source absent/not-in-universe | NaN可相同但reason counts与policy输出正确 | `ADOPT_INVARIANT` |
+| TF-12 | parallel重复执行、ties、NaN/inf/float edge | semantic output hash稳定或明确声明non-deterministic | `ADOPT_INVARIANT` |
+| TF-13 | cache poison/corrupt/schema mismatch | cache被拒绝并重算，不发布错误output | `ADOPT_INVARIANT` |
 
 ## Dataset / Split / Processor
 
@@ -75,6 +76,17 @@
 | TP-05 | SignalVersion与backtest UniverseVersion不一致 | submitBacktest admission失败 | `ADOPT_INVARIANT` |
 | TP-06 | evaluation后尝试改Dataset/Prediction descriptor | immutable conflict；只能创建新derived version | `ADOPT_INVARIANT` |
 
+## Truth ceiling
+
+| ID | 测试 | 预期 | 分类 |
+|---|---|---|---|
+| TT-01 | 同一Factor/Dataset spec，Case A绑定`PRE_ALPHA + STRICT_PIT` Snapshot，Case B绑定`FORMAL_ADMITTED + STRICT_PIT` Snapshot | definition IDs可保持一致；evaluation/materialization IDs必须不同；A最多non-formal，B仅有资格继续Formal admission | `ADOPT_INVARIANT` |
+| TT-02 | Snapshot lifecycle=`PUBLISHED`且Strict PIT proof PASS，但validation profile admission=`PRE_ALPHA` | FactorEvaluation、DatasetVersion、Run、Prediction均不得成为Formal | `ADOPT_INVARIANT` |
+| TT-03 | 多个upstream truth states中任一个由Formal降为PRE_ALPHA/NOT_FORMAL | downstream ceiling精确降为minimum；spec/definition identity不因数据truth变化而重建 | `ADOPT_INVARIANT` |
+| TT-04 | factor dependency、lookahead、leakage、split、train-only fit与Artifact closure全部PASS，但upstream非Formal | proofs保存为PASS，truth admission仍为non-formal，禁止把proof success折叠成Formal | `ADOPT_INVARIANT` |
+| TT-05 | Formal model对PRE_ALPHA Dataset生成Prediction，再执行Signal promotion | Prediction与Signal均不得高于PRE_ALPHA；Prediction仍不是Signal | `ADOPT_INVARIANT` |
+| TT-06 | Case B upstream Formal-admitted，但缺Universe revision gate或provenance edge | 只表示具备部分必要条件；Formal admission仍拒绝 | `ADOPT_INVARIANT` |
+
 ## End-to-end reference scenarios
 
 `ADAPT_TO_V3`：学习 Qlib all-pipeline test 的完整形状，建立 V3 自有最小 golden：
@@ -88,6 +100,6 @@
 7. 运行evaluation/backtest并发布typed Metrics/Result；
 8. 从Result反向遍历到Snapshot/Universe/Factor/Dataset/Model/Signal/Attempt，验证closure与hashes。
 
-`ADOPT_INVARIANT`：同一scenario再运行mutation matrix：只改变 snapshot revision、universe membership、factor operator version、label horizon、purge、processor fit rows、model seed、signal resampling，逐项断言恰当的上游/下游 identities 改变且无不应变化的对象被覆盖。
+`ADOPT_INVARIANT`：同一scenario再运行mutation matrix：只改变snapshot revision或universe membership时，FactorDefinitionVersion保持不变而Evaluation/Materialization及下游identities变化；只改变factor operator version时definition及下游identities变化；再分别改变label horizon、purge、processor fit rows、model seed、signal resampling与upstream truth admission，逐项断言identity与truth ceiling只在正确边界变化且无对象被覆盖。
 
 `FUTURE_ONLY`：在reference evaluator稳定后，再加入Qlib adapter conformance suite、不同计算引擎semantic equivalence、大规模partition fault injection与remote recorder import tests。

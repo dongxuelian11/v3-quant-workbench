@@ -31,10 +31,12 @@ OpenBB 的直接证据是 [`Fetcher`](https://github.com/OpenBB-finance/OpenBB/b
 
 ```mermaid
 flowchart LR
-    S["Published PIT Snapshot"] --> F["FactorDefinitionVersion evaluation"]
-    U["UniverseVersion"] --> F
-    F --> FS["FeatureSetVersion"]
-    S --> D["DatasetVersion"]
+    FD["FactorDefinitionVersion"] --> FS["FeatureSetVersion"]
+    FD --> FE["FactorEvaluation / FeatureMaterialization"]
+    S["Published PIT Snapshot"] --> FE
+    U["UniverseVersion"] --> FE
+    FE --> D["DatasetVersion"]
+    S --> D
     U --> D
     FS --> D
     L["LabelSpec"] --> D
@@ -64,7 +66,8 @@ flowchart LR
 | Window dependency | Qlib operator 暴露 left/right extended window，但存在嵌套 Ref、forward operator、expanding window 精度限制。vnpy.alpha 用 heuristic extended days。 | 每个 operator 的 dependency signature 可组合且经过测试；任何未知/无法证明的右窗口拒绝 formal materialization。 | `ADOPT_INVARIANT` |
 | Caching | Qlib expression/dataset cache 主要由表达式、instrument、日期、频率、processors 等参数形成。 | cache key 至少覆盖 snapshot、UniverseVersion、factor/feature/label/split/preprocess、engine/operator、schema 与 missing policy；cache 只加速，不发布 identity。 | `ADAPT_TO_V3` |
 | Missing values | Qlib rolling `min_periods=1`、fill/drop/normalization processors 与数据中的 NaN 约定灵活；vnpy.alpha 也可 drop/fill。 | 缺失策略、warm-up、suspension/no-observation/invalid 的原因与 coverage 必须版本化；禁止静默 fill/drop 改变研究总体。 | `ADOPT_INVARIANT` |
-| Universe dependency | Qlib cross-sectional processors 依赖当期截面；instrument filter 与数据加载耦合。 | 任一横截面因子/processor 必须依赖精确的 `UniverseVersion` membership at timestamp；membership 变化必须改变输出 identity。 | `ADOPT_INVARIANT` |
+| Definition / evaluation identity | Qlib表达式/feature name描述计算，而instrument/date/provider参数决定某次加载；框架本身未形成V3所需双层authority。 | FactorDefinitionVersion只描述“怎么算”；exact Snapshot/Universe/membership/cutoff/calendar/engine进入FactorEvaluation/Materialization identity。数据输入变化时definition ID不变，evaluation/cache/output/provenance必须变化。 | `ADOPT_INVARIANT` |
+| Universe dependency | Qlib cross-sectional processors 依赖当期截面；instrument filter 与数据加载耦合。 | 任一横截面求值必须依赖精确的 `UniverseVersion` membership at timestamp；membership 变化必须改变Evaluation/Materialization与输出identity，但不得改变FactorDefinitionVersion identity。 | `ADOPT_INVARIANT` |
 | Dataset / Handler | Qlib 清晰区分 loader、handler、learn/infer processors 与 Dataset segments；vnpy.alpha 也保留 raw/infer/learn。 | 保留层次，但将 spec、fit state、materialized bytes、manifest 拆为不同 immutable objects/artifacts。 | `ADAPT_TO_V3` |
 | Segment | Qlib `DatasetH` 接受任意命名 segment 并按范围 fetch，本身不强制 chronology/non-overlap。 | `SplitSpec` 必须验证 train/valid/test 顺序、边界、purge、embargo、label visibility 与 hidden final test。 | `ADOPT_INVARIANT` |
 | Fit/transform | Qlib learnable processors 可配置 fit 起止时间；官方例子通常 train-only，但底层也能对全部数据 fit。vnpy.alpha 未给 fit range 时可全量 fit。 | Formal preprocessing 只能在 `fit_scope` 上 fit；fit-state 是带 input lineage 的 artifact，valid/test 只 transform。 | `ADOPT_INVARIANT` |
@@ -76,6 +79,7 @@ flowchart LR
 | Artifact | Qlib/MLflow 可记录 pickle、任意文件并异步 log；vnpy.alpha 以 name/path 管理 pickle/Parquet。 | 只接纳 V3 safe-format policy 允许的 typed、content-addressed bytes；descriptor+active reference 原子发布；pickle 保持拒绝。 | `REJECT_NOT_V3_FIT` |
 | Metrics | Qlib metrics 是灵活 name/value；分析 record 生成 IC、回测等对象。 | Metric 定义版本、split/scope、unit/direction/aggregation、sample count/denominator 与 upstream artifacts 都必须显式。 | `ADAPT_TO_V3` |
 | Failure semantics | Qlib 某些 record 在依赖缺失/空 label 时 warning 并跳过；vnpy.alpha 某些工作流也 log 后 return。 | Formal run 对缺失 mandatory artifact、无法证明 PIT、schema/coverage 异常 fail closed；允许 `PARTIAL` 但禁止冒充 `SUCCEEDED`。 | `ADOPT_INVARIANT` |
+| Truth ceiling | Data Truth V1明确当前完整local invariant profile仍是PRE_ALPHA；publication与Strict PIT proof不等于external-provider Formal admission。 | 所有Factor/Dataset/Run/Prediction/Signal/Result均满足`truth_state <= minimum(upstream truth states)`；proof PASS只能维持或降低，不能提升authority。 | `ADOPT_INVARIANT` |
 | Portfolio/Evaluation boundary | Qlib portfolio analysis 是 prediction 下游 record；策略负责解释 score 与仓位。 | Factor/Dataset 不拥有组合或回测语义；SignalVersion 是明确边界，Result 不反向修改上游版本。 | `ADOPT_INVARIANT` |
 | Framework storage/authority | Qlib provider/cache 与 MLflow store、OpenBB provider results、vnpy.alpha local files 都优化各自运行体验。 | 外部系统的 run ID、path、cache key、provider result 均仅为 provenance metadata，不能成为 V3 canonical foreign key。 | `REJECT_NOT_V3_FIT` |
 | Remote experiment registry federation | MLflow/Qlib experiment backend 可支持远程管理。 | 先完成本地 canonical Run/Attempt/Artifact closure；远程镜像、导入或联邦查询延后。 | `FUTURE_ONLY` |

@@ -80,6 +80,8 @@ DatasetSpec hash
 
 `ADOPT_INVARIANT`：DatasetSpec 是意图；DatasetVersion 是对精确输入的一次已发布 materialization。相同 spec 对不同 snapshot/universe 产生不同 version。发布后 manifest、partitions、row-set 与 hashes 不可变。
 
+`ADOPT_INVARIANT`：FactorDefinitionVersion/FeatureSetVersion 只描述定义语义，不因 Snapshot、UniverseVersion 或 knowledge cutoff变化而改变。DatasetVersion引用的是这些稳定定义，加上精确FactorEvaluation/feature materialization inputs与outputs；数据输入变化必须改变DatasetVersion/evaluation/cache/output identity，不能反向制造新的factor definition identity。
+
 ## D-07 — Manifest 必须证明内容，而不只是指向文件
 
 `ADOPT_INVARIANT`：Dataset manifest 至少记录：
@@ -121,3 +123,22 @@ DatasetSpec hash
 `REJECT_NOT_V3_FIT`：框架 handler config、local pickle、mutable Parquet path、instrument name、cache URI 或 segment dict 均不是 DatasetVersion。框架禁止自行下载数据、解析 latest universe 或将 warning/empty result 当成功。
 
 `FUTURE_ONLY`：online feature serving、distributed materialization、incremental partition reuse 和跨引擎 certified equivalence 在最小 formal DatasetVersion 完成后再做。
+
+## D-12 — Dataset 不得突破 upstream truth ceiling
+
+`ADOPT_INVARIANT`：`PUBLISHED`、Strict PIT PASS、leakage audit PASS、split validation PASS 与train-only preprocessing PASS是彼此独立的必要条件，任何一个都不能把 `PRE_ALPHA / NOT_FORMAL` upstream提升为Formal。DatasetVersion必须持久化每个exact upstream的truth state与计算出的minimum ceiling。
+
+```text
+DatasetVersion.truth_state <= minimum(
+  Snapshot validation/admission truth,
+  Universe resolution truth,
+  all FactorEvaluation/materialization truth states,
+  label/source truth,
+  preprocessing fit-state input truth,
+  dataset validation/admission result
+)
+```
+
+`ADOPT_INVARIANT`：同一个DatasetSpec在 `PRE_ALPHA + STRICT_PIT` Snapshot上，即使factor dependency、leakage、chronology、purge/embargo与fit proof全部PASS，发布输出最多仍是`PRE_ALPHA / NOT_FORMAL`。只有exact Snapshot validation profile已`FORMAL_ADMITTED`，Universe/PIT/revision/knowledge-cutoff满足required gates，全部factor/dataset proofs PASS且provenance完整，才有资格继续Dataset Formal admission。
+
+`REJECT_NOT_V3_FIT`：不得把Qlib Dataset构建成功、Artifact完整、无NaN、回测表现良好或下游人工批准当作提升上游truth state的依据。
