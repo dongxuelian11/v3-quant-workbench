@@ -1,0 +1,185 @@
+import {
+  ROUND3_EVIDENCE_EVENT_TYPE,
+  parseRound3ResearchEvidenceBundle,
+  type CanonicalEvidenceProjectionV1,
+  type Round3EvidenceKind,
+  type Round3ResearchEvidenceBundleV1
+} from "../../../../packages/contracts/src/round3Evidence";
+import type {
+  BackendRuntimeReadOnlyBridge,
+  RuntimeConnectionState,
+  TaskEventView
+} from "../preload/backendRuntime/types";
+import {
+  AGENT_WORKSPACE_BOUNDARY,
+  DEVELOPMENT_INTEGRATION_BOUNDARY,
+  type AgentWorkspaceBoundary,
+  type AgentWorkspaceData,
+  type ArtifactPayload,
+  type EvidenceView,
+  type TimelineState
+} from "./agentWorkspace";
+
+declare global {
+  interface Window {
+    v3BackendRuntime: BackendRuntimeReadOnlyBridge;
+  }
+}
+
+const EMPTY_SESSION_VIEW_ID = "session-view-round3-live-read-only";
+
+const TITLES: Record<Round3EvidenceKind, string> = {
+  PortfolioIntent: "Canonical portfolio intent",
+  TargetWeightVector: "Canonical target weights",
+  RiskAdjustedWeightVector: "Canonical risk-adjusted weights",
+  RiskDecisionReport: "Canonical risk decision report",
+  BacktestRunSpec: "Canonical backtest run specification",
+  BacktestRunResult: "Canonical backtest run result"
+};
+
+const LABS: Record<Round3EvidenceKind, EvidenceView["openInLab"]> = {
+  PortfolioIntent: "strategy",
+  TargetWeightVector: "strategy",
+  RiskAdjustedWeightVector: "backtest",
+  RiskDecisionReport: "backtest",
+  BacktestRunSpec: "backtest",
+  BacktestRunResult: "result"
+};
+
+export interface Round3AgentWorkspaceState {
+  readonly connectionState: RuntimeConnectionState;
+  readonly sourceMode: Round3ResearchEvidenceBundleV1["source_mode"] | null;
+  readonly boundary: AgentWorkspaceBoundary;
+  readonly data: AgentWorkspaceData;
+}
+
+function emptyData(): AgentWorkspaceData {
+  return {
+    sessions: [{
+      sessionViewId: EMPTY_SESSION_VIEW_ID,
+      title: "Round 3 canonical evidence",
+      goal: "Waiting for read-only canonical Portfolio → Risk → Backtest evidence.",
+      status: "PENDING",
+      linkedExperimentRunId: null,
+      linkedTaskId: null,
+      lastEvidenceUpdate: "NOT_AVAILABLE",
+      evidenceIds: []
+    }],
+    statements: [],
+    timeline: [],
+    evidence: [],
+    artifacts: []
+  };
+}
+
+function disconnectedBoundary(connectionState: RuntimeConnectionState): AgentWorkspaceBoundary {
+  return {
+    mode: connectionState === "READY" ? "LIVE_READ_ONLY_NO_EVIDENCE" : "BACKEND_DISCONNECTED",
+    label: connectionState === "READY" ? "LIVE READ-ONLY · NO EVIDENCE" : "BACKEND DISCONNECTED",
+    source: connectionState === "READY" ? "NO_CANONICAL_EVIDENCE_AVAILABLE" : "BACKEND_RUNTIME_UNAVAILABLE",
+    transport: connectionState === "READY" ? "WS_E_READ_ONLY_CONNECTED" : `WS_E_${connectionState}`,
+    authority: "READ_ONLY_VIEW_MODEL"
+  };
+}
+
+export function initialRound3AgentWorkspaceState(): Round3AgentWorkspaceState {
+  return { connectionState: "STOPPED", sourceMode: null, boundary: disconnectedBoundary("STOPPED"), data: emptyData() };
+}
+
+export function applyRound3ConnectionState(
+  current: Round3AgentWorkspaceState,
+  connectionState: RuntimeConnectionState
+): Round3AgentWorkspaceState {
+  if (current.data.evidence.length > 0) {
+    const connectedBoundary = current.sourceMode === "DEVELOPMENT_INTEGRATION_FIXTURE"
+      ? DEVELOPMENT_INTEGRATION_BOUNDARY
+      : AGENT_WORKSPACE_BOUNDARY;
+    return {
+      ...current,
+      connectionState,
+      boundary: connectionState === "READY" ? connectedBoundary : disconnectedBoundary(connectionState)
+    };
+  }
+  return { connectionState, sourceMode: current.sourceMode, boundary: disconnectedBoundary(connectionState), data: current.data };
+}
+
+function summary(projection: CanonicalEvidenceProjectionV1): string {
+  return `${projection.source_artifact_type} · ${projection.canonical_truth_state} · ${projection.canonical_admission_state} · validation ${projection.validation_state}`;
+}
+
+function timelineState(projection: CanonicalEvidenceProjectionV1): TimelineState {
+  if (projection.validation_state === "FAILED") return "FAILED";
+  if (projection.validation_state === "PASSED") return "PASSED";
+  if (projection.canonical_admission_state === "PRE_ALPHA") return "PRE_ALPHA";
+  return "NOT_RUN";
+}
+
+function asEvidence(projection: CanonicalEvidenceProjectionV1): EvidenceView {
+  return {
+    kind: projection.source_artifact_type,
+    objectId: projection.source_object_id,
+    title: TITLES[projection.source_artifact_type],
+    summary: summary(projection),
+    canonicalTruthState: projection.canonical_truth_state,
+    canonicalAdmissionState: projection.canonical_admission_state,
+    validationState: projection.validation_state,
+    provenanceRefs: [...projection.provenance_refs],
+    reviewerFinding: null,
+    facts: projection.view_facts.map((fact) => ({ ...fact })),
+    openInLab: LABS[projection.source_artifact_type],
+    artifactId: projection.source_object_id
+  };
+}
+
+function fromBundle(bundle: Round3ResearchEvidenceBundleV1, occurredAt: string): AgentWorkspaceData {
+  const evidence = bundle.projections.map(asEvidence);
+  const evidenceIds = evidence.map((item) => item.objectId);
+  return {
+    sessions: [{
+      sessionViewId: bundle.session_view_id,
+      title: "Round 3 canonical evidence chain",
+      goal: "Inspect exact read-only Portfolio → Risk → Backtest lineage without execution or publication authority.",
+      status: "PENDING",
+      linkedExperimentRunId: null,
+      linkedTaskId: null,
+      lastEvidenceUpdate: occurredAt,
+      evidenceIds
+    }],
+    statements: [],
+    evidence,
+    artifacts: bundle.projections.map((projection) => ({
+      artifactId: projection.source_object_id,
+      title: TITLES[projection.source_artifact_type],
+      mediaType: `application/vnd.${projection.source_artifact_type.toLowerCase()}+json`,
+      provenanceRef: projection.provenance_refs.join(" · "),
+      payload: projection.renderer_payload as ArtifactPayload
+    })),
+    timeline: bundle.projections.map((projection, index) => ({
+      id: `round3-evidence-${index + 1}-${projection.source_object_id}`,
+      sessionViewId: bundle.session_view_id,
+      authority: "EVIDENCE",
+      state: timelineState(projection),
+      title: `${projection.source_artifact_type} evidence available`,
+      detail: summary(projection),
+      objectId: projection.source_object_id,
+      at: occurredAt
+    }))
+  };
+}
+
+export function applyRound3EvidenceEvent(
+  current: Round3AgentWorkspaceState,
+  event: TaskEventView
+): Round3AgentWorkspaceState {
+  if (event.event_type !== ROUND3_EVIDENCE_EVENT_TYPE) return current;
+  const bundle = parseRound3ResearchEvidenceBundle(event.body);
+  const boundary = bundle.source_mode === "DEVELOPMENT_INTEGRATION_FIXTURE"
+    ? DEVELOPMENT_INTEGRATION_BOUNDARY
+    : AGENT_WORKSPACE_BOUNDARY;
+  return {
+    connectionState: current.connectionState,
+    sourceMode: bundle.source_mode,
+    boundary: current.connectionState === "READY" ? boundary : disconnectedBoundary(current.connectionState),
+    data: fromBundle(bundle, event.occurred_at)
+  };
+}

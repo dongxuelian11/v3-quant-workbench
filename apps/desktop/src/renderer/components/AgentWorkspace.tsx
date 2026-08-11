@@ -1,26 +1,36 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { LabId } from "../../../../../packages/contracts/src/index";
+import type { RuntimeConnectionState } from "../../preload/backendRuntime/types";
 import {
-  AGENT_WORKSPACE_BOUNDARY,
-  FUTURE_EXTENSION_SLOTS,
   PERMISSION_SURFACE,
+  ROUND3_MAIN_CONTRACT_SLOTS,
   deriveAgentWorkspaceSessionScope,
   resolveSessionArtifact,
   resolveSessionEvidenceSelection,
   statusTone,
+  type AgentWorkspaceBoundary,
+  type AgentWorkspaceData,
   type EvidenceView,
   type ResearchSessionView
 } from "../agentWorkspace";
-import { agentStatements, artifactViews, evidenceViews, timelineEntries } from "../agentWorkspaceFixture";
 import { ArtifactViewer } from "./ArtifactViewer";
 
-export function AgentWorkspace({ session, onOpenLab }: { session: ResearchSessionView; onOpenLab: (lab: LabId) => void }) {
-  const sessionScope = useMemo(() => deriveAgentWorkspaceSessionScope(session, agentStatements, timelineEntries, evidenceViews), [session.sessionViewId]);
+export function AgentWorkspace({ session, data, boundary, connectionState, onOpenLab }: {
+  session: ResearchSessionView;
+  data: AgentWorkspaceData;
+  boundary: AgentWorkspaceBoundary;
+  connectionState: RuntimeConnectionState;
+  onOpenLab: (lab: LabId) => void;
+}) {
+  const sessionScope = useMemo(
+    () => deriveAgentWorkspaceSessionScope(session, data.statements, data.timeline, data.evidence),
+    [data.evidence, data.statements, data.timeline, session]
+  );
   const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(session.evidenceIds[0] ?? null);
   const [draftInput, setDraftInput] = useState("");
   const [localDrafts, setLocalDrafts] = useState<Record<string, string>>({});
   const selectedEvidence = resolveSessionEvidenceSelection(sessionScope.evidence, selectedEvidenceId);
-  const selectedArtifact = resolveSessionArtifact(selectedEvidence, artifactViews);
+  const selectedArtifact = resolveSessionArtifact(selectedEvidence, data.artifacts);
 
   useEffect(() => {
     setSelectedEvidenceId((currentObjectId) => resolveSessionEvidenceSelection(sessionScope.evidence, currentObjectId)?.objectId ?? null);
@@ -40,10 +50,10 @@ export function AgentWorkspace({ session, onOpenLab }: { session: ResearchSessio
     setDraftInput("");
   };
 
-  return <section className="agent-workspace" data-testid="agent-workspace" data-session-id={session.sessionViewId} data-boundary={AGENT_WORKSPACE_BOUNDARY.mode}>
+  return <section className="agent-workspace" data-testid="agent-workspace" data-session-id={session.sessionViewId} data-boundary={boundary.mode} data-connection-state={connectionState}>
     <header className="agent-workspace-head">
       <div className="agent-session-title"><small>ACTIVE RESEARCH SESSION · DERIVED VIEW</small><h1>{session.title}</h1><p>{session.goal}</p></div>
-      <div className="agent-boundary-stack"><span className="boundary-chip">{AGENT_WORKSPACE_BOUNDARY.label}</span><code>{AGENT_WORKSPACE_BOUNDARY.transport}</code></div>
+      <div className="agent-boundary-stack"><span className="boundary-chip">{boundary.label}</span><code>{boundary.transport}</code><small>{boundary.source}</small></div>
     </header>
 
     <div className="agent-workspace-body">
@@ -77,8 +87,8 @@ export function AgentWorkspace({ session, onOpenLab }: { session: ResearchSessio
         <div className="evidence-index" role="list" aria-label="Session evidence objects">
           {sessionScope.evidence.map((item) => <button key={item.objectId} data-evidence-object-id={item.objectId} data-truth-state={item.canonicalTruthState} data-admission-state={item.canonicalAdmissionState} className={item.objectId === selectedEvidence?.objectId ? "active" : ""} onClick={() => selectEvidence(item.objectId)} role="listitem"><span>{item.kind}</span><code>{compactId(item.objectId)}</code><small>{item.canonicalTruthState} / {item.canonicalAdmissionState}</small></button>)}
         </div>
-        {selectedEvidence ? <EvidenceDetails evidence={selectedEvidence} onOpenLab={onOpenLab}/> : <div className="evidence-empty" data-testid="session-evidence-empty"><small>SESSION EVIDENCE</small><b>No evidence linked</b><p>This Research Session has no explicit evidence links. Nothing from another session is displayed.</p></div>}
-        <section className="future-slots"><h3>Future main-contract slots</h3>{FUTURE_EXTENSION_SLOTS.map((slot) => <div key={slot.object}><b>{slot.object}</b><span>{slot.status}</span><small>{slot.owner}</small></div>)}</section>
+        {selectedEvidence ? <EvidenceDetails evidence={selectedEvidence} onOpenLab={onOpenLab}/> : <div className="evidence-empty" data-testid="session-evidence-empty"><small>SESSION EVIDENCE</small><b>{connectionState === "READY" ? "No canonical evidence available" : "Backend evidence unavailable"}</b><p>{connectionState === "READY" ? "The backend is connected, but no canonical Round 3 evidence is available for this session." : `WS-E backendRuntime is ${connectionState}. No demo evidence has been substituted.`}</p></div>}
+        <section className="future-slots"><h3>Round 3 main-contract connections</h3>{ROUND3_MAIN_CONTRACT_SLOTS.map((slot) => <div key={slot.object}><b>{slot.object}</b><span>{slot.status}</span><small>{slot.owner}</small></div>)}</section>
       </aside>
     </div>
 

@@ -22,5 +22,15 @@ function ArtifactBody({ artifact }: { artifact: ArtifactView }) {
   if (payload.renderer === "table") return <div className="artifact-table-wrap"><table><thead><tr>{payload.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{payload.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}</tr>)}</tbody></table></div>;
   if (payload.renderer === "details") return <dl className="artifact-details">{payload.entries.map((entry) => <React.Fragment key={entry.label}><dt>{entry.label}</dt><dd>{entry.value}</dd></React.Fragment>)}</dl>;
   if (payload.renderer === "text") return <p className="artifact-text">{payload.text}</p>;
+  if (payload.renderer === "backtest-result" && !("availability" in payload)) return <div className="backtest-result-artifact" data-testid="canonical-backtest-result">
+    <div className="artifact-metrics">
+      <div><small>FILLS</small><strong>{payload.fillCount}</strong></div>
+      <div><small>DIAGNOSTICS</small><strong>{payload.diagnosticCount}</strong></div>
+      <div><small>CASH LEDGER</small><strong>{payload.cashLedgerSummary}</strong></div>
+      <div><small>FEE LEDGER</small><strong>{payload.feeLedgerSummary}</strong></div>
+    </div>
+    <dl className="artifact-details"><dt>Result ID</dt><dd>{payload.resultId}</dd><dt>Run spec ID</dt><dd>{payload.runSpecId}</dd></dl>
+    <div className="artifact-table-wrap"><table><thead><tr>{payload.nav.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{payload.nav.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}</tr>)}</tbody></table></div>
+  </div>;
   return <div className="future-renderer-slot"><b>{payload.renderer === "chart" ? "Chart" : "Backtest / Result"} renderer slot</b><p>{payload.reason}</p><span>NOT_CONNECTED · no formal support claim</span></div>;
 }

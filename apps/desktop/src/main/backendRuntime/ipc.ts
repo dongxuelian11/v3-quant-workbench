@@ -1,10 +1,12 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
 import type { BackendSupervisor } from "./supervisor";
+import { contextBridgeSafe } from "./protocol";
 import type { CancelTaskInput, OpenArtifactStreamInput, ResumeTaskInput, RetryTaskInput } from "./types";
 
 export const BACKEND_RUNTIME_CHANNELS = Object.freeze({
   capabilities: "backendRuntime:capabilities",
   health: "backendRuntime:health",
+  evidenceSnapshot: "backendRuntime:evidenceSnapshot",
   cancelTask: "backendRuntime:cancelTask",
   retryTask: "backendRuntime:retryTask",
   resumeTask: "backendRuntime:resumeTask",
@@ -35,12 +37,21 @@ function stateVersion(item: Record<string, unknown>): number {
   return Number(value);
 }
 
-export function registerBackendRuntimeIpc(ipcMain: IpcMain, trusted: TrustIpcSender, supervisor: BackendSupervisor): () => void {
+export function registerBackendRuntimeIpc(
+  ipcMain: IpcMain,
+  trusted: TrustIpcSender,
+  supervisor: BackendSupervisor,
+  evidenceSnapshot: () => unknown = () => null
+): () => void {
   const handle = (channel: string, listener: (value: unknown) => unknown | Promise<unknown>): void => {
     ipcMain.handle(channel, (event, value) => { trusted(event); return listener(value); });
   };
   ipcMain.handle(BACKEND_RUNTIME_CHANNELS.capabilities, (event) => { trusted(event); return supervisor.capabilities; });
-  ipcMain.handle(BACKEND_RUNTIME_CHANNELS.health, (event) => { trusted(event); return supervisor.getHealth(); });
+  ipcMain.handle(BACKEND_RUNTIME_CHANNELS.health, (event) => {
+    trusted(event);
+    return supervisor.state === "READY" ? supervisor.getHealth() : { state: supervisor.state };
+  });
+  ipcMain.handle(BACKEND_RUNTIME_CHANNELS.evidenceSnapshot, (event) => { trusted(event); return contextBridgeSafe(evidenceSnapshot()); });
   handle(BACKEND_RUNTIME_CHANNELS.cancelTask, (value) => {
     const item = assertObject(value, ["taskId", "expectedStateVersion", "reason"]);
     const request: CancelTaskInput = {
@@ -80,6 +91,14 @@ export function registerBackendRuntimeIpc(ipcMain: IpcMain, trusted: TrustIpcSen
     return supervisor.openArtifactStream(request);
   });
   return () => {
-    for (const channel of Object.values(BACKEND_RUNTIME_CHANNELS).slice(0, 6)) ipcMain.removeHandler(channel);
+    for (const channel of [
+      BACKEND_RUNTIME_CHANNELS.capabilities,
+      BACKEND_RUNTIME_CHANNELS.health,
+      BACKEND_RUNTIME_CHANNELS.evidenceSnapshot,
+      BACKEND_RUNTIME_CHANNELS.cancelTask,
+      BACKEND_RUNTIME_CHANNELS.retryTask,
+      BACKEND_RUNTIME_CHANNELS.resumeTask,
+      BACKEND_RUNTIME_CHANNELS.openArtifactStream
+    ]) ipcMain.removeHandler(channel);
   };
 }

@@ -102,7 +102,15 @@ const artifactViewerSource = await readRequired("apps/desktop/src/renderer/compo
 assert.doesNotMatch(`${agentWorkspaceSource}\n${artifactViewerSource}`, /dangerouslySetInnerHTML|\beval\s*\(|new Function\s*\(/, "Agent output must never execute arbitrary model HTML or code");
 assertSourceContract(agentWorkspaceSource, /NON_CANONICAL/, "Agent drafts must expose the non-canonical boundary");
 assertSourceContract(agentWorkspaceSource, /Open in .* Lab/, "Open-in-Lab navigation is missing");
-assert.equal(AGENT_WORKSPACE_BOUNDARY.mode, "DEMO_DEVELOPMENT_ONLY");
+assert.equal(AGENT_WORKSPACE_BOUNDARY.mode, "LIVE_READ_ONLY");
+assertSourceContract(appSource, /getEvidenceSnapshot/, "Agent Workspace must consume the existing backendRuntime read-only snapshot");
+assertSourceContract(appSource, /onEvidenceEvent/, "Agent Workspace must consume the existing backendRuntime event relay");
+const preloadBridgeSource = await readRequired("apps/desktop/src/preload/backendRuntime/bridge.ts", 500);
+assertSourceContract(preloadBridgeSource, /createBackendRuntimeReadOnlyBridge/, "Read-only backendRuntime product bridge is missing");
+for (const forbidden of ["cancelTask", "retryTask", "resumeTask", "openArtifactStream"]) {
+  const productSurface = preloadBridgeSource.slice(preloadBridgeSource.indexOf("createBackendRuntimeReadOnlyBridge"));
+  assert.doesNotMatch(productSurface, new RegExp(`${forbidden}\\s*:`), `Renderer product bridge must not expose ${forbidden}`);
+}
 assert.deepEqual(PERMISSION_SURFACE.filter((item) => item.allowed).map((item) => item.level), ["L0_READ", "L1_DRAFT"]);
 assert.deepEqual(Object.keys(ARTIFACT_RENDERER_REGISTRY), ["table", "metric", "text", "details", "chart", "backtest-result"]);
 assert.ok(researchSessions.length >= 3 && evidenceViews.length >= 12 && timelineEntries.length >= 8, "Agent-first fixture coverage is incomplete");

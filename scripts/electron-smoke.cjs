@@ -74,8 +74,16 @@ app.whenReady().then(async () => {
   const win = BrowserWindow.getAllWindows()[0];
   if (!win) throw new Error("Main process did not create BrowserWindow");
   const consoleErrors = [];
+  const preloadErrors = [];
   win.webContents.on("console-message", (_event, details) => { if (details && details.level === "error") consoleErrors.push(details.message); });
-  await waitFor(win, "Boolean(document.querySelector('[data-testid=app-shell]'))", "renderer hydration");
+  win.webContents.on("preload-error", (_event, preloadPath, error) => preloadErrors.push({ preloadPath, message: error.message, stack: error.stack }));
+  try {
+    await waitFor(win, "Boolean(document.querySelector('[data-testid=app-shell]'))", "renderer hydration");
+  } catch (error) {
+    const page = await evaluate(win, "({url:location.href,readyState:document.readyState,body:document.body?.innerText??'',html:document.body?.innerHTML?.slice(0,1000)??'',scripts:Array.from(document.scripts).map((item)=>({src:item.src,type:item.type})),resources:performance.getEntriesByType('resource').map((item)=>({name:item.name,transferSize:item.transferSize}))})");
+    error.message += `; page=${JSON.stringify(page)}; consoleErrors=${JSON.stringify(consoleErrors)}; preloadErrors=${JSON.stringify(preloadErrors)}`;
+    throw error;
+  }
   if (phase === "capture") {
     await evaluate(win, "window.v3Desktop.resetWorkspace()");
     await evaluate(win, "window.localStorage.removeItem('v3-layout-contract')");
@@ -91,7 +99,7 @@ app.whenReady().then(async () => {
     const geometry = fs.existsSync(geometryPath) ? JSON.parse(fs.readFileSync(geometryPath, "utf8")) : [];
     win.setContentSize(1920, 1080);
     await delay(900);
-    await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace][data-boundary=DEMO_DEVELOPMENT_ONLY]'))", "Agent-first default after restart");
+    await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace][data-boundary=DEVELOPMENT_INTEGRATION_FIXTURE][data-connection-state=READY]'))", "canonical Round 3 Agent Workspace after restart");
     await click(win, "[data-lab='research']", 900);
     await waitFor(win, "document.querySelectorAll('.dv-tab').length>=3", "restored multi-panel Dockview layout");
     const restored = await evaluate(win, "({lab:document.querySelector('[data-lab-workbench]')?.getAttribute('data-lab-workbench'),panelTabs:document.querySelectorAll('.dv-tab').length,layoutContract:localStorage.getItem('v3-layout-contract')})");
@@ -103,24 +111,40 @@ app.whenReady().then(async () => {
     const geometry = [];
     const interactionEvidence = {};
     if (await evaluate(win, "document.querySelectorAll('[data-lab]').length") !== 5) throw new Error("Five-Lab navigation contract failed");
-    await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace][data-boundary=DEMO_DEVELOPMENT_ONLY]'))", "Agent-first default workspace");
+    try {
+      await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace][data-boundary=DEVELOPMENT_INTEGRATION_FIXTURE][data-connection-state=READY]'))", "canonical Round 3 Agent Workspace");
+    } catch (error) {
+      const state = await evaluate(win, "Promise.all([window.v3Desktop.runtimeInfo(),window.v3BackendRuntime.getEvidenceSnapshot()]).then(([runtime,snapshot])=>({runtime,snapshot,boundary:document.querySelector('[data-testid=agent-workspace]')?.getAttribute('data-boundary'),connection:document.querySelector('[data-testid=agent-workspace]')?.getAttribute('data-connection-state'),body:document.body.innerText.slice(0,2000)}))");
+      error.message += `; state=${JSON.stringify(state)}`;
+      throw error;
+    }
+    const exactEvidenceIds = [
+      "pint_sha256_011e48a40e65b1ff92213b5ce1a4895f0412f91c0b534f8aa78c03e49df96a9e",
+      "twv_sha256_7e9aa3d18cd1d4c1ea2dca665fdd760c866907c2043be3c467dc25df1152b9cd",
+      "rawv_sha256_d6f24bd4402608eb8a7c844137162c68d8effd9ad535509efe4cf586203ff2fa",
+      "rdr_sha256_060f64b4c30726126071aa15d407c1731ebf6fbec78d2d2494471117ec56cdf0",
+      "btrs_sha256_d39992efac79dd077ab0919b59bc4072adb0f987c624c25bbfd019fef31490be",
+      "btrr_sha256_4f08d474405ec0a5451bfc898851848db37a893479bf6e51af0afaf9ed06c09f"
+    ];
     interactionEvidence.agentWorkspace = await evaluate(win, `(()=>{
       const permissions=Array.from(document.querySelectorAll('.permission-strip > div')).map((item)=>({level:item.querySelector('span')?.textContent,status:item.querySelector('b')?.textContent,allowed:item.getAttribute('data-allowed')}));
       const actionLabels=Array.from(document.querySelectorAll('button')).map((button)=>button.textContent?.trim()??'');
-      const nonSuccessStates=['PENDING','NOT_RUN','BLOCKED'].map((state)=>{const item=document.querySelector('[data-timeline-state="'+state+'"]')||document.querySelector('[data-session-status="'+state+'"]');return {state,found:Boolean(item),successClass:item?.classList.contains('success')??false}});
       return {
         defaultSurface:document.querySelector('[data-testid=app-shell]')?.getAttribute('data-default-surface'),
+        boundary:document.querySelector('[data-testid=agent-workspace]')?.getAttribute('data-boundary'),
+        connection:document.querySelector('[data-testid=agent-workspace]')?.getAttribute('data-connection-state'),
         navigator:Boolean(document.querySelector('[data-testid=research-session-navigator]')),
         inspector:Boolean(document.querySelector('[data-testid=evidence-inspector]')),
         artifactViewer:Boolean(document.querySelector('[data-testid=artifact-viewer]')),
         timeline:Boolean(document.querySelector('[data-testid=agent-timeline]')),
         permissions,
         forbiddenActions:actionLabels.filter((label)=>/^(Execute|Publish)$/i.test(label)),
-        nonSuccessStates,
         agentRoles:Array.from(document.querySelectorAll('[data-agent-role]')).map((item)=>item.getAttribute('data-agent-role')),
         statementSessions:Array.from(document.querySelectorAll('[data-statement-id]')).map((item)=>item.getAttribute('data-session-id')),
         timelineSessions:Array.from(document.querySelectorAll('[data-timeline-id]')).map((item)=>item.getAttribute('data-session-id')),
-        evidenceIds:Array.from(document.querySelectorAll('[data-evidence-object-id]')).map((item)=>item.getAttribute('data-evidence-object-id'))
+        timelineStates:Array.from(document.querySelectorAll('[data-timeline-id]')).map((item)=>({state:item.getAttribute('data-timeline-state'),successClass:item.classList.contains('success'),title:item.querySelector('strong')?.textContent})),
+        evidenceIds:Array.from(document.querySelectorAll('[data-evidence-object-id]')).map((item)=>item.getAttribute('data-evidence-object-id')),
+        connectionSlots:Array.from(document.querySelectorAll('.future-slots > div')).map((item)=>({object:item.querySelector('b')?.textContent,status:item.querySelector('span')?.textContent,owner:item.querySelector('small')?.textContent}))
       };
     })()`);
     const permissionContract = JSON.stringify(interactionEvidence.agentWorkspace.permissions) === JSON.stringify([
@@ -129,49 +153,30 @@ app.whenReady().then(async () => {
       { level: "L2_EXECUTE", status: "DENIED", allowed: "false" },
       { level: "L3_PUBLISH", status: "DENIED", allowed: "false" }
     ]);
-    const defaultSessionId = "session-view-momentum-pit-001";
-    if (interactionEvidence.agentWorkspace.defaultSurface !== "agent" || !interactionEvidence.agentWorkspace.navigator || !interactionEvidence.agentWorkspace.inspector || !interactionEvidence.agentWorkspace.artifactViewer || !interactionEvidence.agentWorkspace.timeline || !permissionContract || interactionEvidence.agentWorkspace.forbiddenActions.length || interactionEvidence.agentWorkspace.nonSuccessStates.some((item)=>!item.found||item.successClass) || interactionEvidence.agentWorkspace.agentRoles.slice().sort().join(',') !== 'DATA,RESEARCH,REVIEWER' || interactionEvidence.agentWorkspace.statementSessions.some((item)=>item!==defaultSessionId) || interactionEvidence.agentWorkspace.timelineSessions.some((item)=>item!==defaultSessionId)) throw new Error(`Agent workspace contract failed ${JSON.stringify(interactionEvidence.agentWorkspace)}`);
+    const defaultSessionId = "session-view-round3-integration-001";
+    if (interactionEvidence.agentWorkspace.defaultSurface !== "agent" || interactionEvidence.agentWorkspace.boundary !== "DEVELOPMENT_INTEGRATION_FIXTURE" || interactionEvidence.agentWorkspace.connection !== "READY" || !interactionEvidence.agentWorkspace.navigator || !interactionEvidence.agentWorkspace.inspector || !interactionEvidence.agentWorkspace.artifactViewer || !interactionEvidence.agentWorkspace.timeline || !permissionContract || interactionEvidence.agentWorkspace.forbiddenActions.length || interactionEvidence.agentWorkspace.agentRoles.length || interactionEvidence.agentWorkspace.statementSessions.length || interactionEvidence.agentWorkspace.timelineSessions.some((item)=>item!==defaultSessionId) || JSON.stringify(interactionEvidence.agentWorkspace.evidenceIds)!==JSON.stringify(exactEvidenceIds) || interactionEvidence.agentWorkspace.timelineStates.length!==6 || interactionEvidence.agentWorkspace.timelineStates.some((item)=>item.state!=="PRE_ALPHA"||item.successClass||/executed|succeeded/i.test(item.title??'')) || JSON.stringify(interactionEvidence.agentWorkspace.connectionSlots.map((item)=>item.owner))!==JSON.stringify(["CANONICAL_H","CANONICAL_I","CANONICAL_J"]) || interactionEvidence.agentWorkspace.connectionSlots.some((item)=>item.status!=="CONNECTED_READ_ONLY_MAIN_CONTRACT")) throw new Error(`Agent workspace contract failed ${JSON.stringify(interactionEvidence.agentWorkspace)}`);
     await evaluate(win, `(()=>{const input=document.querySelector('textarea[aria-label="Research question"]');const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(input,'Audit the exact dataset evidence before drafting a conclusion.');input.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
     await clickText(win, "Save L1 draft", 300);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=local-agent-draft]'))", "saved local L1 draft");
-    const exactRewardId = `rwv_sha256_${"6".repeat(64)}`;
-    await click(win, `[data-evidence-object-id='${exactRewardId}']`, 300);
-    if (await evaluate(win, "document.querySelector('[data-testid=artifact-viewer]')?.getAttribute('data-artifact-id')") !== `art_sha256_${"6".repeat(64)}`) throw new Error("Default session RewardVector artifact did not bind exactly");
-    await click(win, "[data-session-id='session-view-provider-revision-002']", 400);
-    await waitFor(win, "document.querySelector('.agent-session-title h1')?.textContent==='Provider revision audit'", "research session navigation");
-    const exactSnapshotId = `snp_sha256_${"1".repeat(64)}`;
-    const exactDatasetId = `dsv_sha256_${"2".repeat(64)}`;
-    interactionEvidence.sessionScope = await evaluate(win, `(()=>({
-      statementIds:Array.from(document.querySelectorAll('[data-statement-id]')).map((item)=>item.getAttribute('data-statement-id')),
-      statementSessions:Array.from(document.querySelectorAll('[data-statement-id]')).map((item)=>item.getAttribute('data-session-id')),
-      timelineIds:Array.from(document.querySelectorAll('[data-timeline-id]')).map((item)=>item.getAttribute('data-timeline-id')),
-      timelineSessions:Array.from(document.querySelectorAll('[data-timeline-id]')).map((item)=>item.getAttribute('data-session-id')),
-      evidenceIds:Array.from(document.querySelectorAll('[data-evidence-object-id]')).map((item)=>item.getAttribute('data-evidence-object-id')),
-      selectedEvidence:document.querySelector('.exact-object-id code')?.textContent,
-      artifactId:document.querySelector('[data-testid=artifact-viewer]')?.getAttribute('data-artifact-id'),
-      localDraftVisible:Boolean(document.querySelector('[data-testid=local-agent-draft]')),
-      previousRewardVisible:document.body.innerText.includes('RewardVector metrics')
-    }))()`);
-    const secondSessionId = "session-view-provider-revision-002";
-    if (interactionEvidence.sessionScope.statementIds.join(',') !== 'draft-data-002' || interactionEvidence.sessionScope.statementSessions.some((item)=>item!==secondSessionId) || interactionEvidence.sessionScope.timelineIds.join(',') !== 'tl-09,tl-10,tl-11,tl-12' || interactionEvidence.sessionScope.timelineSessions.some((item)=>item!==secondSessionId) || interactionEvidence.sessionScope.evidenceIds.join(',') !== `${exactSnapshotId},${exactDatasetId}` || interactionEvidence.sessionScope.selectedEvidence !== exactSnapshotId || interactionEvidence.sessionScope.artifactId !== `art_sha256_${"d".repeat(64)}` || interactionEvidence.sessionScope.localDraftVisible || interactionEvidence.sessionScope.previousRewardVisible) throw new Error(`Session scope closure failed ${JSON.stringify(interactionEvidence.sessionScope)}`);
-    await click(win, `[data-evidence-object-id='${exactSnapshotId}']`, 300);
-    interactionEvidence.evidenceInspector = await evaluate(win, `(()=>({objectId:document.querySelector('.exact-object-id code')?.textContent,truth:Array.from(document.querySelectorAll('.truth-admission-grid b')).map((item)=>item.textContent),provenance:Array.from(document.querySelectorAll('.evidence-details section code')).map((item)=>item.textContent)}))()`);
-    if (interactionEvidence.evidenceInspector.objectId !== exactSnapshotId || interactionEvidence.evidenceInspector.truth.join(',') !== 'NOT_FORMAL,PRE_ALPHA,NOT_RUN' || !interactionEvidence.evidenceInspector.provenance.some((item)=>item.startsWith('art_sha256_'))) throw new Error(`Evidence Inspector exactness failed ${JSON.stringify(interactionEvidence.evidenceInspector)}`);
+    await click(win, `[data-evidence-object-id='${exactEvidenceIds[1]}']`, 250);
+    if (!await evaluate(win, "document.querySelector('.open-in-lab')?.textContent==='Open in Strategy Lab'")) throw new Error("TargetWeightVector Open-in-Lab route label is not Strategy");
+    await click(win, ".open-in-lab", 500);
+    if (await evaluate(win, "document.querySelector('[data-lab-workbench]')?.getAttribute('data-lab-workbench')") !== "strategy") throw new Error("TargetWeightVector did not route to Strategy Lab");
+    await click(win, "[data-surface='agent']", 400);
+    await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace]'))", "return from TargetWeightVector Strategy route");
+    for (const exactId of [exactEvidenceIds[2], exactEvidenceIds[4], exactEvidenceIds[5]]) {
+      await click(win, `[data-evidence-object-id='${exactId}']`, 250);
+      const binding = await evaluate(win, `(()=>({objectId:document.querySelector('.exact-object-id code')?.textContent,artifactId:document.querySelector('[data-testid=artifact-viewer]')?.getAttribute('data-artifact-id'),truth:Array.from(document.querySelectorAll('.truth-admission-grid b')).map((item)=>item.textContent)}))()`);
+      if (binding.objectId!==exactId || binding.artifactId!==exactId || binding.truth.join(',')!=="NOT_FORMAL,PRE_ALPHA,NOT_RUN") throw new Error(`Exact canonical evidence binding failed ${JSON.stringify(binding)}`);
+    }
+    interactionEvidence.evidenceInspector = await evaluate(win, `(()=>({objectId:document.querySelector('.exact-object-id code')?.textContent,truth:Array.from(document.querySelectorAll('.truth-admission-grid b')).map((item)=>item.textContent)}))()`);
+    interactionEvidence.backtestResult = await evaluate(win, `(()=>({renderer:document.querySelector('[data-testid=artifact-viewer]')?.getAttribute('data-renderer'),actual:Boolean(document.querySelector('[data-testid=canonical-backtest-result]')),body:document.querySelector('[data-testid=canonical-backtest-result]')?.textContent}))()`);
+    if (interactionEvidence.evidenceInspector.objectId !== exactEvidenceIds[5] || interactionEvidence.evidenceInspector.truth.join(',') !== 'NOT_FORMAL,PRE_ALPHA,NOT_RUN' || interactionEvidence.backtestResult.renderer !== 'backtest-result' || !interactionEvidence.backtestResult.actual || !interactionEvidence.backtestResult.body.includes(exactEvidenceIds[5]) || !interactionEvidence.backtestResult.body.includes(exactEvidenceIds[4])) throw new Error(`Canonical BacktestRunResult rendering failed ${JSON.stringify(interactionEvidence)}`);
+    await shot(win, geometry, "00-round3-canonical-agent-workspace.png", [1920, 1080]);
     await click(win, ".open-in-lab", 700);
-    if (await evaluate(win, "document.querySelector('[data-lab-workbench]')?.getAttribute('data-lab-workbench')") !== "research") throw new Error("Open-in-Lab did not route to Research Lab");
+    if (await evaluate(win, "document.querySelector('[data-lab-workbench]')?.getAttribute('data-lab-workbench')") !== "result") throw new Error("Canonical BacktestRunResult did not route to Result Lab");
     await click(win, "[data-surface='agent']", 500);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace]'))", "return to Agent Workspace");
-    await click(win, "[data-session-id='session-view-empty-004']", 400);
-    await waitFor(win, "document.querySelector('[data-testid=agent-workspace]')?.getAttribute('data-session-id')==='session-view-empty-004'", "zero-evidence session navigation");
-    interactionEvidence.emptySession = await evaluate(win, `(()=>({
-      emptyEvidence:Boolean(document.querySelector('[data-testid=session-evidence-empty]')),
-      emptyArtifact:document.querySelector('[data-testid=artifact-viewer]')?.getAttribute('data-empty'),
-      statementCount:document.querySelectorAll('[data-statement-id]').length,
-      timelineCount:document.querySelectorAll('[data-timeline-id]').length,
-      evidenceCount:document.querySelectorAll('[data-evidence-object-id]').length,
-      exactObjectVisible:Boolean(document.querySelector('.exact-object-id'))
-    }))()`);
-    if (!interactionEvidence.emptySession.emptyEvidence || interactionEvidence.emptySession.emptyArtifact !== 'true' || interactionEvidence.emptySession.statementCount || interactionEvidence.emptySession.timelineCount || interactionEvidence.emptySession.evidenceCount || interactionEvidence.emptySession.exactObjectVisible) throw new Error(`Zero-evidence fail-closed state failed ${JSON.stringify(interactionEvidence.emptySession)}`);
     await click(win, "[data-lab='research']", 700);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=research-echart]'))", "Research ECharts");
     await shot(win, geometry, "01-research-default-chart-first.png", [1536, 864]);

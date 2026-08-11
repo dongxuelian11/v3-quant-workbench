@@ -46,7 +46,10 @@ export class NodeBackendProcessFactory implements BackendProcessFactory {
 
 export function sanitizedBackendEnvironment(source: NodeJS.ProcessEnv = process.env): Readonly<Record<string, string>> {
   const result: Record<string, string> = {};
-  for (const name of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP"]) {
+  // APPDATA lets a Windows CPython installation locate its standard per-user
+  // site-packages (notably the IANA tzdata required by canonical BacktestRunSpec).
+  // No package-specific, project, token, or raw storage path is admitted.
+  for (const name of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "APPDATA"]) {
     const value = source[name];
     if (typeof value === "string" && value.length > 0) result[name] = value;
   }

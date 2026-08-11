@@ -235,9 +235,10 @@ export class BackendSupervisor extends EventEmitter {
     this.setState("STARTING");
     const token = this.tokenFactory();
     if (token.byteLength !== 32) throw new Error("supervisor token factory must return 256 bits");
+    const backendModule = this.config.backendModule ?? "v3_backend.runtime.bootstrap";
     const spec: SpawnSpec = {
       executable: this.config.pythonExecutable,
-      args: ["-m", "v3_backend.runtime.bootstrap", "--transport=stdio-framed-v1"],
+      args: ["-m", backendModule, "--transport=stdio-framed-v1"],
       cwd: this.config.backendWorkingDirectory,
       env: sanitizedBackendEnvironment()
     };

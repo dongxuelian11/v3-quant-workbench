@@ -1,15 +1,16 @@
 import React from "react";
-import { AGENT_WORKSPACE_BOUNDARY, statusTone, type ResearchSessionView } from "../agentWorkspace";
+import { statusTone, type AgentWorkspaceBoundary, type ResearchSessionView } from "../agentWorkspace";
 
-export function ResearchSessionNavigator({ sessions, activeSessionId, onSelect }: {
-  sessions: ResearchSessionView[];
+export function ResearchSessionNavigator({ sessions, boundary, activeSessionId, onSelect }: {
+  sessions: readonly ResearchSessionView[];
+  boundary: AgentWorkspaceBoundary;
   activeSessionId: string;
   onSelect: (sessionId: string) => void;
 }) {
   return <div className="session-navigator" data-testid="research-session-navigator">
     <header className="session-nav-head">
       <div><small>RESEARCH SESSIONS</small><b>Workspace index</b></div>
-      <span className="boundary-chip">{AGENT_WORKSPACE_BOUNDARY.label}</span>
+      <span className="boundary-chip">{boundary.label}</span>
     </header>
     <div className="session-nav-summary"><span>{sessions.length} derived views</span><span>read-only index</span></div>
     <div className="session-list">

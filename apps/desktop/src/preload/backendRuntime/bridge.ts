@@ -1,6 +1,7 @@
 import type {
   ArtifactStreamRequest,
   BackendRuntimeBridge,
+  BackendRuntimeReadOnlyBridge,
   CancelTaskRequest,
   ResumeTaskRequest,
   RetryTaskRequest,
@@ -12,6 +13,7 @@ import type {
 export const BACKEND_RUNTIME_CHANNELS = Object.freeze({
   capabilities: "backendRuntime:capabilities",
   health: "backendRuntime:health",
+  evidenceSnapshot: "backendRuntime:evidenceSnapshot",
   cancelTask: "backendRuntime:cancelTask",
   retryTask: "backendRuntime:retryTask",
   resumeTask: "backendRuntime:resumeTask",
@@ -41,6 +43,16 @@ export function createBackendRuntimeBridge(ipc: NarrowIpcRenderer): BackendRunti
     resumeTask: (request: ResumeTaskRequest) => ipc.invoke(BACKEND_RUNTIME_CHANNELS.resumeTask, structuredClone(request)),
     openArtifactStream: (request: ArtifactStreamRequest) => ipc.invoke(BACKEND_RUNTIME_CHANNELS.openArtifactStream, structuredClone(request)),
     onTaskEvent: (listener: (event: TaskEventView) => void) => subscribe(ipc, BACKEND_RUNTIME_CHANNELS.taskEvent, listener),
+    onConnectionState: (listener: (state: RuntimeConnectionState) => void) => subscribe(ipc, BACKEND_RUNTIME_CHANNELS.connectionState, listener)
+  });
+}
+
+export function createBackendRuntimeReadOnlyBridge(ipc: NarrowIpcRenderer): BackendRuntimeReadOnlyBridge {
+  return Object.freeze({
+    getCapabilities: () => ipc.invoke(BACKEND_RUNTIME_CHANNELS.capabilities) as Promise<readonly RuntimeCapability[]>,
+    getHealth: () => ipc.invoke(BACKEND_RUNTIME_CHANNELS.health) as Promise<Readonly<Record<string, unknown>>>,
+    getEvidenceSnapshot: () => ipc.invoke(BACKEND_RUNTIME_CHANNELS.evidenceSnapshot) as Promise<TaskEventView | null>,
+    onEvidenceEvent: (listener: (event: TaskEventView) => void) => subscribe(ipc, BACKEND_RUNTIME_CHANNELS.taskEvent, listener),
     onConnectionState: (listener: (state: RuntimeConnectionState) => void) => subscribe(ipc, BACKEND_RUNTIME_CHANNELS.connectionState, listener)
   });
 }
