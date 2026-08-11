@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import ClassVar
+from zoneinfo import ZoneInfo
 
 from v3_backend.contracts.common.truth_admission import (
     PRE_ALPHA_CEILING,
@@ -25,6 +26,10 @@ class UnsupportedCorporateActionError(BacktestContractError):
     pass
 
 
+class ExpiredScheduledWeightsError(BacktestContractError):
+    pass
+
+
 class Board(str, Enum):
     SSE_MAIN = "SSE_MAIN"
     SSE_STAR = "SSE_STAR"
@@ -36,6 +41,14 @@ class Board(str, Enum):
 class Side(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
+
+
+class OpenEligibilityBoundary(str, Enum):
+    STRICTLY_BEFORE = "STRICTLY_BEFORE"
+
+
+class ScheduleSelectionPolicy(str, Enum):
+    LATEST_ELIGIBLE_VECTOR_PER_SESSION_OPEN = "LATEST_ELIGIBLE_VECTOR_PER_SESSION_OPEN"
 
 
 class CorporateActionType(str, Enum):
@@ -234,6 +247,139 @@ class AshareTradingRuleProfileVersion:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionTimingProfileVersion:
+    profile_id: str
+    content_sha256: str
+    profile_name: str
+    effective_from: date
+    effective_to: date | None
+    market_timezone: str
+    raw_open_eligibility_cutoff_local_time: str
+    raw_open_execution_local_time: str
+    eligibility_boundary: OpenEligibilityBoundary
+    selection_policy: ScheduleSelectionPolicy
+    execution_convention: str
+    truth_admission: TruthAdmissionState
+
+    schema_version: ClassVar[str] = "v3.a_share_execution_timing_profile/1.0.0"
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        profile_name: str,
+        effective_from: date,
+        effective_to: date | None,
+        market_timezone: str,
+        raw_open_eligibility_cutoff_local_time: str,
+        raw_open_execution_local_time: str,
+        eligibility_boundary: OpenEligibilityBoundary = OpenEligibilityBoundary.STRICTLY_BEFORE,
+        selection_policy: ScheduleSelectionPolicy = ScheduleSelectionPolicy.LATEST_ELIGIBLE_VECTOR_PER_SESSION_OPEN,
+        execution_convention: str = "NEXT_ELIGIBLE_SESSION_RAW_OPEN",
+        truth_admission: TruthAdmissionState = PRE_ALPHA_CEILING,
+    ) -> ExecutionTimingProfileVersion:
+        _text(profile_name, "profile_name")
+        _text(execution_convention, "execution_convention")
+        if execution_convention != "NEXT_ELIGIBLE_SESSION_RAW_OPEN":
+            raise BacktestContractError("only NEXT_ELIGIBLE_SESSION_RAW_OPEN is supported")
+        if effective_to is not None and effective_to < effective_from:
+            raise BacktestContractError("timing profile effective_to precedes effective_from")
+        try:
+            ZoneInfo(_text(market_timezone, "market_timezone"))
+        except Exception as exc:
+            raise BacktestContractError("market_timezone must name an installed IANA timezone") from exc
+        try:
+            cutoff = time.fromisoformat(raw_open_eligibility_cutoff_local_time)
+            execution_time = time.fromisoformat(raw_open_execution_local_time)
+        except ValueError as exc:
+            raise BacktestContractError("raw-open eligibility cutoff must be an ISO local time") from exc
+        if cutoff.tzinfo is not None or execution_time.tzinfo is not None:
+            raise BacktestContractError("raw-open cutoff and execution time must be timezone-free local times")
+        if execution_time < cutoff:
+            raise BacktestContractError("raw-open execution time precedes eligibility cutoff")
+        if eligibility_boundary is not OpenEligibilityBoundary.STRICTLY_BEFORE:
+            raise BacktestContractError("only STRICTLY_BEFORE raw-open eligibility is supported")
+        if selection_policy is not ScheduleSelectionPolicy.LATEST_ELIGIBLE_VECTOR_PER_SESSION_OPEN:
+            raise BacktestContractError("only latest eligible vector selection is supported")
+        admitted = meet_pair(truth_admission, PRE_ALPHA_CEILING)
+        payload = {
+            "schema_version": cls.schema_version,
+            "profile_name": profile_name,
+            "effective_from": effective_from.isoformat(),
+            "effective_to": effective_to.isoformat() if effective_to else None,
+            "market_timezone": market_timezone,
+            "raw_open_eligibility_cutoff_local_time": cutoff.isoformat(),
+            "raw_open_execution_local_time": execution_time.isoformat(),
+            "eligibility_boundary": eligibility_boundary.value,
+            "selection_policy": selection_policy.value,
+            "execution_convention": execution_convention,
+            "truth_admission": admitted.to_wire(),
+        }
+        digest = canonical_sha256(payload)
+        return cls(
+            "timing_sha256_" + digest,
+            digest,
+            profile_name,
+            effective_from,
+            effective_to,
+            market_timezone,
+            cutoff.isoformat(),
+            execution_time.isoformat(),
+            eligibility_boundary,
+            selection_policy,
+            execution_convention,
+            admitted,
+        )
+
+    def eligibility_cutoff(self, session_date: date) -> datetime:
+        return datetime.combine(
+            session_date,
+            time.fromisoformat(self.raw_open_eligibility_cutoff_local_time),
+            ZoneInfo(self.market_timezone),
+        )
+
+    def execution_timestamp(self, session_date: date) -> datetime:
+        return datetime.combine(
+            session_date,
+            time.fromisoformat(self.raw_open_execution_local_time),
+            ZoneInfo(self.market_timezone),
+        )
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "profile_id": self.profile_id,
+            "content_sha256": self.content_sha256,
+            "profile_name": self.profile_name,
+            "effective_from": self.effective_from.isoformat(),
+            "effective_to": self.effective_to.isoformat() if self.effective_to else None,
+            "market_timezone": self.market_timezone,
+            "raw_open_eligibility_cutoff_local_time": self.raw_open_eligibility_cutoff_local_time,
+            "raw_open_execution_local_time": self.raw_open_execution_local_time,
+            "eligibility_boundary": self.eligibility_boundary.value,
+            "selection_policy": self.selection_policy.value,
+            "execution_convention": self.execution_convention,
+            "truth_admission": self.truth_admission.to_wire(),
+        }
+
+    def assert_canonical(self) -> None:
+        rebuilt = type(self).create(
+            profile_name=self.profile_name,
+            effective_from=self.effective_from,
+            effective_to=self.effective_to,
+            market_timezone=self.market_timezone,
+            raw_open_eligibility_cutoff_local_time=self.raw_open_eligibility_cutoff_local_time,
+            raw_open_execution_local_time=self.raw_open_execution_local_time,
+            eligibility_boundary=self.eligibility_boundary,
+            selection_policy=self.selection_policy,
+            execution_convention=self.execution_convention,
+            truth_admission=self.truth_admission,
+        )
+        if rebuilt != self:
+            raise BacktestContractError("execution timing profile identity/content mismatch")
+
+
+@dataclass(frozen=True, slots=True)
 class CostBreakdown:
     commission: str
     stamp_duty: str
@@ -249,20 +395,52 @@ class CostBreakdown:
 
 
 @dataclass(frozen=True, slots=True)
+class MarketCostRule:
+    board: Board
+    effective_from: date
+    effective_to: date | None
+    transfer_fee_rate: str
+    exchange_fee_rate: str
+    official_source_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.board, Board):
+            raise TypeError("board must be Board")
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise BacktestContractError("market cost rule effective_to precedes effective_from")
+        object.__setattr__(self, "transfer_fee_rate", decimal_text(self.transfer_fee_rate, "transfer_fee_rate", non_negative=True))
+        object.__setattr__(self, "exchange_fee_rate", decimal_text(self.exchange_fee_rate, "exchange_fee_rate", non_negative=True))
+        _text(self.official_source_id, "official_source_id")
+
+    def applies(self, board: Board, session_date: date) -> bool:
+        return self.board is board and self.effective_from <= session_date and (self.effective_to is None or session_date <= self.effective_to)
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "board": self.board.value,
+            "effective_from": self.effective_from.isoformat(),
+            "effective_to": self.effective_to.isoformat() if self.effective_to else None,
+            "transfer_fee_rate": self.transfer_fee_rate,
+            "exchange_fee_rate": self.exchange_fee_rate,
+            "official_source_id": self.official_source_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CostPolicyVersion:
     policy_id: str
     content_sha256: str
     policy_name: str
     effective_from: date
+    effective_to: date | None
     commission_rate: str
     minimum_commission: str
     stamp_duty_sell_rate: str
-    transfer_fee_rate: str
-    exchange_fee_rate: str
+    market_rules: tuple[MarketCostRule, ...]
     currency_scale: int
     truth_admission: TruthAdmissionState
 
-    schema_version: ClassVar[str] = "v3.a_share_cost_policy/1.0.0"
+    schema_version: ClassVar[str] = "v3.a_share_cost_policy/1.1.0"
 
     @classmethod
     def create(
@@ -270,49 +448,64 @@ class CostPolicyVersion:
         *,
         policy_name: str,
         effective_from: date,
+        effective_to: date | None,
         commission_rate: str,
         minimum_commission: str,
         stamp_duty_sell_rate: str,
-        transfer_fee_rate: str,
-        exchange_fee_rate: str,
+        market_rules: tuple[MarketCostRule, ...],
         currency_scale: int = 2,
         truth_admission: TruthAdmissionState = PRE_ALPHA_CEILING,
     ) -> CostPolicyVersion:
         _text(policy_name, "policy_name")
+        if effective_to is not None and effective_to < effective_from:
+            raise BacktestContractError("cost policy effective_to precedes effective_from")
         if currency_scale < 0 or currency_scale > 8:
             raise BacktestContractError("currency_scale is outside supported range")
         values = tuple(decimal_text(value, name, non_negative=True) for name, value in (
             ("commission_rate", commission_rate),
             ("minimum_commission", minimum_commission),
             ("stamp_duty_sell_rate", stamp_duty_sell_rate),
-            ("transfer_fee_rate", transfer_fee_rate),
-            ("exchange_fee_rate", exchange_fee_rate),
         ))
+        ordered_rules = tuple(sorted(market_rules, key=lambda item: (item.board.value, item.effective_from, item.effective_to or date.max, item.official_source_id)))
+        if not ordered_rules:
+            raise BacktestContractError("cost policy requires market-scoped rules")
+        if any(not isinstance(item, MarketCostRule) for item in ordered_rules):
+            raise TypeError("market_rules must contain MarketCostRule")
+        admitted = meet_pair(truth_admission, PRE_ALPHA_CEILING)
         payload = {
             "schema_version": cls.schema_version,
             "policy_name": policy_name,
             "effective_from": effective_from.isoformat(),
+            "effective_to": effective_to.isoformat() if effective_to else None,
             "commission_rate": values[0],
             "minimum_commission": values[1],
             "stamp_duty_sell_rate": values[2],
-            "transfer_fee_rate": values[3],
-            "exchange_fee_rate": values[4],
+            "market_rules": [item.to_wire() for item in ordered_rules],
             "currency_scale": currency_scale,
             "rounding": "ROUND_HALF_UP",
-            "truth_admission": truth_admission.to_wire(),
+            "truth_admission": admitted.to_wire(),
         }
         digest = canonical_sha256(payload)
-        return cls("cost_sha256_" + digest, digest, policy_name, effective_from, *values, currency_scale, truth_admission)
+        return cls("cost_sha256_" + digest, digest, policy_name, effective_from, effective_to, *values, ordered_rules, currency_scale, admitted)
 
     def _money(self, value: Decimal) -> Decimal:
         from decimal import ROUND_HALF_UP
         return value.quantize(Decimal(1).scaleb(-self.currency_scale), rounding=ROUND_HALF_UP)
 
-    def calculate(self, side: Side, consideration: Decimal) -> CostBreakdown:
+    def applicable_rule(self, board: Board, session_date: date) -> MarketCostRule:
+        if session_date < self.effective_from or (self.effective_to is not None and session_date > self.effective_to):
+            raise BacktestContractError("session is outside pinned cost-policy effective range")
+        matches = tuple(rule for rule in self.market_rules if rule.applies(board, session_date))
+        if len(matches) != 1:
+            raise BacktestContractError(f"cost policy must resolve exactly one rule for {board.value} on {session_date.isoformat()}; found {len(matches)}")
+        return matches[0]
+
+    def calculate(self, board: Board, side: Side, consideration: Decimal, session_date: date) -> CostBreakdown:
+        rule = self.applicable_rule(board, session_date)
         commission = self._money(max(consideration * _d(self.commission_rate), _d(self.minimum_commission))) if consideration > 0 else Decimal(0)
         stamp = self._money(consideration * _d(self.stamp_duty_sell_rate)) if side is Side.SELL else Decimal(0)
-        transfer = self._money(consideration * _d(self.transfer_fee_rate))
-        exchange = self._money(consideration * _d(self.exchange_fee_rate))
+        transfer = self._money(consideration * _d(rule.transfer_fee_rate))
+        exchange = self._money(consideration * _d(rule.exchange_fee_rate))
         return CostBreakdown(*(decimal_text(value, "fee", non_negative=True) for value in (commission, stamp, transfer, exchange)))
 
     def to_wire(self) -> dict[str, object]:
@@ -322,11 +515,11 @@ class CostPolicyVersion:
             "content_sha256": self.content_sha256,
             "policy_name": self.policy_name,
             "effective_from": self.effective_from.isoformat(),
+            "effective_to": self.effective_to.isoformat() if self.effective_to else None,
             "commission_rate": self.commission_rate,
             "minimum_commission": self.minimum_commission,
             "stamp_duty_sell_rate": self.stamp_duty_sell_rate,
-            "transfer_fee_rate": self.transfer_fee_rate,
-            "exchange_fee_rate": self.exchange_fee_rate,
+            "market_rules": [item.to_wire() for item in self.market_rules],
             "currency_scale": self.currency_scale,
             "rounding": "ROUND_HALF_UP",
             "truth_admission": self.truth_admission.to_wire(),
@@ -336,11 +529,11 @@ class CostPolicyVersion:
         rebuilt = type(self).create(
             policy_name=self.policy_name,
             effective_from=self.effective_from,
+            effective_to=self.effective_to,
             commission_rate=self.commission_rate,
             minimum_commission=self.minimum_commission,
             stamp_duty_sell_rate=self.stamp_duty_sell_rate,
-            transfer_fee_rate=self.transfer_fee_rate,
-            exchange_fee_rate=self.exchange_fee_rate,
+            market_rules=self.market_rules,
             currency_scale=self.currency_scale,
             truth_admission=self.truth_admission,
         )
@@ -454,6 +647,8 @@ class ScheduledWeights:
         if not isinstance(self.vector, RiskAdjustedWeightVector):
             raise TypeError("vector must be canonical RiskAdjustedWeightVector")
         self.vector.assert_canonical()
+        if self.effective_at != self.vector.source_target.rebalance_time:
+            raise BacktestContractError("ScheduledWeights.effective_at must exactly equal W0 source_target.rebalance_time")
 
     def to_wire(self) -> dict[str, object]:
         return {"effective_at": self.effective_at, "risk_adjusted_weight_vector_id": self.vector.risk_adjusted_weight_vector_id, "content_sha256": self.vector.content_sha256}
@@ -485,16 +680,16 @@ class BacktestRunSpec:
     schedule: tuple[ScheduledWeights, ...]
     rule_profile: AshareTradingRuleProfileVersion
     cost_policy: CostPolicyVersion
+    execution_timing_profile: ExecutionTimingProfileVersion
     exact_references: tuple[ExactInputReference, ...]
     runtime_identity: RuntimeIdentity
     engine_version: str
-    market_timezone: str
     truth_admission: TruthAdmissionState
 
-    schema_version: ClassVar[str] = "v3.a_share_backtest_run_spec/1.0.0"
+    schema_version: ClassVar[str] = "v3.a_share_backtest_run_spec/1.1.0"
 
     @classmethod
-    def create(cls, *, initial_cash: str, initial_holdings: tuple[InitialHolding, ...], instruments: tuple[InstrumentDefinition, ...], sessions: tuple[MarketSession, ...], schedule: tuple[ScheduledWeights, ...], rule_profile: AshareTradingRuleProfileVersion, cost_policy: CostPolicyVersion, exact_references: tuple[ExactInputReference, ...], runtime_identity: RuntimeIdentity, engine_version: str = "v3.a_share_daily_eod_engine/0.1.0", market_timezone: str = "Asia/Shanghai") -> BacktestRunSpec:
+    def create(cls, *, initial_cash: str, initial_holdings: tuple[InitialHolding, ...], instruments: tuple[InstrumentDefinition, ...], sessions: tuple[MarketSession, ...], schedule: tuple[ScheduledWeights, ...], rule_profile: AshareTradingRuleProfileVersion, cost_policy: CostPolicyVersion, execution_timing_profile: ExecutionTimingProfileVersion, exact_references: tuple[ExactInputReference, ...], runtime_identity: RuntimeIdentity, engine_version: str = "v3.a_share_daily_eod_engine/0.2.0") -> BacktestRunSpec:
         cash = decimal_text(initial_cash, "initial_cash", non_negative=True)
         ordered_instruments = tuple(sorted(instruments, key=lambda x: x.instrument_id))
         instrument_ids = tuple(x.instrument_id for x in ordered_instruments)
@@ -508,11 +703,6 @@ class BacktestRunSpec:
             raise BacktestContractError("at least one W0 weight vector is required")
         if len({item.effective_at for item in ordered_schedule}) != len(ordered_schedule):
             raise BacktestContractError("scheduled W0 effective_at values must be unique")
-        try:
-            from zoneinfo import ZoneInfo
-            ZoneInfo(_text(market_timezone, "market_timezone"))
-        except Exception as exc:
-            raise BacktestContractError("market_timezone must name an installed IANA timezone") from exc
         if any(set(x.vector.source_target.source.universe_instrument_ids) != set(instrument_ids) for x in ordered_schedule):
             raise BacktestContractError("W0 exact universe must equal BacktestRunSpec instruments")
         holdings = tuple(sorted(initial_holdings, key=lambda x: x.instrument_id))
@@ -520,16 +710,20 @@ class BacktestRunSpec:
             raise BacktestContractError("initial holdings must be unique and inside exact universe")
         refs = tuple(sorted(exact_references, key=lambda x: (x.reference_kind, x.source_id)))
         kinds = {x.reference_kind for x in refs}
-        required = {"SNAPSHOT", "MARKET_DATA", "TRADING_CALENDAR", "UNIVERSE", "CORPORATE_ACTIONS"}
+        required = {"SNAPSHOT", "MARKET_DATA", "TRADING_CALENDAR", "UNIVERSE", "CORPORATE_ACTIONS", "OFFICIAL_TRADING_HOURS", "OFFICIAL_COST_RULES"}
         if required - kinds:
-            raise BacktestContractError("exact references must pin snapshot, market data, calendar, universe, and corporate actions")
+            raise BacktestContractError("exact references must pin snapshot, market data, calendar, universe, corporate actions, official trading hours, and official cost rules")
         rule_profile.assert_canonical()
         cost_policy.assert_canonical()
+        execution_timing_profile.assert_canonical()
         if any(session.session_date < rule_profile.effective_from or (rule_profile.effective_to is not None and session.session_date > rule_profile.effective_to) for session in ordered_sessions):
             raise BacktestContractError("session is outside pinned rule-profile effective range")
-        if any(session.session_date < cost_policy.effective_from for session in ordered_sessions):
-            raise BacktestContractError("session precedes pinned cost-policy effective date")
-        requirements = [UpstreamRequirement("rule:" + rule_profile.profile_id, rule_profile.truth_admission), UpstreamRequirement("cost:" + cost_policy.policy_id, cost_policy.truth_admission)]
+        if any(session.session_date < execution_timing_profile.effective_from or (execution_timing_profile.effective_to is not None and session.session_date > execution_timing_profile.effective_to) for session in ordered_sessions):
+            raise BacktestContractError("session is outside pinned execution-timing-profile effective range")
+        for session in ordered_sessions:
+            for instrument in ordered_instruments:
+                cost_policy.applicable_rule(instrument.board, session.session_date)
+        requirements = [UpstreamRequirement("rule:" + rule_profile.profile_id, rule_profile.truth_admission), UpstreamRequirement("cost:" + cost_policy.policy_id, cost_policy.truth_admission), UpstreamRequirement("timing:" + execution_timing_profile.profile_id, execution_timing_profile.truth_admission)]
         requirements.extend(UpstreamRequirement("ref:" + x.reference_kind + ":" + x.source_id, x.truth_admission) for x in refs)
         requirements.extend(
             UpstreamRequirement(
@@ -539,16 +733,20 @@ class BacktestRunSpec:
             for index, x in enumerate(ordered_schedule)
         )
         truth = propagate_downstream_ceiling(PRE_ALPHA_CEILING, requirements)
-        payload = cls._payload(cash, holdings, ordered_instruments, ordered_sessions, ordered_schedule, rule_profile, cost_policy, refs, runtime_identity, engine_version, market_timezone, truth)
+        payload = cls._payload(cash, holdings, ordered_instruments, ordered_sessions, ordered_schedule, rule_profile, cost_policy, execution_timing_profile, refs, runtime_identity, engine_version, truth)
         digest = canonical_sha256(payload)
-        return cls("btrs_sha256_" + digest, digest, cash, holdings, ordered_instruments, ordered_sessions, ordered_schedule, rule_profile, cost_policy, refs, runtime_identity, engine_version, market_timezone, truth)
+        return cls("btrs_sha256_" + digest, digest, cash, holdings, ordered_instruments, ordered_sessions, ordered_schedule, rule_profile, cost_policy, execution_timing_profile, refs, runtime_identity, engine_version, truth)
 
     @classmethod
-    def _payload(cls, cash, holdings, instruments, sessions, schedule, rule, cost, refs, runtime, engine_version, market_timezone, truth):
-        return {"schema_version": cls.schema_version, "initial_cash": cash, "initial_holdings": [x.to_wire() for x in holdings], "instruments": [x.to_wire() for x in instruments], "sessions": [x.to_wire() for x in sessions], "schedule": [x.to_wire() for x in schedule], "rule_profile_id": rule.profile_id, "rule_profile_sha256": rule.content_sha256, "cost_policy_id": cost.policy_id, "cost_policy_sha256": cost.content_sha256, "exact_references": [x.to_wire() for x in refs], "runtime_identity": runtime.to_wire(), "engine_version": _text(engine_version, "engine_version"), "market_timezone": market_timezone, "execution_timing": "EFFECTIVE_SESSION_RAW_OPEN", "valuation": "RAW_EOD_CLOSE_FAIL_CLOSED", "truth_admission": truth.to_wire()}
+    def _payload(cls, cash, holdings, instruments, sessions, schedule, rule, cost, timing, refs, runtime, engine_version, truth):
+        return {"schema_version": cls.schema_version, "initial_cash": cash, "initial_holdings": [x.to_wire() for x in holdings], "instruments": [x.to_wire() for x in instruments], "sessions": [x.to_wire() for x in sessions], "schedule": [x.to_wire() for x in schedule], "rule_profile_id": rule.profile_id, "rule_profile_sha256": rule.content_sha256, "cost_policy_id": cost.policy_id, "cost_policy_sha256": cost.content_sha256, "execution_timing_profile_id": timing.profile_id, "execution_timing_profile_sha256": timing.content_sha256, "exact_references": [x.to_wire() for x in refs], "runtime_identity": runtime.to_wire(), "engine_version": _text(engine_version, "engine_version"), "execution_timing": timing.execution_convention, "valuation": "RAW_EOD_CLOSE_FAIL_CLOSED", "truth_admission": truth.to_wire()}
 
     def to_wire(self) -> dict[str, object]:
-        return {"artifact_type": "BacktestRunSpec", "run_spec_id": self.run_spec_id, "content_sha256": self.content_sha256, **self._payload(self.initial_cash, self.initial_holdings, self.instruments, self.sessions, self.schedule, self.rule_profile, self.cost_policy, self.exact_references, self.runtime_identity, self.engine_version, self.market_timezone, self.truth_admission)}
+        return {"artifact_type": "BacktestRunSpec", "run_spec_id": self.run_spec_id, "content_sha256": self.content_sha256, **self._payload(self.initial_cash, self.initial_holdings, self.instruments, self.sessions, self.schedule, self.rule_profile, self.cost_policy, self.execution_timing_profile, self.exact_references, self.runtime_identity, self.engine_version, self.truth_admission)}
+
+    @property
+    def market_timezone(self) -> str:
+        return self.execution_timing_profile.market_timezone
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,9 +835,10 @@ class CashLedgerEntry:
     amount: str
     balance_after: str
     reference_id: str
+    cost_breakdown: CostBreakdown | None = None
 
     def to_wire(self):
-        return {"sequence": self.sequence, "session_date": self.session_date.isoformat(), "kind": self.kind.value, "amount": self.amount, "balance_after": self.balance_after, "reference_id": self.reference_id}
+        return {"sequence": self.sequence, "session_date": self.session_date.isoformat(), "kind": self.kind.value, "amount": self.amount, "balance_after": self.balance_after, "reference_id": self.reference_id, "cost_breakdown": self.cost_breakdown.to_wire() if self.cost_breakdown else None}
 
 
 @dataclass(frozen=True, slots=True)
@@ -723,6 +922,43 @@ def cn_a_share_2026_07_06_rule_profile() -> AshareTradingRuleProfileVersion:
     )
 
 
+def cn_a_share_2026_07_06_execution_timing_profile() -> ExecutionTimingProfileVersion:
+    return ExecutionTimingProfileVersion.create(
+        profile_name="CN_A_SHARE_RAW_OPEN_2026_07_06_V1",
+        effective_from=date(2026, 7, 6),
+        effective_to=None,
+        market_timezone="Asia/Shanghai",
+        raw_open_eligibility_cutoff_local_time="09:15:00",
+        raw_open_execution_local_time="09:25:00",
+    )
+
+
+def cn_a_share_2023_08_28_cost_policy(
+    *,
+    commission_rate: str,
+    minimum_commission: str,
+    currency_scale: int = 2,
+) -> CostPolicyVersion:
+    effective_from = date(2023, 8, 28)
+    market_rules = (
+        MarketCostRule(Board.SSE_MAIN, effective_from, None, "0.00001", "0.0000341", "CHINACLEAR_2025_06_30+SSE_2023_137"),
+        MarketCostRule(Board.SSE_STAR, effective_from, None, "0.00001", "0.0000341", "CHINACLEAR_2025_06_30+SSE_2023_137"),
+        MarketCostRule(Board.SZSE_MAIN, effective_from, None, "0.00001", "0.0000341", "CHINACLEAR_2025_06_30+SZSE_2023_768"),
+        MarketCostRule(Board.SZSE_CHINEXT, effective_from, None, "0.00001", "0.0000341", "CHINACLEAR_2025_06_30+SZSE_2023_768"),
+        MarketCostRule(Board.BSE, effective_from, None, "0.00001", "0.000125", "CHINACLEAR_2025_07_01+BSE_2023_54"),
+    )
+    return CostPolicyVersion.create(
+        policy_name="CN_A_SHARE_COST_2023_08_28_V1",
+        effective_from=effective_from,
+        effective_to=None,
+        commission_rate=commission_rate,
+        minimum_commission=minimum_commission,
+        stamp_duty_sell_rate="0.0005",
+        market_rules=market_rules,
+        currency_scale=currency_scale,
+    )
+
+
 OrderIntent = Order
 BacktestOrder = Order
 
@@ -744,20 +980,27 @@ __all__ = [
     "DailyNav",
     "DiagnosticCode",
     "ExactInputReference",
+    "ExecutionTimingProfileVersion",
     "ExecutionDiagnostic",
+    "ExpiredScheduledWeightsError",
     "Fill",
     "HoldingSnapshot",
     "InitialHolding",
     "InstrumentDefinition",
     "LedgerKind",
+    "MarketCostRule",
     "MarketSession",
+    "OpenEligibilityBoundary",
     "Order",
     "OrderIntent",
     "PositionLedgerEntry",
     "ScheduledWeights",
+    "ScheduleSelectionPolicy",
     "Side",
     "TargetQuantityRow",
     "TargetQuantityVector",
     "UnsupportedCorporateActionError",
+    "cn_a_share_2026_07_06_execution_timing_profile",
+    "cn_a_share_2023_08_28_cost_policy",
     "cn_a_share_2026_07_06_rule_profile",
 ]

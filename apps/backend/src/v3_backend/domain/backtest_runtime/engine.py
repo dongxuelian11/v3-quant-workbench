@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from zoneinfo import ZoneInfo
-
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
 from .model import (
@@ -14,6 +12,7 @@ from .model import (
     DailyNav,
     DiagnosticCode,
     ExecutionDiagnostic,
+    ExpiredScheduledWeightsError,
     Fill,
     HoldingSnapshot,
     LedgerKind,
@@ -60,10 +59,7 @@ class DeterministicAshareBacktestEngine:
         cash_ledger.append(CashLedgerEntry(cash_sequence, first_date, LedgerKind.INITIAL_CASH, spec.initial_cash, spec.initial_cash, spec.run_spec_id))
         cash_sequence += 1
 
-        schedule_by_date = {}
-        for item in spec.schedule:
-            local_date = item.effective_at.astimezone(ZoneInfo(spec.market_timezone)).date()
-            schedule_by_date.setdefault(local_date, []).append(item)
+        pending_schedule = list(spec.schedule)
 
         for session in spec.sessions:
             state_map = {item.instrument_id: item for item in session.states}
@@ -95,10 +91,26 @@ class DeterministicAshareBacktestEngine:
                 else:
                     raise UnsupportedCorporateActionError(f"{action.action_type.value} is NOT_SUPPORTED")
 
-            events = schedule_by_date.get(session.session_date, [])
+            events = []
+            if session.is_open:
+                cutoff = spec.execution_timing_profile.eligibility_cutoff(session.session_date)
+                eligible_count = 0
+                for item in pending_schedule:
+                    if item.effective_at < cutoff:
+                        eligible_count += 1
+                    else:
+                        break
+                if eligible_count:
+                    scheduled = pending_schedule[eligible_count - 1]
+                    pending_schedule = pending_schedule[eligible_count:]
+                    execution_timestamp = spec.execution_timing_profile.execution_timestamp(session.session_date)
+                    if execution_timestamp > scheduled.vector.source_target.valid_until:
+                        raise ExpiredScheduledWeightsError(
+                            "selected W0 vector expires before raw-open execution timestamp"
+                        )
+                    events.append(scheduled)
+
             for scheduled in events:
-                if not session.is_open:
-                    continue
                 pre_trade_nav = cash + sum(Decimal(quantity[i]) * _d(state_map[i].raw_open) for i in quantity)
                 weights = {row.instrument_id: _d(row.target_weight) for row in scheduled.vector.rows}
                 rows = []
@@ -162,7 +174,7 @@ class DeterministicAshareBacktestEngine:
                             continue
                         while fill_qty >= rule.buy_minimum_quantity:
                             consideration = Decimal(fill_qty) * _d(order.raw_limit_price)
-                            costs = spec.cost_policy.calculate(Side.BUY, consideration)
+                            costs = spec.cost_policy.calculate(instrument_map[order.instrument_id].board, Side.BUY, consideration, session.session_date)
                             if consideration + costs.total <= cash:
                                 break
                             fill_qty -= rule.buy_quantity_step
@@ -173,7 +185,7 @@ class DeterministicAshareBacktestEngine:
                             result_code = DiagnosticCode.PARTIAL_CASH
 
                     consideration = Decimal(fill_qty) * _d(order.raw_limit_price)
-                    costs = spec.cost_policy.calculate(order.side, consideration)
+                    costs = spec.cost_policy.calculate(instrument_map[order.instrument_id].board, order.side, consideration, session.session_date)
                     fill_payload = {"order_id": order.order_id, "quantity": fill_qty, "raw_price": order.raw_limit_price, "costs": costs.to_wire()}
                     fill_id = "fill_sha256_" + canonical_sha256(fill_payload)
                     fill = Fill(fill_id, order.order_id, session.session_date, order.instrument_id, order.side, fill_qty, order.raw_limit_price, decimal_text(consideration, "consideration"), costs)
@@ -195,7 +207,7 @@ class DeterministicAshareBacktestEngine:
                     cash_sequence += 1
                     if costs.total:
                         cash -= costs.total
-                        cash_ledger.append(CashLedgerEntry(cash_sequence, session.session_date, LedgerKind.FEE, decimal_text(-costs.total, "fee_delta"), decimal_text(cash, "cash"), fill_id))
+                        cash_ledger.append(CashLedgerEntry(cash_sequence, session.session_date, LedgerKind.FEE, decimal_text(-costs.total, "fee_delta"), decimal_text(cash, "cash"), fill_id, costs))
                         cash_sequence += 1
                     position_ledger.append(PositionLedgerEntry(position_sequence, session.session_date, order.instrument_id, pos_delta, quantity[order.instrument_id], sellable[order.instrument_id], fill_id))
                     position_sequence += 1
