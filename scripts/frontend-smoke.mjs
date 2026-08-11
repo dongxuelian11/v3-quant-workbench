@@ -72,4 +72,6 @@ for (const [kind, count] of Object.entries({ PortfolioIntent: 2, TargetWeightVec
 }
 if (round3.timelineStates.some((item) => item.state !== "PRE_ALPHA" || item.successClass) || round3.forbiddenActions.length) throw new Error("Round 3 truth or permission surface was promoted");
 if (!capture.interactionEvidence?.backtestResult?.actual || capture.interactionEvidence.backtestResult.renderer !== "backtest-result") throw new Error("Canonical BacktestRunResult renderer evidence missing");
+const resultAnalytics = capture.interactionEvidence?.resultAnalytics;
+if (!resultAnalytics?.analyticsId?.startsWith("bra_sha256_") || !resultAnalytics?.resultId?.startsWith("btrr_sha256_") || !resultAnalytics?.policyId?.startsWith("rap_sha256_") || !resultAnalytics?.benchmarkId?.startsWith("bmsv_sha256_") || !resultAnalytics.truth || !resultAnalytics.policy || !resultAnalytics.chartBound || resultAnalytics.chartAnalyticsId !== resultAnalytics.analyticsId) throw new Error("Track L Result Analytics exact identity, truth, policy, benchmark, or chart evidence missing");
 console.log(`Visual frontend evidence PASS: ${expected.length} distinct real-Electron states, chart geometry gates, restart layout, and secure preferences asserted.`);

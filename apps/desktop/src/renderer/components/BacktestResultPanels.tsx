@@ -4,7 +4,6 @@ import { useWorkbench } from "../store";
 import { Icon, MetricRail, TruthMark } from "./PresentationSystem";
 
 const backtestTabs = ["Review", "Run Matrix", "Holdings", "Orders / Fills", "Attribution"] as const;
-const resultTabs = ["Performance", "Drawdown / Rolling", "Positions", "Orders / Fills", "Risk / Attribution", "Compare / Lineage"] as const;
 
 function TruthStatus() {
   return <span data-truth-classification={DEMO_TRUTH.wave3} title={DEMO_TRUTH.wave3}><TruthMark detail="非正式金融输出"/></span>;
@@ -32,19 +31,6 @@ function BacktestReview({ queue, setQueue, onRun }: { queue: string; setQueue: (
 
 function RunMatrix({ queue, onRun }: { queue: string; onRun: (id: string) => void }) {
   return <div className="run-matrix"><div className="section-head"><div><small>RUN MATRIX / QUEUE</small><h2>12 Demo Runs</h2></div><span className={`state ${queue}`}>{queue.toUpperCase()}</span></div>{["BT-DEMO-021", "BT-DEMO-022", "BT-DEMO-023", "BT-DEMO-024", "BT-DEMO-025"].map((id, index) => <button className="matrix-row" key={id} onClick={() => onRun(id)}><b>{id}</b><span>{index === 0 ? "Risk parity" : "Equal weight"}</span><span>Monthly</span><progress max="100" value={queue === "running" ? 32 + index * 12 : index === 0 ? 100 : 58 - index * 7}/><small>{queue === "running" ? "RUNNING" : index === 0 ? "COMPLETE" : "PAUSED"}</small></button>)}</div>;
-}
-
-export function ResultPanel() {
-  const [tab, setTab] = useState<typeof resultTabs[number]>("Performance");
-  const [lineageOpen, setLineageOpen] = useState(false);
-  const [resultReceipt, setResultReceipt] = useState("结果上下文就绪");
-  return <section className="panel-page result-workspace" data-testid="result-surface" data-primary-panel="result-review" data-major-panel>
-    <header className="analysis-header"><div className="analysis-title"><small>RESULT IDENTITY / RESULTVERSION-DEMO-V21</small><h1>BT-DEMO-021 · 绩效与风险</h1><p><TruthStatus/><span>as-of 2026-06-30 · available 18:48 CST</span></p></div><div className="result-hero-metric"><small>NET RETURN</small><b>+26.84%</b><span>+9.71% vs benchmark</span></div><div className="analysis-actions"><select aria-label="选择回测结果" defaultValue="BT-DEMO-021" onChange={(event) => setResultReceipt(`${event.target.value} 已载入结果上下文`)}><option>BT-DEMO-021</option><option>BT-DEMO-022</option></select><button data-action="result-lineage" aria-pressed={lineageOpen} onClick={() => setLineageOpen(!lineageOpen)}>Lineage</button><button onClick={() => setResultReceipt("BT-DEMO-021 已加入前端比较上下文")}>加入比较</button></div></header>
-    <div className="analysis-contextline"><span>Benchmark 沪深300 · Demo</span><span>StrategyDraft/demo-v8</span><span>ModelVersion/demo-lgbm-v4</span><span className="action-receipt" role="status" aria-live="polite">{resultReceipt}</span></div>
-    <div className="mini-tabs" role="tablist" aria-label="结果分析视图">{resultTabs.map((item) => <button role="tab" aria-selected={tab === item} data-result-tab={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)} key={item}>{item}</button>)}</div>
-    <div className="result-primary primary-canvas" data-primary-canvas>{tab === "Performance" || tab === "Drawdown / Rolling" ? <div className="performance-result"><MetricRail items={[{ label: "Demo Return", value: "+26.84%", tone: "positive" }, { label: "Drawdown", value: "-8.31%", tone: "negative" }, { label: "Sharpe", value: "1.42" }, { label: "Turnover", value: "38.4%" }]}/><PerformanceChart detailed /><div className="chart-legend"><span><i className="equity"/>Strategy equity</span><span><i className="benchmark"/>Benchmark</span><span><i className="drawdown"/>Drawdown</span></div></div> : <ExecutionTable tab={tab} />}</div>
-    {lineageOpen && <div className="context-drawer lineage-drawer" role="region" aria-label="结果 lineage" data-major-panel><div className="drawer-head"><div><small>RESULT PROVENANCE</small><b>Lineage Manifest</b></div><button onClick={() => setLineageOpen(false)} aria-label="关闭 Lineage">×</button></div><ol><li>UniverseVersion/demo-v12</li><li>StrategyDraft/demo-v8</li><li>ModelVersion/demo-lgbm-v4</li><li>PredictionSignalVersion/demo-alpha-v3</li><li>BacktestHandoffDraft/demo-v8</li><li>BT-DEMO-021</li><li>ResultVersion/demo-result-v21</li></ol><div className="evidence-section"><h3>Truth classification</h3><code>{DEMO_TRUTH.wave3}</code></div><button onClick={() => setResultReceipt("Provenance Manifest 已在检查器上下文中就绪")}>查看 Provenance Manifest</button></div>}
-  </section>;
 }
 
 function PerformanceChart({ detailed = false }: { detailed?: boolean }) {
