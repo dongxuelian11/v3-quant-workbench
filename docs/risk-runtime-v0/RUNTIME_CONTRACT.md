@@ -19,6 +19,13 @@ An arbitrary target ID is not an input. `apply_risk` requires the actual W0 obje
 
 `RiskPolicySetVersion` is frozen, content-addressed and order-sensitive. Every policy binds its type/version, mode, exact parameters, required state declarations, reject behavior, residual/cash rule, risk-model requirement, code/runtime/backend, PIT requirement and truth ceiling. The enum is closed; generic callbacks are forbidden.
 
+Risk V0 execution backend authority is closed to exactly `v3-native-decimal`. The
+factory compatibility keyword is not caller-selectable authority: any other backend
+value is rejected. A `RiskPolicyDefinition` is canonical only when both its content
+identity and the shared closed-algebra semantic validator succeed. Hash/ID consistency
+alone cannot admit a policy whose mode, exact parameter set, failure/cash rule,
+risk-model requirement, PIT/truth rule, truth ceiling or backend is inconsistent.
+
 | Policy | Mode | Behavior | Cash rule | Failure |
 |---|---|---|---|---|
 | `PASS_THROUGH` | `PASS_THROUGH` | No weight transform; `NO_ADDITIONAL_RISK_TRANSFORM` evidence | `PRESERVE` | typed reject for contract/state failure |
@@ -31,6 +38,11 @@ A non-transforming policy set must contain explicit `PASS_THROUGH`. A transformi
 
 Policies may declare exact `RISK_STATE` or `RISK_MODEL` inputs. Supplied inputs must be declared, unique and kind-matched. `AS_OF_NOT_AFTER_TARGET_DECISION` is checked against target decision time. Missing, wrong-kind or future state produces a deterministic rejected stage and raises `RiskPolicyRejected`; no RiskAdjusted vector is returned.
 
+If multiple policies in one `RiskPolicySetVersion` declare the same `input_key`, every
+occurrence must use the same `reference_kind` and `pit_requirement`. Identical repeated
+declarations are allowed; contradictory meanings fail closed at policy-set creation.
+Exact state object identity remains application-time evidence.
+
 Forbidden fallbacks remain forbidden:
 
 - error to cash;
@@ -39,6 +51,10 @@ Forbidden fallbacks remain forbidden:
 - external solver failure/candidate to unchanged canonical output.
 
 An `external_solver_candidate` is rejected with `ExternalSolverAuthorityError`. A future worker may propose evidence, but only canonical Track I code may validate it and call the W0 publisher.
+
+Future external solvers require a separate versioned isolated-worker contract. They
+cannot relabel the V0 native Decimal execution backend, and this PRE_ALPHA contract does
+not claim FORMAL owner resolution of the Python runtime or environment fingerprint.
 
 ## Evidence and identity
 
@@ -54,4 +70,4 @@ Rule-based policies are the complete V0 scope. Policy definitions/sets are cappe
 
 ## Acceptance mapping
 
-The `round3_track_i_risk_runtime` suite covers actual canonical input, source immutability, explicit pass-through/new identity, policy ordering, deterministic max-single-name clipping, residual cash equation, gross/net validation, missing/PIT-invalid state, no fallback, identity sensitivity, PRE_ALPHA preservation, worker authority rejection and complete deterministic evidence. Full repository regression, compile and public validation remain separate delivery gates.
+The `round3_track_i_risk_runtime` suite covers actual canonical input, source immutability, explicit pass-through/new identity, policy ordering, deterministic max-single-name clipping, residual cash equation, gross/net validation, missing/PIT-invalid state, no fallback, identity sensitivity, PRE_ALPHA preservation, semantic canonicality despite hash consistency, closed backend authority, shared state-key consistency, worker authority rejection and complete deterministic evidence. Full repository regression, compile and public validation remain separate delivery gates.

@@ -20,6 +20,7 @@ from .model import (
     ExternalSolverAuthorityError,
     PitRequirement,
     PolicyType,
+    RISK_V0_BACKEND,
     RiskDecisionReport,
     RiskPolicyDefinition,
     RiskPolicyRejected,
@@ -194,6 +195,10 @@ def apply_risk(
     if not isinstance(runtime_identity, RuntimeIdentity):
         raise TypeError("runtime_identity must be the W0 RuntimeIdentity")
     for policy in policy_set.policies:
+        if policy.backend != RISK_V0_BACKEND:
+            raise RiskRuntimeError(
+                f"policy set is not executable by Risk V0 backend {RISK_V0_BACKEND}"
+            )
         if (
             policy.code_version != runtime_identity.code_version
             or policy.runtime_profile_id != runtime_identity.runtime_profile_id

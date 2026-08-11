@@ -6,12 +6,17 @@ import unittest
 from decimal import Decimal
 
 from round3_w0_weight_seam.test_weight_seam import WeightSeamFixture
-from v3_backend.contracts.common.truth_admission import PRE_ALPHA_CEILING
+from v3_backend.contracts.common.truth_admission import (
+    FORMAL_ADMITTED_CEILING,
+    PRE_ALPHA_CEILING,
+)
 from v3_backend.domain.risk_runtime import (
     DecisionStatus,
     ExternalSolverAuthorityError,
+    PitRequirement,
     PolicyMode,
     PolicyType,
+    RISK_V0_BACKEND,
     ResidualCashRule,
     RiskPolicyDefinition,
     RiskPolicyRejected,
@@ -30,6 +35,7 @@ from v3_backend.domain.weights import (
     RuntimeIdentity,
     TargetWeightRow,
 )
+from v3_backend.provenance.canonical_hash import canonical_sha256
 
 
 class RiskRuntimeFixture(WeightSeamFixture):
@@ -50,9 +56,15 @@ class RiskRuntimeFixture(WeightSeamFixture):
             runtime_profile_id=self.risk_runtime.runtime_profile_id,
         )
 
-    def max_policy(self, max_weight: str = "0.45") -> RiskPolicyDefinition:
+    def max_policy(
+        self,
+        max_weight: str = "0.45",
+        *,
+        required_state_inputs: tuple[RiskStateRequirement, ...] = (),
+    ) -> RiskPolicyDefinition:
         return RiskPolicyDefinition.max_single_name(
             max_weight=max_weight,
+            required_state_inputs=required_state_inputs,
             code_version=self.risk_runtime.code_version,
             runtime_profile_id=self.risk_runtime.runtime_profile_id,
         )
@@ -88,8 +100,190 @@ class RiskRuntimeFixture(WeightSeamFixture):
             state_inputs=state_inputs,
         )
 
+    def rehash_policy(
+        self,
+        policy: RiskPolicyDefinition,
+        **changes: object,
+    ) -> RiskPolicyDefinition:
+        candidate = dataclasses.replace(policy, **changes)
+        payload = {
+            key: value
+            for key, value in candidate.to_wire().items()
+            if key not in {"policy_id", "content_sha256"}
+        }
+        digest = canonical_sha256(payload)
+        return dataclasses.replace(
+            candidate,
+            policy_id="rpd_sha256_" + digest,
+            content_sha256=digest,
+        )
+
+    def rehash_policy_set(
+        self,
+        policies: tuple[RiskPolicyDefinition, ...],
+    ) -> RiskPolicySetVersion:
+        payload = RiskPolicySetVersion._payload(policies, PRE_ALPHA_CEILING)
+        digest = canonical_sha256(payload)
+        return RiskPolicySetVersion(
+            risk_policy_set_version_id="rpsv_sha256_" + digest,
+            content_sha256=digest,
+            policies=policies,
+            truth_admission=PRE_ALPHA_CEILING,
+        )
+
 
 class RiskPolicySetTests(RiskRuntimeFixture):
+    def test_normal_policy_factories_are_semantically_canonical(self) -> None:
+        policies = (
+            self.pass_policy(),
+            self.max_policy(),
+            self.exposure_policy(),
+        )
+        for policy in policies:
+            with self.subTest(policy_type=policy.policy_type):
+                policy.assert_canonical()
+                self.assertEqual(policy.backend, RISK_V0_BACKEND)
+
+    def test_public_factory_rejects_non_native_backend(self) -> None:
+        common = {
+            "code_version": self.risk_runtime.code_version,
+            "runtime_profile_id": self.risk_runtime.runtime_profile_id,
+            "backend": "cvxpy-worker",
+        }
+        factories = (
+            lambda: RiskPolicyDefinition.pass_through(**common),
+            lambda: RiskPolicyDefinition.max_single_name(
+                max_weight="0.45",
+                **common,
+            ),
+            lambda: RiskPolicyDefinition.gross_net_exposure_validate(
+                max_gross="1",
+                min_net="0",
+                max_net="1",
+                **common,
+            ),
+        )
+        for factory in factories:
+            with self.subTest(factory=factory):
+                with self.assertRaisesRegex(RiskRuntimeError, "backend must be exactly"):
+                    factory()
+
+    def test_hash_consistent_pass_through_with_wrong_mode_is_rejected(self) -> None:
+        forged = self.rehash_policy(
+            self.pass_policy(),
+            mode=PolicyMode.VALIDATE,
+        )
+        with self.assertRaisesRegex(RiskRuntimeError, "PASS_THROUGH mode"):
+            forged.assert_canonical()
+
+    def test_hash_consistent_max_single_name_with_wrong_cash_rule_is_rejected(
+        self,
+    ) -> None:
+        forged = self.rehash_policy(
+            self.max_policy(),
+            residual_cash_rule=ResidualCashRule.PRESERVE,
+        )
+        with self.assertRaisesRegex(RiskRuntimeError, "ADD_REDUCTION_TO_CASH"):
+            forged.assert_canonical()
+
+    def test_hash_consistent_gross_net_with_invalid_parameters_is_rejected(
+        self,
+    ) -> None:
+        forged = self.rehash_policy(
+            self.exposure_policy(),
+            parameters=(("max_gross", "1"), ("min_net", "0")),
+        )
+        with self.assertRaisesRegex(RiskRuntimeError, "exact gross/net limits"):
+            forged.assert_canonical()
+
+    def test_hash_consistent_policy_above_pre_alpha_is_rejected(self) -> None:
+        forged = self.rehash_policy(
+            self.pass_policy(),
+            truth_admission=FORMAL_ADMITTED_CEILING,
+        )
+        with self.assertRaisesRegex(RiskRuntimeError, "cannot exceed PRE_ALPHA"):
+            forged.assert_canonical()
+
+    def test_hash_consistent_policy_with_wrong_pit_or_truth_requirement_is_rejected(
+        self,
+    ) -> None:
+        cases = (
+            (
+                self.rehash_policy(
+                    self.pass_policy(),
+                    pit_requirement=PitRequirement.AS_OF_NOT_AFTER_TARGET_DECISION,
+                ),
+                "TARGET_ONLY",
+            ),
+            (
+                self.rehash_policy(
+                    self.pass_policy(),
+                    truth_requirement="PROMOTE_AFTER_VALIDATION",
+                ),
+                "upstream truth ceiling",
+            ),
+        )
+        for policy, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(RiskRuntimeError, message):
+                    policy.assert_canonical()
+
+    def test_unsupported_backend_cannot_enter_policy_set(self) -> None:
+        forged = self.rehash_policy(
+            self.pass_policy(),
+            backend="cvxpy-worker",
+        )
+        with self.assertRaisesRegex(RiskRuntimeError, "backend must be exactly"):
+            RiskPolicySetVersion.create((forged,))
+
+    def test_repeated_state_key_with_identical_kind_and_pit_is_allowed(self) -> None:
+        requirement = RiskStateRequirement(
+            "shared-risk-state",
+            ReferenceKind.RISK_STATE,
+            PitRequirement.AS_OF_NOT_AFTER_TARGET_DECISION,
+        )
+        policy_set = RiskPolicySetVersion.create(
+            (
+                self.max_policy(required_state_inputs=(requirement,)),
+                self.exposure_policy(required_state_inputs=(requirement,)),
+            )
+        )
+        self.assertEqual(len(policy_set.policies), 2)
+
+    def test_repeated_state_key_with_conflicting_reference_kind_is_rejected(
+        self,
+    ) -> None:
+        first = RiskStateRequirement("shared-risk-state", ReferenceKind.RISK_STATE)
+        second = RiskStateRequirement("shared-risk-state", ReferenceKind.RISK_MODEL)
+        with self.assertRaisesRegex(RiskRuntimeError, "reference_kind"):
+            RiskPolicySetVersion.create(
+                (
+                    self.max_policy(required_state_inputs=(first,)),
+                    self.exposure_policy(required_state_inputs=(second,)),
+                )
+            )
+
+    def test_repeated_state_key_with_conflicting_pit_requirement_is_rejected(
+        self,
+    ) -> None:
+        first = RiskStateRequirement(
+            "shared-risk-state",
+            ReferenceKind.RISK_STATE,
+            PitRequirement.AS_OF_NOT_AFTER_TARGET_DECISION,
+        )
+        second = RiskStateRequirement(
+            "shared-risk-state",
+            ReferenceKind.RISK_STATE,
+            PitRequirement.TARGET_ONLY,
+        )
+        with self.assertRaisesRegex(RiskRuntimeError, "pit_requirement"):
+            RiskPolicySetVersion.create(
+                (
+                    self.max_policy(required_state_inputs=(first,)),
+                    self.exposure_policy(required_state_inputs=(second,)),
+                )
+            )
+
     def test_policy_set_is_immutable_content_addressed_and_ordered(self) -> None:
         pass_policy = self.pass_policy()
         validate = self.exposure_policy()
@@ -129,6 +323,35 @@ class RiskPolicySetTests(RiskRuntimeFixture):
 
 
 class RiskRuntimeTests(RiskRuntimeFixture):
+    def test_native_backend_executes_and_manual_non_native_set_cannot(self) -> None:
+        native = self.apply((self.pass_policy(),))
+        self.assertEqual(native.policy_set.policies[0].backend, RISK_V0_BACKEND)
+
+        non_native = self.rehash_policy(
+            self.pass_policy(),
+            backend="cvxpy-worker",
+        )
+        with self.assertRaisesRegex(RiskRuntimeError, "backend must be exactly"):
+            apply_risk(
+                source_target=self.target(),
+                policy_set=self.rehash_policy_set((non_native,)),
+                runtime_identity=self.risk_runtime,
+            )
+
+    def test_policy_code_and_runtime_profile_must_match_execution_runtime(
+        self,
+    ) -> None:
+        wrong_runtime = dataclasses.replace(
+            self.risk_runtime,
+            runtime_profile_id="v3.risk-runtime/wrong-profile",
+        )
+        with self.assertRaisesRegex(RiskRuntimeError, "match exactly"):
+            apply_risk(
+                source_target=self.target(),
+                policy_set=RiskPolicySetVersion.create((self.pass_policy(),)),
+                runtime_identity=wrong_runtime,
+            )
+
     def test_exact_canonical_target_object_is_required(self) -> None:
         with self.assertRaisesRegex(TypeError, "canonical W0 TargetWeightVector object"):
             apply_risk(

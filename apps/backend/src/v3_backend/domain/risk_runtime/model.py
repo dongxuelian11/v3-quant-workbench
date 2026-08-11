@@ -9,6 +9,7 @@ from typing import ClassVar
 from v3_backend.contracts.common.truth_admission import (
     PRE_ALPHA_CEILING,
     TruthAdmissionState,
+    is_at_most,
     meet_pair,
 )
 from v3_backend.domain.weights import (
@@ -27,6 +28,8 @@ RISK_POLICY_SCHEMA_VERSION = "v3.risk-policy-definition/1.0.0"
 RISK_POLICY_SET_SCHEMA_VERSION = "v3.risk-policy-set-version/1.0.0"
 RISK_STAGE_REPORT_SCHEMA_VERSION = "v3.risk-stage-report/1.0.0"
 RISK_DECISION_REPORT_SCHEMA_VERSION = "v3.risk-decision-report/1.0.0"
+RISK_V0_BACKEND = "v3-native-decimal"
+RISK_V0_TRUTH_REQUIREMENT = "PRESERVE_UPSTREAM_TRUTH_CEILING"
 
 
 class RiskRuntimeError(ValueError):
@@ -110,6 +113,19 @@ def _canonical_parameters(
     return ordered
 
 
+def _canonical_state_requirements(
+    requirements: tuple[RiskStateRequirement, ...],
+) -> tuple[RiskStateRequirement, ...]:
+    if not isinstance(requirements, tuple) or any(
+        not isinstance(value, RiskStateRequirement) for value in requirements
+    ):
+        raise TypeError("required_state_inputs must contain RiskStateRequirement")
+    ordered = tuple(sorted(requirements, key=lambda value: value.input_key))
+    if len({value.input_key for value in ordered}) != len(ordered):
+        raise RiskRuntimeError("required risk state input keys must be unique")
+    return ordered
+
+
 @dataclass(frozen=True, slots=True)
 class RiskStateRequirement:
     input_key: str
@@ -184,7 +200,7 @@ class RiskPolicyDefinition:
         *,
         code_version: str,
         runtime_profile_id: str,
-        backend: str = "v3-native-decimal",
+        backend: str = RISK_V0_BACKEND,
         policy_version: str = "1.0.0",
         truth_admission: TruthAdmissionState = PRE_ALPHA_CEILING,
     ) -> RiskPolicyDefinition:
@@ -199,7 +215,7 @@ class RiskPolicyDefinition:
             code_version=code_version,
             runtime_profile_id=runtime_profile_id,
             backend=backend,
-            truth_requirement="PRESERVE_UPSTREAM_TRUTH_CEILING",
+            truth_requirement=RISK_V0_TRUTH_REQUIREMENT,
             pit_requirement=PitRequirement.TARGET_ONLY,
             truth_admission=truth_admission,
         )
@@ -211,7 +227,7 @@ class RiskPolicyDefinition:
         max_weight: str,
         code_version: str,
         runtime_profile_id: str,
-        backend: str = "v3-native-decimal",
+        backend: str = RISK_V0_BACKEND,
         policy_version: str = "1.0.0",
         required_state_inputs: tuple[RiskStateRequirement, ...] = (),
         truth_admission: TruthAdmissionState = PRE_ALPHA_CEILING,
@@ -227,7 +243,7 @@ class RiskPolicyDefinition:
             code_version=code_version,
             runtime_profile_id=runtime_profile_id,
             backend=backend,
-            truth_requirement="PRESERVE_UPSTREAM_TRUTH_CEILING",
+            truth_requirement=RISK_V0_TRUTH_REQUIREMENT,
             pit_requirement=PitRequirement.AS_OF_NOT_AFTER_TARGET_DECISION,
             truth_admission=truth_admission,
         )
@@ -241,7 +257,7 @@ class RiskPolicyDefinition:
         max_net: str,
         code_version: str,
         runtime_profile_id: str,
-        backend: str = "v3-native-decimal",
+        backend: str = RISK_V0_BACKEND,
         policy_version: str = "1.0.0",
         required_state_inputs: tuple[RiskStateRequirement, ...] = (),
         truth_admission: TruthAdmissionState = PRE_ALPHA_CEILING,
@@ -261,7 +277,7 @@ class RiskPolicyDefinition:
             code_version=code_version,
             runtime_profile_id=runtime_profile_id,
             backend=backend,
-            truth_requirement="PRESERVE_UPSTREAM_TRUTH_CEILING",
+            truth_requirement=RISK_V0_TRUTH_REQUIREMENT,
             pit_requirement=PitRequirement.AS_OF_NOT_AFTER_TARGET_DECISION,
             truth_admission=truth_admission,
         )
@@ -284,38 +300,24 @@ class RiskPolicyDefinition:
         pit_requirement: PitRequirement,
         truth_admission: TruthAdmissionState,
     ) -> RiskPolicyDefinition:
-        if not isinstance(policy_type, PolicyType) or not isinstance(mode, PolicyMode):
-            raise TypeError("policy_type/mode must use Risk V0 enums")
-        for name, value in (
-            ("policy_version", policy_version),
-            ("code_version", code_version),
-            ("runtime_profile_id", runtime_profile_id),
-            ("backend", backend),
-            ("truth_requirement", truth_requirement),
-        ):
-            _require_text(value, name)
-        if not isinstance(residual_cash_rule, ResidualCashRule):
-            raise TypeError("residual_cash_rule must be ResidualCashRule")
-        if not isinstance(risk_model_requirement, RiskModelRequirement):
-            raise TypeError("risk_model_requirement must be RiskModelRequirement")
-        if not isinstance(pit_requirement, PitRequirement):
-            raise TypeError("pit_requirement must be PitRequirement")
-        if not isinstance(truth_admission, TruthAdmissionState):
-            raise TypeError("truth_admission must be TruthAdmissionState")
-        ordered_requirements = tuple(sorted(required_state_inputs, key=lambda value: value.input_key))
-        if any(not isinstance(value, RiskStateRequirement) for value in ordered_requirements):
-            raise TypeError("required_state_inputs must contain RiskStateRequirement")
-        if len({value.input_key for value in ordered_requirements}) != len(ordered_requirements):
-            raise RiskRuntimeError("required risk state input keys must be unique")
+        ordered_requirements = _canonical_state_requirements(required_state_inputs)
         canonical_parameters = _canonical_parameters(parameters)
-        cls._validate_algebra(
-            policy_type,
-            mode,
-            canonical_parameters,
-            residual_cash_rule,
-            risk_model_requirement,
+        cls._validate_semantics(
+            policy_type=policy_type,
+            policy_version=policy_version,
+            mode=mode,
+            parameters=canonical_parameters,
+            required_state_inputs=ordered_requirements,
+            failure_behavior=FailureBehavior.REJECT,
+            residual_cash_rule=residual_cash_rule,
+            risk_model_requirement=risk_model_requirement,
+            code_version=code_version,
+            runtime_profile_id=runtime_profile_id,
+            backend=backend,
+            truth_requirement=truth_requirement,
+            pit_requirement=pit_requirement,
+            truth_admission=truth_admission,
         )
-        bounded_truth = meet_pair(truth_admission, PRE_ALPHA_CEILING)
         payload = cls._payload(
             policy_type=policy_type,
             policy_version=policy_version,
@@ -330,7 +332,7 @@ class RiskPolicyDefinition:
             backend=backend,
             truth_requirement=truth_requirement,
             pit_requirement=pit_requirement,
-            truth_admission=bounded_truth,
+            truth_admission=truth_admission,
         )
         digest = canonical_sha256(payload)
         return cls(
@@ -349,23 +351,80 @@ class RiskPolicyDefinition:
             backend=backend,
             truth_requirement=truth_requirement,
             pit_requirement=pit_requirement,
-            truth_admission=bounded_truth,
+            truth_admission=truth_admission,
         )
 
-    @staticmethod
-    def _validate_algebra(
+    @classmethod
+    def _validate_semantics(
+        cls,
+        *,
         policy_type: PolicyType,
+        policy_version: str,
         mode: PolicyMode,
         parameters: tuple[tuple[str, str], ...],
+        required_state_inputs: tuple[RiskStateRequirement, ...],
+        failure_behavior: FailureBehavior,
         residual_cash_rule: ResidualCashRule,
         risk_model_requirement: RiskModelRequirement,
+        code_version: str,
+        runtime_profile_id: str,
+        backend: str,
+        truth_requirement: str,
+        pit_requirement: PitRequirement,
+        truth_admission: TruthAdmissionState,
     ) -> None:
+        if not isinstance(policy_type, PolicyType) or not isinstance(mode, PolicyMode):
+            raise TypeError("policy_type/mode must use Risk V0 enums")
+        for name, value in (
+            ("policy_version", policy_version),
+            ("code_version", code_version),
+            ("runtime_profile_id", runtime_profile_id),
+            ("backend", backend),
+            ("truth_requirement", truth_requirement),
+        ):
+            _require_text(value, name)
+        if not isinstance(failure_behavior, FailureBehavior):
+            raise TypeError("failure_behavior must be FailureBehavior")
+        if failure_behavior is not FailureBehavior.REJECT:
+            raise RiskRuntimeError("Risk V0 policies require REJECT failure behavior")
+        if not isinstance(residual_cash_rule, ResidualCashRule):
+            raise TypeError("residual_cash_rule must be ResidualCashRule")
+        if not isinstance(risk_model_requirement, RiskModelRequirement):
+            raise TypeError("risk_model_requirement must be RiskModelRequirement")
+        if risk_model_requirement is not RiskModelRequirement.NOT_REQUIRED:
+            raise RiskRuntimeError("Risk V0 built-in policies do not admit a RiskModel")
+        if not isinstance(pit_requirement, PitRequirement):
+            raise TypeError("pit_requirement must be PitRequirement")
+        if not isinstance(truth_admission, TruthAdmissionState):
+            raise TypeError("truth_admission must be TruthAdmissionState")
+        if not is_at_most(truth_admission, PRE_ALPHA_CEILING):
+            raise RiskRuntimeError("Risk V0 policy truth cannot exceed PRE_ALPHA")
+        if backend != RISK_V0_BACKEND:
+            raise RiskRuntimeError(
+                f"Risk V0 backend must be exactly {RISK_V0_BACKEND}"
+            )
+        if truth_requirement != RISK_V0_TRUTH_REQUIREMENT:
+            raise RiskRuntimeError(
+                "Risk V0 policies must preserve the upstream truth ceiling"
+            )
+
+        canonical_parameters = _canonical_parameters(parameters)
+        if canonical_parameters != parameters:
+            raise RiskRuntimeError("policy parameters are not in canonical order/form")
+        canonical_requirements = _canonical_state_requirements(required_state_inputs)
+        if canonical_requirements != required_state_inputs:
+            raise RiskRuntimeError("risk state requirements are not in canonical order")
+
         values = dict(parameters)
         if policy_type is PolicyType.PASS_THROUGH:
             if mode is not PolicyMode.PASS_THROUGH or parameters:
                 raise RiskRuntimeError("PASS_THROUGH has no parameters and requires PASS_THROUGH mode")
+            if required_state_inputs:
+                raise RiskRuntimeError("PASS_THROUGH does not admit required risk state inputs")
             if residual_cash_rule is not ResidualCashRule.PRESERVE:
                 raise RiskRuntimeError("PASS_THROUGH must preserve cash")
+            if pit_requirement is not PitRequirement.TARGET_ONLY:
+                raise RiskRuntimeError("PASS_THROUGH requires TARGET_ONLY PIT semantics")
         elif policy_type is PolicyType.MAX_SINGLE_NAME:
             if mode is not PolicyMode.CLIP or set(values) != {"max_weight"}:
                 raise RiskRuntimeError("MAX_SINGLE_NAME requires CLIP and exact max_weight")
@@ -373,6 +432,10 @@ class RiskPolicyDefinition:
                 raise RiskRuntimeError("max_weight must be in (0, 1]")
             if residual_cash_rule is not ResidualCashRule.ADD_REDUCTION_TO_CASH:
                 raise RiskRuntimeError("MAX_SINGLE_NAME requires ADD_REDUCTION_TO_CASH")
+            if pit_requirement is not PitRequirement.AS_OF_NOT_AFTER_TARGET_DECISION:
+                raise RiskRuntimeError(
+                    "MAX_SINGLE_NAME requires AS_OF_NOT_AFTER_TARGET_DECISION"
+                )
         elif policy_type is PolicyType.GROSS_NET_EXPOSURE_VALIDATE:
             if mode is not PolicyMode.VALIDATE or set(values) != {
                 "max_gross",
@@ -391,8 +454,12 @@ class RiskPolicyDefinition:
                 raise RiskRuntimeError("max_gross must be in [0, 1]")
             if residual_cash_rule is not ResidualCashRule.PRESERVE:
                 raise RiskRuntimeError("GROSS_NET_EXPOSURE_VALIDATE must preserve cash")
-        if risk_model_requirement is RiskModelRequirement.REQUIRED:
-            raise RiskRuntimeError("Risk V0 built-in policies do not admit a RiskModel")
+            if pit_requirement is not PitRequirement.AS_OF_NOT_AFTER_TARGET_DECISION:
+                raise RiskRuntimeError(
+                    "GROSS_NET_EXPOSURE_VALIDATE requires AS_OF_NOT_AFTER_TARGET_DECISION"
+                )
+        else:
+            raise RiskRuntimeError("unsupported Risk V0 policy type")
 
     @classmethod
     def _payload(
@@ -444,6 +511,22 @@ class RiskPolicyDefinition:
         }
 
     def assert_canonical(self) -> None:
+        self._validate_semantics(
+            policy_type=self.policy_type,
+            policy_version=self.policy_version,
+            mode=self.mode,
+            parameters=self.parameters,
+            required_state_inputs=self.required_state_inputs,
+            failure_behavior=self.failure_behavior,
+            residual_cash_rule=self.residual_cash_rule,
+            risk_model_requirement=self.risk_model_requirement,
+            code_version=self.code_version,
+            runtime_profile_id=self.runtime_profile_id,
+            backend=self.backend,
+            truth_requirement=self.truth_requirement,
+            pit_requirement=self.pit_requirement,
+            truth_admission=self.truth_admission,
+        )
         if canonical_sha256({key: value for key, value in self.to_wire().items() if key not in {"policy_id", "content_sha256"}}) != self.content_sha256:
             raise RiskRuntimeError("RiskPolicyDefinition content identity mismatch")
         if self.policy_id != "rpd_sha256_" + self.content_sha256:
@@ -472,6 +555,23 @@ class RiskPolicySetVersion:
         }
         if len(runtime_keys) != 1:
             raise RiskRuntimeError("all policies in a set must use one exact runtime/backend")
+        state_declarations: dict[str, tuple[ReferenceKind, PitRequirement]] = {}
+        for policy in policies:
+            for requirement in policy.required_state_inputs:
+                semantics = (
+                    requirement.reference_kind,
+                    requirement.pit_requirement,
+                )
+                previous = state_declarations.setdefault(
+                    requirement.input_key,
+                    semantics,
+                )
+                if previous != semantics:
+                    raise RiskRuntimeError(
+                        "repeated risk state input_key declarations must agree on "
+                        "reference_kind and pit_requirement: "
+                        + requirement.input_key
+                    )
         has_transform = any(value.mode is PolicyMode.CLIP for value in policies)
         has_explicit_pass = any(value.mode is PolicyMode.PASS_THROUGH for value in policies)
         if not has_transform and not has_explicit_pass:
@@ -913,6 +1013,7 @@ __all__ = [
     "PitRequirement",
     "PolicyMode",
     "PolicyType",
+    "RISK_V0_BACKEND",
     "ResidualCashRule",
     "RiskDecisionReport",
     "RiskModelRequirement",
