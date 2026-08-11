@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import StrEnum
 
 from v3_backend.contracts.common.truth_admission import (
     FORMAL_ADMITTED_CEILING,
+    PRE_ALPHA_CEILING,
     TruthAdmissionState,
     UpstreamRequirement,
+    meet_pair,
     propagate_downstream_ceiling,
 )
 from v3_backend.domain.datasets import DatasetVersion
@@ -23,6 +26,20 @@ class StrategyBindingError(ValueError):
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _NON_EXACT = {"latest", "current", "unresolved", "auto", "default"}
+
+
+class ExternalReferenceResolution(StrEnum):
+    """Resolution evidence available to Track F for an external owner reference."""
+
+    UNRESOLVED_CALLER_ASSERTED = "UNRESOLVED_CALLER_ASSERTED"
+
+
+def _cap_unresolved_truth(
+    value: TruthAdmissionState, name: str
+) -> TruthAdmissionState:
+    if not isinstance(value, TruthAdmissionState):
+        raise TypeError(f"{name} truth_admission must be TruthAdmissionState")
+    return meet_pair(value, PRE_ALPHA_CEILING)
 
 
 def _require_exact_text(value: str, name: str) -> None:
@@ -73,19 +90,28 @@ class EvaluationPeriod:
 
 @dataclass(frozen=True, slots=True)
 class ExactSnapshotReference:
+    """Exact research binding data without a canonical Snapshot receipt."""
+
     snapshot_id: str
     content_sha256: str
     truth_admission: TruthAdmissionState
+    resolution: ExternalReferenceResolution = field(
+        init=False, default=ExternalReferenceResolution.UNRESOLVED_CALLER_ASSERTED
+    )
 
     def __post_init__(self) -> None:
         _require_exact_text(self.snapshot_id, "snapshot_id")
         _require_sha256(self.content_sha256, "snapshot content_sha256")
-        if not isinstance(self.truth_admission, TruthAdmissionState):
-            raise TypeError("snapshot truth_admission must be TruthAdmissionState")
+        object.__setattr__(
+            self,
+            "truth_admission",
+            _cap_unresolved_truth(self.truth_admission, "snapshot"),
+        )
 
     def to_wire(self) -> dict[str, object]:
         return {
-            "authority": "SNAPSHOT_OWNER_REFERENCE",
+            "reference_kind": "SNAPSHOT_RESEARCH_EVALUATION_REFERENCE",
+            "resolution": self.resolution.value,
             "snapshot_id": self.snapshot_id,
             "content_sha256": self.content_sha256,
             "truth_admission": self.truth_admission.to_wire(),
@@ -94,12 +120,17 @@ class ExactSnapshotReference:
 
 @dataclass(frozen=True, slots=True)
 class ExactUniverseReference:
+    """Exact research membership binding without a canonical Universe receipt."""
+
     universe_version_id: str
     definition_sha256: str
     membership_artifact_id: str
     membership_sha256: str
     instrument_ids: tuple[str, ...]
     truth_admission: TruthAdmissionState
+    resolution: ExternalReferenceResolution = field(
+        init=False, default=ExternalReferenceResolution.UNRESOLVED_CALLER_ASSERTED
+    )
 
     def __post_init__(self) -> None:
         _require_exact_text(self.universe_version_id, "universe_version_id")
@@ -115,13 +146,17 @@ class ExactUniverseReference:
             raise StrategyBindingError("universe instrument IDs must be non-empty and unique")
         for instrument_id in ordered:
             _require_exact_text(instrument_id, "instrument_id")
-        if not isinstance(self.truth_admission, TruthAdmissionState):
-            raise TypeError("universe truth_admission must be TruthAdmissionState")
+        object.__setattr__(
+            self,
+            "truth_admission",
+            _cap_unresolved_truth(self.truth_admission, "universe"),
+        )
         object.__setattr__(self, "instrument_ids", ordered)
 
     def to_wire(self) -> dict[str, object]:
         return {
-            "authority": "UNIVERSE_OWNER_REFERENCE",
+            "reference_kind": "UNIVERSE_RESEARCH_EVALUATION_REFERENCE",
+            "resolution": self.resolution.value,
             "universe_version_id": self.universe_version_id,
             "definition_sha256": self.definition_sha256,
             "membership_artifact_id": self.membership_artifact_id,
@@ -134,10 +169,15 @@ class ExactUniverseReference:
 
 @dataclass(frozen=True, slots=True)
 class ExactCalendarReference:
+    """Exact deterministic calendar binding without a canonical Calendar receipt."""
+
     calendar_version_id: str
     content_sha256: str
     timezone_name: str
     truth_admission: TruthAdmissionState
+    resolution: ExternalReferenceResolution = field(
+        init=False, default=ExternalReferenceResolution.UNRESOLVED_CALLER_ASSERTED
+    )
 
     def __post_init__(self) -> None:
         _require_exact_text(self.calendar_version_id, "calendar_version_id")
@@ -145,12 +185,16 @@ class ExactCalendarReference:
         _require_exact_text(self.timezone_name, "timezone_name")
         if "/" not in self.timezone_name and self.timezone_name != "UTC":
             raise StrategyBindingError("timezone_name must be an explicit IANA name or UTC")
-        if not isinstance(self.truth_admission, TruthAdmissionState):
-            raise TypeError("calendar truth_admission must be TruthAdmissionState")
+        object.__setattr__(
+            self,
+            "truth_admission",
+            _cap_unresolved_truth(self.truth_admission, "calendar"),
+        )
 
     def to_wire(self) -> dict[str, object]:
         return {
-            "authority": "CALENDAR_OWNER_REFERENCE",
+            "reference_kind": "CALENDAR_RESEARCH_EVALUATION_REFERENCE",
+            "resolution": self.resolution.value,
             "calendar_version_id": self.calendar_version_id,
             "content_sha256": self.content_sha256,
             "timezone_name": self.timezone_name,
@@ -160,21 +204,27 @@ class ExactCalendarReference:
 
 @dataclass(frozen=True, slots=True)
 class GenericAdmittedArtifactReference:
-    """Typed extension point; this does not define any upstream artifact owner."""
+    """Unresolved typed extension point; it does not prove an upstream owner receipt."""
 
     artifact_type: str
     source_id: str
     artifact_id: str
     content_sha256: str
     truth_admission: TruthAdmissionState
+    resolution: ExternalReferenceResolution = field(
+        init=False, default=ExternalReferenceResolution.UNRESOLVED_CALLER_ASSERTED
+    )
 
     def __post_init__(self) -> None:
         _require_exact_text(self.artifact_type, "artifact_type")
         _require_exact_text(self.source_id, "source_id")
         _require_sha256(self.content_sha256, "artifact content_sha256")
         _require_artifact(self.artifact_id, "artifact_id", self.content_sha256)
-        if not isinstance(self.truth_admission, TruthAdmissionState):
-            raise TypeError("artifact truth_admission must be TruthAdmissionState")
+        object.__setattr__(
+            self,
+            "truth_admission",
+            _cap_unresolved_truth(self.truth_admission, "artifact"),
+        )
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -183,7 +233,8 @@ class GenericAdmittedArtifactReference:
             "artifact_id": self.artifact_id,
             "content_sha256": self.content_sha256,
             "truth_admission": self.truth_admission.to_wire(),
-            "ownership": "EXTERNAL_CANONICAL_OWNER_REFERENCE",
+            "resolution": self.resolution.value,
+            "ownership": "UNRESOLVED_EXTERNAL_REFERENCE",
         }
 
 
@@ -482,6 +533,7 @@ __all__ = [
     "ExactCalendarReference",
     "ExactSnapshotReference",
     "ExactUniverseReference",
+    "ExternalReferenceResolution",
     "GenericAdmittedArtifactReference",
     "StrategyBindingError",
     "StrategyEvaluationBindingVersion",

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from v3_backend.contracts.common.truth_admission import (
     FORMAL_ADMITTED_CEILING,
     PRE_ALPHA_CEILING,
+    TruthAdmissionState,
 )
 from v3_backend.domain.datasets import (
     DatasetBinding,
@@ -33,6 +34,7 @@ from v3_backend.domain.strategies import (
     ExactCalendarReference,
     ExactSnapshotReference,
     ExactUniverseReference,
+    GenericAdmittedArtifactReference,
     MissingSemantics,
     NodeOutputRef,
     PortCardinality,
@@ -73,6 +75,7 @@ def build_strategy_ir(
     node_order: tuple[str, ...] | None = None,
     projection_tag: str = "first",
     explicit_defaults: bool = False,
+    selection_count: int = 2,
 ) -> StrategyIr:
     nodes = {
         "input.scores": StrategyNode(
@@ -108,7 +111,7 @@ def build_strategy_ir(
             "v3.strategy.select.top_n",
             "1.0.0",
             {"ranked": NodeOutputRef("rank.primary", "ranked")},
-            {"count": 2},
+            {"count": selection_count},
         ),
         "output.signal": StrategyNode(
             "output.signal",
@@ -175,6 +178,8 @@ def build_runtime_fixture(
     factor_values: tuple[float | None, ...] = (3.0, 3.0, 2.0, None),
     runtime_values: dict[str, object | None] | None = None,
     definition: StrategyDefinitionVersion | None = None,
+    reference_truth: TruthAdmissionState = PRE_ALPHA_CEILING,
+    membership_character: str = "f",
 ) -> RuntimeFixture:
     factor_registry = default_operator_registry()
     factor_definition = FactorDefinitionVersion.create(
@@ -250,14 +255,14 @@ def build_runtime_fixture(
     input_reference = BoundInputReference.from_feature_materialization(
         "scores", materialization
     )
-    membership_hash = sha("f")
+    membership_hash = sha(membership_character)
     binding = StrategyEvaluationBindingVersion.create(
         definition=definition,
         dataset=dataset,
         factor_evaluations=(factor_evaluation,),
         feature_materializations=(materialization,),
         snapshot=ExactSnapshotReference(
-            snapshot_id, sha("1"), PRE_ALPHA_CEILING
+            snapshot_id, sha("1"), reference_truth
         ),
         universe=ExactUniverseReference(
             universe_id,
@@ -265,7 +270,7 @@ def build_runtime_fixture(
             "art_sha256_" + membership_hash,
             membership_hash,
             INSTRUMENTS,
-            PRE_ALPHA_CEILING,
+            reference_truth,
         ),
         period=EvaluationPeriod(
             datetime(2026, 1, 5, 8, tzinfo=timezone.utc),
@@ -273,7 +278,7 @@ def build_runtime_fixture(
         ),
         knowledge_cutoff=factor_context.knowledge_cutoff,
         calendar=ExactCalendarReference(
-            "calendar-1", sha("3"), "Asia/Shanghai", PRE_ALPHA_CEILING
+            "calendar-1", sha("3"), "Asia/Shanghai", reference_truth
         ),
         compiler_version=definition.compiler_version,
         runtime_profile_id=definition.runtime_profile_id,
@@ -300,4 +305,30 @@ def build_runtime_fixture(
         dataset=dataset,
         factor_evaluation=factor_evaluation,
         materialization=materialization,
+    )
+
+
+def rebuild_binding(
+    fixture: RuntimeFixture,
+    *,
+    snapshot: ExactSnapshotReference | None = None,
+    universe: ExactUniverseReference | None = None,
+    calendar: ExactCalendarReference | None = None,
+    generic_artifact_references: tuple[GenericAdmittedArtifactReference, ...] = (),
+) -> StrategyEvaluationBindingVersion:
+    return StrategyEvaluationBindingVersion.create(
+        definition=fixture.definition,
+        dataset=fixture.dataset,
+        factor_evaluations=(fixture.factor_evaluation,),
+        feature_materializations=(fixture.materialization,),
+        snapshot=snapshot or fixture.binding.snapshot,
+        universe=universe or fixture.binding.universe,
+        period=fixture.binding.period,
+        knowledge_cutoff=fixture.binding.knowledge_cutoff,
+        calendar=calendar or fixture.binding.calendar,
+        compiler_version=fixture.binding.compiler_version,
+        runtime_profile_id=fixture.binding.runtime_profile_id,
+        environment_fingerprint=fixture.binding.environment_fingerprint,
+        input_references=fixture.binding.input_references,
+        generic_artifact_references=generic_artifact_references,
     )

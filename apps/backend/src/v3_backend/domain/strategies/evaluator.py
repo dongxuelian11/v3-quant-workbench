@@ -337,10 +337,8 @@ class DeterministicStrategyEvaluator:
             portfolio_intent = PortfolioIntent.create(
                 definition=definition,
                 binding=binding,
-                source_signal_artifact_id=(
-                    None if signal_artifact is None else signal_artifact.signal_artifact_id
-                ),
-                source_selection_artifact_id=selection_artifact.selection_artifact_id,
+                signal_artifact=signal_artifact,
+                selection_artifact=selection_artifact,
                 exposure_mode=intent_payload.exposure_mode,
                 cash_policy=intent_payload.cash_policy,
                 rebalance_intent=intent_payload.rebalance_intent,
@@ -363,7 +361,6 @@ class DeterministicStrategyEvaluator:
                     "normalization": "EQUAL_DESIRED_EXPOSURE",
                     "portfolio_service_required": True,
                 },
-                input_artifacts=evidence,
             )
         return StrategyEvaluationResult(
             signal_artifact=signal_artifact,

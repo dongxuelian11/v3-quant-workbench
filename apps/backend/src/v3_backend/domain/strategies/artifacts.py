@@ -45,6 +45,15 @@ def _ordered_unique(values: tuple[str, ...], name: str) -> tuple[str, ...]:
     return ordered
 
 
+def _require_definition_binding(
+    definition: StrategyDefinitionVersion,
+    binding: StrategyEvaluationBindingVersion,
+    artifact_name: str,
+) -> None:
+    if binding.strategy_definition_version_id != definition.strategy_definition_version_id:
+        raise StrategyArtifactError(f"{artifact_name} definition/binding mismatch")
+
+
 class SignalDirection(StrEnum):
     POSITIVE = "POSITIVE"
     NEGATIVE = "NEGATIVE"
@@ -68,6 +77,33 @@ class InputArtifactEvidence:
             "artifact_id": self.artifact_id,
             "content_sha256": self.content_sha256,
         }
+
+
+def _exact_input_evidence(
+    binding: StrategyEvaluationBindingVersion,
+    input_artifacts: tuple[InputArtifactEvidence, ...],
+    artifact_name: str,
+) -> tuple[InputArtifactEvidence, ...]:
+    observed = {value.binding_key: value for value in input_artifacts}
+    if len(observed) != len(input_artifacts):
+        raise StrategyArtifactError(
+            f"{artifact_name} input evidence must exactly match binding.input_references; duplicate keys are forbidden"
+        )
+    expected = {value.binding_key: value for value in binding.input_references}
+    if set(observed) != set(expected):
+        raise StrategyArtifactError(
+            f"{artifact_name} input evidence must exactly match binding.input_references"
+        )
+    for binding_key, reference in expected.items():
+        evidence = observed[binding_key]
+        if (
+            evidence.artifact_id != reference.artifact_id
+            or evidence.content_sha256 != reference.content_sha256
+        ):
+            raise StrategyArtifactError(
+                f"{artifact_name} input evidence must exactly match binding.input_references"
+            )
+    return tuple(observed[key] for key in sorted(observed))
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,11 +164,10 @@ class SignalArtifact:
         missing_instrument_ids: tuple[str, ...],
     ) -> SignalArtifact:
         _require_aware(decision_time, "decision_time")
-        if binding.strategy_definition_version_id != definition.strategy_definition_version_id:
-            raise StrategyArtifactError("SignalArtifact definition/binding mismatch")
-        ordered_inputs = tuple(sorted(input_artifacts, key=lambda value: value.binding_key))
-        if len({value.binding_key for value in ordered_inputs}) != len(ordered_inputs):
-            raise StrategyArtifactError("SignalArtifact input binding keys must be unique")
+        _require_definition_binding(definition, binding, "SignalArtifact")
+        ordered_inputs = _exact_input_evidence(
+            binding, input_artifacts, "SignalArtifact"
+        )
         ordered_rows = tuple(sorted(rows, key=lambda value: value.instrument_id))
         if len({value.instrument_id for value in ordered_rows}) != len(ordered_rows):
             raise StrategyArtifactError("SignalArtifact rows must be unique by instrument")
@@ -204,6 +239,78 @@ class SignalArtifact:
         }
 
 
+def _require_canonical_signal_source(
+    signal: SignalArtifact,
+    definition: StrategyDefinitionVersion,
+    binding: StrategyEvaluationBindingVersion,
+) -> tuple[InputArtifactEvidence, ...]:
+    if signal.rows != tuple(sorted(signal.rows, key=lambda value: value.instrument_id)):
+        raise StrategyArtifactError(
+            "PortfolioIntent SignalArtifact rows are not canonical"
+        )
+    if signal.missing_instrument_ids != tuple(sorted(signal.missing_instrument_ids)):
+        raise StrategyArtifactError(
+            "PortfolioIntent SignalArtifact missing instruments are not canonical"
+        )
+    ordered_inputs = _exact_input_evidence(
+        binding, signal.input_artifacts, "PortfolioIntent SignalArtifact"
+    )
+    if signal.input_artifacts != ordered_inputs:
+        raise StrategyArtifactError(
+            "PortfolioIntent SignalArtifact input evidence is not canonical"
+        )
+    if (
+        signal.compiler_version != definition.compiler_version
+        or signal.runtime_profile_id != definition.runtime_profile_id
+    ):
+        raise StrategyArtifactError(
+            "PortfolioIntent SignalArtifact runtime provenance mismatch"
+        )
+    expected_truth = propagate_downstream_ceiling(
+        FORMAL_ADMITTED_CEILING,
+        (
+            UpstreamRequirement(
+                definition.strategy_definition_version_id,
+                definition.truth_admission,
+            ),
+            UpstreamRequirement(
+                binding.strategy_evaluation_binding_version_id,
+                binding.truth_admission,
+            ),
+        ),
+    )
+    if signal.truth_admission != expected_truth:
+        raise StrategyArtifactError(
+            "PortfolioIntent SignalArtifact truth provenance mismatch"
+        )
+    provenance = {
+        "strategy_definition_version_id": definition.strategy_definition_version_id,
+        "strategy_evaluation_binding_version_id": binding.strategy_evaluation_binding_version_id,
+        "input_artifacts": [value.to_wire() for value in ordered_inputs],
+        "compiler_version": definition.compiler_version,
+        "runtime_profile_id": definition.runtime_profile_id,
+        "universe_version_id": binding.universe.universe_version_id,
+        "membership_sha256": binding.universe.membership_sha256,
+    }
+    expected_provenance = canonical_sha256(provenance)
+    payload = {
+        **provenance,
+        "decision_time": _wire_time(signal.decision_time),
+        "rows": [value.to_wire() for value in signal.rows],
+        "missing_instrument_ids": list(signal.missing_instrument_ids),
+        "truth_admission": signal.truth_admission.to_wire(),
+        "provenance_sha256": expected_provenance,
+    }
+    if (
+        signal.provenance_sha256 != expected_provenance
+        or signal.signal_artifact_id != "sig_sha256_" + canonical_sha256(payload)
+    ):
+        raise StrategyArtifactError(
+            "PortfolioIntent SignalArtifact is not a canonical exact source object"
+        )
+    return ordered_inputs
+
+
 @dataclass(frozen=True, slots=True)
 class SelectionEntry:
     instrument_id: str
@@ -239,6 +346,7 @@ class SelectionArtifact:
     universe_version_id: str
     membership_artifact_id: str
     membership_sha256: str
+    input_artifacts: tuple[InputArtifactEvidence, ...]
     entries: tuple[SelectionEntry, ...]
     excluded_instrument_ids: tuple[str, ...]
     truth_admission: TruthAdmissionState
@@ -254,6 +362,10 @@ class SelectionArtifact:
         excluded_instrument_ids: tuple[str, ...],
         input_artifacts: tuple[InputArtifactEvidence, ...],
     ) -> SelectionArtifact:
+        _require_definition_binding(definition, binding, "SelectionArtifact")
+        ordered_inputs = _exact_input_evidence(
+            binding, input_artifacts, "SelectionArtifact"
+        )
         ordered_entries = tuple(sorted(entries, key=lambda value: value.rank))
         if tuple(value.rank for value in ordered_entries) != tuple(range(1, len(entries) + 1)):
             raise StrategyArtifactError("SelectionArtifact ranks must be contiguous")
@@ -266,6 +378,10 @@ class SelectionArtifact:
         excluded = _ordered_unique(excluded_instrument_ids, "excluded instrument IDs")
         if not set(excluded).issubset(universe) or set(excluded).intersection(selected_ids):
             raise StrategyArtifactError("selection exclusion boundary is inconsistent")
+        if set(selected_ids).union(excluded) != universe:
+            raise StrategyArtifactError(
+                "SelectionArtifact must cover the exact bound universe membership"
+            )
         truth = propagate_downstream_ceiling(
             FORMAL_ADMITTED_CEILING,
             (
@@ -282,10 +398,7 @@ class SelectionArtifact:
         provenance = {
             "strategy_definition_version_id": definition.strategy_definition_version_id,
             "strategy_evaluation_binding_version_id": binding.strategy_evaluation_binding_version_id,
-            "input_artifacts": [
-                value.to_wire()
-                for value in sorted(input_artifacts, key=lambda item: item.binding_key)
-            ],
+            "input_artifacts": [value.to_wire() for value in ordered_inputs],
             "universe_version_id": binding.universe.universe_version_id,
             "membership_artifact_id": binding.universe.membership_artifact_id,
             "membership_sha256": binding.universe.membership_sha256,
@@ -305,6 +418,7 @@ class SelectionArtifact:
             universe_version_id=binding.universe.universe_version_id,
             membership_artifact_id=binding.universe.membership_artifact_id,
             membership_sha256=binding.universe.membership_sha256,
+            input_artifacts=ordered_inputs,
             entries=ordered_entries,
             excluded_instrument_ids=excluded,
             truth_admission=truth,
@@ -320,11 +434,78 @@ class SelectionArtifact:
             "universe_version_id": self.universe_version_id,
             "membership_artifact_id": self.membership_artifact_id,
             "membership_sha256": self.membership_sha256,
+            "input_artifacts": [value.to_wire() for value in self.input_artifacts],
             "entries": [value.to_wire() for value in self.entries],
             "excluded_instrument_ids": list(self.excluded_instrument_ids),
             "truth_admission": self.truth_admission.to_wire(),
             "provenance_sha256": self.provenance_sha256,
         }
+
+
+def _require_canonical_selection_source(
+    selection: SelectionArtifact,
+    definition: StrategyDefinitionVersion,
+    binding: StrategyEvaluationBindingVersion,
+) -> tuple[InputArtifactEvidence, ...]:
+    if selection.entries != tuple(sorted(selection.entries, key=lambda value: value.rank)):
+        raise StrategyArtifactError(
+            "PortfolioIntent SelectionArtifact entries are not canonical"
+        )
+    if selection.excluded_instrument_ids != tuple(
+        sorted(selection.excluded_instrument_ids)
+    ):
+        raise StrategyArtifactError(
+            "PortfolioIntent SelectionArtifact exclusions are not canonical"
+        )
+    ordered_inputs = _exact_input_evidence(
+        binding, selection.input_artifacts, "PortfolioIntent SelectionArtifact"
+    )
+    if selection.input_artifacts != ordered_inputs:
+        raise StrategyArtifactError(
+            "PortfolioIntent SelectionArtifact input evidence is not canonical"
+        )
+    expected_truth = propagate_downstream_ceiling(
+        FORMAL_ADMITTED_CEILING,
+        (
+            UpstreamRequirement(
+                definition.strategy_definition_version_id,
+                definition.truth_admission,
+            ),
+            UpstreamRequirement(
+                binding.strategy_evaluation_binding_version_id,
+                binding.truth_admission,
+            ),
+        ),
+    )
+    if selection.truth_admission != expected_truth:
+        raise StrategyArtifactError(
+            "PortfolioIntent SelectionArtifact truth provenance mismatch"
+        )
+    provenance = {
+        "strategy_definition_version_id": definition.strategy_definition_version_id,
+        "strategy_evaluation_binding_version_id": binding.strategy_evaluation_binding_version_id,
+        "input_artifacts": [value.to_wire() for value in ordered_inputs],
+        "universe_version_id": binding.universe.universe_version_id,
+        "membership_artifact_id": binding.universe.membership_artifact_id,
+        "membership_sha256": binding.universe.membership_sha256,
+    }
+    expected_provenance = canonical_sha256(provenance)
+    payload = {
+        **provenance,
+        "entries": [value.to_wire() for value in selection.entries],
+        "excluded_instrument_ids": list(selection.excluded_instrument_ids),
+        "truth_admission": selection.truth_admission.to_wire(),
+        "provenance_sha256": expected_provenance,
+    }
+    if (
+        selection.provenance_sha256 != expected_provenance
+        or selection.selection_artifact_id
+        != "sel_sha256_" + canonical_sha256(payload)
+    ):
+        raise StrategyArtifactError(
+            "PortfolioIntent SelectionArtifact is not a canonical exact source object"
+        )
+    return ordered_inputs
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,6 +544,9 @@ class PortfolioIntent:
     strategy_evaluation_binding_version_id: str
     source_signal_artifact_id: str | None
     source_selection_artifact_id: str
+    source_signal_provenance_sha256: str | None
+    source_selection_provenance_sha256: str
+    input_artifacts: tuple[InputArtifactEvidence, ...]
     exposure_mode: str
     cash_policy: str
     rebalance_intent: str
@@ -395,15 +579,77 @@ class PortfolioIntent:
         *,
         definition: StrategyDefinitionVersion,
         binding: StrategyEvaluationBindingVersion,
-        source_signal_artifact_id: str | None,
-        source_selection_artifact_id: str,
+        selection_artifact: SelectionArtifact,
+        signal_artifact: SignalArtifact | None,
         exposure_mode: str,
         cash_policy: str,
         rebalance_intent: str,
         items: tuple[PortfolioIntentItem, ...],
         constraints: Mapping[str, object],
-        input_artifacts: tuple[InputArtifactEvidence, ...],
     ) -> PortfolioIntent:
+        _require_definition_binding(definition, binding, "PortfolioIntent")
+        if (
+            selection_artifact.strategy_definition_version_id
+            != definition.strategy_definition_version_id
+        ):
+            raise StrategyArtifactError(
+                "PortfolioIntent SelectionArtifact definition mismatch"
+            )
+        if (
+            selection_artifact.strategy_evaluation_binding_version_id
+            != binding.strategy_evaluation_binding_version_id
+        ):
+            raise StrategyArtifactError(
+                "PortfolioIntent SelectionArtifact evaluation binding mismatch"
+            )
+        if (
+            selection_artifact.universe_version_id
+            != binding.universe.universe_version_id
+            or selection_artifact.membership_artifact_id
+            != binding.universe.membership_artifact_id
+            or selection_artifact.membership_sha256
+            != binding.universe.membership_sha256
+        ):
+            raise StrategyArtifactError(
+                "PortfolioIntent SelectionArtifact universe membership mismatch"
+            )
+        ordered_inputs = _require_canonical_selection_source(
+            selection_artifact,
+            definition,
+            binding,
+        )
+        if signal_artifact is not None:
+            if (
+                signal_artifact.strategy_definition_version_id
+                != definition.strategy_definition_version_id
+            ):
+                raise StrategyArtifactError(
+                    "PortfolioIntent SignalArtifact definition mismatch"
+                )
+            if (
+                signal_artifact.strategy_evaluation_binding_version_id
+                != binding.strategy_evaluation_binding_version_id
+            ):
+                raise StrategyArtifactError(
+                    "PortfolioIntent SignalArtifact evaluation binding mismatch"
+                )
+            signal_inputs = _require_canonical_signal_source(
+                signal_artifact,
+                definition,
+                binding,
+            )
+            if signal_inputs != ordered_inputs:
+                raise StrategyArtifactError(
+                    "PortfolioIntent source artifacts must share exact input evidence"
+                )
+        source_selection_artifact_id = selection_artifact.selection_artifact_id
+        source_signal_artifact_id = (
+            None if signal_artifact is None else signal_artifact.signal_artifact_id
+        )
+        source_selection_provenance_sha256 = selection_artifact.provenance_sha256
+        source_signal_provenance_sha256 = (
+            None if signal_artifact is None else signal_artifact.provenance_sha256
+        )
         for name, value in (
             ("source_selection_artifact_id", source_selection_artifact_id),
             ("exposure_mode", exposure_mode),
@@ -433,28 +679,44 @@ class PortfolioIntent:
             raise StrategyArtifactError("PortfolioIntent instruments must be unique")
         if not set(item_ids).issubset(binding.universe.instrument_ids):
             raise StrategyArtifactError("PortfolioIntent instrument is outside bound universe")
+        selected_ids = {value.instrument_id for value in selection_artifact.entries}
+        if set(item_ids) != selected_ids:
+            raise StrategyArtifactError(
+                "PortfolioIntent items must exactly match source SelectionArtifact"
+            )
+        truth_requirements = [
+            UpstreamRequirement(
+                definition.strategy_definition_version_id,
+                definition.truth_admission,
+            ),
+            UpstreamRequirement(
+                binding.strategy_evaluation_binding_version_id,
+                binding.truth_admission,
+            ),
+            UpstreamRequirement(
+                selection_artifact.selection_artifact_id,
+                selection_artifact.truth_admission,
+            ),
+        ]
+        if signal_artifact is not None:
+            truth_requirements.append(
+                UpstreamRequirement(
+                    signal_artifact.signal_artifact_id,
+                    signal_artifact.truth_admission,
+                )
+            )
         truth = propagate_downstream_ceiling(
             FORMAL_ADMITTED_CEILING,
-            (
-                UpstreamRequirement(
-                    definition.strategy_definition_version_id,
-                    definition.truth_admission,
-                ),
-                UpstreamRequirement(
-                    binding.strategy_evaluation_binding_version_id,
-                    binding.truth_admission,
-                ),
-            ),
+            tuple(truth_requirements),
         )
         provenance = {
             "strategy_definition_version_id": definition.strategy_definition_version_id,
             "strategy_evaluation_binding_version_id": binding.strategy_evaluation_binding_version_id,
             "source_signal_artifact_id": source_signal_artifact_id,
             "source_selection_artifact_id": source_selection_artifact_id,
-            "input_artifacts": [
-                value.to_wire()
-                for value in sorted(input_artifacts, key=lambda item: item.binding_key)
-            ],
+            "source_signal_provenance_sha256": source_signal_provenance_sha256,
+            "source_selection_provenance_sha256": source_selection_provenance_sha256,
+            "input_artifacts": [value.to_wire() for value in ordered_inputs],
             "publisher_boundary": "PORTFOLIO_SERVICE_IS_SOLE_TARGET_WEIGHT_VECTOR_PUBLISHER",
         }
         provenance_sha256 = canonical_sha256(provenance)
@@ -474,6 +736,9 @@ class PortfolioIntent:
             strategy_evaluation_binding_version_id=binding.strategy_evaluation_binding_version_id,
             source_signal_artifact_id=source_signal_artifact_id,
             source_selection_artifact_id=source_selection_artifact_id,
+            source_signal_provenance_sha256=source_signal_provenance_sha256,
+            source_selection_provenance_sha256=source_selection_provenance_sha256,
+            input_artifacts=ordered_inputs,
             exposure_mode=exposure_mode,
             cash_policy=cash_policy,
             rebalance_intent=rebalance_intent,
@@ -491,6 +756,9 @@ class PortfolioIntent:
             "strategy_evaluation_binding_version_id": self.strategy_evaluation_binding_version_id,
             "source_signal_artifact_id": self.source_signal_artifact_id,
             "source_selection_artifact_id": self.source_selection_artifact_id,
+            "source_signal_provenance_sha256": self.source_signal_provenance_sha256,
+            "source_selection_provenance_sha256": self.source_selection_provenance_sha256,
+            "input_artifacts": [value.to_wire() for value in self.input_artifacts],
             "exposure_mode": self.exposure_mode,
             "cash_policy": self.cash_policy,
             "rebalance_intent": self.rebalance_intent,
