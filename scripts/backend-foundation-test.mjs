@@ -46,7 +46,8 @@ const suites = [
   "track_e_model_prediction_runtime",
   "track_f_strategy_runtime",
   "track_g_ai_research_evidence_integration",
-  "round3_w0_weight_seam"
+  "round3_w0_weight_seam",
+  "track_j_a_share_backtest_core"
 ];
 
 for (const suite of suites) {
@@ -72,4 +73,4 @@ const compile = spawnSync(
   { cwd: root, env, stdio: "inherit" }
 );
 if (compile.status !== 0) process.exit(compile.status ?? 1);
-console.log("Canonical Backend Foundation, Track A0 Truth/Admission, WS-F Data Truth, Track C V0, Track D L0/L1 Agents, Track E Model/Prediction Runtime V0, Track F Strategy Runtime V0, Track G read-only research evidence integration, and Round 3 W0 canonical weight seam: tests and compile gate passed.");
+console.log("Canonical Backend Foundation, Track A0 Truth/Admission, WS-F Data Truth, Track C V0, Track D L0/L1 Agents, Track E Model/Prediction Runtime V0, Track F Strategy Runtime V0, Track G read-only research evidence integration, Round 3 W0 canonical weight seam, and Track J A-share Backtest Core V0: tests and compile gate passed.");
