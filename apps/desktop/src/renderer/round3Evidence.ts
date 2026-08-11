@@ -127,7 +127,9 @@ function asEvidence(projection: CanonicalEvidenceProjectionV1): EvidenceView {
     reviewerFinding: null,
     facts: projection.view_facts.map((fact) => ({ ...fact })),
     openInLab: LABS[projection.source_artifact_type],
-    artifactId: projection.source_object_id
+    artifactId: projection.source_object_id,
+    contentSha256: projection.source_content_sha256,
+    integrityStatus: "NOT_RUN"
   };
 }
 
@@ -152,7 +154,22 @@ function fromBundle(bundle: Round3ResearchEvidenceBundleV1, occurredAt: string):
       title: TITLES[projection.source_artifact_type],
       mediaType: `application/vnd.${projection.source_artifact_type.toLowerCase()}+json`,
       provenanceRef: projection.provenance_refs.join(" · "),
-      payload: projection.renderer_payload as ArtifactPayload
+      payload: projection.renderer_payload as ArtifactPayload,
+      contentSha256: projection.source_content_sha256,
+      sourceObjectId: projection.source_object_id,
+      provenanceRefs: [...projection.provenance_refs],
+      lineageRefs: [...projection.lineage_refs],
+      integrityStatus: "NOT_RUN",
+      validationState: projection.validation_state,
+      openInLab: LABS[projection.source_artifact_type]
+    })),
+    exactRelations: bundle.lineage_edges.map((edge) => ({
+      sourceExactId: edge.source_object_id,
+      sourceContentSha256: edge.source_content_sha256,
+      targetExactId: edge.target_object_id,
+      targetContentSha256: edge.target_content_sha256,
+      relationType: edge.relation,
+      bindingRef: edge.binding_object_id
     })),
     timeline: bundle.projections.map((projection, index) => ({
       id: `round3-evidence-${index + 1}-${projection.source_object_id}`,
