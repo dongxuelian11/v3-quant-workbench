@@ -20,6 +20,7 @@ from .model import (
     ConstructionRejectionReason,
     ConstraintCheck,
     ConstraintCheckStatus,
+    IntentConstraintNormalization,
     OptimizerCandidate,
     PortfolioConstructionDiagnostics,
     PortfolioConstructionProvenance,
@@ -118,15 +119,95 @@ class DeterministicPortfolioConstruction:
                 ConstructionRejectionReason.OPTIMIZER_NOT_CONFIGURED,
                 "V0 deterministic baselines do not admit an external optimizer candidate",
             )
-        if intent.exposure_mode != construction_spec.accepted_intent_exposure_mode:
+        if intent.exposure_mode != construction_spec.accepted_intent_exposure_mode.value:
             _reject(
                 ConstructionRejectionReason.EXPOSURE_MODE_MISMATCH,
                 "PortfolioIntent exposure mode does not match the pinned construction spec",
             )
-        if intent.cash_policy != construction_spec.accepted_intent_cash_policy:
+        if intent.cash_policy != construction_spec.accepted_intent_cash_policy.value:
             _reject(
                 ConstructionRejectionReason.CASH_POLICY_MISMATCH,
                 "PortfolioIntent cash policy does not match the pinned construction spec",
+            )
+        if (
+            intent.rebalance_intent
+            != construction_spec.accepted_intent_rebalance_intent.value
+        ):
+            _reject(
+                ConstructionRejectionReason.REBALANCE_INTENT_MISMATCH,
+                "PortfolioIntent rebalance intent does not match the pinned construction spec",
+            )
+        supported_constraint_keys = {
+            "proposal_only",
+            "normalization",
+            "portfolio_service_required",
+        }
+        constraint_keys = set(intent.constraints)
+        if constraint_keys != supported_constraint_keys:
+            unknown = sorted(str(value) for value in constraint_keys - supported_constraint_keys)
+            missing = sorted(supported_constraint_keys - constraint_keys)
+            _reject(
+                ConstructionRejectionReason.UNSUPPORTED_INTENT_CONSTRAINT,
+                f"PortfolioIntent constraint keys must be exact; unknown={unknown}, missing={missing}",
+            )
+        if intent.constraints["proposal_only"] is not True:
+            _reject(
+                ConstructionRejectionReason.INTENT_CONSTRAINT_MISMATCH,
+                "PortfolioIntent proposal_only must be exactly true",
+            )
+        if intent.constraints["portfolio_service_required"] is not True:
+            _reject(
+                ConstructionRejectionReason.INTENT_CONSTRAINT_MISMATCH,
+                "PortfolioIntent portfolio_service_required must be exactly true",
+            )
+        if (
+            intent.constraints["normalization"]
+            != construction_spec.accepted_intent_constraint_normalization.value
+        ):
+            _reject(
+                ConstructionRejectionReason.INTENT_CONSTRAINT_MISMATCH,
+                "PortfolioIntent normalization marker does not match the closed method policy",
+            )
+
+        for name, value in (
+            ("as_of", as_of),
+            ("decision_time", decision_time),
+            ("rebalance_time", rebalance_time),
+            ("valid_until", valid_until),
+        ):
+            if (
+                not isinstance(value, datetime)
+                or value.tzinfo is None
+                or value.utcoffset() is None
+            ):
+                _reject(
+                    ConstructionRejectionReason.INVALID_TARGET_TIMING,
+                    f"{name} must be timezone-aware",
+                )
+        if not binding.period.start <= as_of <= binding.period.end:
+            _reject(
+                ConstructionRejectionReason.AS_OF_OUTSIDE_BINDING_PERIOD,
+                "as_of must be inside the exact StrategyEvaluationBinding period",
+            )
+        if not binding.period.start <= decision_time <= binding.period.end:
+            _reject(
+                ConstructionRejectionReason.DECISION_TIME_OUTSIDE_BINDING_PERIOD,
+                "decision_time must be inside the exact StrategyEvaluationBinding period",
+            )
+        if as_of > binding.knowledge_cutoff:
+            _reject(
+                ConstructionRejectionReason.AS_OF_AFTER_KNOWLEDGE_CUTOFF,
+                "as_of must not exceed the exact StrategyEvaluationBinding knowledge cutoff",
+            )
+        if decision_time > binding.knowledge_cutoff:
+            _reject(
+                ConstructionRejectionReason.DECISION_TIME_AFTER_KNOWLEDGE_CUTOFF,
+                "decision_time must not exceed the exact StrategyEvaluationBinding knowledge cutoff",
+            )
+        if not as_of <= decision_time <= rebalance_time <= valid_until:
+            _reject(
+                ConstructionRejectionReason.INVALID_TARGET_TIMING,
+                "target timing must satisfy as_of <= decision_time <= rebalance_time <= valid_until",
             )
 
         item_ids = tuple(value.instrument_id for value in intent.items)
@@ -156,6 +237,16 @@ class DeterministicPortfolioConstruction:
                 )
             desired.append((item.instrument_id, value))
         desired_tuple = tuple(sorted(desired))
+        if (
+            construction_spec.accepted_intent_constraint_normalization
+            is IntentConstraintNormalization.EQUAL_DESIRED_EXPOSURE
+            and desired_tuple
+            and len({value for _, value in desired_tuple}) != 1
+        ):
+            _reject(
+                ConstructionRejectionReason.DESIRED_EXPOSURE_SEMANTICS_MISMATCH,
+                "EQUAL_DESIRED_EXPOSURE requires equal item desired exposures",
+            )
         cash = Decimal(construction_spec.target_cash_weight)
         budget = Decimal(1) - cash
         if not desired_tuple:
@@ -217,6 +308,24 @@ class DeterministicPortfolioConstruction:
             )
         checks = (
             ConstraintCheck(
+                "PORTFOLIO_INTENT_SEMANTIC_ADMISSION",
+                ConstraintCheckStatus.PASSED,
+                (
+                    intent.exposure_mode
+                    + "/"
+                    + intent.cash_policy
+                    + "/"
+                    + intent.rebalance_intent
+                ),
+                "CLOSED_METHOD_DERIVED_POLICY_V1",
+            ),
+            ConstraintCheck(
+                "TARGET_TIMING_BINDING",
+                ConstraintCheckStatus.PASSED,
+                "PERIOD_AND_KNOWLEDGE_CUTOFF_VALIDATED",
+                "EXACT_STRATEGY_EVALUATION_BINDING",
+            ),
+            ConstraintCheck(
                 "EXACT_UNIVERSE_SCOPE",
                 ConstraintCheckStatus.PASSED,
                 str(len(item_ids)),
@@ -267,6 +376,25 @@ class DeterministicPortfolioConstruction:
             ),
             source_reference_sha256=source.source_reference_sha256,
             method=construction_spec.method,
+            intent_exposure_mode=construction_spec.accepted_intent_exposure_mode,
+            intent_cash_policy=construction_spec.accepted_intent_cash_policy,
+            intent_rebalance_intent=(
+                construction_spec.accepted_intent_rebalance_intent
+            ),
+            intent_constraint_normalization=(
+                construction_spec.accepted_intent_constraint_normalization
+            ),
+            desired_exposure_magnitude_policy=(
+                construction_spec.desired_exposure_magnitude_policy
+            ),
+            selection_transform=construction_spec.selection_transform,
+            as_of=as_of,
+            decision_time=decision_time,
+            rebalance_time=rebalance_time,
+            valid_until=valid_until,
+            binding_period_start=binding.period.start,
+            binding_period_end=binding.period.end,
+            binding_knowledge_cutoff=binding.knowledge_cutoff,
             constraint_checks=checks,
         )
         provenance = PortfolioConstructionProvenance.create(
@@ -277,6 +405,14 @@ class DeterministicPortfolioConstruction:
             diagnostics_id=diagnostics.diagnostics_id,
             rows=rows,
             cash_weight=construction_spec.target_cash_weight,
+            as_of=as_of,
+            decision_time=decision_time,
+            rebalance_time=rebalance_time,
+            valid_until=valid_until,
+            binding_period_start=binding.period.start,
+            binding_period_end=binding.period.end,
+            binding_knowledge_cutoff=binding.knowledge_cutoff,
+            rebalance_intent=construction_spec.accepted_intent_rebalance_intent,
             runtime_identity=runtime_identity,
         )
         target = TargetWeightVector.create(

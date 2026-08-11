@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
@@ -26,12 +27,12 @@ from v3_backend.domain.weights import (
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
 
-CONSTRUCTION_SPEC_SCHEMA_VERSION = "v3.portfolio-construction-spec/1.0.0"
+CONSTRUCTION_SPEC_SCHEMA_VERSION = "v3.portfolio-construction-spec/1.1.0"
 CONSTRUCTION_DIAGNOSTICS_SCHEMA_VERSION = (
-    "v3.portfolio-construction-diagnostics/1.0.0"
+    "v3.portfolio-construction-diagnostics/1.1.0"
 )
 CONSTRUCTION_PROVENANCE_SCHEMA_VERSION = (
-    "v3.portfolio-construction-provenance/1.0.0"
+    "v3.portfolio-construction-provenance/1.1.0"
 )
 OPTIMIZER_CANDIDATE_SCHEMA_VERSION = "v3.portfolio-optimizer-candidate/1.0.0"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -40,6 +41,44 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 class ConstructionMethod(StrEnum):
     EQUAL_WEIGHT_SELECTED = "EQUAL_WEIGHT_SELECTED"
     NORMALIZED_DESIRED_EXPOSURE = "NORMALIZED_DESIRED_EXPOSURE"
+
+
+class IntentExposureMode(StrEnum):
+    ABSOLUTE_DESIRED_EXPOSURE = "ABSOLUTE_DESIRED_EXPOSURE"
+    RELATIVE_DESIRED_EXPOSURE = "RELATIVE_DESIRED_EXPOSURE"
+
+
+class IntentCashPolicy(StrEnum):
+    RESIDUAL = "RESIDUAL"
+
+
+class IntentRebalancePolicy(StrEnum):
+    AT_BOUND_DECISION_TIME = "AT_BOUND_DECISION_TIME"
+
+
+class IntentConstraintNormalization(StrEnum):
+    EQUAL_DESIRED_EXPOSURE = "EQUAL_DESIRED_EXPOSURE"
+    RELATIVE_DESIRED_EXPOSURE = "RELATIVE_DESIRED_EXPOSURE"
+
+
+class DesiredExposureMagnitudePolicy(StrEnum):
+    NOT_PRESERVED = "INTENT_DESIRED_EXPOSURE_MAGNITUDES_NOT_PRESERVED"
+    RELATIVE_INPUTS = "INTENT_DESIRED_EXPOSURES_INTERPRETED_AS_RELATIVE_INPUTS"
+
+
+class SelectionTransform(StrEnum):
+    REWEIGHTED_EQUAL = "SELECTION_MEMBERSHIP_REWEIGHTED_EQUAL"
+    NORMALIZED_TO_BUDGET = (
+        "RELATIVE_DESIRED_EXPOSURES_NORMALIZED_TO_PINNED_INVESTED_BUDGET"
+    )
+
+
+class IntentSemanticAdmissionStatus(StrEnum):
+    PASSED = "PASSED_CLOSED_PORTFOLIO_INTENT_SEMANTICS_V1"
+
+
+class TimingValidationStatus(StrEnum):
+    PASSED = "PASSED_EXACT_BINDING_PERIOD_AND_KNOWLEDGE_CUTOFF_V1"
 
 
 class ConstraintCheckStatus(StrEnum):
@@ -51,6 +90,21 @@ class ConstructionRejectionReason(StrEnum):
     SPEC_RUNTIME_MISMATCH = "SPEC_RUNTIME_MISMATCH"
     EXPOSURE_MODE_MISMATCH = "EXPOSURE_MODE_MISMATCH"
     CASH_POLICY_MISMATCH = "CASH_POLICY_MISMATCH"
+    REBALANCE_INTENT_MISMATCH = "REBALANCE_INTENT_MISMATCH"
+    UNSUPPORTED_INTENT_CONSTRAINT = "UNSUPPORTED_INTENT_CONSTRAINT"
+    INTENT_CONSTRAINT_MISMATCH = "INTENT_CONSTRAINT_MISMATCH"
+    DESIRED_EXPOSURE_SEMANTICS_MISMATCH = (
+        "DESIRED_EXPOSURE_SEMANTICS_MISMATCH"
+    )
+    INVALID_TARGET_TIMING = "INVALID_TARGET_TIMING"
+    AS_OF_OUTSIDE_BINDING_PERIOD = "AS_OF_OUTSIDE_BINDING_PERIOD"
+    DECISION_TIME_OUTSIDE_BINDING_PERIOD = (
+        "DECISION_TIME_OUTSIDE_BINDING_PERIOD"
+    )
+    AS_OF_AFTER_KNOWLEDGE_CUTOFF = "AS_OF_AFTER_KNOWLEDGE_CUTOFF"
+    DECISION_TIME_AFTER_KNOWLEDGE_CUTOFF = (
+        "DECISION_TIME_AFTER_KNOWLEDGE_CUTOFF"
+    )
     DUPLICATE_INSTRUMENT = "DUPLICATE_INSTRUMENT"
     OUTSIDE_EXACT_UNIVERSE = "OUTSIDE_EXACT_UNIVERSE"
     INVALID_DESIRED_EXPOSURE = "INVALID_DESIRED_EXPOSURE"
@@ -87,6 +141,35 @@ def _wire_decimal(value: Decimal) -> str:
     return text
 
 
+def _wire_time(value: datetime) -> str:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("timing evidence must be timezone-aware")
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _method_intent_semantics(
+    method: ConstructionMethod,
+) -> tuple[
+    IntentExposureMode,
+    IntentConstraintNormalization,
+    DesiredExposureMagnitudePolicy,
+    SelectionTransform,
+]:
+    if method is ConstructionMethod.EQUAL_WEIGHT_SELECTED:
+        return (
+            IntentExposureMode.ABSOLUTE_DESIRED_EXPOSURE,
+            IntentConstraintNormalization.EQUAL_DESIRED_EXPOSURE,
+            DesiredExposureMagnitudePolicy.NOT_PRESERVED,
+            SelectionTransform.REWEIGHTED_EQUAL,
+        )
+    return (
+        IntentExposureMode.RELATIVE_DESIRED_EXPOSURE,
+        IntentConstraintNormalization.RELATIVE_DESIRED_EXPOSURE,
+        DesiredExposureMagnitudePolicy.RELATIVE_INPUTS,
+        SelectionTransform.NORMALIZED_TO_BUDGET,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PortfolioConstructionSpecVersion:
     portfolio_construction_spec_version_id: str
@@ -94,8 +177,17 @@ class PortfolioConstructionSpecVersion:
     method: ConstructionMethod
     method_version: str
     exposure_profile: ExposureProfile
-    accepted_intent_exposure_mode: str
-    accepted_intent_cash_policy: str
+    intent_semantic_policy_version: str
+    intent_constraint_policy_version: str
+    accepted_intent_exposure_mode: IntentExposureMode
+    accepted_intent_cash_policy: IntentCashPolicy
+    accepted_intent_rebalance_intent: IntentRebalancePolicy
+    accepted_intent_constraint_normalization: IntentConstraintNormalization
+    desired_exposure_magnitude_policy: DesiredExposureMagnitudePolicy
+    selection_transform: SelectionTransform
+    required_proposal_only: bool
+    required_portfolio_service: bool
+    unknown_constraint_policy: str
     cash_policy: str
     target_cash_weight: str
     min_instrument_weight: str
@@ -129,8 +221,6 @@ class PortfolioConstructionSpecVersion:
         max_instrument_weight: str = "1",
         max_gross_exposure: str = "1",
         max_net_exposure: str = "1",
-        accepted_intent_exposure_mode: str = "ABSOLUTE_DESIRED_EXPOSURE",
-        accepted_intent_cash_policy: str = "RESIDUAL",
         runtime_identity: RuntimeIdentity,
         optimizer_settings: Mapping[str, object] | None = None,
     ) -> PortfolioConstructionSpecVersion:
@@ -138,12 +228,17 @@ class PortfolioConstructionSpecVersion:
             raise TypeError("method must be ConstructionMethod")
         if not isinstance(runtime_identity, RuntimeIdentity):
             raise TypeError("runtime_identity must be RuntimeIdentity")
-        for name, value in (
-            ("method_version", method_version),
-            ("accepted_intent_exposure_mode", accepted_intent_exposure_mode),
-            ("accepted_intent_cash_policy", accepted_intent_cash_policy),
-        ):
-            _require_text(value, name)
+        _require_text(method_version, "method_version")
+        (
+            accepted_intent_exposure_mode,
+            accepted_intent_constraint_normalization,
+            desired_exposure_magnitude_policy,
+            selection_transform,
+        ) = _method_intent_semantics(method)
+        accepted_intent_cash_policy = IntentCashPolicy.RESIDUAL
+        accepted_intent_rebalance_intent = (
+            IntentRebalancePolicy.AT_BOUND_DECISION_TIME
+        )
         cash = normalize_weight_decimal(target_cash_weight, "target_cash_weight")
         minimum = normalize_weight_decimal(
             min_instrument_weight, "min_instrument_weight"
@@ -170,8 +265,18 @@ class PortfolioConstructionSpecVersion:
         payload = cls._payload(
             method=method,
             method_version=method_version,
+            intent_semantic_policy_version="v3.portfolio-intent-admission/1.0.0",
+            intent_constraint_policy_version=(
+                "v3.portfolio-intent-constraint-policy/1.0.0"
+            ),
             accepted_intent_exposure_mode=accepted_intent_exposure_mode,
             accepted_intent_cash_policy=accepted_intent_cash_policy,
+            accepted_intent_rebalance_intent=accepted_intent_rebalance_intent,
+            accepted_intent_constraint_normalization=(
+                accepted_intent_constraint_normalization
+            ),
+            desired_exposure_magnitude_policy=desired_exposure_magnitude_policy,
+            selection_transform=selection_transform,
             target_cash_weight=cash,
             min_instrument_weight=minimum,
             max_instrument_weight=maximum,
@@ -188,8 +293,21 @@ class PortfolioConstructionSpecVersion:
             method=method,
             method_version=method_version,
             exposure_profile=ExposureProfile.LONG_ONLY_UNLEVERED,
+            intent_semantic_policy_version="v3.portfolio-intent-admission/1.0.0",
+            intent_constraint_policy_version=(
+                "v3.portfolio-intent-constraint-policy/1.0.0"
+            ),
             accepted_intent_exposure_mode=accepted_intent_exposure_mode,
             accepted_intent_cash_policy=accepted_intent_cash_policy,
+            accepted_intent_rebalance_intent=accepted_intent_rebalance_intent,
+            accepted_intent_constraint_normalization=(
+                accepted_intent_constraint_normalization
+            ),
+            desired_exposure_magnitude_policy=desired_exposure_magnitude_policy,
+            selection_transform=selection_transform,
+            required_proposal_only=True,
+            required_portfolio_service=True,
+            unknown_constraint_policy="REJECT_UNSUPPORTED_INTENT_CONSTRAINT",
             cash_policy="PINNED_EXPLICIT_CASH_WITH_INVESTED_RESIDUAL",
             target_cash_weight=cash,
             min_instrument_weight=minimum,
@@ -225,8 +343,14 @@ class PortfolioConstructionSpecVersion:
         *,
         method: ConstructionMethod,
         method_version: str,
-        accepted_intent_exposure_mode: str,
-        accepted_intent_cash_policy: str,
+        intent_semantic_policy_version: str,
+        intent_constraint_policy_version: str,
+        accepted_intent_exposure_mode: IntentExposureMode,
+        accepted_intent_cash_policy: IntentCashPolicy,
+        accepted_intent_rebalance_intent: IntentRebalancePolicy,
+        accepted_intent_constraint_normalization: IntentConstraintNormalization,
+        desired_exposure_magnitude_policy: DesiredExposureMagnitudePolicy,
+        selection_transform: SelectionTransform,
         target_cash_weight: str,
         min_instrument_weight: str,
         max_instrument_weight: str,
@@ -241,8 +365,21 @@ class PortfolioConstructionSpecVersion:
             "method": method.value,
             "method_version": method_version,
             "exposure_profile": ExposureProfile.LONG_ONLY_UNLEVERED.value,
-            "accepted_intent_exposure_mode": accepted_intent_exposure_mode,
-            "accepted_intent_cash_policy": accepted_intent_cash_policy,
+            "intent_semantic_policy_version": intent_semantic_policy_version,
+            "intent_constraint_policy_version": intent_constraint_policy_version,
+            "accepted_intent_exposure_mode": accepted_intent_exposure_mode.value,
+            "accepted_intent_cash_policy": accepted_intent_cash_policy.value,
+            "accepted_intent_rebalance_intent": accepted_intent_rebalance_intent.value,
+            "accepted_intent_constraint_normalization": (
+                accepted_intent_constraint_normalization.value
+            ),
+            "desired_exposure_magnitude_policy": (
+                desired_exposure_magnitude_policy.value
+            ),
+            "selection_transform": selection_transform.value,
+            "required_proposal_only": True,
+            "required_portfolio_service": True,
+            "unknown_constraint_policy": "REJECT_UNSUPPORTED_INTENT_CONSTRAINT",
             "cash_policy": "PINNED_EXPLICIT_CASH_WITH_INVESTED_RESIDUAL",
             "target_cash_weight": target_cash_weight,
             "min_instrument_weight": min_instrument_weight,
@@ -273,6 +410,14 @@ class PortfolioConstructionSpecVersion:
         }
 
     def assert_canonical(self) -> None:
+        if not isinstance(self.method, ConstructionMethod):
+            raise ValueError("PortfolioConstructionSpecVersion method is not closed")
+        (
+            expected_exposure_mode,
+            expected_constraint_normalization,
+            expected_magnitude_policy,
+            expected_selection_transform,
+        ) = _method_intent_semantics(self.method)
         expected_normalization = (
             "SELECTED_MEMBERS_EQUAL_WEIGHT"
             if self.method is ConstructionMethod.EQUAL_WEIGHT_SELECTED
@@ -280,6 +425,22 @@ class PortfolioConstructionSpecVersion:
         )
         fixed_fields_match = (
             self.exposure_profile is ExposureProfile.LONG_ONLY_UNLEVERED
+            and self.intent_semantic_policy_version
+            == "v3.portfolio-intent-admission/1.0.0"
+            and self.intent_constraint_policy_version
+            == "v3.portfolio-intent-constraint-policy/1.0.0"
+            and self.accepted_intent_exposure_mode is expected_exposure_mode
+            and self.accepted_intent_cash_policy is IntentCashPolicy.RESIDUAL
+            and self.accepted_intent_rebalance_intent
+            is IntentRebalancePolicy.AT_BOUND_DECISION_TIME
+            and self.accepted_intent_constraint_normalization
+            is expected_constraint_normalization
+            and self.desired_exposure_magnitude_policy is expected_magnitude_policy
+            and self.selection_transform is expected_selection_transform
+            and self.required_proposal_only is True
+            and self.required_portfolio_service is True
+            and self.unknown_constraint_policy
+            == "REJECT_UNSUPPORTED_INTENT_CONSTRAINT"
             and self.cash_policy == "PINNED_EXPLICIT_CASH_WITH_INVESTED_RESIDUAL"
             and self.selection_normalization_rule == expected_normalization
             and self.tie_break_rule == "CANONICAL_INSTRUMENT_ID_ASCENDING"
@@ -301,8 +462,18 @@ class PortfolioConstructionSpecVersion:
         payload = self._payload(
             method=self.method,
             method_version=self.method_version,
+            intent_semantic_policy_version=self.intent_semantic_policy_version,
+            intent_constraint_policy_version=self.intent_constraint_policy_version,
             accepted_intent_exposure_mode=self.accepted_intent_exposure_mode,
             accepted_intent_cash_policy=self.accepted_intent_cash_policy,
+            accepted_intent_rebalance_intent=self.accepted_intent_rebalance_intent,
+            accepted_intent_constraint_normalization=(
+                self.accepted_intent_constraint_normalization
+            ),
+            desired_exposure_magnitude_policy=(
+                self.desired_exposure_magnitude_policy
+            ),
+            selection_transform=self.selection_transform,
             target_cash_weight=self.target_cash_weight,
             min_instrument_weight=self.min_instrument_weight,
             max_instrument_weight=self.max_instrument_weight,
@@ -326,8 +497,20 @@ class PortfolioConstructionSpecVersion:
             **self._payload(
                 method=self.method,
                 method_version=self.method_version,
+                intent_semantic_policy_version=self.intent_semantic_policy_version,
+                intent_constraint_policy_version=self.intent_constraint_policy_version,
                 accepted_intent_exposure_mode=self.accepted_intent_exposure_mode,
                 accepted_intent_cash_policy=self.accepted_intent_cash_policy,
+                accepted_intent_rebalance_intent=(
+                    self.accepted_intent_rebalance_intent
+                ),
+                accepted_intent_constraint_normalization=(
+                    self.accepted_intent_constraint_normalization
+                ),
+                desired_exposure_magnitude_policy=(
+                    self.desired_exposure_magnitude_policy
+                ),
+                selection_transform=self.selection_transform,
                 target_cash_weight=self.target_cash_weight,
                 min_instrument_weight=self.min_instrument_weight,
                 max_instrument_weight=self.max_instrument_weight,
@@ -474,6 +657,21 @@ class PortfolioConstructionDiagnostics:
     strategy_evaluation_binding_version_id: str
     source_reference_sha256: str
     method: ConstructionMethod
+    intent_semantic_admission_status: IntentSemanticAdmissionStatus
+    intent_exposure_mode: IntentExposureMode
+    intent_cash_policy: IntentCashPolicy
+    intent_rebalance_intent: IntentRebalancePolicy
+    intent_constraint_normalization: IntentConstraintNormalization
+    desired_exposure_magnitude_policy: DesiredExposureMagnitudePolicy
+    selection_transform: SelectionTransform
+    as_of: str
+    decision_time: str
+    rebalance_time: str
+    valid_until: str
+    binding_period_start: str
+    binding_period_end: str
+    binding_knowledge_cutoff: str
+    timing_validation_status: TimingValidationStatus
     constraint_checks: tuple[ConstraintCheck, ...]
     infeasibility_reason: None
     optimizer_evidence: None
@@ -496,6 +694,19 @@ class PortfolioConstructionDiagnostics:
         strategy_evaluation_binding_version_id: str,
         source_reference_sha256: str,
         method: ConstructionMethod,
+        intent_exposure_mode: IntentExposureMode,
+        intent_cash_policy: IntentCashPolicy,
+        intent_rebalance_intent: IntentRebalancePolicy,
+        intent_constraint_normalization: IntentConstraintNormalization,
+        desired_exposure_magnitude_policy: DesiredExposureMagnitudePolicy,
+        selection_transform: SelectionTransform,
+        as_of: datetime,
+        decision_time: datetime,
+        rebalance_time: datetime,
+        valid_until: datetime,
+        binding_period_start: datetime,
+        binding_period_end: datetime,
+        binding_knowledge_cutoff: datetime,
         constraint_checks: tuple[ConstraintCheck, ...],
     ) -> PortfolioConstructionDiagnostics:
         if selected_count < 0 or excluded_count < 0:
@@ -513,6 +724,25 @@ class PortfolioConstructionDiagnostics:
             "strategy_evaluation_binding_version_id": strategy_evaluation_binding_version_id,
             "source_reference_sha256": source_reference_sha256,
             "method": method.value,
+            "intent_semantic_admission_status": (
+                IntentSemanticAdmissionStatus.PASSED.value
+            ),
+            "intent_exposure_mode": intent_exposure_mode.value,
+            "intent_cash_policy": intent_cash_policy.value,
+            "intent_rebalance_intent": intent_rebalance_intent.value,
+            "intent_constraint_normalization": intent_constraint_normalization.value,
+            "desired_exposure_magnitude_policy": (
+                desired_exposure_magnitude_policy.value
+            ),
+            "selection_transform": selection_transform.value,
+            "as_of": _wire_time(as_of),
+            "decision_time": _wire_time(decision_time),
+            "rebalance_time": _wire_time(rebalance_time),
+            "valid_until": _wire_time(valid_until),
+            "binding_period_start": _wire_time(binding_period_start),
+            "binding_period_end": _wire_time(binding_period_end),
+            "binding_knowledge_cutoff": _wire_time(binding_knowledge_cutoff),
+            "timing_validation_status": TimingValidationStatus.PASSED.value,
             "constraint_checks": [value.to_wire() for value in constraint_checks],
             "infeasibility_reason": None,
             "optimizer_evidence": None,
@@ -533,6 +763,21 @@ class PortfolioConstructionDiagnostics:
             strategy_evaluation_binding_version_id=strategy_evaluation_binding_version_id,
             source_reference_sha256=source_reference_sha256,
             method=method,
+            intent_semantic_admission_status=IntentSemanticAdmissionStatus.PASSED,
+            intent_exposure_mode=intent_exposure_mode,
+            intent_cash_policy=intent_cash_policy,
+            intent_rebalance_intent=intent_rebalance_intent,
+            intent_constraint_normalization=intent_constraint_normalization,
+            desired_exposure_magnitude_policy=desired_exposure_magnitude_policy,
+            selection_transform=selection_transform,
+            as_of=_wire_time(as_of),
+            decision_time=_wire_time(decision_time),
+            rebalance_time=_wire_time(rebalance_time),
+            valid_until=_wire_time(valid_until),
+            binding_period_start=_wire_time(binding_period_start),
+            binding_period_end=_wire_time(binding_period_end),
+            binding_knowledge_cutoff=_wire_time(binding_knowledge_cutoff),
+            timing_validation_status=TimingValidationStatus.PASSED,
             constraint_checks=constraint_checks,
             infeasibility_reason=None,
             optimizer_evidence=None,
@@ -553,6 +798,27 @@ class PortfolioConstructionDiagnostics:
             "strategy_evaluation_binding_version_id": self.strategy_evaluation_binding_version_id,
             "source_reference_sha256": self.source_reference_sha256,
             "method": self.method.value,
+            "intent_semantic_admission_status": (
+                self.intent_semantic_admission_status.value
+            ),
+            "intent_exposure_mode": self.intent_exposure_mode.value,
+            "intent_cash_policy": self.intent_cash_policy.value,
+            "intent_rebalance_intent": self.intent_rebalance_intent.value,
+            "intent_constraint_normalization": (
+                self.intent_constraint_normalization.value
+            ),
+            "desired_exposure_magnitude_policy": (
+                self.desired_exposure_magnitude_policy.value
+            ),
+            "selection_transform": self.selection_transform.value,
+            "as_of": self.as_of,
+            "decision_time": self.decision_time,
+            "rebalance_time": self.rebalance_time,
+            "valid_until": self.valid_until,
+            "binding_period_start": self.binding_period_start,
+            "binding_period_end": self.binding_period_end,
+            "binding_knowledge_cutoff": self.binding_knowledge_cutoff,
+            "timing_validation_status": self.timing_validation_status.value,
             "constraint_checks": [value.to_wire() for value in self.constraint_checks],
             "infeasibility_reason": self.infeasibility_reason,
             "optimizer_evidence": self.optimizer_evidence,
@@ -586,6 +852,15 @@ class PortfolioConstructionProvenance:
     diagnostics_id: str
     candidate_rows_sha256: str
     cash_weight: str
+    as_of: str
+    decision_time: str
+    rebalance_time: str
+    valid_until: str
+    binding_period_start: str
+    binding_period_end: str
+    binding_knowledge_cutoff: str
+    rebalance_intent: IntentRebalancePolicy
+    timing_validation_status: TimingValidationStatus
     optimizer_candidate_sha256: None
     runtime_identity: RuntimeIdentity
     truth_admission: TruthAdmissionState
@@ -601,6 +876,14 @@ class PortfolioConstructionProvenance:
         diagnostics_id: str,
         rows: tuple[TargetWeightRow, ...],
         cash_weight: str,
+        as_of: datetime,
+        decision_time: datetime,
+        rebalance_time: datetime,
+        valid_until: datetime,
+        binding_period_start: datetime,
+        binding_period_end: datetime,
+        binding_knowledge_cutoff: datetime,
+        rebalance_intent: IntentRebalancePolicy,
         runtime_identity: RuntimeIdentity,
     ) -> PortfolioConstructionProvenance:
         canonical_cash = normalize_weight_decimal(cash_weight, "cash_weight")
@@ -612,6 +895,15 @@ class PortfolioConstructionProvenance:
             "diagnostics_id": diagnostics_id,
             "candidate_rows_sha256": rows_sha256,
             "cash_weight": canonical_cash,
+            "as_of": _wire_time(as_of),
+            "decision_time": _wire_time(decision_time),
+            "rebalance_time": _wire_time(rebalance_time),
+            "valid_until": _wire_time(valid_until),
+            "binding_period_start": _wire_time(binding_period_start),
+            "binding_period_end": _wire_time(binding_period_end),
+            "binding_knowledge_cutoff": _wire_time(binding_knowledge_cutoff),
+            "rebalance_intent": rebalance_intent.value,
+            "timing_validation_status": TimingValidationStatus.PASSED.value,
             "optimizer_candidate_sha256": None,
             "runtime_identity": runtime_identity.to_wire(),
             "truth_admission": PRE_ALPHA_CEILING.to_wire(),
@@ -625,6 +917,15 @@ class PortfolioConstructionProvenance:
             diagnostics_id=diagnostics_id,
             candidate_rows_sha256=rows_sha256,
             cash_weight=canonical_cash,
+            as_of=_wire_time(as_of),
+            decision_time=_wire_time(decision_time),
+            rebalance_time=_wire_time(rebalance_time),
+            valid_until=_wire_time(valid_until),
+            binding_period_start=_wire_time(binding_period_start),
+            binding_period_end=_wire_time(binding_period_end),
+            binding_knowledge_cutoff=_wire_time(binding_knowledge_cutoff),
+            rebalance_intent=rebalance_intent,
+            timing_validation_status=TimingValidationStatus.PASSED,
             optimizer_candidate_sha256=None,
             runtime_identity=runtime_identity,
             truth_admission=PRE_ALPHA_CEILING,
@@ -638,6 +939,15 @@ class PortfolioConstructionProvenance:
             "diagnostics_id": self.diagnostics_id,
             "candidate_rows_sha256": self.candidate_rows_sha256,
             "cash_weight": self.cash_weight,
+            "as_of": self.as_of,
+            "decision_time": self.decision_time,
+            "rebalance_time": self.rebalance_time,
+            "valid_until": self.valid_until,
+            "binding_period_start": self.binding_period_start,
+            "binding_period_end": self.binding_period_end,
+            "binding_knowledge_cutoff": self.binding_knowledge_cutoff,
+            "rebalance_intent": self.rebalance_intent.value,
+            "timing_validation_status": self.timing_validation_status.value,
             "optimizer_candidate_sha256": self.optimizer_candidate_sha256,
             "runtime_identity": self.runtime_identity.to_wire(),
             "truth_admission": self.truth_admission.to_wire(),
@@ -673,10 +983,18 @@ __all__ = [
     "ConstructionRejectionReason",
     "ConstraintCheck",
     "ConstraintCheckStatus",
+    "DesiredExposureMagnitudePolicy",
+    "IntentCashPolicy",
+    "IntentConstraintNormalization",
+    "IntentExposureMode",
+    "IntentRebalancePolicy",
+    "IntentSemanticAdmissionStatus",
     "OptimizerCandidate",
     "PortfolioConstructionDiagnostics",
     "PortfolioConstructionProvenance",
     "PortfolioConstructionRejected",
     "PortfolioConstructionResult",
     "PortfolioConstructionSpecVersion",
+    "SelectionTransform",
+    "TimingValidationStatus",
 ]
