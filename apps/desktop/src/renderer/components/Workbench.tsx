@@ -3,7 +3,8 @@ import { DockviewReact, type DockviewApi, type DockviewReadyEvent } from "dockvi
 import { ResearchChartPanel, ResearchAnalyticsPanel, UniverseBuilderPanel } from "./ResearchPanels";
 import { StrategyDraftPanel, StrategyReviewPanel } from "./StrategyPanels";
 import { ModelRunsPanel, ModelStudyPanel, ModelVersionPanel, ModelWorkflowPanel } from "./ModelPanels";
-import { BacktestPanel, ResultPanel } from "./BacktestResultPanels";
+import { BacktestPanel } from "./BacktestResultPanels";
+import { ResultPanel } from "./ResultAnalyticsPanel";
 import { useWorkbench } from "../store";
 import { Icon } from "./PresentationSystem";
 

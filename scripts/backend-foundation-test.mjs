@@ -51,6 +51,7 @@ const suites = [
   "round3_track_i_risk_runtime",
   "track_j_a_share_backtest_core",
   "round3_integration_closure",
+  "track_l_result_analytics",
   "track_m_generative_research_ui"
 ];
 

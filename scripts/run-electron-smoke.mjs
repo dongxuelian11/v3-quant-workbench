@@ -3,8 +3,17 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
-const electron = resolve(root, "node_modules", ".bin", process.platform === "win32" ? "electron.cmd" : "electron");
-await access(electron); await mkdir(resolve(root, "deliverables", "raw"), { recursive: true });
+const electronName = process.platform === "win32" ? "electron.cmd" : "electron";
+const electronCandidates = [
+  resolve(root, "node_modules", ".bin", electronName),
+  resolve(root, "..", "..", "..", "node_modules", ".bin", electronName)
+];
+let electron;
+for (const candidate of electronCandidates) {
+  try { await access(candidate); electron = candidate; break; } catch { /* try the shared primary-workspace dependency install */ }
+}
+if (!electron) await access(electronCandidates[0]);
+await mkdir(resolve(root, "deliverables", "raw"), { recursive: true });
 let backendPython = process.env.V3_BACKEND_PYTHON;
 if (!backendPython && process.platform === "win32") {
   const probe = spawnSync("py", ["-3.14", "-c", "import sys; print(sys.executable)"], { encoding: "utf8" });
