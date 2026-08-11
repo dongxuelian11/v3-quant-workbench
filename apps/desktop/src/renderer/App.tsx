@@ -4,6 +4,12 @@ import type { LabId } from "../../../../packages/contracts/src/index";
 import { useWorkbench } from "./store";
 import { Workbench } from "./components/Workbench";
 import { Icon, StatusSurface, TruthMark, type IconName } from "./components/PresentationSystem";
+import { AgentWorkspace } from "./components/AgentWorkspace";
+import { ResearchSessionNavigator } from "./components/ResearchSessionNavigator";
+import { AGENT_WORKSPACE_BOUNDARY } from "./agentWorkspace";
+import { researchSessions } from "./agentWorkspaceFixture";
+
+type WorkspaceSurface = "agent" | LabId;
 
 const labs: { id: LabId; zh: string; en: string; icon: IconName }[] = [
   { id: "research", zh: "研究", en: "Research", icon: "research" },
@@ -24,6 +30,8 @@ const labContext: Record<LabId, { object: string; phase: string }> = {
 export function App() {
   const s = useWorkbench();
   const [palette, setPalette] = useState(false);
+  const [surface, setSurface] = useState<WorkspaceSurface>("agent");
+  const [activeSessionId, setActiveSessionId] = useState(researchSessions[0].sessionViewId);
 
   useEffect(() => { void s.hydrate(); }, []);
   useEffect(() => {
@@ -32,9 +40,15 @@ export function App() {
         event.preventDefault();
         setPalette((value) => !value);
       }
+      if ((event.ctrlKey || event.metaKey) && event.key === "0") {
+        event.preventDefault();
+        setSurface("agent");
+      }
       if ((event.ctrlKey || event.metaKey) && /^[1-5]$/.test(event.key)) {
         event.preventDefault();
-        s.setLab(labs[Number(event.key) - 1].id);
+        const lab = labs[Number(event.key) - 1].id;
+        s.setLab(lab);
+        setSurface(lab);
       }
     };
     document.addEventListener("keydown", listener);
@@ -45,48 +59,58 @@ export function App() {
 
   const active = labs.find((lab) => lab.id === s.activeLab) ?? labs[0];
   const context = labContext[s.activeLab];
+  const activeSession = researchSessions.find((session) => session.sessionViewId === activeSessionId) ?? researchSessions[0];
+  const openLab = (lab: LabId) => { s.setLab(lab); setSurface(lab); };
 
-  return <div className={`app-shell inspector-${s.inspectorOpen ? "open" : "closed"}`} data-testid="app-shell">
-    <aside className="global-rail" aria-label="V3 实验室导航">
+  return <div className={`app-shell inspector-${surface !== "agent" && s.inspectorOpen ? "open" : "closed"}`} data-testid="app-shell" data-default-surface={surface}>
+    <aside className="global-rail" aria-label="V3 Agent 与实验室导航">
       <div className="rail-brand" aria-label="V3 Precision Research Workbench"><span>V3</span><i/></div>
-      <nav>{labs.map((lab, index) => <button
+      <nav><button
+        data-surface="agent"
+        className={surface === "agent" ? "active" : ""}
+        onClick={() => setSurface("agent")}
+        aria-current={surface === "agent" ? "page" : undefined}
+        title="Agent Workspace · Ctrl+0"
+      ><Icon name="pulse"/><span>Agent</span><kbd>0</kbd></button>{labs.map((lab, index) => <button
         key={lab.id}
         data-lab={lab.id}
-        className={s.activeLab === lab.id ? "active" : ""}
-        onClick={() => s.setLab(lab.id)}
-        aria-current={s.activeLab === lab.id ? "page" : undefined}
+        className={surface === lab.id ? "active" : ""}
+        onClick={() => openLab(lab.id)}
+        aria-current={surface === lab.id ? "page" : undefined}
         title={`${lab.zh}实验室 · Ctrl+${index + 1}`}
       ><Icon name={lab.icon}/><span>{lab.zh}</span><kbd>{index + 1}</kbd></button>)}</nav>
       <div className="rail-utilities">
         <button onClick={() => setPalette(true)} aria-label="打开命令面板" aria-haspopup="dialog"><Icon name="command"/></button>
-        <button onClick={s.toggleBottom} aria-label="打开任务与日志" aria-pressed={s.bottomOpen}><Icon name="operations"/></button>
+        {surface !== "agent" && <button onClick={s.toggleBottom} aria-label="打开任务与日志" aria-pressed={s.bottomOpen}><Icon name="operations"/></button>}
         <span className="rail-avatar" aria-label="当前用户 LM">LM</span>
       </div>
     </aside>
 
     <header className="context-bar">
-      <div className="context-breadcrumb"><span>{active.en} Lab</span><Icon name="chevron" size={13}/><b>{context.object}</b><small>{context.phase}</small></div>
+      <div className="context-breadcrumb">{surface === "agent" ? <><span>Agent Workspace</span><Icon name="chevron" size={13}/><b>{activeSession.title}</b><small>Evidence-first research</small></> : <><span>{active.en} Lab</span><Icon name="chevron" size={13}/><b>{context.object}</b><small>{context.phase}</small></>}</div>
       <button className="context-search" onClick={() => setPalette(true)} aria-haspopup="dialog" aria-expanded={palette}><Icon name="command" size={15}/><span>跳转、打开视图或执行命令</span><kbd>Ctrl K</kbd></button>
-      <div className="context-runtime"><TruthMark compact/><span><i/>{s.runtime}</span></div>
+      <div className="context-runtime">{surface === "agent" ? <span className="boundary-chip">{AGENT_WORKSPACE_BOUNDARY.label}</span> : <TruthMark compact/>}<span><i/>{s.runtime}</span></div>
     </header>
 
     <aside className="context-sidebar" aria-label="项目与研究资产" data-nav-width>
-      <div className="sidebar-project">
-        <span className="sidebar-icon"><Icon name="project"/></span>
-        <div><small>ACTIVE PROJECT</small><b>Momentum Research</b><span>2026 Q2 · LOCAL</span></div>
-        <button aria-label="项目操作"><Icon name="more" size={16}/></button>
-      </div>
-      <div className="sidebar-section-head"><span>工作对象</span><button aria-label="新增资产" onClick={() => s.select("新增资产 · BACKEND_UNWIRED")}><Icon name="add" size={15}/></button></div>
-      <AssetGroup mark="D" title="数据" items={["CN Daily Adjusted · Demo", "Factor Panel v12 · Demo"]} onSelect={s.select}/>
-      <AssetGroup mark="U" title="Universe" items={["CN Large Cap @v12", "Imported Watchlist @v3"]} onSelect={s.select}/>
-      <AssetGroup mark="R" title="研究案例" items={["Momentum 12M", "IC Decay Analysis", "Coverage Diagnostics"]} onSelect={s.select}/>
-      <AssetGroup mark="V" title="版本与运行" items={["StrategyDraft v8", "Study S-014", "ModelVersion lgbm-v4"]} onSelect={s.select}/>
-      <div className="sidebar-foot"><TruthMark detail="Deterministic provider"/><span>available 15:05 CST</span></div>
+      {surface === "agent" ? <ResearchSessionNavigator sessions={researchSessions} activeSessionId={activeSessionId} onSelect={setActiveSessionId}/> : <>
+        <div className="sidebar-project">
+          <span className="sidebar-icon"><Icon name="project"/></span>
+          <div><small>ACTIVE PROJECT</small><b>Momentum Research</b><span>2026 Q2 · LOCAL</span></div>
+          <button aria-label="项目操作"><Icon name="more" size={16}/></button>
+        </div>
+        <div className="sidebar-section-head"><span>工作对象</span><button aria-label="新增资产" onClick={() => s.select("新增资产 · BACKEND_UNWIRED")}><Icon name="add" size={15}/></button></div>
+        <AssetGroup mark="D" title="数据" items={["CN Daily Adjusted · Demo", "Factor Panel v12 · Demo"]} onSelect={s.select}/>
+        <AssetGroup mark="U" title="Universe" items={["CN Large Cap @v12", "Imported Watchlist @v3"]} onSelect={s.select}/>
+        <AssetGroup mark="R" title="研究案例" items={["Momentum 12M", "IC Decay Analysis", "Coverage Diagnostics"]} onSelect={s.select}/>
+        <AssetGroup mark="V" title="版本与运行" items={["StrategyDraft v8", "Study S-014", "ModelVersion lgbm-v4"]} onSelect={s.select}/>
+        <div className="sidebar-foot"><TruthMark detail="Deterministic provider"/><span>available 15:05 CST</span></div>
+      </>}
     </aside>
 
-    <main className="workspace"><Workbench/></main>
+    <main className="workspace">{surface === "agent" ? <AgentWorkspace session={activeSession} onOpenLab={openLab}/> : <Workbench/>}</main>
 
-    {s.inspectorOpen && <aside className="inspector" aria-label="上下文检查器" data-testid="inspector" data-inspector-width>
+    {surface !== "agent" && s.inspectorOpen && <aside className="inspector" aria-label="上下文检查器" data-testid="inspector" data-inspector-width>
       <div className="inspector-head"><div><Icon name="inspector" size={15}/><span>{s.inspectorEvidence.eyebrow}</span></div><button onClick={s.toggleInspector} aria-label="关闭检查器"><Icon name="close" size={15}/></button></div>
       <div className="inspector-identity"><small>SELECTED CONTEXT</small><h2>{s.inspectorEvidence.title}</h2><p>{s.inspectorEvidence.summary}</p><TruthMark detail="来源可追溯"/></div>
       <section className="inspector-section"><h3>上下文事实</h3><dl>{s.inspectorEvidence.facts.map((fact) => <React.Fragment key={fact.label}><dt>{fact.label}</dt><dd>{fact.value}</dd></React.Fragment>)}</dl></section>
@@ -94,23 +118,24 @@ export function App() {
       <section className="inspector-section"><h3>来源与守卫</h3><p>{s.inspectorEvidence.provenance}</p><p>available-time / effective-time 约束保留；无后端金融计算。</p></section>
     </aside>}
 
-    <section className={`operations ${s.bottomOpen ? "open" : "closed"}`} aria-label="任务、日志与输出">
+    {surface !== "agent" && <section className={`operations ${s.bottomOpen ? "open" : "closed"}`} aria-label="任务、日志与输出">
       <header><div><Icon name="operations" size={16}/><span>Operations</span><small>仅在需要时显示</small></div><button data-action="operations-toggle" onClick={s.toggleBottom} aria-expanded={s.bottomOpen} aria-controls="operations-drawer"><Icon name="close" size={15}/></button></header>
       {s.bottomOpen && <div id="operations-drawer" className="operations-drawer" data-major-panel>
         <div><small>SESSION</small><b>Workspace ready</b><span>ProjectContext 已恢复</span></div>
         <div><small>LAYOUT</small><b>Dockview persistence</b><span>{s.savedAt ? `保存于 ${new Date(s.savedAt).toLocaleTimeString("zh-CN")}` : "等待保存"}</span></div>
         <div><small>TRUTH</small><b>Demo / backend unwired</b><span>不构成投资或交易建议</span></div>
       </div>}
-    </section>
+    </section>}
 
     {palette && <div className="palette-backdrop" onMouseDown={() => setPalette(false)} role="presentation">
       <Command className="command-palette" onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") setPalette(false); }} label="命令面板" role="dialog" aria-modal="true">
         <div className="palette-head"><Icon name="command"/><Command.Input autoFocus placeholder="输入命令、Lab 或工作对象…"/><kbd>ESC</kbd></div>
         <Command.List><Command.Empty>无匹配命令</Command.Empty>
-          <Command.Group heading="实验室">{labs.map((lab, index) => <Command.Item key={lab.id} onSelect={() => { s.setLab(lab.id); setPalette(false); }}><Icon name={lab.icon}/><span>打开 {lab.zh}实验室<small>{lab.en}</small></span><kbd>Ctrl {index + 1}</kbd></Command.Item>)}</Command.Group>
+          <Command.Group heading="Agent-first 入口"><Command.Item onSelect={() => { setSurface("agent"); setPalette(false); }}><Icon name="pulse"/><span>打开 Agent Workspace<small>Research sessions · evidence · timeline</small></span><kbd>Ctrl 0</kbd></Command.Item></Command.Group>
+          <Command.Group heading="专业实验室">{labs.map((lab, index) => <Command.Item key={lab.id} onSelect={() => { openLab(lab.id); setPalette(false); }}><Icon name={lab.icon}/><span>打开 {lab.zh}实验室<small>{lab.en}</small></span><kbd>Ctrl {index + 1}</kbd></Command.Item>)}</Command.Group>
           <Command.Group heading="工作区">
-            <Command.Item onSelect={() => { s.toggleInspector(); setPalette(false); }}><Icon name="inspector"/><span>切换上下文检查器<small>Context Inspector</small></span></Command.Item>
-            <Command.Item onSelect={() => { s.toggleBottom(); setPalette(false); }}><Icon name="operations"/><span>切换任务与日志抽屉<small>Operations</small></span></Command.Item>
+            {surface !== "agent" && <Command.Item onSelect={() => { s.toggleInspector(); setPalette(false); }}><Icon name="inspector"/><span>切换上下文检查器<small>Context Inspector</small></span></Command.Item>}
+            {surface !== "agent" && <Command.Item onSelect={() => { s.toggleBottom(); setPalette(false); }}><Icon name="operations"/><span>切换任务与日志抽屉<small>Operations</small></span></Command.Item>}
             <Command.Item onSelect={() => { void s.save(); setPalette(false); }}><Icon name="focus"/><span>保存当前工作区<small>Persist workspace</small></span></Command.Item>
             <Command.Item onSelect={() => { void s.reset(); setPalette(false); }}><Icon name="pulse"/><span>重置当前工作区<small>Reset layout and state</small></span></Command.Item>
           </Command.Group>

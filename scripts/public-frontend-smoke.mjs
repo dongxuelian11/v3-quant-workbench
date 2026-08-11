@@ -3,6 +3,8 @@ import { readFile, stat } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 
 import { DEMO_TRUTH, LAB_IDS } from "../packages/contracts/src/index.ts";
+import { AGENT_WORKSPACE_BOUNDARY, ARTIFACT_RENDERER_REGISTRY, PERMISSION_SURFACE, validateAgentWorkspaceFixture } from "../apps/desktop/src/renderer/agentWorkspace.ts";
+import { agentStatements, artifactViews, evidenceViews, researchSessions, timelineEntries } from "../apps/desktop/src/renderer/agentWorkspaceFixture.ts";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -77,6 +79,8 @@ assertSourceContract(preloadSource, /contextBridge\.exposeInMainWorld\(["']v3Des
 
 assert.deepEqual([...LAB_IDS], ["research", "strategy", "model", "backtest", "result"]);
 const appSource = await readRequired("apps/desktop/src/renderer/App.tsx", 500);
+assertSourceContract(appSource, /useState<WorkspaceSurface>\(["']agent["']\)/, "Agent Workspace must remain the default product surface");
+assertSourceContract(appSource, /data-surface=["']agent["']/, "Agent Workspace navigation entry is missing");
 for (const lab of LAB_IDS) {
   assertSourceContract(appSource, new RegExp(`id:\\s*["']${lab}["']`), `Renderer route metadata is missing for ${lab}`);
 }
@@ -85,12 +89,26 @@ for (const componentPath of [
   "apps/desktop/src/renderer/components/StrategyPanels.tsx",
   "apps/desktop/src/renderer/components/ModelPanels.tsx",
   "apps/desktop/src/renderer/components/BacktestResultPanels.tsx",
-  "apps/desktop/src/renderer/components/Workbench.tsx"
+  "apps/desktop/src/renderer/components/Workbench.tsx",
+  "apps/desktop/src/renderer/components/AgentWorkspace.tsx",
+  "apps/desktop/src/renderer/components/ResearchSessionNavigator.tsx",
+  "apps/desktop/src/renderer/components/ArtifactViewer.tsx"
 ]) {
   await readRequired(componentPath, 500);
 }
 
+const agentWorkspaceSource = await readRequired("apps/desktop/src/renderer/components/AgentWorkspace.tsx", 1000);
+const artifactViewerSource = await readRequired("apps/desktop/src/renderer/components/ArtifactViewer.tsx", 500);
+assert.doesNotMatch(`${agentWorkspaceSource}\n${artifactViewerSource}`, /dangerouslySetInnerHTML|\beval\s*\(|new Function\s*\(/, "Agent output must never execute arbitrary model HTML or code");
+assertSourceContract(agentWorkspaceSource, /NON_CANONICAL/, "Agent drafts must expose the non-canonical boundary");
+assertSourceContract(agentWorkspaceSource, /Open in .* Lab/, "Open-in-Lab navigation is missing");
+assert.equal(AGENT_WORKSPACE_BOUNDARY.mode, "DEMO_DEVELOPMENT_ONLY");
+assert.deepEqual(PERMISSION_SURFACE.filter((item) => item.allowed).map((item) => item.level), ["L0_READ", "L1_DRAFT"]);
+assert.deepEqual(Object.keys(ARTIFACT_RENDERER_REGISTRY), ["table", "metric", "text", "details", "chart", "backtest-result"]);
+assert.ok(researchSessions.length >= 3 && evidenceViews.length >= 12 && timelineEntries.length >= 8, "Agent-first fixture coverage is incomplete");
+assert.equal(validateAgentWorkspaceFixture({ sessions: researchSessions, statements: agentStatements, timeline: timelineEntries, evidence: evidenceViews, artifacts: artifactViews }), true);
+
 assert.equal(DEMO_TRUTH.classification, "DEMO");
 assert.match(DEMO_TRUTH.label, /NOT FORMAL FINANCIAL OUTPUT/);
 
-console.log(`Public frontend smoke PASS: ${LAB_IDS.length} Lab contracts, Electron security invariants, runtime outputs, and ${new Set(referencedAssets).size} renderer assets verified without GUI or local evidence artifacts.`);
+console.log(`Public frontend smoke PASS: Agent-first default, ${LAB_IDS.length} preserved Lab contracts, closed artifact registry, Electron security invariants, runtime outputs, and ${new Set(referencedAssets).size} renderer assets verified without GUI or local evidence artifacts.`);
