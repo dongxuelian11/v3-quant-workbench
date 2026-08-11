@@ -1,6 +1,6 @@
 """Track G trusted research-evidence integration for L0 READ / L1 DRAFT only."""
 
-from .adapter import ResearchEvidenceReadAdapter
+from .adapter import EvidenceChainBindingError, ResearchEvidenceReadAdapter
 from .contracts import (
     AgentEvidenceTrace,
     DataEvidenceFinding,
@@ -40,6 +40,7 @@ __all__ = [
     "DataFindingNarrativePayload",
     "DatasetEvidence",
     "EvidenceObjectKind",
+    "EvidenceChainBindingError",
     "EvidenceToolCall",
     "EvidenceToolRequestRejected",
     "ExperimentEvidence",

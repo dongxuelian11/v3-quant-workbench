@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from typing import TypeVar
 
 from v3_backend.agents.research_evidence_integration import (
     ResearchEvidenceReadAdapter,
@@ -47,8 +49,11 @@ from v3_backend.domain.factors import (
 )
 
 
-def artifact(character: str) -> str:
-    return "art_sha256_" + character * 64
+_T = TypeVar("_T")
+
+
+def artifact(seed: str) -> str:
+    return "art_sha256_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -68,12 +73,25 @@ class EvidenceFixture:
     composition: ResearchEvidenceToolComposition
 
 
-def build_evidence_fixture(*, instrument_count: int = 1) -> EvidenceFixture:
+@dataclass(frozen=True)
+class CrossChainFixture:
+    primary: EvidenceFixture
+    secondary: EvidenceFixture
+    alternate_attempt: ExperimentAttempt
+    alternate_reward: RewardVector
+
+
+def build_evidence_fixture(
+    *,
+    instrument_count: int = 1,
+    namespace: str = "1",
+) -> EvidenceFixture:
+    snapshot_id = f"snapshot-{namespace}"
     snapshot = ResearchDataSnapshot(
-        snapshot_id="snapshot-1",
+        snapshot_id=snapshot_id,
         normalization_version=NORMALIZATION_VERSION,
-        raw_capture_ids=("raw_capture-1",),
-        acquisition_ids=("acquisition-1",),
+        raw_capture_ids=(f"raw_capture-{namespace}",),
+        acquisition_ids=(f"acquisition-{namespace}",),
         records=(),
         truth_ceiling=PRE_ALPHA_CEILING,
         pit_evidence=PitEvidenceState.UNKNOWN,
@@ -83,10 +101,11 @@ def build_evidence_fixture(*, instrument_count: int = 1) -> EvidenceFixture:
             "PROVIDER_REVISION_UNKNOWN",
         ),
         research_universe_input=ResearchUniverseInput(
-            research_universe_input_id="research-universe-input-1",
-            snapshot_id="snapshot-1",
+            research_universe_input_id=f"research-universe-input-{namespace}",
+            snapshot_id=snapshot_id,
             instrument_ids=tuple(
-                f"ins_cn_sse_{index:06d}" for index in range(instrument_count)
+                f"ins_cn_sse_{namespace}_{index:06d}"
+                for index in range(instrument_count)
             ),
         ),
     )
@@ -95,29 +114,39 @@ def build_evidence_fixture(*, instrument_count: int = 1) -> EvidenceFixture:
         "close", FeatureNode("close", "eod.close/1.0.0"), registry
     )
     evaluator = DeterministicReferenceEvaluator(registry)
+    universe_version_id = f"universe-{namespace}"
     context = FactorEvaluationContext(
         snapshot_id=snapshot.snapshot_id,
-        universe_version_id="universe-1",
+        universe_version_id=universe_version_id,
         snapshot_truth_binding=UnresolvedIdUpstreamTruthBinding.snapshot(
             snapshot.snapshot_id, PRE_ALPHA_CEILING
         ),
         universe_truth_binding=UnresolvedIdUpstreamTruthBinding.universe(
-            "universe-1", FORMAL_ADMITTED_CEILING
+            universe_version_id, FORMAL_ADMITTED_CEILING
         ),
         knowledge_cutoff=datetime(2026, 1, 5, 8, tzinfo=timezone.utc),
-        calendar_version_id="calendar-1",
-        schema_version_id="schema-1",
-        environment_fingerprint="python-3.14-track-g-test",
+        calendar_version_id=f"calendar-{namespace}",
+        schema_version_id=f"schema-{namespace}",
+        environment_fingerprint=f"python-3.14-track-g-test-{namespace}",
         evaluator_version=evaluator.evaluator_version,
     )
     result = evaluator.evaluate(definition, {"close": [1.0, 2.0, 3.0]})
     materialization = FeatureMaterialization.create(
-        definition, result, context, artifact("a"), FORMAL_ADMITTED_CEILING
+        definition,
+        result,
+        context,
+        artifact(f"{namespace}:materialization"),
+        FORMAL_ADMITTED_CEILING,
     )
     evaluation = FactorEvaluation.create(
-        definition, materialization, artifact("b"), FORMAL_ADMITTED_CEILING
+        definition,
+        materialization,
+        artifact(f"{namespace}:evaluation"),
+        FORMAL_ADMITTED_CEILING,
     )
-    feature_set = FeatureSetVersion.create((evaluation,), artifact("c"))
+    feature_set = FeatureSetVersion.create(
+        (evaluation,), artifact(f"{namespace}:feature-set")
+    )
     label = LabelSpec.create("next_return", "close", 1, 0)
     split = SplitSpec.create(
         train_start=0,
@@ -146,21 +175,23 @@ def build_evidence_fixture(*, instrument_count: int = 1) -> EvidenceFixture:
         label_spec=label,
         split_spec=split,
         binding=binding,
-        dataset_artifact_id=artifact("d"),
-        provenance_artifact_id=artifact("e"),
+        dataset_artifact_id=artifact(f"{namespace}:dataset"),
+        provenance_artifact_id=artifact(f"{namespace}:dataset-provenance"),
         proposed_state=FORMAL_ADMITTED_CEILING,
     )
     experiment = ExperimentVersion.create(
-        "track-g-factor", "evaluate deterministic evidence", "1.0.0"
+        f"track-g-factor-{namespace}",
+        "evaluate deterministic evidence",
+        "1.0.0",
     )
     run = ExperimentRun.create(
         experiment=experiment,
         dataset=dataset,
         factor_evaluation=evaluation,
-        code_version="track-g-test/1",
+        code_version=f"track-g-test/{namespace}",
         environment_fingerprint=context.environment_fingerprint,
         input_artifact_ids=(dataset.dataset_artifact_id, materialization.output_artifact_id),
-        run_provenance_artifact_id=artifact("f"),
+        run_provenance_artifact_id=artifact(f"{namespace}:run-provenance"),
         proposed_state=FORMAL_ADMITTED_CEILING,
     )
     started = datetime(2026, 1, 5, 9, tzinfo=timezone.utc)
@@ -170,15 +201,15 @@ def build_evidence_fixture(*, instrument_count: int = 1) -> EvidenceFixture:
         state=ExperimentAttemptState.SUCCEEDED,
         started_at=started,
         ended_at=started + timedelta(seconds=1),
-        evidence_artifact_ids=(artifact("1"),),
-        result_artifact_id=artifact("2"),
+        evidence_artifact_ids=(artifact(f"{namespace}:attempt-evidence"),),
+        result_artifact_id=artifact(f"{namespace}:attempt-result"),
     )
     reviewer_finding = ReviewerFinding.create(
         category="lookahead",
         code="NO_RIGHT_LOOKAHEAD",
         severity=FindingSeverity.INFO,
         status=EvidenceStatus.PASS,
-        evidence_artifact_ids=(artifact("3"),),
+        evidence_artifact_ids=(artifact(f"{namespace}:review-finding"),),
     )
     reviewer_evidence = ReviewerEvidence.create(
         lookahead=EvidenceStatus.PASS,
@@ -190,7 +221,7 @@ def build_evidence_fixture(*, instrument_count: int = 1) -> EvidenceFixture:
         complexity=EvidenceStatus.PASS,
         multiple_testing_robustness=EvidenceStatus.NOT_RUN,
         findings=(reviewer_finding,),
-        provenance_artifact_id=artifact("4"),
+        provenance_artifact_id=artifact(f"{namespace}:review-provenance"),
     )
     reward = RewardVector.create(
         run=run,
@@ -204,7 +235,7 @@ def build_evidence_fixture(*, instrument_count: int = 1) -> EvidenceFixture:
         turnover=0.2,
         complexity=definition.metadata.complexity,
         reviewer_evidence=reviewer_evidence,
-        provenance_artifact_id=artifact("5"),
+        provenance_artifact_id=artifact(f"{namespace}:reward-provenance"),
         proposed_state=FORMAL_ADMITTED_CEILING,
     )
     adapter = ResearchEvidenceReadAdapter(
@@ -235,4 +266,63 @@ def build_evidence_fixture(*, instrument_count: int = 1) -> EvidenceFixture:
         reward=reward,
         adapter=adapter,
         composition=composition,
+    )
+
+
+def _unique(values: tuple[_T, ...], identity_name: str) -> tuple[_T, ...]:
+    by_identity = {getattr(value, identity_name): value for value in values}
+    return tuple(by_identity[key] for key in sorted(by_identity))
+
+
+def build_cross_chain_fixture() -> CrossChainFixture:
+    primary = build_evidence_fixture(namespace="primary")
+    secondary = build_evidence_fixture(namespace="secondary")
+    alternate_started = primary.attempt.ended_at + timedelta(seconds=1)
+    alternate_attempt = ExperimentAttempt.create(
+        run=primary.run,
+        ordinal=2,
+        state=ExperimentAttemptState.SUCCEEDED,
+        started_at=alternate_started,
+        ended_at=alternate_started + timedelta(seconds=1),
+        evidence_artifact_ids=(artifact("primary:alternate-attempt-evidence"),),
+        result_artifact_id=artifact("primary:alternate-attempt-result"),
+    )
+    alternate_reward = RewardVector.create(
+        run=primary.run,
+        attempt=alternate_attempt,
+        coverage=primary.reward.coverage,
+        ic=primary.reward.ic,
+        rank_ic=primary.reward.rank_ic,
+        lower_quantile_return=primary.reward.lower_quantile_return,
+        upper_quantile_return=primary.reward.upper_quantile_return,
+        quantile_spread=primary.reward.quantile_spread,
+        turnover=primary.reward.turnover,
+        complexity=primary.reward.complexity,
+        reviewer_evidence=primary.reviewer_evidence,
+        provenance_artifact_id=artifact("primary:alternate-reward-provenance"),
+        proposed_state=FORMAL_ADMITTED_CEILING,
+    )
+    adapter = ResearchEvidenceReadAdapter(
+        snapshots=(primary.snapshot, secondary.snapshot),
+        datasets=(primary.dataset, secondary.dataset),
+        feature_sets=(primary.feature_set, secondary.feature_set),
+        label_specs=_unique(
+            (primary.label, secondary.label), "label_spec_id"
+        ),
+        split_specs=_unique(
+            (primary.split, secondary.split), "split_spec_id"
+        ),
+        factor_evaluations=(primary.evaluation, secondary.evaluation),
+        experiments=(primary.experiment, secondary.experiment),
+        runs=(primary.run, secondary.run),
+        attempts=(primary.attempt, alternate_attempt, secondary.attempt),
+        reward_vectors=(primary.reward, alternate_reward, secondary.reward),
+        reviewer_evidence=(primary.reviewer_evidence, secondary.reviewer_evidence),
+    )
+    composition = ResearchEvidenceToolComposition(adapter)
+    return CrossChainFixture(
+        primary=replace(primary, adapter=adapter, composition=composition),
+        secondary=replace(secondary, adapter=adapter, composition=composition),
+        alternate_attempt=alternate_attempt,
+        alternate_reward=alternate_reward,
     )

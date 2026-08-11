@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from collections.abc import Callable
 
 from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -12,13 +13,17 @@ from v3_backend.agents import (
     PermissionLevel,
 )
 from v3_backend.agents.research_evidence_integration import (
-    DataEvidenceFindingKind,
     DataFindingNarrativePayload,
+    EvidenceChainBindingError,
     ResearchEvidenceAgentWorker,
     ReviewerEvidenceFindingKind,
 )
 
-from .fixtures import EvidenceFixture, build_evidence_fixture
+from .fixtures import (
+    EvidenceFixture,
+    build_cross_chain_fixture,
+    build_evidence_fixture,
+)
 
 
 _TOOL_ARGUMENT = {
@@ -130,6 +135,7 @@ def output_without_tools(_messages: list[object], info: AgentInfo) -> ModelRespo
 class EvidenceAgentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = build_evidence_fixture()
+        self.cross = build_cross_chain_fixture()
 
     @staticmethod
     def _worker(
@@ -145,6 +151,25 @@ class EvidenceAgentTests(unittest.TestCase):
             prompt_version="track-g-prompt-v1.0",
             tool_composition=fixture.composition,
         )
+
+    def _assert_chain_rejected_before_model(
+        self,
+        fixture: EvidenceFixture,
+        invoke: Callable[[ResearchEvidenceAgentWorker], object],
+    ) -> None:
+        model_calls = 0
+
+        def counting_model(
+            messages: list[object], info: AgentInfo
+        ) -> ModelResponse:
+            nonlocal model_calls
+            model_calls += 1
+            return evidence_model(messages, info)
+
+        worker = self._worker(fixture, model_function=counting_model)
+        with self.assertRaises(EvidenceChainBindingError):
+            invoke(worker)
+        self.assertEqual(model_calls, 0)
 
     def test_research_draft_consumes_exact_evidence_and_has_stable_identity(self) -> None:
         worker = self._worker(self.fixture)
@@ -176,24 +201,58 @@ class EvidenceAgentTests(unittest.TestCase):
         self.assertIsNone(first.canonical_identity)
         self.assertFalse(first.payload.alpha_mining_request.worker_triggered)
 
-    def test_data_finding_cannot_claim_pit_pass_and_missing_is_explicit(self) -> None:
+    def test_research_wrong_snapshot_is_rejected_before_model(self) -> None:
+        primary = self.cross.primary
+        secondary = self.cross.secondary
+        self._assert_chain_rejected_before_model(
+            primary,
+            lambda worker: worker.run_research_with_evidence(
+                hypothesis="Mismatched Snapshot must fail.",
+                snapshot_id=secondary.snapshot.snapshot_id,
+                dataset_version_id=primary.dataset.dataset_version_id,
+                experiment_run_id=primary.run.experiment_run_id,
+            ),
+        )
+
+    def test_research_run_from_another_dataset_is_rejected_before_model(self) -> None:
+        primary = self.cross.primary
+        secondary = self.cross.secondary
+        self._assert_chain_rejected_before_model(
+            primary,
+            lambda worker: worker.run_research_with_evidence(
+                hypothesis="Mismatched Run must fail.",
+                snapshot_id=primary.snapshot.snapshot_id,
+                dataset_version_id=primary.dataset.dataset_version_id,
+                experiment_run_id=secondary.run.experiment_run_id,
+            ),
+        )
+
+    def test_data_exact_snapshot_dataset_chain_is_accepted_without_pit_pass(self) -> None:
         worker = self._worker(self.fixture)
         draft = worker.run_data_review_with_evidence(
-            snapshot_id="snapshot-missing",
+            snapshot_id=self.fixture.snapshot.snapshot_id,
             dataset_version_id=self.fixture.dataset.dataset_version_id,
         )
-        self.assertIn("snapshot-missing", draft.evidence_trace.missing_evidence_ids)
-        self.assertTrue(
-            any(
-                item.kind is DataEvidenceFindingKind.MISSING_EVIDENCE
-                for item in draft.payload.findings
-            )
-        )
+        self.assertEqual(draft.evidence_trace.missing_evidence_ids, ())
         self.assertTrue(all(not item.pit_pass_claimed for item in draft.payload.findings))
         self.assertEqual(draft.reviewed_input_sha256, draft.provenance.input_sha256)
-        expected_ids = ("snapshot-missing", self.fixture.dataset.dataset_version_id)
+        expected_ids = (
+            self.fixture.snapshot.snapshot_id,
+            self.fixture.dataset.dataset_version_id,
+        )
         self.assertTrue(
             all(item.evidence_object_ids == expected_ids for item in draft.payload.findings)
+        )
+
+    def test_data_unrelated_snapshot_dataset_is_rejected_before_model(self) -> None:
+        primary = self.cross.primary
+        secondary = self.cross.secondary
+        self._assert_chain_rejected_before_model(
+            primary,
+            lambda worker: worker.run_data_review_with_evidence(
+                snapshot_id=secondary.snapshot.snapshot_id,
+                dataset_version_id=primary.dataset.dataset_version_id,
+            ),
         )
 
     def test_reviewer_references_exact_run_attempt_reward_and_is_not_admission(self) -> None:
@@ -222,6 +281,57 @@ class EvidenceAgentTests(unittest.TestCase):
         self.assertTrue(finding.recommended_next_check)
         self.assertIsNone(draft.admission_decision)
         self.assertFalse(draft.publish_authority)
+
+    def test_reviewer_reward_from_different_run_is_rejected_before_model(self) -> None:
+        primary = self.cross.primary
+        secondary = self.cross.secondary
+        self._assert_chain_rejected_before_model(
+            primary,
+            lambda worker: worker.run_reviewer_with_evidence(
+                experiment_run_id=primary.run.experiment_run_id,
+                experiment_attempt_id=primary.attempt.experiment_attempt_id,
+                reward_vector_id=secondary.reward.reward_vector_id,
+                reviewer_evidence_id=secondary.reviewer_evidence.reviewer_evidence_id,
+            ),
+        )
+
+    def test_reviewer_reward_from_different_attempt_is_rejected_before_model(self) -> None:
+        primary = self.cross.primary
+        self._assert_chain_rejected_before_model(
+            primary,
+            lambda worker: worker.run_reviewer_with_evidence(
+                experiment_run_id=primary.run.experiment_run_id,
+                experiment_attempt_id=primary.attempt.experiment_attempt_id,
+                reward_vector_id=self.cross.alternate_reward.reward_vector_id,
+                reviewer_evidence_id=primary.reviewer_evidence.reviewer_evidence_id,
+            ),
+        )
+
+    def test_reviewer_different_reviewer_evidence_is_rejected_before_model(self) -> None:
+        primary = self.cross.primary
+        secondary = self.cross.secondary
+        self._assert_chain_rejected_before_model(
+            primary,
+            lambda worker: worker.run_reviewer_with_evidence(
+                experiment_run_id=primary.run.experiment_run_id,
+                experiment_attempt_id=primary.attempt.experiment_attempt_id,
+                reward_vector_id=primary.reward.reward_vector_id,
+                reviewer_evidence_id=secondary.reviewer_evidence.reviewer_evidence_id,
+            ),
+        )
+
+    def test_reviewer_attempt_from_different_run_is_rejected_before_model(self) -> None:
+        primary = self.cross.primary
+        secondary = self.cross.secondary
+        self._assert_chain_rejected_before_model(
+            primary,
+            lambda worker: worker.run_reviewer_with_evidence(
+                experiment_run_id=primary.run.experiment_run_id,
+                experiment_attempt_id=secondary.attempt.experiment_attempt_id,
+                reward_vector_id=primary.reward.reward_vector_id,
+                reviewer_evidence_id=primary.reviewer_evidence.reviewer_evidence_id,
+            ),
+        )
 
     def test_l0_can_see_only_read_tools_but_cannot_create_a_draft_or_execute(self) -> None:
         worker = self._worker(self.fixture, PermissionLevel.L0_READ)

@@ -154,6 +154,45 @@ class ResearchEvidenceToolComposition:
     def registry(self) -> TrustedToolBindings:
         return self._registry
 
+    def validate_research_chain(
+        self,
+        *,
+        snapshot_id: str,
+        dataset_version_id: str,
+        experiment_run_id: str,
+    ) -> None:
+        self._adapter.validate_research_chain(
+            snapshot_id=snapshot_id,
+            dataset_version_id=dataset_version_id,
+            experiment_run_id=experiment_run_id,
+        )
+
+    def validate_data_chain(
+        self,
+        *,
+        snapshot_id: str,
+        dataset_version_id: str,
+    ) -> None:
+        self._adapter.validate_data_chain(
+            snapshot_id=snapshot_id,
+            dataset_version_id=dataset_version_id,
+        )
+
+    def validate_reviewer_chain(
+        self,
+        *,
+        experiment_run_id: str,
+        experiment_attempt_id: str,
+        reward_vector_id: str,
+        reviewer_evidence_id: str,
+    ) -> None:
+        self._adapter.validate_reviewer_chain(
+            experiment_run_id=experiment_run_id,
+            experiment_attempt_id=experiment_attempt_id,
+            reward_vector_id=reward_vector_id,
+            reviewer_evidence_id=reviewer_evidence_id,
+        )
+
     def begin_trace(self, allowed_calls: tuple[tuple[str, str], ...]) -> None:
         if self._active:
             raise RuntimeError("an evidence trace is already active")

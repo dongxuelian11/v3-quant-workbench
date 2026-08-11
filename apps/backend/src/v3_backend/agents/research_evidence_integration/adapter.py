@@ -71,6 +71,24 @@ def _index(
     return MappingProxyType(observed)
 
 
+class EvidenceChainBindingError(ValueError):
+    """Exact registered evidence objects do not form the supplied canonical chain."""
+
+
+def _require_registered(
+    values: MappingProxyType[str, _T],
+    object_id: str,
+    *,
+    label: str,
+) -> _T:
+    value = values.get(object_id)
+    if value is None:
+        raise EvidenceChainBindingError(
+            f"exact evidence chain requires registered {label}: {object_id}"
+        )
+    return value
+
+
 class ResearchEvidenceReadAdapter:
     """Read-only view over exact current-main owner objects; never a storage authority."""
 
@@ -215,6 +233,95 @@ class ResearchEvidenceReadAdapter:
             raise ValueError("RewardVector must bind exact registered Run/Attempt evidence")
         if reward.reviewer_evidence_id not in self._reviewer_evidence:
             raise ValueError("RewardVector reviewer evidence must be registered")
+
+    def validate_research_chain(
+        self,
+        *,
+        snapshot_id: str,
+        dataset_version_id: str,
+        experiment_run_id: str,
+    ) -> None:
+        _require_registered(self._snapshots, snapshot_id, label="Snapshot")
+        dataset = _require_registered(
+            self._datasets, dataset_version_id, label="DatasetVersion"
+        )
+        run = _require_registered(
+            self._runs, experiment_run_id, label="ExperimentRun"
+        )
+        if dataset.binding.snapshot_id != snapshot_id:
+            raise EvidenceChainBindingError(
+                "research evidence chain mismatch: DatasetVersion does not bind "
+                "the supplied Snapshot"
+            )
+        if run.dataset_version_id != dataset_version_id:
+            raise EvidenceChainBindingError(
+                "research evidence chain mismatch: ExperimentRun does not bind "
+                "the supplied DatasetVersion"
+            )
+        if run.factor_evaluation_id not in dataset.factor_evaluation_ids:
+            raise EvidenceChainBindingError(
+                "research evidence chain mismatch: ExperimentRun FactorEvaluation "
+                "is not a member of the supplied DatasetVersion"
+            )
+
+    def validate_data_chain(
+        self,
+        *,
+        snapshot_id: str,
+        dataset_version_id: str,
+    ) -> None:
+        _require_registered(self._snapshots, snapshot_id, label="Snapshot")
+        dataset = _require_registered(
+            self._datasets, dataset_version_id, label="DatasetVersion"
+        )
+        if dataset.binding.snapshot_id != snapshot_id:
+            raise EvidenceChainBindingError(
+                "data evidence chain mismatch: DatasetVersion does not bind "
+                "the supplied Snapshot"
+            )
+
+    def validate_reviewer_chain(
+        self,
+        *,
+        experiment_run_id: str,
+        experiment_attempt_id: str,
+        reward_vector_id: str,
+        reviewer_evidence_id: str,
+    ) -> None:
+        _require_registered(
+            self._runs, experiment_run_id, label="ExperimentRun"
+        )
+        attempt = _require_registered(
+            self._attempts, experiment_attempt_id, label="ExperimentAttempt"
+        )
+        reward = _require_registered(
+            self._rewards, reward_vector_id, label="RewardVector"
+        )
+        _require_registered(
+            self._reviewer_evidence,
+            reviewer_evidence_id,
+            label="ReviewerEvidence",
+        )
+        if attempt.experiment_run_id != experiment_run_id:
+            raise EvidenceChainBindingError(
+                "reviewer evidence chain mismatch: ExperimentAttempt does not bind "
+                "the supplied ExperimentRun"
+            )
+        if reward.experiment_run_id != experiment_run_id:
+            raise EvidenceChainBindingError(
+                "reviewer evidence chain mismatch: RewardVector does not bind "
+                "the supplied ExperimentRun"
+            )
+        if reward.experiment_attempt_id != experiment_attempt_id:
+            raise EvidenceChainBindingError(
+                "reviewer evidence chain mismatch: RewardVector does not bind "
+                "the supplied ExperimentAttempt"
+            )
+        if reward.reviewer_evidence_id != reviewer_evidence_id:
+            raise EvidenceChainBindingError(
+                "reviewer evidence chain mismatch: RewardVector does not bind "
+                "the supplied ReviewerEvidence"
+            )
 
     @staticmethod
     def _missing(kind: EvidenceObjectKind, object_id: str) -> MissingEvidence:
@@ -409,4 +516,4 @@ class ResearchEvidenceReadAdapter:
         )
 
 
-__all__ = ["ResearchEvidenceReadAdapter"]
+__all__ = ["EvidenceChainBindingError", "ResearchEvidenceReadAdapter"]

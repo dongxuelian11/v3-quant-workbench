@@ -154,6 +154,11 @@ class ResearchEvidenceAgentWorker(PydanticAgentWorker):
         experiment_run_id: str,
     ) -> ResearchEvidenceDraft:
         decision = require_permission(self._permission, PermissionLevel.L1_DRAFT)
+        self._evidence_composition.validate_research_chain(
+            snapshot_id=snapshot_id,
+            dataset_version_id=dataset_version_id,
+            experiment_run_id=experiment_run_id,
+        )
         input_ids = (snapshot_id, dataset_version_id, experiment_run_id)
         request = {
             "task": "RESEARCH_EVIDENCE_DRAFT",
@@ -208,6 +213,10 @@ class ResearchEvidenceAgentWorker(PydanticAgentWorker):
         dataset_version_id: str,
     ) -> DataEvidenceReviewDraft:
         decision = require_permission(self._permission, PermissionLevel.L1_DRAFT)
+        self._evidence_composition.validate_data_chain(
+            snapshot_id=snapshot_id,
+            dataset_version_id=dataset_version_id,
+        )
         input_ids = (snapshot_id, dataset_version_id)
         request = {
             "task": "DATA_EVIDENCE_REVIEW",
@@ -266,6 +275,12 @@ class ResearchEvidenceAgentWorker(PydanticAgentWorker):
         reviewer_evidence_id: str,
     ) -> ReviewerEvidenceReviewDraft:
         decision = require_permission(self._permission, PermissionLevel.L1_DRAFT)
+        self._evidence_composition.validate_reviewer_chain(
+            experiment_run_id=experiment_run_id,
+            experiment_attempt_id=experiment_attempt_id,
+            reward_vector_id=reward_vector_id,
+            reviewer_evidence_id=reviewer_evidence_id,
+        )
         input_ids = (
             experiment_run_id,
             experiment_attempt_id,
