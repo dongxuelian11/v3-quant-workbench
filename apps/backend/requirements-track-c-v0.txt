@@ -1,0 +1,6 @@
+# Canonical runtime direct dependency. V3 owns operator semantics and identity.
+TA-Lib==0.7.1
+
+# alphalens-reloaded==0.4.6 is intentionally excluded from the canonical runtime.
+# It runs only in an isolated reference environment and its output crosses the
+# versioned REFERENCE_ONLY adapter boundary in v3_backend.adapters.alphalens.
