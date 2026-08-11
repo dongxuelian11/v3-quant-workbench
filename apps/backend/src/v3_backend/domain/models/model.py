@@ -22,7 +22,7 @@ from v3_backend.provenance.canonical_hash import (
 
 SAFE_LINEAR_MODEL_MEDIA_TYPE = "application/vnd.v3.safe-linear-model+json;version=1"
 SAFE_LINEAR_MODEL_SCHEMA_VERSION = "v3.safe-linear-model/1"
-MODEL_WORKER_PROTOCOL_VERSION = "v3.model-worker/1"
+MODEL_WORKER_PROTOCOL_VERSION = "v3.model-worker/2"
 
 
 def _require_text(value: str, name: str) -> None:
@@ -421,6 +421,7 @@ def _ordered_samples(samples: tuple[ModelSample, ...]) -> tuple[ModelSample, ...
 @dataclass(frozen=True, slots=True)
 class TrainingDatasetView:
     dataset_version_id: str
+    dataset_artifact_id: str
     training_spec_version_id: str
     split_spec_id: str
     train_samples: tuple[ModelSample, ...]
@@ -469,6 +470,7 @@ class TrainingDatasetView:
 
         return cls(
             dataset_version_id=dataset.dataset_version_id,
+            dataset_artifact_id=dataset.dataset_artifact_id,
             training_spec_version_id=training_spec.training_spec_version_id,
             split_spec_id=split_spec.split_spec_id,
             train_samples=tuple(train),
@@ -491,6 +493,7 @@ class TrainingDatasetView:
 @dataclass(frozen=True, slots=True)
 class PredictionDatasetView:
     dataset_version_id: str
+    dataset_artifact_id: str
     model_version_id: str
     training_spec_version_id: str
     samples: tuple[ModelSample, ...]
@@ -524,6 +527,7 @@ class PredictionDatasetView:
         payload = [value.prediction_identity_wire() for value in ordered]
         return cls(
             dataset_version_id=dataset.dataset_version_id,
+            dataset_artifact_id=dataset.dataset_artifact_id,
             model_version_id=model.model_version_id,
             training_spec_version_id=training_spec.training_spec_version_id,
             samples=ordered,
@@ -632,7 +636,120 @@ class ModelRun:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelTrainingRequest:
+    model_training_request_id: str
+    dataset_version_id: str
+    dataset_artifact_id: str
+    training_spec_version_id: str
+    model_training_binding_id: str
+    model_run_id: str
+    train_row_set_hash: str
+    validation_row_set_hash: str
+    worker_runtime_fingerprint: str
+    feature_schema_fingerprint: str
+    seed: int
+    code_version: str
+
+    @staticmethod
+    def _payload(
+        *,
+        dataset_version_id: str,
+        dataset_artifact_id: str,
+        training_spec_version_id: str,
+        model_training_binding_id: str,
+        model_run_id: str,
+        train_row_set_hash: str,
+        validation_row_set_hash: str,
+        worker_runtime_fingerprint: str,
+        feature_schema_fingerprint: str,
+        seed: int,
+        code_version: str,
+    ) -> dict[str, object]:
+        return {
+            "dataset_version_id": dataset_version_id,
+            "dataset_artifact_id": dataset_artifact_id,
+            "training_spec_version_id": training_spec_version_id,
+            "model_training_binding_id": model_training_binding_id,
+            "model_run_id": model_run_id,
+            "train_row_set_hash": train_row_set_hash,
+            "validation_row_set_hash": validation_row_set_hash,
+            "worker_runtime_fingerprint": worker_runtime_fingerprint,
+            "feature_schema_fingerprint": feature_schema_fingerprint,
+            "seed": seed,
+            "code_version": code_version,
+        }
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("dataset_version_id", self.dataset_version_id),
+            ("training_spec_version_id", self.training_spec_version_id),
+            ("model_training_binding_id", self.model_training_binding_id),
+            ("model_run_id", self.model_run_id),
+            ("train_row_set_hash", self.train_row_set_hash),
+            ("validation_row_set_hash", self.validation_row_set_hash),
+            ("worker_runtime_fingerprint", self.worker_runtime_fingerprint),
+            ("feature_schema_fingerprint", self.feature_schema_fingerprint),
+            ("code_version", self.code_version),
+        ):
+            _require_text(value, name)
+        _require_artifact(self.dataset_artifact_id, "dataset_artifact_id")
+        if not isinstance(self.seed, int) or isinstance(self.seed, bool) or self.seed < 0:
+            raise ValueError("training request seed must be a non-negative integer")
+        expected = "mtr_sha256_" + canonical_sha256(
+            self._payload(
+                dataset_version_id=self.dataset_version_id,
+                dataset_artifact_id=self.dataset_artifact_id,
+                training_spec_version_id=self.training_spec_version_id,
+                model_training_binding_id=self.model_training_binding_id,
+                model_run_id=self.model_run_id,
+                train_row_set_hash=self.train_row_set_hash,
+                validation_row_set_hash=self.validation_row_set_hash,
+                worker_runtime_fingerprint=self.worker_runtime_fingerprint,
+                feature_schema_fingerprint=self.feature_schema_fingerprint,
+                seed=self.seed,
+                code_version=self.code_version,
+            )
+        )
+        if self.model_training_request_id != expected:
+            raise ValueError("model training request ID must match canonical payload")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        dataset: DatasetVersion,
+        training_spec: TrainingSpecVersion,
+        run: ModelRun,
+    ) -> ModelTrainingRequest:
+        binding = run.binding
+        if binding.dataset_version_id != dataset.dataset_version_id:
+            raise ValueError("training request must bind exact DatasetVersion")
+        if binding.training_spec_version_id != training_spec.training_spec_version_id:
+            raise ValueError("training request must bind exact TrainingSpecVersion")
+        if binding.worker_runtime.fingerprint != training_spec.dependency_runtime_fingerprint:
+            raise ValueError("training request runtime must match TrainingSpecVersion")
+        payload = cls._payload(
+            dataset_version_id=dataset.dataset_version_id,
+            dataset_artifact_id=dataset.dataset_artifact_id,
+            training_spec_version_id=training_spec.training_spec_version_id,
+            model_training_binding_id=binding.model_training_binding_id,
+            model_run_id=run.model_run_id,
+            train_row_set_hash=run.train_row_set_hash,
+            validation_row_set_hash=run.validation_row_set_hash,
+            worker_runtime_fingerprint=binding.worker_runtime.fingerprint,
+            feature_schema_fingerprint=training_spec.feature_schema_fingerprint,
+            seed=training_spec.seed,
+            code_version=binding.code_version,
+        )
+        return cls(
+            model_training_request_id="mtr_sha256_" + canonical_sha256(payload),
+            **payload,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class WorkerTrainingCandidate:
+    model_training_request_id: str
     runtime: WorkerRuntimeFingerprint
     feature_order: tuple[str, ...]
     coefficients: tuple[float, ...]
@@ -643,7 +760,27 @@ class WorkerTrainingCandidate:
     validation_rmse: float
     seed: int
 
+    @property
+    def candidate_digest(self) -> str:
+        return "mtc_sha256_" + canonical_sha256(
+            {
+                "model_training_request_id": self.model_training_request_id,
+                "runtime": self.runtime.to_wire(),
+                "feature_order": list(self.feature_order),
+                "coefficients": list(self.coefficients),
+                "intercept": self.intercept,
+                "train_sample_ids": list(self.train_sample_ids),
+                "validation_sample_ids": list(self.validation_sample_ids),
+                "train_rmse": self.train_rmse,
+                "validation_rmse": self.validation_rmse,
+                "seed": self.seed,
+            }
+        )
+
     def __post_init__(self) -> None:
+        _require_text(self.model_training_request_id, "model_training_request_id")
+        if not self.model_training_request_id.startswith("mtr_sha256_"):
+            raise ValueError("worker candidate must echo a model training request ID")
         if not isinstance(self.runtime, WorkerRuntimeFingerprint):
             raise TypeError("worker training runtime must be typed")
         if not self.feature_order or any(
@@ -676,6 +813,7 @@ class WorkerTrainingCandidate:
             payload,
             frozenset(
                 {
+                    "model_training_request_id",
                     "runtime",
                     "feature_order",
                     "coefficients",
@@ -709,6 +847,7 @@ class WorkerTrainingCandidate:
         if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
             raise ValueError("worker candidate seed must be non-negative integer")
         return cls(
+            model_training_request_id=observed["model_training_request_id"],
             runtime=WorkerRuntimeFingerprint.from_wire(observed["runtime"]),
             feature_order=feature_order,
             coefficients=coefficients,
@@ -726,6 +865,8 @@ class WorkerTrainingCandidate:
 @dataclass(frozen=True, slots=True)
 class TrainingEvidence:
     training_evidence_id: str
+    model_training_request_id: str
+    worker_training_candidate_digest: str
     model_run_id: str
     dataset_version_id: str
     split_spec_id: str
@@ -741,12 +882,25 @@ class TrainingEvidence:
     def create(
         cls,
         *,
+        dataset: DatasetVersion,
+        training_spec: TrainingSpecVersion,
         run: ModelRun,
         view: TrainingDatasetView,
+        training_request: ModelTrainingRequest,
         candidate: WorkerTrainingCandidate,
         provenance_artifact_id: str,
     ) -> TrainingEvidence:
         _require_artifact(provenance_artifact_id, "provenance_artifact_id")
+        if training_request != ModelTrainingRequest.create(
+            dataset=dataset,
+            training_spec=training_spec,
+            run=run,
+        ):
+            raise ValueError("training evidence requires exact parent-computed request")
+        if candidate.model_training_request_id != training_request.model_training_request_id:
+            raise ValueError("training candidate request ID must match exact request")
+        if view.dataset_artifact_id != training_request.dataset_artifact_id:
+            raise ValueError("training view must bind exact Dataset Artifact")
         if candidate.runtime != run.binding.worker_runtime:
             raise ValueError("training candidate runtime must match ModelRun")
         if candidate.seed != run.binding.seed:
@@ -756,6 +910,8 @@ class TrainingEvidence:
         if candidate.validation_sample_ids != view.validation_sample_ids:
             raise ValueError("training candidate must bind exact VALIDATION rows")
         payload = {
+            "model_training_request_id": training_request.model_training_request_id,
+            "worker_training_candidate_digest": candidate.candidate_digest,
             "model_run_id": run.model_run_id,
             "dataset_version_id": view.dataset_version_id,
             "split_spec_id": view.split_spec_id,
@@ -769,6 +925,8 @@ class TrainingEvidence:
         }
         return cls(
             training_evidence_id="mte_sha256_" + canonical_sha256(payload),
+            model_training_request_id=training_request.model_training_request_id,
+            worker_training_candidate_digest=candidate.candidate_digest,
             model_run_id=run.model_run_id,
             dataset_version_id=view.dataset_version_id,
             split_spec_id=view.split_spec_id,
@@ -788,6 +946,8 @@ class SafeLinearModelArtifact:
     media_type: str
     schema_version: str
     training_spec_version_id: str
+    model_training_request_id: str
+    worker_training_candidate_digest: str
     feature_order: tuple[str, ...]
     coefficients: tuple[float, ...]
     intercept: float
@@ -801,6 +961,15 @@ class SafeLinearModelArtifact:
         _require_text(self.training_spec_version_id, "training_spec_version_id")
         if not self.training_spec_version_id.startswith("trspec_sha256_"):
             raise ValueError("safe model must bind a TrainingSpecVersion")
+        _require_text(self.model_training_request_id, "model_training_request_id")
+        if not self.model_training_request_id.startswith("mtr_sha256_"):
+            raise ValueError("safe model must bind a ModelTrainingRequest")
+        _require_text(
+            self.worker_training_candidate_digest,
+            "worker_training_candidate_digest",
+        )
+        if not self.worker_training_candidate_digest.startswith("mtc_sha256_"):
+            raise ValueError("safe model must bind a worker training candidate digest")
         if not self.feature_order:
             raise ValueError("safe model feature_order must be non-empty")
         for value in self.feature_order:
@@ -819,8 +988,15 @@ class SafeLinearModelArtifact:
     def create(
         cls,
         training_spec: TrainingSpecVersion,
+        training_request: ModelTrainingRequest,
         candidate: WorkerTrainingCandidate,
     ) -> SafeLinearModelArtifact:
+        if candidate.model_training_request_id != training_request.model_training_request_id:
+            raise ValueError("safe model candidate request ID must match exact request")
+        if training_request.training_spec_version_id != training_spec.training_spec_version_id:
+            raise ValueError("safe model request must bind exact TrainingSpecVersion")
+        if training_request.feature_schema_fingerprint != training_spec.feature_schema_fingerprint:
+            raise ValueError("safe model request must bind exact feature schema")
         if candidate.feature_order != training_spec.feature_order:
             raise ValueError("worker feature order must exactly match TrainingSpec")
         if len(candidate.coefficients) != len(training_spec.feature_schema):
@@ -828,6 +1004,8 @@ class SafeLinearModelArtifact:
         payload = {
             "schema_version": SAFE_LINEAR_MODEL_SCHEMA_VERSION,
             "training_spec_version_id": training_spec.training_spec_version_id,
+            "model_training_request_id": training_request.model_training_request_id,
+            "worker_training_candidate_digest": candidate.candidate_digest,
             "feature_order": list(candidate.feature_order),
             "coefficients": list(candidate.coefficients),
             "intercept": candidate.intercept,
@@ -837,6 +1015,8 @@ class SafeLinearModelArtifact:
             media_type=SAFE_LINEAR_MODEL_MEDIA_TYPE,
             schema_version=SAFE_LINEAR_MODEL_SCHEMA_VERSION,
             training_spec_version_id=training_spec.training_spec_version_id,
+            model_training_request_id=training_request.model_training_request_id,
+            worker_training_candidate_digest=candidate.candidate_digest,
             feature_order=candidate.feature_order,
             coefficients=candidate.coefficients,
             intercept=candidate.intercept,
@@ -859,6 +1039,8 @@ class SafeLinearModelArtifact:
                 {
                     "schema_version",
                     "training_spec_version_id",
+                    "model_training_request_id",
+                    "worker_training_candidate_digest",
                     "feature_order",
                     "coefficients",
                     "intercept",
@@ -885,6 +1067,10 @@ class SafeLinearModelArtifact:
             media_type=media_type,
             schema_version=observed["schema_version"],
             training_spec_version_id=observed["training_spec_version_id"],
+            model_training_request_id=observed["model_training_request_id"],
+            worker_training_candidate_digest=observed[
+                "worker_training_candidate_digest"
+            ],
             feature_order=tuple(feature_order),
             coefficients=coefficient_values,
             intercept=_require_finite(observed["intercept"], "intercept"),
@@ -894,6 +1080,8 @@ class SafeLinearModelArtifact:
         return {
             "schema_version": self.schema_version,
             "training_spec_version_id": self.training_spec_version_id,
+            "model_training_request_id": self.model_training_request_id,
+            "worker_training_candidate_digest": self.worker_training_candidate_digest,
             "feature_order": list(self.feature_order),
             "coefficients": list(self.coefficients),
             "intercept": self.intercept,
@@ -909,6 +1097,8 @@ class ModelVersion:
     dataset_version_id: str
     model_run_id: str
     training_spec_version_id: str
+    model_training_request_id: str
+    worker_training_candidate_digest: str
     model_artifact_id: str
     model_artifact_media_type: str
     feature_schema_fingerprint: str
@@ -925,6 +1115,7 @@ class ModelVersion:
         dataset: DatasetVersion,
         run: ModelRun,
         training_spec: TrainingSpecVersion,
+        training_request: ModelTrainingRequest,
         artifact: SafeLinearModelArtifact,
         training_evidence: TrainingEvidence,
         provenance_artifact_id: str,
@@ -935,12 +1126,27 @@ class ModelVersion:
             raise ValueError("ModelVersion must bind exact DatasetVersion")
         if run.binding.training_spec_version_id != training_spec.training_spec_version_id:
             raise ValueError("ModelVersion must bind exact TrainingSpecVersion")
+        if training_request != ModelTrainingRequest.create(
+            dataset=dataset,
+            training_spec=training_spec,
+            run=run,
+        ):
+            raise ValueError("ModelVersion requires exact parent-computed request")
         if artifact.training_spec_version_id != training_spec.training_spec_version_id:
             raise ValueError("model Artifact must bind exact TrainingSpecVersion")
+        if artifact.model_training_request_id != training_request.model_training_request_id:
+            raise ValueError("model Artifact must bind exact training request")
         if training_evidence.model_run_id != run.model_run_id:
             raise ValueError("training evidence must bind exact ModelRun")
         if training_evidence.dataset_version_id != dataset.dataset_version_id:
             raise ValueError("training evidence must bind exact DatasetVersion")
+        if training_evidence.model_training_request_id != training_request.model_training_request_id:
+            raise ValueError("training evidence must bind exact training request")
+        if (
+            training_evidence.worker_training_candidate_digest
+            != artifact.worker_training_candidate_digest
+        ):
+            raise ValueError("training evidence and model Artifact must bind one candidate")
         truth_admission = propagate_downstream_ceiling(
             proposed_state,
             (UpstreamRequirement(dataset.dataset_version_id, dataset.truth_admission),),
@@ -949,6 +1155,8 @@ class ModelVersion:
             "dataset_version_id": dataset.dataset_version_id,
             "model_run_id": run.model_run_id,
             "training_spec_version_id": training_spec.training_spec_version_id,
+            "model_training_request_id": training_request.model_training_request_id,
+            "worker_training_candidate_digest": artifact.worker_training_candidate_digest,
             "model_artifact_id": artifact.artifact_id,
             "model_artifact_media_type": artifact.media_type,
             "feature_schema_fingerprint": training_spec.feature_schema_fingerprint,
@@ -963,6 +1171,8 @@ class ModelVersion:
             dataset_version_id=dataset.dataset_version_id,
             model_run_id=run.model_run_id,
             training_spec_version_id=training_spec.training_spec_version_id,
+            model_training_request_id=training_request.model_training_request_id,
+            worker_training_candidate_digest=artifact.worker_training_candidate_digest,
             model_artifact_id=artifact.artifact_id,
             model_artifact_media_type=artifact.media_type,
             feature_schema_fingerprint=training_spec.feature_schema_fingerprint,
@@ -971,6 +1181,125 @@ class ModelVersion:
             training_evidence_id=training_evidence.training_evidence_id,
             provenance_artifact_id=provenance_artifact_id,
             truth_admission=truth_admission,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ModelPredictionRequest:
+    model_prediction_request_id: str
+    model_version_id: str
+    model_artifact_id: str
+    model_training_request_id: str
+    training_spec_version_id: str
+    prediction_dataset_version_id: str
+    prediction_dataset_artifact_id: str
+    prediction_row_set_hash: str
+    feature_schema_fingerprint: str
+    worker_runtime_fingerprint: str
+    target_semantics: str
+
+    @staticmethod
+    def _payload(
+        *,
+        model_version_id: str,
+        model_artifact_id: str,
+        model_training_request_id: str,
+        training_spec_version_id: str,
+        prediction_dataset_version_id: str,
+        prediction_dataset_artifact_id: str,
+        prediction_row_set_hash: str,
+        feature_schema_fingerprint: str,
+        worker_runtime_fingerprint: str,
+        target_semantics: str,
+    ) -> dict[str, str]:
+        return {
+            "model_version_id": model_version_id,
+            "model_artifact_id": model_artifact_id,
+            "model_training_request_id": model_training_request_id,
+            "training_spec_version_id": training_spec_version_id,
+            "prediction_dataset_version_id": prediction_dataset_version_id,
+            "prediction_dataset_artifact_id": prediction_dataset_artifact_id,
+            "prediction_row_set_hash": prediction_row_set_hash,
+            "feature_schema_fingerprint": feature_schema_fingerprint,
+            "worker_runtime_fingerprint": worker_runtime_fingerprint,
+            "target_semantics": target_semantics,
+        }
+
+    def __post_init__(self) -> None:
+        for name, value in self._payload(
+            model_version_id=self.model_version_id,
+            model_artifact_id=self.model_artifact_id,
+            model_training_request_id=self.model_training_request_id,
+            training_spec_version_id=self.training_spec_version_id,
+            prediction_dataset_version_id=self.prediction_dataset_version_id,
+            prediction_dataset_artifact_id=self.prediction_dataset_artifact_id,
+            prediction_row_set_hash=self.prediction_row_set_hash,
+            feature_schema_fingerprint=self.feature_schema_fingerprint,
+            worker_runtime_fingerprint=self.worker_runtime_fingerprint,
+            target_semantics=self.target_semantics,
+        ).items():
+            _require_text(value, name)
+        _require_artifact(self.model_artifact_id, "model_artifact_id")
+        _require_artifact(
+            self.prediction_dataset_artifact_id,
+            "prediction_dataset_artifact_id",
+        )
+        expected = "mpr_sha256_" + canonical_sha256(
+            self._payload(
+                model_version_id=self.model_version_id,
+                model_artifact_id=self.model_artifact_id,
+                model_training_request_id=self.model_training_request_id,
+                training_spec_version_id=self.training_spec_version_id,
+                prediction_dataset_version_id=self.prediction_dataset_version_id,
+                prediction_dataset_artifact_id=self.prediction_dataset_artifact_id,
+                prediction_row_set_hash=self.prediction_row_set_hash,
+                feature_schema_fingerprint=self.feature_schema_fingerprint,
+                worker_runtime_fingerprint=self.worker_runtime_fingerprint,
+                target_semantics=self.target_semantics,
+            )
+        )
+        if self.model_prediction_request_id != expected:
+            raise ValueError("model prediction request ID must match canonical payload")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        model: ModelVersion,
+        model_artifact: SafeLinearModelArtifact,
+        dataset: DatasetVersion,
+        training_spec: TrainingSpecVersion,
+        view: PredictionDatasetView,
+        target_semantics: str,
+    ) -> ModelPredictionRequest:
+        _require_text(target_semantics, "target_semantics")
+        if model_artifact.artifact_id != model.model_artifact_id:
+            raise ValueError("prediction request must bind exact ModelVersion Artifact")
+        if model_artifact.model_training_request_id != model.model_training_request_id:
+            raise ValueError("prediction request Artifact must bind ModelVersion training request")
+        if training_spec.training_spec_version_id != model.training_spec_version_id:
+            raise ValueError("prediction request must bind exact TrainingSpecVersion")
+        if view.model_version_id != model.model_version_id:
+            raise ValueError("prediction request view must bind exact ModelVersion")
+        if view.dataset_version_id != dataset.dataset_version_id:
+            raise ValueError("prediction request view must bind exact DatasetVersion")
+        if view.dataset_artifact_id != dataset.dataset_artifact_id:
+            raise ValueError("prediction request view must bind exact Dataset Artifact")
+        payload = cls._payload(
+            model_version_id=model.model_version_id,
+            model_artifact_id=model_artifact.artifact_id,
+            model_training_request_id=model.model_training_request_id,
+            training_spec_version_id=training_spec.training_spec_version_id,
+            prediction_dataset_version_id=dataset.dataset_version_id,
+            prediction_dataset_artifact_id=dataset.dataset_artifact_id,
+            prediction_row_set_hash=view.row_set_hash,
+            feature_schema_fingerprint=training_spec.feature_schema_fingerprint,
+            worker_runtime_fingerprint=model.worker_runtime.fingerprint,
+            target_semantics=target_semantics,
+        )
+        return cls(
+            model_prediction_request_id="mpr_sha256_" + canonical_sha256(payload),
+            **payload,
         )
 
 
@@ -986,11 +1315,15 @@ class WorkerPredictionValue:
 
 @dataclass(frozen=True, slots=True)
 class WorkerPredictionCandidate:
+    model_prediction_request_id: str
     runtime: WorkerRuntimeFingerprint
     feature_order: tuple[str, ...]
     predictions: tuple[WorkerPredictionValue, ...]
 
     def __post_init__(self) -> None:
+        _require_text(self.model_prediction_request_id, "model_prediction_request_id")
+        if not self.model_prediction_request_id.startswith("mpr_sha256_"):
+            raise ValueError("worker candidate must echo a model prediction request ID")
         if not isinstance(self.runtime, WorkerRuntimeFingerprint):
             raise TypeError("worker prediction runtime must be typed")
         if not self.feature_order or any(
@@ -1011,7 +1344,14 @@ class WorkerPredictionCandidate:
     def from_wire(cls, payload: object) -> WorkerPredictionCandidate:
         observed = _strict_object(
             payload,
-            frozenset({"runtime", "feature_order", "predictions"}),
+            frozenset(
+                {
+                    "model_prediction_request_id",
+                    "runtime",
+                    "feature_order",
+                    "predictions",
+                }
+            ),
             "worker prediction candidate",
         )
         if not isinstance(observed["feature_order"], list):
@@ -1038,6 +1378,7 @@ class WorkerPredictionCandidate:
         if len(sample_ids) != len(set(sample_ids)):
             raise ValueError("worker prediction sample IDs must be unique")
         return cls(
+            model_prediction_request_id=observed["model_prediction_request_id"],
             runtime=WorkerRuntimeFingerprint.from_wire(observed["runtime"]),
             feature_order=feature_order,
             predictions=tuple(predictions),
@@ -1083,6 +1424,8 @@ class PredictionValue:
 class PredictionArtifact:
     prediction_artifact_id: str
     model_version_id: str
+    model_artifact_id: str
+    model_prediction_request_id: str
     prediction_dataset_version_id: str
     prediction_row_set_hash: str
     feature_schema_fingerprint: str
@@ -1101,9 +1444,11 @@ class PredictionArtifact:
         cls,
         *,
         model: ModelVersion,
+        model_artifact: SafeLinearModelArtifact,
         dataset: DatasetVersion,
         training_spec: TrainingSpecVersion,
         view: PredictionDatasetView,
+        prediction_request: ModelPredictionRequest,
         candidate: WorkerPredictionCandidate,
         prediction_timestamp: datetime,
         target_semantics: str,
@@ -1113,6 +1458,18 @@ class PredictionArtifact:
         _require_aware(prediction_timestamp, "prediction_timestamp")
         _require_text(target_semantics, "target_semantics")
         _require_artifact(provenance_artifact_id, "provenance_artifact_id")
+        expected_request = ModelPredictionRequest.create(
+            model=model,
+            model_artifact=model_artifact,
+            dataset=dataset,
+            training_spec=training_spec,
+            view=view,
+            target_semantics=target_semantics,
+        )
+        if prediction_request != expected_request:
+            raise ValueError("PredictionArtifact requires exact parent-computed request")
+        if candidate.model_prediction_request_id != prediction_request.model_prediction_request_id:
+            raise ValueError("prediction candidate request ID must match exact request")
         if view.dataset_version_id != dataset.dataset_version_id:
             raise ValueError("PredictionArtifact must bind exact prediction DatasetVersion")
         if view.model_version_id != model.model_version_id:
@@ -1146,6 +1503,8 @@ class PredictionArtifact:
         )
         payload = {
             "model_version_id": model.model_version_id,
+            "model_artifact_id": model_artifact.artifact_id,
+            "model_prediction_request_id": prediction_request.model_prediction_request_id,
             "prediction_dataset_version_id": dataset.dataset_version_id,
             "prediction_row_set_hash": view.row_set_hash,
             "feature_schema_fingerprint": training_spec.feature_schema_fingerprint,
@@ -1162,6 +1521,8 @@ class PredictionArtifact:
         return cls(
             prediction_artifact_id="pred_sha256_" + canonical_sha256(payload),
             model_version_id=model.model_version_id,
+            model_artifact_id=model_artifact.artifact_id,
+            model_prediction_request_id=prediction_request.model_prediction_request_id,
             prediction_dataset_version_id=dataset.dataset_version_id,
             prediction_row_set_hash=view.row_set_hash,
             feature_schema_fingerprint=training_spec.feature_schema_fingerprint,
@@ -1287,9 +1648,11 @@ __all__ = [
     "MissingValuePolicy",
     "ModelAlgorithmFamily",
     "ModelEvaluationEvidence",
+    "ModelPredictionRequest",
     "ModelRun",
     "ModelSample",
     "ModelTrainingBinding",
+    "ModelTrainingRequest",
     "ModelVersion",
     "PredictionArtifact",
     "PredictionDatasetView",

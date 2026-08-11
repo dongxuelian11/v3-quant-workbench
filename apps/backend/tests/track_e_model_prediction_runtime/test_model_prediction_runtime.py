@@ -34,7 +34,9 @@ from v3_backend.domain.models import (
     DatasetSplitRole,
     FeatureColumn,
     ModelSample,
+    ModelPredictionRequest,
     ModelTrainingBinding,
+    ModelTrainingRequest,
     ModelVersion,
     PredictionArtifact,
     PredictionDatasetView,
@@ -60,7 +62,7 @@ def runtime(version: str = "1.9.0") -> WorkerRuntimeFingerprint:
     return WorkerRuntimeFingerprint.create(
         backend_name="scikit-learn-ridge",
         backend_version=version,
-        protocol_version="v3.model-worker/1",
+        protocol_version="v3.model-worker/2",
         python_version="3.14.7",
         platform="test-cpu",
         packages=(
@@ -221,9 +223,13 @@ class FakeWorker:
         self.runtime = worker_runtime
 
     def train(
-        self, training_spec: TrainingSpecVersion, view: TrainingDatasetView
+        self,
+        request: ModelTrainingRequest,
+        training_spec: TrainingSpecVersion,
+        view: TrainingDatasetView,
     ) -> WorkerTrainingCandidate:
         return WorkerTrainingCandidate(
+            model_training_request_id=request.model_training_request_id,
             runtime=self.runtime,
             feature_order=training_spec.feature_order,
             coefficients=(2.0, -0.5),
@@ -237,12 +243,14 @@ class FakeWorker:
 
     def predict(
         self,
+        request: ModelPredictionRequest,
         training_spec: TrainingSpecVersion,
         artifact_value: SafeLinearModelArtifact,
         view: PredictionDatasetView,
     ) -> WorkerPredictionCandidate:
         return WorkerPredictionCandidate.from_wire(
             {
+                "model_prediction_request_id": request.model_prediction_request_id,
                 "runtime": self.runtime.to_wire(),
                 "feature_order": list(training_spec.feature_order),
                 "predictions": [
@@ -269,6 +277,8 @@ def train_fake(
     split: SplitSpec,
     training_spec: TrainingSpecVersion,
     worker: FakeWorker,
+    *,
+    code_version: str = "track-e-v0/1",
 ):
     return train_model(
         worker=worker,
@@ -276,7 +286,7 @@ def train_fake(
         split_spec=split,
         training_spec=training_spec,
         samples=training_samples(),
-        code_version="track-e-v0/1",
+        code_version=code_version,
         training_evidence_provenance_artifact_id=artifact("f"),
         model_provenance_artifact_id=artifact("g"),
         proposed_state=FORMAL_ADMITTED_CEILING,
@@ -298,6 +308,116 @@ class IdentityAndBoundaryTests(unittest.TestCase):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             self.spec.seed = 8  # type: ignore[misc]
 
+    def test_exact_training_request_candidate_is_accepted(self) -> None:
+        trained = train_fake(self.dataset, self.split, self.spec, self.worker)
+        self.assertEqual(
+            trained.request.model_training_request_id,
+            trained.candidate.model_training_request_id,
+        )
+        self.assertEqual(
+            trained.request.model_training_request_id,
+            trained.training_evidence.model_training_request_id,
+        )
+        self.assertEqual(
+            trained.request.model_training_request_id,
+            trained.artifact.model_training_request_id,
+        )
+        self.assertEqual(
+            trained.training_evidence.worker_training_candidate_digest,
+            trained.artifact.worker_training_candidate_digest,
+        )
+        self.assertEqual(
+            trained.view.dataset_artifact_id,
+            self.dataset.dataset_artifact_id,
+        )
+        with self.assertRaisesRegex(ValueError, "ID must match canonical payload"):
+            dataclasses.replace(trained.request, code_version="worker-forged")
+
+    def test_training_candidate_wrong_request_id_is_rejected(self) -> None:
+        trained = train_fake(self.dataset, self.split, self.spec, self.worker)
+        wrong = dataclasses.replace(
+            trained.candidate,
+            model_training_request_id="mtr_sha256_" + "9" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "request ID must match"):
+            TrainingEvidence.create(
+                dataset=self.dataset,
+                training_spec=self.spec,
+                run=trained.run,
+                view=trained.view,
+                training_request=trained.request,
+                candidate=wrong,
+                provenance_artifact_id=artifact("f"),
+            )
+
+    def test_training_candidate_from_another_model_run_is_rejected(self) -> None:
+        expected = train_fake(self.dataset, self.split, self.spec, self.worker)
+        other = train_fake(
+            self.dataset,
+            self.split,
+            self.spec,
+            self.worker,
+            code_version="track-e-v0/other-code",
+        )
+        self.assertNotEqual(
+            expected.request.model_training_request_id,
+            other.request.model_training_request_id,
+        )
+        with self.assertRaisesRegex(ValueError, "request ID must match"):
+            TrainingEvidence.create(
+                dataset=self.dataset,
+                training_spec=self.spec,
+                run=expected.run,
+                view=expected.view,
+                training_request=expected.request,
+                candidate=other.candidate,
+                provenance_artifact_id=artifact("f"),
+            )
+
+    def test_evidence_and_artifact_from_different_requests_cannot_mix(self) -> None:
+        expected = train_fake(self.dataset, self.split, self.spec, self.worker)
+        other = train_fake(
+            self.dataset,
+            self.split,
+            self.spec,
+            self.worker,
+            code_version="track-e-v0/other-code",
+        )
+        with self.assertRaisesRegex(ValueError, "Artifact must bind exact training request"):
+            ModelVersion.create(
+                dataset=self.dataset,
+                run=expected.run,
+                training_spec=self.spec,
+                training_request=expected.request,
+                artifact=other.artifact,
+                training_evidence=expected.training_evidence,
+                provenance_artifact_id=artifact("g"),
+                proposed_state=FORMAL_ADMITTED_CEILING,
+            )
+
+    def test_evidence_and_artifact_from_different_candidates_cannot_mix(self) -> None:
+        trained = train_fake(self.dataset, self.split, self.spec, self.worker)
+        other_candidate = dataclasses.replace(
+            trained.candidate,
+            coefficients=(3.0, -0.5),
+        )
+        other_artifact = SafeLinearModelArtifact.create(
+            self.spec,
+            trained.request,
+            other_candidate,
+        )
+        with self.assertRaisesRegex(ValueError, "must bind one candidate"):
+            ModelVersion.create(
+                dataset=self.dataset,
+                run=trained.run,
+                training_spec=self.spec,
+                training_request=trained.request,
+                artifact=other_artifact,
+                training_evidence=trained.training_evidence,
+                provenance_artifact_id=artifact("g"),
+                proposed_state=FORMAL_ADMITTED_CEILING,
+            )
+
     def test_dataset_version_binding_is_exact(self) -> None:
         trained = train_fake(self.dataset, self.split, self.spec, self.worker)
         other_dataset, _ = build_dataset("snapshot-2")
@@ -306,6 +426,7 @@ class IdentityAndBoundaryTests(unittest.TestCase):
                 dataset=other_dataset,
                 run=trained.run,
                 training_spec=self.spec,
+                training_request=trained.request,
                 artifact=trained.artifact,
                 training_evidence=trained.training_evidence,
                 provenance_artifact_id=artifact("g"),
@@ -360,6 +481,7 @@ class IdentityAndBoundaryTests(unittest.TestCase):
 
     def test_worker_candidate_cannot_assign_canonical_model_identity(self) -> None:
         valid = {
+            "model_training_request_id": "mtr_sha256_" + "1" * 64,
             "runtime": self.runtime.to_wire(),
             "feature_order": list(self.spec.feature_order),
             "coefficients": [2.0, -0.5],
@@ -378,6 +500,7 @@ class IdentityAndBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "finite"):
             WorkerPredictionCandidate.from_wire(
                 {
+                    "model_prediction_request_id": "mpr_sha256_" + "1" * 64,
                     "runtime": self.runtime.to_wire(),
                     "feature_order": list(self.spec.feature_order),
                     "predictions": [{"sample_id": "test-0", "value": float("nan")}],
@@ -392,8 +515,17 @@ class IdentityAndBoundaryTests(unittest.TestCase):
             training_spec=self.spec,
             samples=test_samples(),
         )
+        request = ModelPredictionRequest.create(
+            model=trained.model,
+            model_artifact=trained.artifact,
+            dataset=self.dataset,
+            training_spec=self.spec,
+            view=view,
+            target_semantics="next_return",
+        )
         incomplete = WorkerPredictionCandidate.from_wire(
             {
+                "model_prediction_request_id": request.model_prediction_request_id,
                 "runtime": self.runtime.to_wire(),
                 "feature_order": list(self.spec.feature_order),
                 "predictions": [{"sample_id": "test-0", "value": 1.0}],
@@ -402,10 +534,239 @@ class IdentityAndBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly match"):
             PredictionArtifact.create(
                 model=trained.model,
+                model_artifact=trained.artifact,
                 dataset=self.dataset,
                 training_spec=self.spec,
                 view=view,
+                prediction_request=request,
                 candidate=incomplete,
+                prediction_timestamp=datetime(2026, 1, 5, 9, tzinfo=timezone.utc),
+                target_semantics="next_return",
+                provenance_artifact_id=artifact("h"),
+                proposed_state=FORMAL_ADMITTED_CEILING,
+            )
+
+    def test_exact_prediction_request_candidate_is_accepted(self) -> None:
+        trained = train_fake(self.dataset, self.split, self.spec, self.worker)
+        bundle = predict_model(
+            worker=self.worker,
+            model=trained.model,
+            model_artifact=trained.artifact,
+            prediction_dataset=self.dataset,
+            training_spec=self.spec,
+            samples=test_samples(),
+            prediction_timestamp=datetime(2026, 1, 5, 9, tzinfo=timezone.utc),
+            target_semantics="next_return",
+            provenance_artifact_id=artifact("h"),
+            proposed_state=FORMAL_ADMITTED_CEILING,
+        )
+        self.assertEqual(
+            bundle.request.model_prediction_request_id,
+            bundle.candidate.model_prediction_request_id,
+        )
+        self.assertEqual(
+            bundle.request.model_prediction_request_id,
+            bundle.prediction.model_prediction_request_id,
+        )
+        self.assertEqual(bundle.prediction.model_artifact_id, trained.artifact.artifact_id)
+        self.assertEqual(
+            bundle.view.dataset_artifact_id,
+            self.dataset.dataset_artifact_id,
+        )
+        different_semantics = ModelPredictionRequest.create(
+            model=trained.model,
+            model_artifact=trained.artifact,
+            dataset=self.dataset,
+            training_spec=self.spec,
+            view=bundle.view,
+            target_semantics="different_target",
+        )
+        self.assertNotEqual(
+            bundle.request.model_prediction_request_id,
+            different_semantics.model_prediction_request_id,
+        )
+        with self.assertRaisesRegex(ValueError, "ID must match canonical payload"):
+            dataclasses.replace(bundle.request, target_semantics="worker-forged")
+
+    def test_prediction_candidate_from_another_model_is_rejected(self) -> None:
+        expected = train_fake(self.dataset, self.split, self.spec, self.worker)
+        other_spec = spec_for(self.dataset, self.runtime, seed=8)
+        other = train_fake(self.dataset, self.split, other_spec, self.worker)
+        expected_view = PredictionDatasetView.create(
+            dataset=self.dataset,
+            model=expected.model,
+            training_spec=self.spec,
+            samples=test_samples(),
+        )
+        expected_request = ModelPredictionRequest.create(
+            model=expected.model,
+            model_artifact=expected.artifact,
+            dataset=self.dataset,
+            training_spec=self.spec,
+            view=expected_view,
+            target_semantics="next_return",
+        )
+        other_view = PredictionDatasetView.create(
+            dataset=self.dataset,
+            model=other.model,
+            training_spec=other_spec,
+            samples=test_samples(),
+        )
+        other_request = ModelPredictionRequest.create(
+            model=other.model,
+            model_artifact=other.artifact,
+            dataset=self.dataset,
+            training_spec=other_spec,
+            view=other_view,
+            target_semantics="next_return",
+        )
+        other_candidate = self.worker.predict(
+            other_request,
+            other_spec,
+            other.artifact,
+            other_view,
+        )
+        with self.assertRaisesRegex(ValueError, "request ID must match"):
+            PredictionArtifact.create(
+                model=expected.model,
+                model_artifact=expected.artifact,
+                dataset=self.dataset,
+                training_spec=self.spec,
+                view=expected_view,
+                prediction_request=expected_request,
+                candidate=other_candidate,
+                prediction_timestamp=datetime(2026, 1, 5, 9, tzinfo=timezone.utc),
+                target_semantics="next_return",
+                provenance_artifact_id=artifact("h"),
+                proposed_state=FORMAL_ADMITTED_CEILING,
+            )
+
+    def test_prediction_candidate_from_another_dataset_row_set_is_rejected(self) -> None:
+        trained = train_fake(self.dataset, self.split, self.spec, self.worker)
+        expected_view = PredictionDatasetView.create(
+            dataset=self.dataset,
+            model=trained.model,
+            training_spec=self.spec,
+            samples=test_samples(),
+        )
+        expected_request = ModelPredictionRequest.create(
+            model=trained.model,
+            model_artifact=trained.artifact,
+            dataset=self.dataset,
+            training_spec=self.spec,
+            view=expected_view,
+            target_semantics="next_return",
+        )
+        other_dataset = dataclasses.replace(
+            self.dataset,
+            dataset_version_id="dsv_sha256_" + "8" * 64,
+            dataset_artifact_id=artifact("8"),
+        )
+        other_samples = (sample("test-0", 22, 60.0), sample("test-1", 23, 70.0))
+        other_view = PredictionDatasetView.create(
+            dataset=other_dataset,
+            model=trained.model,
+            training_spec=self.spec,
+            samples=other_samples,
+        )
+        other_request = ModelPredictionRequest.create(
+            model=trained.model,
+            model_artifact=trained.artifact,
+            dataset=other_dataset,
+            training_spec=self.spec,
+            view=other_view,
+            target_semantics="next_return",
+        )
+        other_candidate = self.worker.predict(
+            other_request,
+            self.spec,
+            trained.artifact,
+            other_view,
+        )
+        with self.assertRaisesRegex(ValueError, "request ID must match"):
+            PredictionArtifact.create(
+                model=trained.model,
+                model_artifact=trained.artifact,
+                dataset=self.dataset,
+                training_spec=self.spec,
+                view=expected_view,
+                prediction_request=expected_request,
+                candidate=other_candidate,
+                prediction_timestamp=datetime(2026, 1, 5, 9, tzinfo=timezone.utc),
+                target_semantics="next_return",
+                provenance_artifact_id=artifact("h"),
+                proposed_state=FORMAL_ADMITTED_CEILING,
+            )
+
+    def test_wrong_prediction_request_id_is_rejected(self) -> None:
+        trained = train_fake(self.dataset, self.split, self.spec, self.worker)
+        view = PredictionDatasetView.create(
+            dataset=self.dataset,
+            model=trained.model,
+            training_spec=self.spec,
+            samples=test_samples(),
+        )
+        request = ModelPredictionRequest.create(
+            model=trained.model,
+            model_artifact=trained.artifact,
+            dataset=self.dataset,
+            training_spec=self.spec,
+            view=view,
+            target_semantics="next_return",
+        )
+        candidate = self.worker.predict(request, self.spec, trained.artifact, view)
+        wrong = dataclasses.replace(
+            candidate,
+            model_prediction_request_id="mpr_sha256_" + "9" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "request ID must match"):
+            PredictionArtifact.create(
+                model=trained.model,
+                model_artifact=trained.artifact,
+                dataset=self.dataset,
+                training_spec=self.spec,
+                view=view,
+                prediction_request=request,
+                candidate=wrong,
+                prediction_timestamp=datetime(2026, 1, 5, 9, tzinfo=timezone.utc),
+                target_semantics="next_return",
+                provenance_artifact_id=artifact("h"),
+                proposed_state=FORMAL_ADMITTED_CEILING,
+            )
+
+    def test_prediction_artifact_requires_exact_model_artifact_and_request(self) -> None:
+        expected = train_fake(self.dataset, self.split, self.spec, self.worker)
+        other = train_fake(
+            self.dataset,
+            self.split,
+            self.spec,
+            self.worker,
+            code_version="track-e-v0/other-code",
+        )
+        view = PredictionDatasetView.create(
+            dataset=self.dataset,
+            model=expected.model,
+            training_spec=self.spec,
+            samples=test_samples(),
+        )
+        request = ModelPredictionRequest.create(
+            model=expected.model,
+            model_artifact=expected.artifact,
+            dataset=self.dataset,
+            training_spec=self.spec,
+            view=view,
+            target_semantics="next_return",
+        )
+        candidate = self.worker.predict(request, self.spec, expected.artifact, view)
+        with self.assertRaisesRegex(ValueError, "exact ModelVersion Artifact"):
+            PredictionArtifact.create(
+                model=expected.model,
+                model_artifact=other.artifact,
+                dataset=self.dataset,
+                training_spec=self.spec,
+                view=view,
+                prediction_request=request,
+                candidate=candidate,
                 prediction_timestamp=datetime(2026, 1, 5, 9, tzinfo=timezone.utc),
                 target_semantics="next_return",
                 provenance_artifact_id=artifact("h"),
@@ -447,6 +808,11 @@ class IdentityAndBoundaryTests(unittest.TestCase):
         first = train_fake(self.dataset, self.split, self.spec, self.worker)
         second = train_fake(self.dataset, self.split, self.spec, self.worker)
         self.assertEqual(first.run.model_run_id, second.run.model_run_id)
+        self.assertEqual(
+            first.request.model_training_request_id,
+            second.request.model_training_request_id,
+        )
+        self.assertEqual(first.candidate.candidate_digest, second.candidate.candidate_digest)
         self.assertEqual(first.artifact.artifact_id, second.artifact.artifact_id)
         self.assertEqual(first.model.model_version_id, second.model.model_version_id)
 
@@ -534,6 +900,7 @@ class IsolatedSklearnWorkerTests(unittest.TestCase):
         dataset, split = build_dataset()
         worker = SklearnRidgeSubprocessWorker()
         self.assertEqual(worker.runtime.backend_version, "1.9.0")
+        self.assertEqual(worker.runtime.protocol_version, "v3.model-worker/2")
         self.assertEqual(
             dict(worker.runtime.packages),
             {
@@ -569,6 +936,8 @@ class IsolatedSklearnWorkerTests(unittest.TestCase):
             proposed_state=FORMAL_ADMITTED_CEILING,
         )
         self.assertEqual(first.model.model_version_id, second.model.model_version_id)
+        self.assertEqual(first.request, second.request)
+        self.assertEqual(first.candidate.candidate_digest, second.candidate.candidate_digest)
         prediction = predict_model(
             worker=worker,
             model=first.model,
@@ -584,6 +953,10 @@ class IsolatedSklearnWorkerTests(unittest.TestCase):
         self.assertEqual(
             tuple(value.sample_id for value in prediction.prediction.values),
             ("test-0", "test-1"),
+        )
+        self.assertEqual(
+            prediction.request.model_prediction_request_id,
+            prediction.candidate.model_prediction_request_id,
         )
         self.assertTrue(
             all(math.isfinite(value.value) for value in prediction.prediction.values)

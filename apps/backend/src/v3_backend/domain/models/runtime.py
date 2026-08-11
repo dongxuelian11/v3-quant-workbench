@@ -9,9 +9,11 @@ from v3_backend.domain.datasets import DatasetVersion, SplitSpec
 
 from .model import (
     ModelEvaluationEvidence,
+    ModelPredictionRequest,
     ModelRun,
     ModelSample,
     ModelTrainingBinding,
+    ModelTrainingRequest,
     ModelVersion,
     PredictionArtifact,
     PredictionDatasetView,
@@ -30,11 +32,15 @@ class IsolatedModelWorker(Protocol):
     def runtime(self) -> WorkerRuntimeFingerprint: ...
 
     def train(
-        self, training_spec: TrainingSpecVersion, view: TrainingDatasetView
+        self,
+        request: ModelTrainingRequest,
+        training_spec: TrainingSpecVersion,
+        view: TrainingDatasetView,
     ) -> WorkerTrainingCandidate: ...
 
     def predict(
         self,
+        request: ModelPredictionRequest,
         training_spec: TrainingSpecVersion,
         artifact: SafeLinearModelArtifact,
         view: PredictionDatasetView,
@@ -46,6 +52,7 @@ class TrainedModelBundle:
     view: TrainingDatasetView
     binding: ModelTrainingBinding
     run: ModelRun
+    request: ModelTrainingRequest
     candidate: WorkerTrainingCandidate
     training_evidence: TrainingEvidence
     artifact: SafeLinearModelArtifact
@@ -55,6 +62,7 @@ class TrainedModelBundle:
 @dataclass(frozen=True, slots=True)
 class PredictionBundle:
     view: PredictionDatasetView
+    request: ModelPredictionRequest
     candidate: WorkerPredictionCandidate
     prediction: PredictionArtifact
 
@@ -85,18 +93,27 @@ def train_model(
         proposed_state=proposed_state,
     )
     run = ModelRun.create(binding, view)
-    candidate = worker.train(training_spec, view)
+    request = ModelTrainingRequest.create(
+        dataset=dataset,
+        training_spec=training_spec,
+        run=run,
+    )
+    candidate = worker.train(request, training_spec, view)
     evidence = TrainingEvidence.create(
+        dataset=dataset,
+        training_spec=training_spec,
         run=run,
         view=view,
+        training_request=request,
         candidate=candidate,
         provenance_artifact_id=training_evidence_provenance_artifact_id,
     )
-    artifact = SafeLinearModelArtifact.create(training_spec, candidate)
+    artifact = SafeLinearModelArtifact.create(training_spec, request, candidate)
     model = ModelVersion.create(
         dataset=dataset,
         run=run,
         training_spec=training_spec,
+        training_request=request,
         artifact=artifact,
         training_evidence=evidence,
         provenance_artifact_id=model_provenance_artifact_id,
@@ -106,6 +123,7 @@ def train_model(
         view=view,
         binding=binding,
         run=run,
+        request=request,
         candidate=candidate,
         training_evidence=evidence,
         artifact=artifact,
@@ -136,19 +154,34 @@ def predict_model(
         training_spec=training_spec,
         samples=samples,
     )
-    candidate = worker.predict(training_spec, model_artifact, view)
-    prediction = PredictionArtifact.create(
+    request = ModelPredictionRequest.create(
         model=model,
+        model_artifact=model_artifact,
         dataset=prediction_dataset,
         training_spec=training_spec,
         view=view,
+        target_semantics=target_semantics,
+    )
+    candidate = worker.predict(request, training_spec, model_artifact, view)
+    prediction = PredictionArtifact.create(
+        model=model,
+        model_artifact=model_artifact,
+        dataset=prediction_dataset,
+        training_spec=training_spec,
+        view=view,
+        prediction_request=request,
         candidate=candidate,
         prediction_timestamp=prediction_timestamp,
         target_semantics=target_semantics,
         provenance_artifact_id=provenance_artifact_id,
         proposed_state=proposed_state,
     )
-    return PredictionBundle(view=view, candidate=candidate, prediction=prediction)
+    return PredictionBundle(
+        view=view,
+        request=request,
+        candidate=candidate,
+        prediction=prediction,
+    )
 
 
 def evaluate_prediction(

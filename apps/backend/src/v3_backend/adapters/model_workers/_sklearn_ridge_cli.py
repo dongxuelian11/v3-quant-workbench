@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-PROTOCOL_VERSION = "v3.model-worker/1"
+PROTOCOL_VERSION = "v3.model-worker/2"
 BACKEND_NAME = "scikit-learn-ridge"
 THREAD_KEYS = (
     "MKL_NUM_THREADS",
@@ -34,6 +34,12 @@ def _finite(value: object, name: str) -> float:
     if not math.isfinite(result):
         raise ValueError(f"{name} must be finite")
     return result
+
+
+def _request_id(value: object, prefix: str, name: str) -> str:
+    if not isinstance(value, str) or not value.startswith(prefix):
+        raise ValueError(f"{name} must be a parent-issued request ID")
+    return value
 
 
 def _runtime_payload() -> dict[str, object]:
@@ -103,6 +109,11 @@ def _rmse(expected: list[float], observed: list[float]) -> float:
 def _train(request: Mapping[str, Any]) -> dict[str, object]:
     from sklearn.linear_model import Ridge
 
+    request_id = _request_id(
+        request["model_training_request_id"],
+        "mtr_sha256_",
+        "model_training_request_id",
+    )
     spec = _strict(
         request["spec"],
         {"alpha", "fit_intercept", "solver", "feature_order", "seed"},
@@ -136,6 +147,7 @@ def _train(request: Mapping[str, Any]) -> dict[str, object]:
     train_predictions = [float(value) for value in model.predict(train_x)]
     validation_predictions = [float(value) for value in model.predict(validation_x)]
     return {
+        "model_training_request_id": request_id,
         "runtime": _runtime_payload(),
         "feature_order": feature_order,
         "coefficients": [_finite(value, "coefficient") for value in model.coef_],
@@ -149,6 +161,11 @@ def _train(request: Mapping[str, Any]) -> dict[str, object]:
 
 
 def _predict(request: Mapping[str, Any]) -> dict[str, object]:
+    request_id = _request_id(
+        request["model_prediction_request_id"],
+        "mpr_sha256_",
+        "model_prediction_request_id",
+    )
     feature_order = request["feature_order"]
     coefficients = request["coefficients"]
     if not isinstance(feature_order, list) or not isinstance(coefficients, list):
@@ -180,6 +197,7 @@ def _predict(request: Mapping[str, Any]) -> dict[str, object]:
             {"sample_id": sample_id, "value": _finite(prediction, "prediction")}
         )
     return {
+        "model_prediction_request_id": request_id,
         "runtime": _runtime_payload(),
         "feature_order": feature_order,
         "predictions": predictions,
@@ -201,14 +219,25 @@ def handle(payload: object) -> dict[str, object]:
     if operation == "train_ridge":
         body = _strict(
             request["payload"],
-            {"spec", "train_rows", "validation_rows"},
+            {
+                "model_training_request_id",
+                "spec",
+                "train_rows",
+                "validation_rows",
+            },
             "train payload",
         )
         return _train(body)
     if operation == "predict_linear":
         body = _strict(
             request["payload"],
-            {"feature_order", "coefficients", "intercept", "rows"},
+            {
+                "model_prediction_request_id",
+                "feature_order",
+                "coefficients",
+                "intercept",
+                "rows",
+            },
             "predict payload",
         )
         return _predict(body)

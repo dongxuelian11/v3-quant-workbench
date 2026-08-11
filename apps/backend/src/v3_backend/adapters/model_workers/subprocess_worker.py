@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from v3_backend.domain.models import (
+    ModelPredictionRequest,
+    ModelTrainingRequest,
     PredictionDatasetView,
     SafeLinearModelArtifact,
     TrainingDatasetView,
@@ -19,7 +21,7 @@ from v3_backend.domain.models import (
 from v3_backend.workers.entrypoint import WorkerSandboxPolicy
 
 
-MODEL_WORKER_PROTOCOL_VERSION = "v3.model-worker/1"
+MODEL_WORKER_PROTOCOL_VERSION = "v3.model-worker/2"
 
 
 class ModelWorkerError(RuntimeError):
@@ -138,9 +140,13 @@ class SklearnRidgeSubprocessWorker:
         ]
 
     def train(
-        self, training_spec: TrainingSpecVersion, view: TrainingDatasetView
+        self,
+        request: ModelTrainingRequest,
+        training_spec: TrainingSpecVersion,
+        view: TrainingDatasetView,
     ) -> WorkerTrainingCandidate:
         payload = {
+            "model_training_request_id": request.model_training_request_id,
             "spec": {
                 "alpha": training_spec.alpha,
                 "fit_intercept": training_spec.fit_intercept,
@@ -156,10 +162,13 @@ class SklearnRidgeSubprocessWorker:
         )
         if candidate.runtime != self.runtime:
             raise ModelWorkerError("training runtime drifted after worker admission")
+        if candidate.model_training_request_id != request.model_training_request_id:
+            raise ModelWorkerError("training worker echoed the wrong request ID")
         return candidate
 
     def predict(
         self,
+        request: ModelPredictionRequest,
         training_spec: TrainingSpecVersion,
         artifact: SafeLinearModelArtifact,
         view: PredictionDatasetView,
@@ -167,6 +176,7 @@ class SklearnRidgeSubprocessWorker:
         if artifact.feature_order != training_spec.feature_order:
             raise ValueError("safe model Artifact feature order mismatch")
         payload = {
+            "model_prediction_request_id": request.model_prediction_request_id,
             "feature_order": list(artifact.feature_order),
             "coefficients": list(artifact.coefficients),
             "intercept": artifact.intercept,
@@ -183,6 +193,8 @@ class SklearnRidgeSubprocessWorker:
         )
         if candidate.runtime != self.runtime:
             raise ModelWorkerError("prediction runtime drifted after worker admission")
+        if candidate.model_prediction_request_id != request.model_prediction_request_id:
+            raise ModelWorkerError("prediction worker echoed the wrong request ID")
         return candidate
 
 

@@ -7,6 +7,7 @@ Track E owns the raw model chain only:
 ```text
 DatasetVersion
 -> TrainingSpecVersion
+-> ModelTrainingRequest
 -> process-isolated model worker candidate
 -> V3 safe model artifact
 -> ModelVersion
@@ -58,22 +59,44 @@ the DatasetVersion truth ceiling. ModelRun adds exact ordered TRAIN and
 VALIDATION row-set hashes. Retry/attempt timing is deliberately absent from the
 semantic identity.
 
+### Exact worker requests
+
+V3 Core creates immutable request descriptors before worker execution. The
+worker is not a request authority; protocol `v3.model-worker/2` only permits it
+to echo the parent-issued request ID.
+
+`ModelTrainingRequest` binds the exact DatasetVersion and dataset artifact,
+TrainingSpecVersion, training binding, ModelRun, TRAIN/VALIDATION row-set
+hashes, feature-schema and worker-runtime fingerprints, seed, and code version.
+`WorkerTrainingCandidate` must echo that exact ID. Core also computes a digest
+over the complete validated candidate, including coefficients and metrics, so
+TrainingEvidence and the safe model artifact cannot be mixed across requests
+or across different candidate contents.
+
+`ModelPredictionRequest` binds the exact ModelVersion, safe model artifact,
+originating training request, TrainingSpecVersion, prediction DatasetVersion
+and dataset artifact, prediction row-set hash, feature-schema and runtime
+fingerprints, and target semantics. `WorkerPredictionCandidate` must echo the
+exact request ID; runtime, feature order, and sample IDs alone are insufficient.
+
 ### ModelVersion
 
 ModelVersion binds the exact DatasetVersion, ModelRun, TrainingSpecVersion,
-V3 safe model artifact ID/media type, ordered feature schema fingerprint,
-worker runtime, seed, training evidence, provenance artifact and propagated
-truth/admission state. A worker response containing a canonical model ID is
-rejected as an unknown field.
+ModelTrainingRequest, validated worker-candidate digest, V3 safe model artifact
+ID/media type, ordered feature schema fingerprint, worker runtime, seed,
+training evidence, provenance artifact and propagated truth/admission state. A
+worker response containing a canonical model or request ID other than the
+parent-issued echo is rejected.
 
 ### PredictionArtifact
 
-PredictionArtifact binds the exact ModelVersion, prediction DatasetVersion,
-canonical sample row set, instrument/sample identity, event and decision time,
-explicit prediction timestamp, target/Label semantics, feature schema,
-validated finite values, worker runtime, provenance and truth/admission state.
-Candidate rows must match the requested sample IDs exactly; positional or
-partial output is rejected.
+PredictionArtifact binds the exact ModelVersion, exact safe model artifact,
+ModelPredictionRequest, prediction DatasetVersion, canonical sample row set,
+instrument/sample identity, event and decision time, explicit prediction
+timestamp, target/Label semantics, feature schema, validated finite values,
+worker runtime, provenance and truth/admission state. Candidate rows must match
+the requested sample IDs exactly; positional, partial, or cross-request output
+is rejected.
 
 ## Leakage and truth behavior
 
@@ -98,20 +121,37 @@ therefore preserved through the model and prediction chain.
 
 ## Safe artifact and worker boundary
 
-The selected worker is a closed JSON stdin/stdout subprocess. The parent fixes
+The selected worker is a closed JSON stdin/stdout subprocess using explicit
+protocol `v3.model-worker/2`. The parent fixes
 `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, and
 `NUMEXPR_NUM_THREADS` to one, consumes the existing worker sandbox policy to
 strip credentials, admits no network endpoints, and verifies the worker
 runtime before use.
 
 The worker never returns pickle/joblib/cloudpickle. It returns coefficients,
-intercept, exact row IDs, metrics and its runtime descriptor. V3 produces
+intercept, exact row IDs, metrics, its runtime descriptor, and only an echoed
+parent-issued request ID. V3 produces
 canonical UTF-8 JSON with media type
 `application/vnd.v3.safe-linear-model+json;version=1`, validates exact keys and
-finite numbers, and hashes the canonical payload. Unsupported media types,
+finite numbers, binds the training request and candidate digest, and hashes the
+canonical payload. Unsupported media types,
 non-canonical JSON, worker stderr/nonzero exit, timeouts, runtime drift,
 missing rows, extra rows, NaN and infinity all fail explicitly. There is no
 fallback backend.
+
+## Dataset row-materialization V0 boundary
+
+Track C DatasetVersion owns `dataset_artifact_id`, but V0 does not yet expose a
+canonical resolver or row-materialization receipt that proves caller-provided
+`ModelSample` values were decoded from those exact artifact bytes. Track E does
+not create that missing Dataset authority.
+
+TrainingDatasetView and PredictionDatasetView therefore describe an exact
+content-addressed model-runtime input view: they bind DatasetVersion,
+`dataset_artifact_id`, exact typed rows, and deterministic row-set hashes. This
+is exact request provenance, not proof of owner-resolved artifact decoding. The
+unresolved materialization boundary remains PRE_ALPHA and successful training,
+prediction, artifact validation, or metrics cannot promote it to FORMAL.
 
 ## Evaluation evidence
 
