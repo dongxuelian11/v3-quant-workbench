@@ -19,8 +19,8 @@
   "branch": "codex/round4-track-n-evidence-artifact-ux-v0-01",
   "base_branch": "main",
   "base_sha": "0d9799f0d47285d10246c23f9f1494105f20848a",
-  "head_sha_at_last_checkpoint": "0d9799f0d47285d10246c23f9f1494105f20848a",
-  "head_note": "The implementation is not committed at this checkpoint; final exact branch HEAD is observed and reported after commit/push rather than self-referenced inside its own commit.",
+  "head_sha_at_last_checkpoint": "26ffcc093318c8f5b1f9fe246e76106163348dcb",
+  "head_note": "This is the committed implementation checkpoint immediately before the ledger-only checkpoint commit. The final exact branch HEAD and its CI are observed and reported from GitHub rather than self-referenced inside their own commit.",
   "github_current_verified": true,
   "github_current_ci": {
     "status": "PASS",
@@ -28,6 +28,15 @@
     "url": "https://github.com/dongxuelian11/v3-quant-workbench/actions/runs/31497373057"
   },
   "open_prs_at_start": [],
+  "open_prs_at_delivery_reconcile": [
+    {
+      "number": 21,
+      "track": "O",
+      "head_sha": "8da06623673b1964ce11656a8ff2a1dabb6ec8dd",
+      "metadata_only": true,
+      "write_set_result": "One shared minimal mount path: apps/desktop/src/renderer/components/AgentWorkspace.tsx. No Track O code or contracts were read, copied, or depended on."
+    }
+  ],
   "sibling_write_sets": {
     "L": "NO_OPEN_PR",
     "M": "NO_OPEN_PR",
@@ -93,14 +102,26 @@
   },
   "visual_acceptance": "PASS; 21 distinct required visual states, bounded graph/list, active-session default, exact-lineage detail, and zero renderer console errors. One initial screenshot-redraw flake was kept as a failed attempt and the complete Electron capture was rerun before PASS.",
   "pr": {
-    "status": "PENDING",
-    "number": null,
-    "url": null
+    "status": "OPEN",
+    "number": 22,
+    "url": "https://github.com/dongxuelian11/v3-quant-workbench/pull/22",
+    "base_sha": "0d9799f0d47285d10246c23f9f1494105f20848a",
+    "observed_head_sha": "26ffcc093318c8f5b1f9fe246e76106163348dcb",
+    "auto_merge": false
   },
   "ci": {
     "status": "PENDING",
-    "head_sha": null,
-    "url": null
+    "head_sha": "26ffcc093318c8f5b1f9fe246e76106163348dcb",
+    "url": "https://github.com/dongxuelian11/v3-quant-workbench/actions/runs/31513495953",
+    "note": "Initial implementation-head CI was in progress when this ledger-only checkpoint was prepared. Final ledger-head CI must be verified externally after push."
+  },
+  "post_execution_evidence": {
+    "skill": "workflowguard-v3-evidence",
+    "status": "PARTIALLY_UNOBSERVED",
+    "observed": "Target root, branch, and starting HEAD matched; worktree was correctly observed dirty before commit.",
+    "not_observed": "Network/remote state and archived test/verifier logs were outside the read-only evidence input.",
+    "governance_decision": "NOT_PRODUCED",
+    "user_acceptance": "NOT_PRODUCED"
   },
   "blocked": [],
   "warnings": [
@@ -108,5 +129,5 @@
     "The local validator reported Python 3.14.5 versus the authority patch 3.14.7 as an existing warning; required compile/tests still passed.",
     "The isolated npm install lacked the Electron binary payload; the exact local 39.8.10 Electron distribution was reused only under ignored node_modules for smoke execution."
   ],
-  "next_action": "Collect a bounded read-only evidence snapshot, commit the owned write set, re-fetch GitHub CURRENT, push without force, open a PR, and wait for exact-head CI. Do not merge."
+  "next_action": "Commit and push this ledger-only checkpoint, then wait for exact final-head CI and report it externally. Do not merge."
 }
