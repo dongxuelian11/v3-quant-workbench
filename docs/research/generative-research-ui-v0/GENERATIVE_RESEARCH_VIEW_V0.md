@@ -18,6 +18,24 @@ The Python PydanticAI seam and TypeScript wire contract both use strict extra-fi
 | `EvidenceList` | `CANONICAL_EVIDENCE` | Exact evidence IDs, approved fields and canonical Lab link |
 | `Callout` | `AGENT_DRAFT_DERIVED` | Bounded escaped text with closed `INFO/WARNING/BLOCKED` tone and source evidence |
 
+## Frozen structural limits
+
+Python/Pydantic and the TypeScript runtime parser accept the same V0 structural set:
+
+| Contract item | Limit |
+|---|---:|
+| `ShortText` | 1..256 characters |
+| `BoundedText` | 1..4096 characters |
+| blocks per spec | 1..64 |
+| evidence IDs per block | 1..128, unique |
+| metrics per `MetricGroup` | 1..32 |
+| table columns / rows | 1..20 / 1..500 |
+| time-series points | 1..200 |
+| bar points | 1..100 |
+| evidence-list fields | 1..10 |
+
+Every evidence ID must match `^[a-z][a-z0-9_]*_sha256_[0-9a-f]{64}$`, even if a malformed key is present in the renderer context map. Every `block_id` must be unique within one spec. `block_id` is deterministic Draft-view identity, not canonical artifact identity.
+
 ## Approved selectors and display transforms
 
 Selectors are exactly:
@@ -25,13 +43,22 @@ Selectors are exactly:
 - `EVIDENCE_FIELD`: one approved field from `objectId`, `kind`, `title`, `summary`, `canonicalTruthState`, `canonicalAdmissionState`, `validationState`, `reviewerFinding`, `openInLab`, `artifactId`.
 - `FACT`: exact case-sensitive fact label from the selected evidence projection.
 
-Display normalization is exactly `NONE`, `NUMBER`, `PERCENT` or `ISO_DATE`. `DataTable` permits a declared column sort and bounded `top_n`. `BarChart` permits `INPUT`, `VALUE_ASC`, `VALUE_DESC` and bounded `top_n`. `TimeSeriesChart` permits an inclusive ISO date window. These are display transforms only; no formula or financial calculation engine exists.
+Display normalization is exactly `NONE`, `NUMBER` or `ISO_DATE`. V0 intentionally has no `PERCENT` transform: active-session evidence does not carry unit proof that distinguishes a ratio from an exact percent literal, and Track M must not guess or apply ratio-to-percent scaling.
+
+`NUMBER` accepts only a finite numeric literal and produces a display coordinate/value; it does not create canonical financial numeric authority. `ISO_DATE` accepts only:
+
+- a valid date-only value `YYYY-MM-DD`, preserved exactly; or
+- a valid timestamp `YYYY-MM-DDTHH:mm:ss(.fraction)?Z` / `YYYY-MM-DDTHH:mm:ss(.fraction)?±HH:mm`, deterministically normalized to UTC.
+
+Timezone-naive timestamps, locale date strings and invalid calendar/clock/offset values fail closed. `TimeSeriesChart.date_window` uses the same strict grammar and ordering. `DataTable` permits a declared column sort and bounded `top_n`; `BarChart` permits `INPUT`, `VALUE_ASC`, `VALUE_DESC` and bounded `top_n`. These are display transforms only; no formula or financial calculation engine exists.
 
 ## Exact evidence binding
 
 The renderer receives only the active session's already-derived `EvidenceView[]`. The spec's `session_view_id` must match the active session. Every referenced `evidence_id` must occur in the block declaration and active-session evidence map. A session switch regenerates the deterministic fixture for the new session; a prior session spec fails closed.
 
 For `CANONICAL_EVIDENCE`, Agent output contains labels, evidence IDs, selectors and display choices—not canonical values. The resolver reads the value from the current evidence projection. For `AGENT_DRAFT_DERIVED`, text remains visibly `NON_CANONICAL / DRAFT` and cannot set Truth, Admission or Validation.
+
+Resolved display values retain `sourceEvidenceId`, and UI evidence bindings return to the original canonical evidence. Normalization never mutates the evidence projection. Chart numbers and normalized temporal coordinates are renderer-only display values, not new Artifacts, Truth, Admission or Validation state.
 
 ## Renderer safety
 

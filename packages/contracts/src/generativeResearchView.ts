@@ -1,5 +1,20 @@
 export const GENERATIVE_RESEARCH_VIEW_SCHEMA_VERSION = "v3.generative_research_view/1.0.0" as const;
 
+export const GENERATIVE_RESEARCH_VIEW_LIMITS = Object.freeze({
+  SHORT_TEXT_MAX: 256,
+  BOUNDED_TEXT_MAX: 4096,
+  MAX_BLOCKS: 64,
+  MAX_EVIDENCE_IDS_PER_BLOCK: 128,
+  MAX_METRICS: 32,
+  MAX_TABLE_COLUMNS: 20,
+  MAX_TABLE_ROWS: 500,
+  MAX_TIME_SERIES_POINTS: 200,
+  MAX_BAR_POINTS: 100,
+  MAX_EVIDENCE_LIST_FIELDS: 10
+} as const);
+
+export const GENERATIVE_RESEARCH_VIEW_EVIDENCE_ID_PATTERN = "^[a-z][a-z0-9_]*_sha256_[0-9a-f]{64}$" as const;
+
 export const GENERATIVE_RESEARCH_VIEW_BLOCK_TYPES = Object.freeze([
   "Narrative",
   "MetricGroup",
@@ -12,7 +27,7 @@ export const GENERATIVE_RESEARCH_VIEW_BLOCK_TYPES = Object.freeze([
 
 export type GenerativeResearchViewBlockType = typeof GENERATIVE_RESEARCH_VIEW_BLOCK_TYPES[number];
 export type ResearchViewDataAuthority = "CANONICAL_EVIDENCE" | "AGENT_DRAFT_DERIVED";
-export type DisplayNormalization = "NONE" | "NUMBER" | "PERCENT" | "ISO_DATE";
+export type DisplayNormalization = "NONE" | "NUMBER" | "ISO_DATE";
 export type EvidenceField = "objectId" | "kind" | "title" | "summary" | "canonicalTruthState" | "canonicalAdmissionState" | "validationState" | "reviewerFinding" | "openInLab" | "artifactId";
 
 export type ResearchViewSelector =

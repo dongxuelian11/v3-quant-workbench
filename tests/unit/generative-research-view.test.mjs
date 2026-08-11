@@ -4,6 +4,11 @@ import { parseResearchViewSpec } from "../../apps/desktop/src/renderer/generativ
 import { buildClosedChartOption } from "../../apps/desktop/src/renderer/generative_ui/closedRenderer.ts";
 import { CLOSED_RESEARCH_RENDERER_KEYS, getClosedResearchRenderer } from "../../apps/desktop/src/renderer/generative_ui/rendererRegistry.ts";
 import { createGenerativeResearchViewFixture } from "../../apps/desktop/src/renderer/generative_ui/integrationFixture.ts";
+import {
+  GENERATIVE_RESEARCH_VIEW_BLOCK_TYPES,
+  GENERATIVE_RESEARCH_VIEW_EVIDENCE_ID_PATTERN,
+  GENERATIVE_RESEARCH_VIEW_LIMITS
+} from "../../packages/contracts/src/generativeResearchView.ts";
 
 const evidenceId = (character) => `evidence_sha256_${character.repeat(64)}`;
 
@@ -292,6 +297,136 @@ test("unknown selector and formula language are rejected", () => {
   assert.match(parsed.invalidBlocks[0].reason, /unknown selector/);
 });
 
+test("V0 rejects PERCENT because canonical evidence has no unit-bearing percent contract", () => {
+  const spec = structuredClone(canonicalMetricSpec);
+  spec.blocks[0].metrics[0].selector.normalization = "PERCENT";
+  const parsed = parseResearchViewSpec(spec, { sessionViewId: "session-a", evidence: sessionEvidence });
+  assert.equal(parsed.status, "INVALID");
+  assert.match(parsed.invalidBlocks[0].reason, /normalization/);
+});
+
+test("ISO_DATE deterministically preserves date-only and normalizes timezone-aware timestamps", () => {
+  const values = [
+    ["2026-08-11", "2026-08-11"],
+    ["2026-08-11T09:00:00+08:00", "2026-08-11T01:00:00.000Z"],
+    ["2026-08-11T01:00:00Z", "2026-08-11T01:00:00.000Z"]
+  ];
+  for (const [source, expected] of values) {
+    const evidence = [{
+      ...sessionEvidence[0],
+      facts: [...sessionEvidence[0].facts.filter((fact) => fact.label !== "As of"), { label: "As of", value: source }]
+    }];
+    const canonicalBefore = structuredClone(evidence);
+    const spec = {
+      ...canonicalMetricSpec,
+      blocks: [{
+        type: "TimeSeriesChart",
+        block_id: `time-${source}`,
+        title: "Strict temporal display",
+        data_authority: "CANONICAL_EVIDENCE",
+        evidence_ids: [evidenceId("a")],
+        x_label: "Date",
+        y_label: "IC",
+        points: [{
+          evidence_id: evidenceId("a"),
+          x_selector: { kind: "FACT", label: "As of", normalization: "ISO_DATE" },
+          y_selector: { kind: "FACT", label: "IC", normalization: "NUMBER" }
+        }],
+        date_window: null
+      }]
+    };
+    const parsed = parseResearchViewSpec(spec, { sessionViewId: "session-a", evidence });
+    assert.equal(parsed.status, "VALID", source);
+    assert.equal(parsed.blocks[0].points[0].x, expected, source);
+    assert.equal(parsed.blocks[0].points[0].sourceEvidenceId, evidenceId("a"), source);
+    assert.deepEqual(evidence, canonicalBefore, `canonical evidence mutated for ${source}`);
+  }
+});
+
+test("ISO_DATE resolved output is independent of the machine timezone", () => {
+  const evidence = [{
+    ...sessionEvidence[0],
+    facts: [...sessionEvidence[0].facts.filter((fact) => fact.label !== "As of"), { label: "As of", value: "2026-08-11T09:00:00+08:00" }]
+  }];
+  const spec = structuredClone(canonicalMetricSpec);
+  spec.blocks[0].metrics = [{
+    label: "As of",
+    evidence_id: evidenceId("a"),
+    selector: { kind: "FACT", label: "As of", normalization: "ISO_DATE" }
+  }];
+  const originalTimezone = process.env.TZ;
+  try {
+    const resolved = [];
+    for (const timezone of ["UTC", "Asia/Shanghai"]) {
+      process.env.TZ = timezone;
+      const parsed = parseResearchViewSpec(spec, { sessionViewId: "session-a", evidence });
+      assert.equal(parsed.status, "VALID", timezone);
+      resolved.push(parsed.blocks[0].metrics[0].value);
+    }
+    assert.deepEqual(resolved, ["2026-08-11T01:00:00.000Z", "2026-08-11T01:00:00.000Z"]);
+  } finally {
+    if (originalTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimezone;
+  }
+});
+
+test("ISO_DATE rejects timezone-naive, locale, and invalid calendar evidence values", () => {
+  for (const source of ["2026-08-11T09:00:00", "Aug 11 2026", "08/11/2026", "2026-02-30", "2026-08-11T25:00:00Z", "2026-08-11T09:00:00+24:00"]) {
+    const evidence = [{
+      ...sessionEvidence[0],
+      facts: [...sessionEvidence[0].facts.filter((fact) => fact.label !== "As of"), { label: "As of", value: source }]
+    }];
+    const spec = structuredClone(canonicalMetricSpec);
+    spec.blocks[0].metrics = [{
+      label: "As of",
+      evidence_id: evidenceId("a"),
+      selector: { kind: "FACT", label: "As of", normalization: "ISO_DATE" }
+    }];
+    const parsed = parseResearchViewSpec(spec, { sessionViewId: "session-a", evidence });
+    assert.equal(parsed.status, "INVALID", source);
+    assert.match(parsed.invalidBlocks[0].reason, /ISO timestamp|calendar date|clock time|timezone offset/, source);
+  }
+});
+
+test("TimeSeriesChart date_window uses the same strict temporal grammar and ordering", () => {
+  const block = {
+    type: "TimeSeriesChart",
+    block_id: "strict-window",
+    title: "Strict date window",
+    data_authority: "CANONICAL_EVIDENCE",
+    evidence_ids: [evidenceId("a")],
+    x_label: "As of",
+    y_label: "IC",
+    points: [{
+      evidence_id: evidenceId("a"),
+      x_selector: { kind: "FACT", label: "As of", normalization: "ISO_DATE" },
+      y_selector: { kind: "FACT", label: "IC", normalization: "NUMBER" }
+    }],
+    date_window: { start: "2026-08-11", end: "2026-08-12T00:00:00Z" }
+  };
+  assert.equal(parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [block] }, { sessionViewId: "session-a", evidence: sessionEvidence }).status, "VALID");
+  for (const date_window of [
+    { start: "2026-08-11T00:00:00", end: "2026-08-12T00:00:00Z" },
+    { start: "Aug 11 2026", end: "2026-08-12" },
+    { start: "2026-02-30", end: "2026-08-12" },
+    { start: "2026-08-13", end: "2026-08-12" }
+  ]) {
+    const parsed = parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [{ ...block, date_window }] }, { sessionViewId: "session-a", evidence: sessionEvidence });
+    assert.equal(parsed.status, "INVALID", JSON.stringify(date_window));
+  }
+});
+
+test("NUMBER accepts finite numeric literals and rejects nonnumeric canonical evidence", () => {
+  assert.equal(parseResearchViewSpec(canonicalMetricSpec, { sessionViewId: "session-a", evidence: sessionEvidence }).status, "VALID");
+  const evidence = [{
+    ...sessionEvidence[0],
+    facts: sessionEvidence[0].facts.map((fact) => fact.label === "IC" ? { ...fact, value: "not-a-number" } : fact)
+  }];
+  const parsed = parseResearchViewSpec(canonicalMetricSpec, { sessionViewId: "session-a", evidence });
+  assert.equal(parsed.status, "INVALID");
+  assert.match(parsed.invalidBlocks[0].reason, /finite numeric/);
+});
+
 test("arbitrary HTML in Agent-authored text is rejected", () => {
   const spec = {
     ...canonicalMetricSpec,
@@ -339,12 +474,107 @@ test("extra fields fail the closed envelope schema", () => {
   assert.match(parsed.error, /closed schema/);
 });
 
+test("TS parser accepts exactly the Python ShortText and BoundedText length boundaries", () => {
+  const narrative = {
+    type: "Narrative",
+    block_id: "narrative-boundary",
+    title: "Narrative boundary",
+    data_authority: "AGENT_DRAFT_DERIVED",
+    evidence_ids: [evidenceId("a")],
+    text: "n".repeat(4096)
+  };
+  const valid = parseResearchViewSpec({ ...canonicalMetricSpec, title: "s".repeat(256), blocks: [narrative] }, { sessionViewId: "session-a", evidence: sessionEvidence });
+  assert.equal(valid.status, "VALID");
+  const callout = parseResearchViewSpec({
+    ...canonicalMetricSpec,
+    blocks: [{
+      type: "Callout",
+      block_id: "callout-boundary",
+      title: "Callout boundary",
+      data_authority: "AGENT_DRAFT_DERIVED",
+      evidence_ids: [evidenceId("a")],
+      tone: "INFO",
+      text: "c".repeat(4096)
+    }]
+  }, { sessionViewId: "session-a", evidence: sessionEvidence });
+  assert.equal(callout.status, "VALID");
+
+  const longShortText = parseResearchViewSpec({ ...canonicalMetricSpec, title: "s".repeat(257), blocks: [narrative] }, { sessionViewId: "session-a", evidence: sessionEvidence });
+  assert.equal(longShortText.status, "INVALID");
+  assert.match(longShortText.error, /ShortText/);
+
+  const longBoundedText = parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [{ ...narrative, text: "n".repeat(4097) }] }, { sessionViewId: "session-a", evidence: sessionEvidence });
+  assert.equal(longBoundedText.status, "INVALID");
+  assert.match(longBoundedText.invalidBlocks[0].reason, /BoundedText/);
+});
+
+test("TS parser enforces the Python EvidenceId pattern and 1-128 unique evidence list", () => {
+  const evidence = Array.from({ length: 129 }, (_, index) => ({
+    ...sessionEvidence[0],
+    objectId: `evidence_sha256_${index.toString(16).padStart(64, "0")}`,
+    title: `Evidence ${index}`
+  }));
+  const narrative = {
+    type: "Narrative",
+    block_id: "evidence-boundary",
+    title: "Evidence boundary",
+    data_authority: "AGENT_DRAFT_DERIVED",
+    evidence_ids: evidence.slice(0, 128).map((item) => item.objectId),
+    text: "Bounded evidence IDs."
+  };
+  assert.equal(parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [narrative] }, { sessionViewId: "session-a", evidence }).status, "VALID");
+
+  const tooMany = parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [{ ...narrative, evidence_ids: evidence.map((item) => item.objectId) }] }, { sessionViewId: "session-a", evidence });
+  assert.equal(tooMany.status, "INVALID");
+  assert.match(tooMany.invalidBlocks[0].reason, /1-128 evidence_ids/);
+
+  const malformedId = "MALFORMED_sha256_" + "a".repeat(64);
+  const malformedEvidence = [{ ...sessionEvidence[0], objectId: malformedId }];
+  const malformed = parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [{ ...narrative, evidence_ids: [malformedId] }] }, { sessionViewId: "session-a", evidence: malformedEvidence });
+  assert.equal(malformed.status, "INVALID");
+  assert.match(malformed.invalidBlocks[0].reason, /EvidenceId/);
+
+  const duplicate = parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [{ ...narrative, evidence_ids: [evidence[0].objectId, evidence[0].objectId] }] }, { sessionViewId: "session-a", evidence });
+  assert.equal(duplicate.status, "INVALID");
+  assert.match(duplicate.invalidBlocks[0].reason, /duplicates/);
+});
+
+test("ResearchViewSpec rejects duplicate block_id identity before rendering", () => {
+  const duplicate = structuredClone(canonicalMetricSpec.blocks[0]);
+  const parsed = parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [duplicate, structuredClone(duplicate)] }, { sessionViewId: "session-a", evidence: sessionEvidence });
+  assert.equal(parsed.status, "INVALID");
+  assert.match(parsed.error, /block_id.*unique/);
+  assert.deepEqual(parsed.blocks, []);
+});
+
 test("closed envelope requires 1-64 bounded blocks", () => {
+  const boundedBlocks = Array.from({ length: 64 }, (_, index) => ({
+    ...structuredClone(canonicalMetricSpec.blocks[0]),
+    block_id: `metric-${index}`
+  }));
+  assert.equal(parseResearchViewSpec({ ...canonicalMetricSpec, blocks: boundedBlocks }, { sessionViewId: "session-a", evidence: sessionEvidence }).status, "VALID");
   for (const blocks of [[], Array.from({ length: 65 }, () => structuredClone(canonicalMetricSpec.blocks[0]))]) {
     const parsed = parseResearchViewSpec({ ...canonicalMetricSpec, blocks }, { sessionViewId: "session-a", evidence: sessionEvidence });
     assert.equal(parsed.status, "INVALID");
     assert.match(parsed.error, /1-64 blocks/);
   }
+});
+
+test("Track M TS contract publishes the frozen V0 structural constants and seven block vocabulary", () => {
+  assert.deepEqual(GENERATIVE_RESEARCH_VIEW_LIMITS, {
+    SHORT_TEXT_MAX: 256,
+    BOUNDED_TEXT_MAX: 4096,
+    MAX_BLOCKS: 64,
+    MAX_EVIDENCE_IDS_PER_BLOCK: 128,
+    MAX_METRICS: 32,
+    MAX_TABLE_COLUMNS: 20,
+    MAX_TABLE_ROWS: 500,
+    MAX_TIME_SERIES_POINTS: 200,
+    MAX_BAR_POINTS: 100,
+    MAX_EVIDENCE_LIST_FIELDS: 10
+  });
+  assert.equal(GENERATIVE_RESEARCH_VIEW_EVIDENCE_ID_PATTERN, "^[a-z][a-z0-9_]*_sha256_[0-9a-f]{64}$");
+  assert.deepEqual(GENERATIVE_RESEARCH_VIEW_BLOCK_TYPES, ["Narrative", "MetricGroup", "DataTable", "TimeSeriesChart", "BarChart", "EvidenceList", "Callout"]);
 });
 
 test("metric group rejects more than 32 selector metrics", () => {

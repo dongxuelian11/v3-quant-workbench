@@ -6,6 +6,23 @@ import type {
 import type { LabId } from "../../../../../packages/contracts/src/index";
 
 const GENERATIVE_RESEARCH_VIEW_SCHEMA_VERSION = "v3.generative_research_view/1.0.0" as const;
+// Keep this runtime parser table byte-for-byte aligned with the exported Track M
+// contract constants. The renderer compiles as CommonJS, while the contract is
+// also executed directly by Node's TypeScript test runner, so a runtime TS import
+// would make one of those two consumers depend on extension-specific resolution.
+const GENERATIVE_RESEARCH_VIEW_LIMITS = Object.freeze({
+  SHORT_TEXT_MAX: 256,
+  BOUNDED_TEXT_MAX: 4096,
+  MAX_BLOCKS: 64,
+  MAX_EVIDENCE_IDS_PER_BLOCK: 128,
+  MAX_METRICS: 32,
+  MAX_TABLE_COLUMNS: 20,
+  MAX_TABLE_ROWS: 500,
+  MAX_TIME_SERIES_POINTS: 200,
+  MAX_BAR_POINTS: 100,
+  MAX_EVIDENCE_LIST_FIELDS: 10
+} as const);
+const GENERATIVE_RESEARCH_VIEW_EVIDENCE_ID_PATTERN = "^[a-z][a-z0-9_]*_sha256_[0-9a-f]{64}$";
 
 export interface ResearchEvidenceProjection {
   readonly kind: string;
@@ -117,7 +134,10 @@ export interface ParsedResearchView {
 const EVIDENCE_FIELDS = new Set<EvidenceField>([
   "objectId", "kind", "title", "summary", "canonicalTruthState", "canonicalAdmissionState", "validationState", "reviewerFinding", "openInLab", "artifactId"
 ]);
-const NORMALIZATIONS = new Set<DisplayNormalization>(["NONE", "NUMBER", "PERCENT", "ISO_DATE"]);
+const NORMALIZATIONS = new Set<DisplayNormalization>(["NONE", "NUMBER", "ISO_DATE"]);
+const EVIDENCE_ID_PATTERN = new RegExp(GENERATIVE_RESEARCH_VIEW_EVIDENCE_ID_PATTERN);
+const ISO_DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|([+-])(\d{2}):(\d{2}))$/;
 
 export function parseResearchViewSpec(value: unknown, context: ResearchViewParseContext): ParsedResearchView {
   try {
@@ -127,9 +147,16 @@ export function parseResearchViewSpec(value: unknown, context: ResearchViewParse
     equal(envelope.session_view_id, context.sessionViewId, "cross-session research view");
     equal(envelope.permission, "L1_DRAFT", "research view requires L1_DRAFT");
     equal(envelope.authority, "AGENT_DRAFT_PROPOSAL", "research view authority is invalid");
-    const specId = text(envelope.spec_id, "spec_id");
-    const title = safeText(envelope.title, "title");
-    if (!Array.isArray(envelope.blocks) || envelope.blocks.length === 0 || envelope.blocks.length > 64) throw new TypeError("research view requires 1-64 blocks");
+    const specId = shortText(envelope.spec_id, "spec_id");
+    shortText(envelope.session_view_id, "session_view_id");
+    const title = safeShortText(envelope.title, "title");
+    if (!Array.isArray(envelope.blocks) || envelope.blocks.length === 0 || envelope.blocks.length > GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_BLOCKS) throw new TypeError(`research view requires 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_BLOCKS} blocks`);
+    const blockIds = envelope.blocks.flatMap((candidate) => {
+      if (candidate === null || Array.isArray(candidate) || typeof candidate !== "object") return [];
+      const value = (candidate as Record<string, unknown>).block_id;
+      return typeof value === "string" ? [shortText(value, "block_id")] : [];
+    });
+    if (new Set(blockIds).size !== blockIds.length) throw new TypeError("ResearchViewSpec block_id values must be unique");
     const evidenceById = new Map(context.evidence.map((item) => [item.objectId, item]));
     const blocks: ResolvedResearchViewBlock[] = [];
     const invalidBlocks: { blockId: string; reason: string }[] = [];
@@ -174,13 +201,13 @@ function parseCallout(value: unknown, evidenceById: ReadonlyMap<string, Research
   if (block.tone !== "INFO" && block.tone !== "WARNING" && block.tone !== "BLOCKED") throw new TypeError("Callout tone is invalid");
   return {
     type: "Callout",
-    blockId: text(block.block_id, "block_id"),
-    title: safeText(block.title, "block title"),
+    blockId: shortText(block.block_id, "block_id"),
+    title: safeShortText(block.title, "block title"),
     dataAuthority: "AGENT_DRAFT_DERIVED",
     authorityLabel: "NON_CANONICAL / DRAFT",
     evidenceIds: declaredEvidenceIds(block.evidence_ids, evidenceById, "Callout"),
     tone: block.tone,
-    text: safeText(block.text, "Callout text")
+    text: safeBoundedText(block.text, "Callout text")
   };
 }
 
@@ -189,17 +216,17 @@ function parseEvidenceList(value: unknown, evidenceById: ReadonlyMap<string, Res
   exactKeys(block, ["type", "block_id", "title", "data_authority", "evidence_ids", "fields"], "EvidenceList");
   equal(block.data_authority, "CANONICAL_EVIDENCE", "EvidenceList requires CANONICAL_EVIDENCE");
   const evidenceIds = declaredEvidenceIds(block.evidence_ids, evidenceById, "EvidenceList");
-  if (!Array.isArray(block.fields) || block.fields.length === 0 || block.fields.length > 10) throw new TypeError("EvidenceList requires 1-10 fields");
+  if (!Array.isArray(block.fields) || block.fields.length === 0 || block.fields.length > GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_EVIDENCE_LIST_FIELDS) throw new TypeError(`EvidenceList requires 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_EVIDENCE_LIST_FIELDS} fields`);
   const fields = block.fields.map((value) => {
     const field = record(value, "EvidenceList field");
     exactKeys(field, ["key", "label", "selector"], "EvidenceList field");
-    return { key: text(field.key, "field key"), label: safeText(field.label, "field label"), selector: parseSelector(field.selector) };
+    return { key: shortText(field.key, "field key"), label: safeShortText(field.label, "field label"), selector: parseSelector(field.selector) };
   });
   if (new Set(fields.map((item) => item.key)).size !== fields.length) throw new TypeError("EvidenceList field keys must be unique");
   return {
     type: "EvidenceList",
-    blockId: text(block.block_id, "block_id"),
-    title: safeText(block.title, "block title"),
+    blockId: shortText(block.block_id, "block_id"),
+    title: safeShortText(block.title, "block title"),
     dataAuthority: "CANONICAL_EVIDENCE",
     evidenceIds,
     items: evidenceIds.map((evidenceId) => {
@@ -220,12 +247,12 @@ function parseNarrative(value: unknown, evidenceById: ReadonlyMap<string, Resear
   const evidenceIds = declaredEvidenceIds(block.evidence_ids, evidenceById, "Narrative");
   return {
     type: "Narrative",
-    blockId: text(block.block_id, "block_id"),
-    title: safeText(block.title, "block title"),
+    blockId: shortText(block.block_id, "block_id"),
+    title: safeShortText(block.title, "block title"),
     dataAuthority: "AGENT_DRAFT_DERIVED",
     authorityLabel: "NON_CANONICAL / DRAFT",
     evidenceIds,
-    text: safeText(block.text, "Narrative text")
+    text: safeBoundedText(block.text, "Narrative text")
   };
 }
 
@@ -234,11 +261,11 @@ function parseBarChart(value: unknown, evidenceById: ReadonlyMap<string, Researc
   exactKeys(block, ["type", "block_id", "title", "data_authority", "evidence_ids", "category_label", "value_label", "bars", "sort", "top_n"], "BarChart");
   equal(block.data_authority, "CANONICAL_EVIDENCE", "BarChart requires CANONICAL_EVIDENCE");
   const evidenceIds = declaredEvidenceIds(block.evidence_ids, evidenceById, "BarChart");
-  if (!Array.isArray(block.bars) || block.bars.length === 0 || block.bars.length > 100) throw new TypeError("BarChart requires 1-100 bars");
+  if (!Array.isArray(block.bars) || block.bars.length === 0 || block.bars.length > GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_BAR_POINTS) throw new TypeError(`BarChart requires 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_BAR_POINTS} bars`);
   let bars = block.bars.map((value) => {
     const bar = record(value, "BarChart bar");
     exactKeys(bar, ["evidence_id", "category_selector", "value_selector"], "BarChart bar");
-    const evidenceId = text(bar.evidence_id, "bar evidence_id");
+    const evidenceId = parseEvidenceId(bar.evidence_id, "bar evidence_id");
     if (!evidenceIds.includes(evidenceId)) throw new TypeError(`bar evidence ${evidenceId} is not declared by block`);
     const evidence = requireEvidence(evidenceById, evidenceId);
     const categorySelector = parseSelector(bar.category_selector);
@@ -257,12 +284,12 @@ function parseBarChart(value: unknown, evidenceById: ReadonlyMap<string, Researc
   }
   return {
     type: "BarChart",
-    blockId: text(block.block_id, "block_id"),
-    title: safeText(block.title, "block title"),
+    blockId: shortText(block.block_id, "block_id"),
+    title: safeShortText(block.title, "block title"),
     dataAuthority: "CANONICAL_EVIDENCE",
     evidenceIds,
-    categoryLabel: safeText(block.category_label, "category_label"),
-    valueLabel: safeText(block.value_label, "value_label"),
+    categoryLabel: safeShortText(block.category_label, "category_label"),
+    valueLabel: safeShortText(block.value_label, "value_label"),
     bars
   };
 }
@@ -272,7 +299,7 @@ function parseTimeSeriesChart(value: unknown, evidenceById: ReadonlyMap<string, 
   exactKeys(block, ["type", "block_id", "title", "data_authority", "evidence_ids", "x_label", "y_label", "points", "date_window"], "TimeSeriesChart");
   equal(block.data_authority, "CANONICAL_EVIDENCE", "TimeSeriesChart requires CANONICAL_EVIDENCE");
   const evidenceIds = declaredEvidenceIds(block.evidence_ids, evidenceById, "TimeSeriesChart");
-  if (!Array.isArray(block.points) || block.points.length === 0 || block.points.length > 200) throw new TypeError("TimeSeriesChart requires 1-200 points");
+  if (!Array.isArray(block.points) || block.points.length === 0 || block.points.length > GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_TIME_SERIES_POINTS) throw new TypeError(`TimeSeriesChart requires 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_TIME_SERIES_POINTS} points`);
   let start = Number.NEGATIVE_INFINITY;
   let end = Number.POSITIVE_INFINITY;
   if (block.date_window !== null) {
@@ -285,7 +312,7 @@ function parseTimeSeriesChart(value: unknown, evidenceById: ReadonlyMap<string, 
   const points = block.points.map((value) => {
     const point = record(value, "TimeSeriesChart point");
     exactKeys(point, ["evidence_id", "x_selector", "y_selector"], "TimeSeriesChart point");
-    const evidenceId = text(point.evidence_id, "point evidence_id");
+    const evidenceId = parseEvidenceId(point.evidence_id, "point evidence_id");
     if (!evidenceIds.includes(evidenceId)) throw new TypeError(`point evidence ${evidenceId} is not declared by block`);
     const evidence = requireEvidence(evidenceById, evidenceId);
     const xSelector = parseSelector(point.x_selector);
@@ -297,18 +324,18 @@ function parseTimeSeriesChart(value: unknown, evidenceById: ReadonlyMap<string, 
     if (!Number.isFinite(y)) throw new TypeError("TimeSeriesChart y value must be finite");
     return { x, y, sourceEvidenceId: evidenceId };
   }).filter((point) => {
-    const timestamp = Date.parse(point.x);
+    const timestamp = parseStrictIsoTemporal(point.x, "TimeSeriesChart x value").sortKey;
     return timestamp >= start && timestamp <= end;
-  }).sort((left, right) => Date.parse(left.x) - Date.parse(right.x) || left.sourceEvidenceId.localeCompare(right.sourceEvidenceId));
+  }).sort((left, right) => parseStrictIsoTemporal(left.x, "TimeSeriesChart x value").sortKey - parseStrictIsoTemporal(right.x, "TimeSeriesChart x value").sortKey || left.sourceEvidenceId.localeCompare(right.sourceEvidenceId));
   if (points.length === 0) throw new TypeError("TimeSeriesChart date window resolved no evidence points");
   return {
     type: "TimeSeriesChart",
-    blockId: text(block.block_id, "block_id"),
-    title: safeText(block.title, "block title"),
+    blockId: shortText(block.block_id, "block_id"),
+    title: safeShortText(block.title, "block title"),
     dataAuthority: "CANONICAL_EVIDENCE",
     evidenceIds,
-    xLabel: safeText(block.x_label, "x_label"),
-    yLabel: safeText(block.y_label, "y_label"),
+    xLabel: safeShortText(block.x_label, "x_label"),
+    yLabel: safeShortText(block.y_label, "y_label"),
     points
   };
 }
@@ -318,22 +345,20 @@ function parseMetricGroup(value: unknown, evidenceById: ReadonlyMap<string, Rese
   exactKeys(block, ["type", "block_id", "title", "data_authority", "evidence_ids", "metrics"], "MetricGroup");
   equal(block.type, "MetricGroup", "unknown research view block");
   equal(block.data_authority, "CANONICAL_EVIDENCE", "MetricGroup requires CANONICAL_EVIDENCE");
-  const evidenceIds = stringArray(block.evidence_ids, "evidence_ids");
-  if (evidenceIds.length === 0) throw new TypeError("MetricGroup requires evidence_ids");
-  for (const evidenceId of evidenceIds) requireEvidence(evidenceById, evidenceId);
-  if (!Array.isArray(block.metrics) || block.metrics.length === 0 || block.metrics.length > 32) throw new TypeError("MetricGroup requires 1-32 metrics");
+  const evidenceIds = declaredEvidenceIds(block.evidence_ids, evidenceById, "MetricGroup");
+  if (!Array.isArray(block.metrics) || block.metrics.length === 0 || block.metrics.length > GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_METRICS) throw new TypeError(`MetricGroup requires 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_METRICS} metrics`);
   const metrics = block.metrics.map((value) => {
     const metric = record(value, "metric");
     exactKeys(metric, ["label", "evidence_id", "selector"], "metric");
-    const evidenceId = text(metric.evidence_id, "metric evidence_id");
+    const evidenceId = parseEvidenceId(metric.evidence_id, "metric evidence_id");
     if (!evidenceIds.includes(evidenceId)) throw new TypeError(`metric evidence ${evidenceId} is not declared by block`);
     const evidence = requireEvidence(evidenceById, evidenceId);
-    return { label: safeText(metric.label, "metric label"), value: selectValue(evidence, parseSelector(metric.selector)), sourceEvidenceId: evidenceId };
+    return { label: safeShortText(metric.label, "metric label"), value: selectValue(evidence, parseSelector(metric.selector)), sourceEvidenceId: evidenceId };
   });
   return {
     type: "MetricGroup",
-    blockId: text(block.block_id, "block_id"),
-    title: safeText(block.title, "block title"),
+    blockId: shortText(block.block_id, "block_id"),
+    title: safeShortText(block.title, "block title"),
     dataAuthority: "CANONICAL_EVIDENCE",
     evidenceIds,
     metrics
@@ -345,18 +370,18 @@ function parseDataTable(value: unknown, evidenceById: ReadonlyMap<string, Resear
   exactKeys(block, ["type", "block_id", "title", "data_authority", "evidence_ids", "columns", "rows", "sort", "top_n"], "DataTable");
   equal(block.data_authority, "CANONICAL_EVIDENCE", "DataTable requires CANONICAL_EVIDENCE");
   const evidenceIds = declaredEvidenceIds(block.evidence_ids, evidenceById, "DataTable");
-  if (!Array.isArray(block.columns) || block.columns.length === 0 || block.columns.length > 20) throw new TypeError("DataTable requires 1-20 columns");
+  if (!Array.isArray(block.columns) || block.columns.length === 0 || block.columns.length > GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_TABLE_COLUMNS) throw new TypeError(`DataTable requires 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_TABLE_COLUMNS} columns`);
   const parsedColumns = block.columns.map((value) => {
     const column = record(value, "DataTable column");
     exactKeys(column, ["key", "header", "selector"], "DataTable column");
-    return { key: text(column.key, "column key"), header: safeText(column.header, "column header"), selector: parseSelector(column.selector) };
+    return { key: shortText(column.key, "column key"), header: safeShortText(column.header, "column header"), selector: parseSelector(column.selector) };
   });
   if (new Set(parsedColumns.map((item) => item.key)).size !== parsedColumns.length) throw new TypeError("DataTable column keys must be unique");
-  if (!Array.isArray(block.rows) || block.rows.length === 0 || block.rows.length > 500) throw new TypeError("DataTable requires 1-500 evidence rows");
+  if (!Array.isArray(block.rows) || block.rows.length === 0 || block.rows.length > GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_TABLE_ROWS) throw new TypeError(`DataTable requires 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_TABLE_ROWS} evidence rows`);
   let rows = block.rows.map((value) => {
     const row = record(value, "DataTable row");
     exactKeys(row, ["evidence_id"], "DataTable row");
-    const evidenceId = text(row.evidence_id, "row evidence_id");
+    const evidenceId = parseEvidenceId(row.evidence_id, "row evidence_id");
     if (!evidenceIds.includes(evidenceId)) throw new TypeError(`row evidence ${evidenceId} is not declared by block`);
     const evidence = requireEvidence(evidenceById, evidenceId);
     return { evidenceId, cells: parsedColumns.map((column) => selectValue(evidence, column.selector)) };
@@ -364,7 +389,7 @@ function parseDataTable(value: unknown, evidenceById: ReadonlyMap<string, Resear
   if (block.sort !== null) {
     const sort = record(block.sort, "DataTable sort");
     exactKeys(sort, ["column_key", "direction"], "DataTable sort");
-    const columnKey = text(sort.column_key, "sort column_key");
+    const columnKey = shortText(sort.column_key, "sort column_key");
     const columnIndex = parsedColumns.findIndex((item) => item.key === columnKey);
     if (columnIndex < 0) throw new TypeError("DataTable sort references an unknown column");
     if (sort.direction !== "ASC" && sort.direction !== "DESC") throw new TypeError("DataTable sort direction is invalid");
@@ -377,8 +402,8 @@ function parseDataTable(value: unknown, evidenceById: ReadonlyMap<string, Resear
   }
   return {
     type: "DataTable",
-    blockId: text(block.block_id, "block_id"),
-    title: safeText(block.title, "block title"),
+    blockId: shortText(block.block_id, "block_id"),
+    title: safeShortText(block.title, "block title"),
     dataAuthority: "CANONICAL_EVIDENCE",
     evidenceIds,
     columns: parsedColumns.map(({ key, header }) => ({ key, header })),
@@ -395,7 +420,7 @@ function parseSelector(value: unknown): ResearchViewSelector {
   }
   if (selector.kind === "FACT") {
     exactKeys(selector, ["kind", "label", "normalization"], "FACT selector");
-    return { kind: "FACT", label: safeText(selector.label, "fact label"), normalization: normalization(selector.normalization) };
+    return { kind: "FACT", label: safeShortText(selector.label, "fact label"), normalization: normalization(selector.normalization) };
   }
   throw new TypeError("unknown selector");
 }
@@ -418,13 +443,7 @@ function normalize(value: string, mode: DisplayNormalization): string {
     if (!/^-?(?:\d+\.?\d*|\.\d+)$/.test(stripped) || !Number.isFinite(Number(stripped))) throw new TypeError("NUMBER normalization requires a finite numeric evidence value");
     return stripped;
   }
-  if (mode === "PERCENT") {
-    const stripped = value.endsWith("%") ? value.slice(0, -1) : value;
-    if (!/^-?(?:\d+\.?\d*|\.\d+)$/.test(stripped) || !Number.isFinite(Number(stripped))) throw new TypeError("PERCENT normalization requires a finite numeric evidence value");
-    return `${stripped}%`;
-  }
-  if (Number.isNaN(Date.parse(value))) throw new TypeError("ISO_DATE normalization requires an ISO date evidence value");
-  return new Date(value).toISOString();
+  return parseStrictIsoTemporal(value, "ISO_DATE evidence value").normalized;
 }
 
 function requireEvidence(evidenceById: ReadonlyMap<string, ResearchEvidenceProjection>, evidenceId: string): ResearchEvidenceProjection {
@@ -434,9 +453,10 @@ function requireEvidence(evidenceById: ReadonlyMap<string, ResearchEvidenceProje
 }
 
 function declaredEvidenceIds(value: unknown, evidenceById: ReadonlyMap<string, ResearchEvidenceProjection>, label: string): string[] {
-  const evidenceIds = stringArray(value, "evidence_ids");
-  if (evidenceIds.length === 0) throw new TypeError(`${label} requires evidence_ids`);
-  for (const evidenceId of evidenceIds) requireEvidence(evidenceById, evidenceId);
+  if (!Array.isArray(value) || value.length === 0 || value.length > GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_EVIDENCE_IDS_PER_BLOCK) throw new TypeError(`${label} requires 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.MAX_EVIDENCE_IDS_PER_BLOCK} evidence_ids`);
+  const evidenceIds = value.map((item) => parseEvidenceId(item, "evidence_id"));
+  if (new Set(evidenceIds).size !== evidenceIds.length) throw new TypeError("evidence_ids must not contain duplicates");
+  for (const item of evidenceIds) requireEvidence(evidenceById, item);
   return evidenceIds;
 }
 
@@ -448,10 +468,51 @@ function compareDisplayValues(left: string, right: string): number {
 }
 
 function parsedDate(value: unknown, label: string): number {
-  const source = text(value, label);
-  const timestamp = Date.parse(source);
-  if (Number.isNaN(timestamp)) throw new TypeError(`${label} must be an ISO date`);
-  return timestamp;
+  return parseStrictIsoTemporal(shortText(value, label), label).sortKey;
+}
+
+function parseStrictIsoTemporal(value: string, label: string): { normalized: string; sortKey: number } {
+  const dateOnly = ISO_DATE_ONLY_PATTERN.exec(value);
+  if (dateOnly) {
+    const [year, month, day] = dateOnly.slice(1).map(Number);
+    validateCalendarDate(year, month, day, label);
+    return { normalized: value, sortKey: utcMilliseconds(year, month, day, 0, 0, 0, 0) };
+  }
+  const timestamp = ISO_TIMESTAMP_PATTERN.exec(value);
+  if (!timestamp) throw new TypeError(`${label} must be YYYY-MM-DD or a timezone-aware ISO timestamp`);
+  const year = Number(timestamp[1]);
+  const month = Number(timestamp[2]);
+  const day = Number(timestamp[3]);
+  const hour = Number(timestamp[4]);
+  const minute = Number(timestamp[5]);
+  const second = Number(timestamp[6]);
+  const fraction = timestamp[7] ?? "";
+  validateCalendarDate(year, month, day, label);
+  if (hour > 23 || minute > 59 || second > 59) throw new TypeError(`${label} has an invalid clock time`);
+  const offsetHour = timestamp[8] === "Z" ? 0 : Number(timestamp[10]);
+  const offsetMinute = timestamp[8] === "Z" ? 0 : Number(timestamp[11]);
+  if (offsetHour > 23 || offsetMinute > 59) throw new TypeError(`${label} has an invalid timezone offset`);
+  const millisecond = Number(fraction.padEnd(3, "0").slice(0, 3) || "0");
+  const direction = timestamp[9] === "-" ? -1 : 1;
+  const offset = timestamp[8] === "Z" ? 0 : direction * (offsetHour * 60 + offsetMinute) * 60_000;
+  const sortKey = utcMilliseconds(year, month, day, hour, minute, second, millisecond) - offset;
+  return { normalized: new Date(sortKey).toISOString(), sortKey };
+}
+
+function validateCalendarDate(year: number, month: number, day: number, label: string): void {
+  if (year < 1 || year > 9999 || month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) throw new TypeError(`${label} has an invalid calendar date`);
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28;
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+function utcMilliseconds(year: number, month: number, day: number, hour: number, minute: number, second: number, millisecond: number): number {
+  const value = new Date(0);
+  value.setUTCFullYear(year, month - 1, day);
+  value.setUTCHours(hour, minute, second, millisecond);
+  return value.getTime();
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -469,21 +530,28 @@ function equal(actual: unknown, expected: string, message: string): void {
   if (actual !== expected) throw new TypeError(message);
 }
 
-function text(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > 512) throw new TypeError(`${label} must be a bounded non-empty string`);
+function shortText(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > GENERATIVE_RESEARCH_VIEW_LIMITS.SHORT_TEXT_MAX) throw new TypeError(`${label} must be ShortText with length 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.SHORT_TEXT_MAX}`);
   return value;
 }
 
-function safeText(value: unknown, label: string): string {
-  const result = text(value, label);
+function safeShortText(value: unknown, label: string): string {
+  return rejectUnsafeText(shortText(value, label), label);
+}
+
+function safeBoundedText(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > GENERATIVE_RESEARCH_VIEW_LIMITS.BOUNDED_TEXT_MAX) throw new TypeError(`${label} must be BoundedText with length 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.BOUNDED_TEXT_MAX}`);
+  return rejectUnsafeText(value, label);
+}
+
+function rejectUnsafeText(result: string, label: string): string {
   if (/<\/?[a-z][^>]*>/i.test(result) || /javascript\s*:/i.test(result)) throw new TypeError(`${label} contains forbidden markup or script`);
   return result;
 }
 
-function stringArray(value: unknown, label: string): string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0)) throw new TypeError(`${label} must be a string array`);
-  if (new Set(value).size !== value.length) throw new TypeError(`${label} must not contain duplicates`);
-  return [...value];
+function parseEvidenceId(value: unknown, label: string): string {
+  if (typeof value !== "string" || !EVIDENCE_ID_PATTERN.test(value)) throw new TypeError(`${label} must match the canonical EvidenceId pattern`);
+  return value;
 }
 
 function normalization(value: unknown): DisplayNormalization {

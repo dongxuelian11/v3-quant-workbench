@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, time
+import re
 from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints, field_validator, model_validator
@@ -7,13 +9,27 @@ from pydantic import Field, StringConstraints, field_validator, model_validator
 from ..contracts import StrictAgentModel
 
 
-BoundedText = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=4096)]
-ShortText = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=256)]
+SHORT_TEXT_MAX = 256
+BOUNDED_TEXT_MAX = 4096
+MAX_BLOCKS = 64
+MAX_EVIDENCE_IDS_PER_BLOCK = 128
+MAX_METRICS = 32
+MAX_TABLE_COLUMNS = 20
+MAX_TABLE_ROWS = 500
+MAX_TIME_SERIES_POINTS = 200
+MAX_BAR_POINTS = 100
+MAX_EVIDENCE_LIST_FIELDS = 10
+EVIDENCE_ID_PATTERN = r"^[a-z][a-z0-9_]*_sha256_[0-9a-f]{64}$"
+ISO_DATE_ONLY_PATTERN = r"^(\d{4})-(\d{2})-(\d{2})$"
+ISO_TIMESTAMP_PATTERN = r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$"
+
+BoundedText = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=BOUNDED_TEXT_MAX)]
+ShortText = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=SHORT_TEXT_MAX)]
 EvidenceId = Annotated[
     str,
-    StringConstraints(strict=True, pattern=r"[a-z][a-z0-9_]*_sha256_[0-9a-f]{64}"),
+    StringConstraints(strict=True, pattern=EVIDENCE_ID_PATTERN),
 ]
-DisplayNormalization = Literal["NONE", "NUMBER", "PERCENT", "ISO_DATE"]
+DisplayNormalization = Literal["NONE", "NUMBER", "ISO_DATE"]
 EvidenceField = Literal[
     "objectId",
     "kind",
@@ -69,12 +85,29 @@ def exact_evidence_binding(declared_values: tuple[str, ...], referenced_values: 
         raise ValueError("child evidence_id must be declared by its block")
 
 
+def parse_strict_iso_temporal(value: str) -> datetime:
+    if re.fullmatch(ISO_DATE_ONLY_PATTERN, value):
+        try:
+            return datetime.combine(date.fromisoformat(value), time.min, tzinfo=UTC)
+        except ValueError as exc:
+            raise ValueError("ISO date has an invalid calendar date") from exc
+    if not re.fullmatch(ISO_TIMESTAMP_PATTERN, value):
+        raise ValueError("temporal value must be YYYY-MM-DD or a timezone-aware ISO timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("ISO timestamp is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("ISO timestamp must include timezone information")
+    return parsed.astimezone(UTC)
+
+
 class NarrativeBlock(StrictAgentModel):
     type: Literal["Narrative"]
     block_id: ShortText
     title: ShortText
     data_authority: Literal["AGENT_DRAFT_DERIVED"]
-    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=128)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=MAX_EVIDENCE_IDS_PER_BLOCK)
     text: BoundedText
 
     _arrays = field_validator("evidence_ids", mode="before")(as_tuple)
@@ -100,8 +133,8 @@ class MetricGroupBlock(StrictAgentModel):
     block_id: ShortText
     title: ShortText
     data_authority: Literal["CANONICAL_EVIDENCE"]
-    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=128)
-    metrics: tuple[ResearchViewMetric, ...] = Field(min_length=1, max_length=32)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=MAX_EVIDENCE_IDS_PER_BLOCK)
+    metrics: tuple[ResearchViewMetric, ...] = Field(min_length=1, max_length=MAX_METRICS)
 
     _safe_title = field_validator("title")(reject_markup)
 
@@ -138,9 +171,9 @@ class DataTableBlock(StrictAgentModel):
     block_id: ShortText
     title: ShortText
     data_authority: Literal["CANONICAL_EVIDENCE"]
-    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=128)
-    columns: tuple[DataTableColumn, ...] = Field(min_length=1, max_length=20)
-    rows: tuple[EvidenceRow, ...] = Field(min_length=1, max_length=500)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=MAX_EVIDENCE_IDS_PER_BLOCK)
+    columns: tuple[DataTableColumn, ...] = Field(min_length=1, max_length=MAX_TABLE_COLUMNS)
+    rows: tuple[EvidenceRow, ...] = Field(min_length=1, max_length=MAX_TABLE_ROWS)
     sort: TableSort | None
     top_n: Annotated[int, Field(strict=True, ge=1, le=100)] | None
 
@@ -176,16 +209,28 @@ class DateWindow(StrictAgentModel):
     start: ShortText
     end: ShortText
 
+    @field_validator("start", "end")
+    @classmethod
+    def require_strict_iso_temporal(cls, value: str) -> str:
+        parse_strict_iso_temporal(value)
+        return value
+
+    @model_validator(mode="after")
+    def require_ordered_window(self) -> DateWindow:
+        if parse_strict_iso_temporal(self.start) > parse_strict_iso_temporal(self.end):
+            raise ValueError("DateWindow start must not exceed end")
+        return self
+
 
 class TimeSeriesChartBlock(StrictAgentModel):
     type: Literal["TimeSeriesChart"]
     block_id: ShortText
     title: ShortText
     data_authority: Literal["CANONICAL_EVIDENCE"]
-    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=128)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=MAX_EVIDENCE_IDS_PER_BLOCK)
     x_label: ShortText
     y_label: ShortText
-    points: tuple[TimeSeriesPoint, ...] = Field(min_length=1, max_length=200)
+    points: tuple[TimeSeriesPoint, ...] = Field(min_length=1, max_length=MAX_TIME_SERIES_POINTS)
     date_window: DateWindow | None
 
     _arrays = field_validator("evidence_ids", "points", mode="before")(as_tuple)
@@ -214,10 +259,10 @@ class BarChartBlock(StrictAgentModel):
     block_id: ShortText
     title: ShortText
     data_authority: Literal["CANONICAL_EVIDENCE"]
-    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=128)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=MAX_EVIDENCE_IDS_PER_BLOCK)
     category_label: ShortText
     value_label: ShortText
-    bars: tuple[BarPoint, ...] = Field(min_length=1, max_length=100)
+    bars: tuple[BarPoint, ...] = Field(min_length=1, max_length=MAX_BAR_POINTS)
     sort: Literal["INPUT", "VALUE_ASC", "VALUE_DESC"]
     top_n: Annotated[int, Field(strict=True, ge=1, le=50)] | None
 
@@ -243,8 +288,8 @@ class EvidenceListBlock(StrictAgentModel):
     block_id: ShortText
     title: ShortText
     data_authority: Literal["CANONICAL_EVIDENCE"]
-    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=128)
-    fields: tuple[EvidenceListField, ...] = Field(min_length=1, max_length=10)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=MAX_EVIDENCE_IDS_PER_BLOCK)
+    fields: tuple[EvidenceListField, ...] = Field(min_length=1, max_length=MAX_EVIDENCE_LIST_FIELDS)
 
     _arrays = field_validator("evidence_ids", "fields", mode="before")(as_tuple)
     _safe_title = field_validator("title")(reject_markup)
@@ -263,7 +308,7 @@ class CalloutBlock(StrictAgentModel):
     block_id: ShortText
     title: ShortText
     data_authority: Literal["AGENT_DRAFT_DERIVED"]
-    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=128)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=MAX_EVIDENCE_IDS_PER_BLOCK)
     tone: Literal["INFO", "WARNING", "BLOCKED"]
     text: BoundedText
 
@@ -296,7 +341,7 @@ class ResearchViewSpecV1(StrictAgentModel):
     permission: Literal["L1_DRAFT"]
     authority: Literal["AGENT_DRAFT_PROPOSAL"]
     title: ShortText
-    blocks: tuple[ResearchViewBlock, ...] = Field(min_length=1, max_length=64)
+    blocks: tuple[ResearchViewBlock, ...] = Field(min_length=1, max_length=MAX_BLOCKS)
 
     _safe_title = field_validator("title")(reject_markup)
 
@@ -304,6 +349,13 @@ class ResearchViewSpecV1(StrictAgentModel):
     @classmethod
     def accept_json_array(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def require_unique_block_identity(self) -> ResearchViewSpecV1:
+        block_ids = tuple(block.block_id for block in self.blocks)
+        if len(set(block_ids)) != len(block_ids):
+            raise ValueError("ResearchViewSpec block_id values must be unique")
+        return self
 
 
 class StructuredResearchViewResult(StrictAgentModel):
