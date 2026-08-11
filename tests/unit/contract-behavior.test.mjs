@@ -5,7 +5,8 @@ import { modelFamilies, universeModes, researchSeries } from "../../apps/desktop
 import {
   AGENT_WORKSPACE_BOUNDARY,
   ARTIFACT_RENDERER_REGISTRY,
-  FUTURE_EXTENSION_SLOTS,
+  DEVELOPMENT_INTEGRATION_BOUNDARY,
+  ROUND3_MAIN_CONTRACT_SLOTS,
   PERMISSION_SURFACE,
   assertSafeArtifactOutput,
   deriveAgentWorkspaceSessionScope,
@@ -49,8 +50,9 @@ test("typed command transition is exactly-once and preserves resume state", () =
 });
 
 test("Agent Workspace fixture is explicit development-only view data", () => {
-  assert.equal(AGENT_WORKSPACE_BOUNDARY.mode, "DEMO_DEVELOPMENT_ONLY");
-  assert.equal(AGENT_WORKSPACE_BOUNDARY.transport, "WS_E_FRONTEND_ENTRYPOINT_UNWIRED");
+  assert.equal(AGENT_WORKSPACE_BOUNDARY.mode, "LIVE_READ_ONLY");
+  assert.equal(DEVELOPMENT_INTEGRATION_BOUNDARY.mode, "DEVELOPMENT_INTEGRATION_FIXTURE");
+  assert.equal(AGENT_WORKSPACE_BOUNDARY.transport, "WS_E_READ_ONLY_CONNECTED");
   assert.ok(researchSessions.length >= 3);
   assert.ok(evidenceViews.length >= 12);
   assert.ok(timelineEntries.some((entry) => entry.authority === "TOOL"));
@@ -161,7 +163,8 @@ test("artifact renderer registry is closed and executable payloads are rejected"
   assert.throws(() => assertSafeArtifactOutput({ renderer: "chart", availability: "AVAILABLE", reason: "bad claim" }), /cannot claim current availability/);
 });
 
-test("H/I/J extension slots remain explicit non-connected future slots", () => {
-  assert.deepEqual(FUTURE_EXTENSION_SLOTS.map((slot) => slot.object), ["TargetWeightVector", "RiskAdjustedWeightVector", "BacktestRunResult"]);
-  assert.ok(FUTURE_EXTENSION_SLOTS.every((slot) => slot.status === "NOT_CONNECTED" && slot.owner === "FUTURE_MAIN_CONTRACT"));
+test("H/I/J main contract slots are connected read-only without a shadow owner", () => {
+  assert.deepEqual(ROUND3_MAIN_CONTRACT_SLOTS.map((slot) => slot.object), ["TargetWeightVector", "RiskAdjustedWeightVector", "BacktestRunResult"]);
+  assert.deepEqual(ROUND3_MAIN_CONTRACT_SLOTS.map((slot) => slot.owner), ["CANONICAL_H", "CANONICAL_I", "CANONICAL_J"]);
+  assert.ok(ROUND3_MAIN_CONTRACT_SLOTS.every((slot) => slot.status === "CONNECTED_READ_ONLY_MAIN_CONTRACT"));
 });

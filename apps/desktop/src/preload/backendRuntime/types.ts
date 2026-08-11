@@ -50,3 +50,11 @@ export interface BackendRuntimeBridge {
   onTaskEvent(listener: (event: TaskEventView) => void): () => void;
   onConnectionState(listener: (state: RuntimeConnectionState) => void): () => void;
 }
+
+export interface BackendRuntimeReadOnlyBridge {
+  getCapabilities(): Promise<readonly RuntimeCapability[]>;
+  getHealth(): Promise<Readonly<Record<string, unknown>>>;
+  getEvidenceSnapshot(): Promise<TaskEventView | null>;
+  onEvidenceEvent(listener: (event: TaskEventView) => void): () => void;
+  onConnectionState(listener: (state: RuntimeConnectionState) => void): () => void;
+}

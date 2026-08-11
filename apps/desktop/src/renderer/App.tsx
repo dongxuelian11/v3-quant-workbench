@@ -6,8 +6,11 @@ import { Workbench } from "./components/Workbench";
 import { Icon, StatusSurface, TruthMark, type IconName } from "./components/PresentationSystem";
 import { AgentWorkspace } from "./components/AgentWorkspace";
 import { ResearchSessionNavigator } from "./components/ResearchSessionNavigator";
-import { AGENT_WORKSPACE_BOUNDARY } from "./agentWorkspace";
-import { researchSessions } from "./agentWorkspaceFixture";
+import {
+  applyRound3ConnectionState,
+  applyRound3EvidenceEvent,
+  initialRound3AgentWorkspaceState
+} from "./round3Evidence";
 
 type WorkspaceSurface = "agent" | LabId;
 
@@ -31,9 +34,39 @@ export function App() {
   const s = useWorkbench();
   const [palette, setPalette] = useState(false);
   const [surface, setSurface] = useState<WorkspaceSurface>("agent");
-  const [activeSessionId, setActiveSessionId] = useState(researchSessions[0].sessionViewId);
+  const [agentState, setAgentState] = useState(initialRound3AgentWorkspaceState);
+  const [activeSessionId, setActiveSessionId] = useState(agentState.data.sessions[0].sessionViewId);
 
   useEffect(() => { void s.hydrate(); }, []);
+  useEffect(() => {
+    const bridge = window.v3BackendRuntime;
+    let stopped = false;
+    let healthAttempts = 0;
+    let healthTimer: ReturnType<typeof setTimeout> | undefined;
+    const stopConnection = bridge.onConnectionState((state) => setAgentState((current) => applyRound3ConnectionState(current, state)));
+    const stopEvidence = bridge.onEvidenceEvent((event) => setAgentState((current) => applyRound3EvidenceEvent(current, event)));
+    void bridge.getEvidenceSnapshot().then((event) => {
+      if (event) setAgentState((current) => applyRound3EvidenceEvent(current, event));
+    }).catch(() => undefined);
+    const syncHealth = (): void => {
+      healthAttempts += 1;
+      void bridge.getHealth().then((health) => {
+        const state = health.state;
+        if (!stopped && typeof state === "string" && ["STOPPED", "STARTING", "HANDSHAKING", "REPLAYING", "READY", "DISCONNECTED", "CRASH_LOOP", "SHUTTING_DOWN"].includes(state)) {
+          setAgentState((current) => applyRound3ConnectionState(current, state as Parameters<typeof applyRound3ConnectionState>[1]));
+        }
+      }).catch(() => {
+        if (!stopped && healthAttempts < 40) healthTimer = setTimeout(syncHealth, 250);
+      });
+    };
+    syncHealth();
+    return () => { stopped = true; if (healthTimer) clearTimeout(healthTimer); stopConnection(); stopEvidence(); };
+  }, []);
+  useEffect(() => {
+    if (!agentState.data.sessions.some((session) => session.sessionViewId === activeSessionId)) {
+      setActiveSessionId(agentState.data.sessions[0].sessionViewId);
+    }
+  }, [activeSessionId, agentState.data.sessions]);
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
@@ -59,7 +92,7 @@ export function App() {
 
   const active = labs.find((lab) => lab.id === s.activeLab) ?? labs[0];
   const context = labContext[s.activeLab];
-  const activeSession = researchSessions.find((session) => session.sessionViewId === activeSessionId) ?? researchSessions[0];
+  const activeSession = agentState.data.sessions.find((session) => session.sessionViewId === activeSessionId) ?? agentState.data.sessions[0];
   const openLab = (lab: LabId) => { s.setLab(lab); setSurface(lab); };
 
   return <div className={`app-shell inspector-${surface !== "agent" && s.inspectorOpen ? "open" : "closed"}`} data-testid="app-shell" data-default-surface={surface}>
@@ -89,11 +122,11 @@ export function App() {
     <header className="context-bar">
       <div className="context-breadcrumb">{surface === "agent" ? <><span>Agent Workspace</span><Icon name="chevron" size={13}/><b>{activeSession.title}</b><small>Evidence-first research</small></> : <><span>{active.en} Lab</span><Icon name="chevron" size={13}/><b>{context.object}</b><small>{context.phase}</small></>}</div>
       <button className="context-search" onClick={() => setPalette(true)} aria-haspopup="dialog" aria-expanded={palette}><Icon name="command" size={15}/><span>跳转、打开视图或执行命令</span><kbd>Ctrl K</kbd></button>
-      <div className="context-runtime">{surface === "agent" ? <span className="boundary-chip">{AGENT_WORKSPACE_BOUNDARY.label}</span> : <TruthMark compact/>}<span><i/>{s.runtime}</span></div>
+      <div className="context-runtime">{surface === "agent" ? <span className="boundary-chip">{agentState.boundary.label}</span> : <TruthMark compact/>}<span><i/>{s.runtime}</span></div>
     </header>
 
     <aside className="context-sidebar" aria-label="项目与研究资产" data-nav-width>
-      {surface === "agent" ? <ResearchSessionNavigator sessions={researchSessions} activeSessionId={activeSessionId} onSelect={setActiveSessionId}/> : <>
+      {surface === "agent" ? <ResearchSessionNavigator sessions={agentState.data.sessions} boundary={agentState.boundary} activeSessionId={activeSessionId} onSelect={setActiveSessionId}/> : <>
         <div className="sidebar-project">
           <span className="sidebar-icon"><Icon name="project"/></span>
           <div><small>ACTIVE PROJECT</small><b>Momentum Research</b><span>2026 Q2 · LOCAL</span></div>
@@ -108,7 +141,7 @@ export function App() {
       </>}
     </aside>
 
-    <main className="workspace">{surface === "agent" ? <AgentWorkspace session={activeSession} onOpenLab={openLab}/> : <Workbench/>}</main>
+    <main className="workspace">{surface === "agent" ? <AgentWorkspace session={activeSession} data={agentState.data} boundary={agentState.boundary} connectionState={agentState.connectionState} onOpenLab={openLab}/> : <Workbench/>}</main>
 
     {surface !== "agent" && s.inspectorOpen && <aside className="inspector" aria-label="上下文检查器" data-testid="inspector" data-inspector-width>
       <div className="inspector-head"><div><Icon name="inspector" size={15}/><span>{s.inspectorEvidence.eyebrow}</span></div><button onClick={s.toggleInspector} aria-label="关闭检查器"><Icon name="close" size={15}/></button></div>

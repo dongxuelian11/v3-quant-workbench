@@ -77,7 +77,7 @@ export interface DesktopBridge {
   saveWorkspace(state: PersistedWorkspace): Promise<PersistedWorkspace>;
   resetWorkspace(): Promise<PersistedWorkspace>;
   executeCommand(command: DesktopCommandEnvelope): Promise<CommandReceipt>;
-  runtimeInfo(): Promise<{ electron: string; platform: string; storePath: string }>;
+  runtimeInfo(): Promise<{ electron: string; platform: string; storePath: string; agentEvidenceMode: "LIVE_READ_ONLY" | "DEVELOPMENT_INTEGRATION_FIXTURE" }>;
 }
 
 export const DEFAULT_STRATEGY_CODE = `# V3 StrategyDraft · DEMO / NOT FORMAL FINANCIAL OUTPUT

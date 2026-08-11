@@ -8,10 +8,23 @@ import {
   type DesktopCommandEnvelope,
   type PersistedWorkspace
 } from "../../../packages/contracts/src/index";
+import {
+  BackendRuntimeEventRelay,
+  BackendSupervisor,
+  registerBackendRuntimeIpc
+} from "./main/backendRuntime/index";
 
 let mainWindow: BrowserWindow | null = null;
 let state: PersistedWorkspace = structuredClone(DEFAULT_WORKSPACE);
 let storePath = "";
+let backendSupervisor: BackendSupervisor | null = null;
+let backendRelay: BackendRuntimeEventRelay | null = null;
+
+const AGENT_EVIDENCE_MODE = process.env.V3_AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE"
+  ? "DEVELOPMENT_INTEGRATION_FIXTURE" as const
+  : "LIVE_READ_ONLY" as const;
+const BACKEND_PROJECT_ID = "prj_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const BACKEND_PROJECT_CONTEXT_REVISION_ID = "pcr_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
 function trusted(event: IpcMainInvokeEvent): void {
   if (!mainWindow || event.sender.id !== mainWindow.webContents.id) throw new Error("Rejected untrusted IPC sender");
@@ -57,7 +70,33 @@ function registerIpc(): void {
     await persist();
     return applied.receipt;
   });
-  ipcMain.handle("runtime:info", (event) => { trusted(event); return { electron: process.versions.electron, platform: process.platform, storePath }; });
+  ipcMain.handle("runtime:info", (event) => { trusted(event); return { electron: process.versions.electron, platform: process.platform, storePath, agentEvidenceMode: AGENT_EVIDENCE_MODE }; });
+}
+
+function startBackendRuntime(): void {
+  if (!mainWindow || backendSupervisor) return;
+  backendSupervisor = new BackendSupervisor({
+    pythonExecutable: process.env.V3_BACKEND_PYTHON ?? process.env.V3_PYTHON ?? (process.platform === "win32" ? "python" : "python3"),
+    backendWorkingDirectory: process.env.V3_BACKEND_WORKING_DIRECTORY ?? join(process.cwd(), "apps", "backend", "src"),
+    desktopVersion: "0.1.0-recovery.1",
+    projectContext: {
+      projectId: BACKEND_PROJECT_ID,
+      projectContextRevisionId: BACKEND_PROJECT_CONTEXT_REVISION_ID,
+      lastDurableProjectEventSequence: 0
+    },
+    backendModule: AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE"
+      ? "v3_backend.adapters.round3_evidence.development_runtime"
+      : "v3_backend.runtime.bootstrap",
+    autoReconnect: false
+  });
+  backendRelay = new BackendRuntimeEventRelay(backendSupervisor, mainWindow.webContents);
+  backendRelay.start();
+  backendSupervisor.on("diagnostic", (item) => console.error(JSON.stringify(item)));
+  registerBackendRuntimeIpc(ipcMain, trusted, backendSupervisor, () => backendRelay?.evidenceSnapshot ?? null);
+  void backendSupervisor.start().catch((error: unknown) => {
+    const code = error !== null && typeof error === "object" && "code" in error ? String(error.code) : "BACKEND_START_FAILED";
+    console.error(JSON.stringify({ level: "ERROR", code, message: "canonical backendRuntime failed to start; no demo fallback" }));
+  });
 }
 
 function createWindow(): void {
@@ -86,7 +125,12 @@ app.whenReady().then(async () => {
   await loadState();
   registerIpc();
   createWindow();
+  startBackendRuntime();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 }).catch((error) => { console.error(error); app.exit(1); });
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+app.on("before-quit", () => {
+  backendRelay?.stop();
+  backendSupervisor?.stopNow();
+});

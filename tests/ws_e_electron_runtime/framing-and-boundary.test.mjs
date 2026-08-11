@@ -5,7 +5,7 @@ import test from "node:test";
 
 import { FrameDecoder, TransportProtocolError, encodeFrame } from "../../dist/apps/desktop/src/main/backendRuntime/framing.js";
 import { contextBridgeSafe } from "../../dist/apps/desktop/src/main/backendRuntime/protocol.js";
-import { createBackendRuntimeBridge } from "../../dist/apps/desktop/src/preload/backendRuntime/bridge.js";
+import { createBackendRuntimeBridge, createBackendRuntimeReadOnlyBridge } from "../../dist/apps/desktop/src/preload/backendRuntime/bridge.js";
 
 test("framing handles fragmented and multiple frames", () => {
   const wire = Buffer.concat([encodeFrame({ kind: "first", value: "雪" }), encodeFrame({ kind: "second" })]);
@@ -56,6 +56,24 @@ test("preload bridge exposes only explicit narrow capability methods and events"
   assert.equal(listeners.has("backendRuntime:taskEvent"), true);
   unsubscribe();
   assert.equal(listeners.has("backendRuntime:taskEvent"), false);
+});
+
+test("renderer product bridge exposes read-only evidence snapshot/event and no L2/L3 mutation", async () => {
+  const calls = [];
+  const listeners = new Map();
+  const ipc = {
+    invoke: async (channel) => { calls.push(channel); return channel.endsWith("evidenceSnapshot") ? { event_type: "round3.research.evidence.bundle.v1" } : {}; },
+    on: (channel, listener) => listeners.set(channel, listener),
+    removeListener: (channel, listener) => { if (listeners.get(channel) === listener) listeners.delete(channel); }
+  };
+  const bridge = createBackendRuntimeReadOnlyBridge(ipc);
+  assert.deepEqual(Object.keys(bridge).sort(), ["getCapabilities", "getEvidenceSnapshot", "getHealth", "onConnectionState", "onEvidenceEvent"]);
+  for (const forbidden of ["cancelTask", "retryTask", "resumeTask", "openArtifactStream", "execute", "publish"]) assert.equal(forbidden in bridge, false);
+  assert.equal((await bridge.getEvidenceSnapshot()).event_type, "round3.research.evidence.bundle.v1");
+  assert.deepEqual(calls, ["backendRuntime:evidenceSnapshot"]);
+  const unsubscribe = bridge.onEvidenceEvent(() => {});
+  assert.equal(listeners.has("backendRuntime:taskEvent"), true);
+  unsubscribe();
 });
 
 test("preload source has no filesystem, database, process, or raw transport access", async () => {

@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const directory = resolve(root, "deliverables", "visual-restoration-screenshots");
 const expected = [
+  "00-round3-canonical-agent-workspace.png",
   "01-research-default-chart-first.png",
   "02-research-selected-event-inspector.png",
   "03-research-universe-builder-focused.png",
@@ -43,7 +44,7 @@ const geometry = JSON.parse(await readFile(resolve(directory, "layout-geometry.j
 if (capture.electron !== "39.8.10" || restart.electron !== "39.8.10") throw new Error("Electron version evidence mismatch");
 if (capture.prefs.contextIsolation !== true || capture.prefs.nodeIntegration !== false || capture.prefs.sandbox !== true || capture.prefs.webSecurity !== true) throw new Error("Electron security preferences failed");
 if (capture.consoleErrors.length || restart.consoleErrors.length) throw new Error(`Renderer console errors: ${JSON.stringify([...capture.consoleErrors, ...restart.consoleErrors])}`);
-if (geometry.length !== 20) throw new Error(`Expected 20 geometry measurements, got ${geometry.length}`);
+if (geometry.length !== 21) throw new Error(`Expected 21 geometry measurements, got ${geometry.length}`);
 const byName = Object.fromEntries(geometry.map((item) => [item.screenshot, item]));
 for (const name of ["01-research-default-chart-first.png", "16-research-1280x720-compact-safe.png", "17-research-1920x1080-wide.png"]) {
   const item = byName[name];
@@ -64,4 +65,11 @@ if (byName["05-strategy-visual-mode.png"].primary_panel_id !== "strategy-editor"
 if (byName["09-model-dataset-family-run-workflow.png"].primary_panel_id !== "model-workflow") throw new Error("Model workflow measurement missing");
 if (!capture.interactionEvidence?.commandPalette?.openedByKeyboard || !capture.interactionEvidence?.commandPalette?.inputFocused) throw new Error("Command palette keyboard/focus evidence failed");
 if (!capture.interactionEvidence?.dockview?.focusable || !capture.interactionEvidence?.motion?.reducedMotionRulePresent) throw new Error("Dockview focus or reduced-motion evidence failed");
+const round3 = capture.interactionEvidence?.agentWorkspace;
+if (round3?.boundary !== "DEVELOPMENT_INTEGRATION_FIXTURE" || round3?.connection !== "READY" || round3?.evidenceIds?.length !== 10) throw new Error("Round 3 canonical multi-rebalance Agent Workspace evidence missing");
+for (const [kind, count] of Object.entries({ PortfolioIntent: 2, TargetWeightVector: 2, RiskAdjustedWeightVector: 2, RiskDecisionReport: 2, BacktestRunSpec: 1, BacktestRunResult: 1 })) {
+  if (round3.evidenceKinds.filter((value) => value === kind).length !== count) throw new Error(`Round 3 ${kind} cardinality mismatch`);
+}
+if (round3.timelineStates.some((item) => item.state !== "PRE_ALPHA" || item.successClass) || round3.forbiddenActions.length) throw new Error("Round 3 truth or permission surface was promoted");
+if (!capture.interactionEvidence?.backtestResult?.actual || capture.interactionEvidence.backtestResult.renderer !== "backtest-result") throw new Error("Canonical BacktestRunResult renderer evidence missing");
 console.log(`Visual frontend evidence PASS: ${expected.length} distinct real-Electron states, chart geometry gates, restart layout, and secure preferences asserted.`);

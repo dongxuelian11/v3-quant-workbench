@@ -1,12 +1,28 @@
 import type { LabId } from "../../../../packages/contracts/src/index";
 
 export const AGENT_WORKSPACE_BOUNDARY = Object.freeze({
-  mode: "DEMO_DEVELOPMENT_ONLY" as const,
-  label: "DEMO / DEVELOPMENT_ONLY",
-  source: "CURRENT_MAIN_VIEW_MODEL" as const,
-  transport: "WS_E_FRONTEND_ENTRYPOINT_UNWIRED" as const,
+  mode: "LIVE_READ_ONLY" as const,
+  label: "LIVE READ-ONLY",
+  source: "CURRENT_MAIN_CANONICAL_PROJECTION" as const,
+  transport: "WS_E_READ_ONLY_CONNECTED" as const,
   authority: "READ_ONLY_VIEW_MODEL" as const
 });
+
+export const DEVELOPMENT_INTEGRATION_BOUNDARY = Object.freeze({
+  mode: "DEVELOPMENT_INTEGRATION_FIXTURE" as const,
+  label: "DEVELOPMENT / INTEGRATION FIXTURE",
+  source: "ACTUAL_CANONICAL_H_I_J_TEST_CHAIN" as const,
+  transport: "WS_E_READ_ONLY_CONNECTED" as const,
+  authority: "READ_ONLY_VIEW_MODEL" as const
+});
+
+export interface AgentWorkspaceBoundary {
+  readonly mode: "LIVE_READ_ONLY" | "LIVE_READ_ONLY_NO_EVIDENCE" | "BACKEND_DISCONNECTED" | "DEVELOPMENT_INTEGRATION_FIXTURE";
+  readonly label: string;
+  readonly source: string;
+  readonly transport: string;
+  readonly authority: "READ_ONLY_VIEW_MODEL";
+}
 
 export const PERMISSION_SURFACE = Object.freeze([
   { level: "L0_READ", allowed: true, label: "Read evidence" },
@@ -21,7 +37,7 @@ export type CanonicalTruthState = "UNKNOWN" | "NOT_FORMAL" | "FORMAL";
 export type CanonicalAdmissionState = "UNKNOWN" | "PRE_ALPHA" | "FORMAL_ADMITTED";
 export type ValidationState = "NOT_RUN" | "FAILED" | "PASSED";
 export type TimelineState = "DRAFT" | "READ" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED" | "NOT_RUN" | "PASSED" | "PRE_ALPHA";
-export type EvidenceKind = "Truth / Admission" | "DatasetVersion" | "FactorEvaluation" | "Experiment Run" | "Experiment Attempt" | "RewardVector" | "ModelVersion" | "PredictionArtifact" | "StrategyDefinition" | "SignalArtifact" | "PortfolioIntent" | "Reviewer Findings";
+export type EvidenceKind = "Truth / Admission" | "DatasetVersion" | "FactorEvaluation" | "Experiment Run" | "Experiment Attempt" | "RewardVector" | "ModelVersion" | "PredictionArtifact" | "StrategyDefinition" | "SignalArtifact" | "PortfolioIntent" | "TargetWeightVector" | "RiskAdjustedWeightVector" | "RiskDecisionReport" | "BacktestRunSpec" | "BacktestRunResult" | "Reviewer Findings";
 
 export interface ResearchSessionView {
   sessionViewId: string;
@@ -80,7 +96,17 @@ export type ArtifactPayload =
   | { renderer: "text"; text: string }
   | { renderer: "details"; entries: { label: string; value: string }[] }
   | { renderer: "chart"; availability: "FUTURE_SLOT"; reason: string }
-  | { renderer: "backtest-result"; availability: "FUTURE_SLOT"; reason: string };
+  | { renderer: "backtest-result"; availability: "FUTURE_SLOT"; reason: string }
+  | {
+      renderer: "backtest-result";
+      resultId: string;
+      runSpecId: string;
+      nav: { columns: readonly ["Session date", "NAV"]; rows: readonly (readonly [string, string])[] };
+      fillCount: number;
+      diagnosticCount: number;
+      cashLedgerSummary: string;
+      feeLedgerSummary: string;
+    };
 
 export interface ArtifactView {
   artifactId: string;
@@ -102,6 +128,14 @@ export interface AgentWorkspaceSessionScope {
   statements: AgentStatementView[];
   timeline: TimelineEntryView[];
   evidence: EvidenceView[];
+}
+
+export interface AgentWorkspaceData {
+  sessions: readonly ResearchSessionView[];
+  statements: readonly AgentStatementView[];
+  timeline: readonly TimelineEntryView[];
+  evidence: readonly EvidenceView[];
+  artifacts: readonly ArtifactView[];
 }
 
 export function deriveAgentWorkspaceSessionScope(
@@ -187,7 +221,7 @@ export const ARTIFACT_RENDERER_REGISTRY = Object.freeze({
   text: { availability: "AVAILABLE", label: "Text" },
   details: { availability: "AVAILABLE", label: "Structured details" },
   chart: { availability: "FUTURE_SLOT", label: "Chart" },
-  "backtest-result": { availability: "FUTURE_SLOT", label: "Backtest / Result" }
+  "backtest-result": { availability: "AVAILABLE", label: "Backtest / Result" }
 } as const);
 
 export function getRendererDefinition(renderer: string) {
@@ -201,11 +235,23 @@ export function assertSafeArtifactOutput(value: unknown): asserts value is Artif
   if (typeof envelope.renderer !== "string") throw new TypeError("artifact renderer must be a string");
   getRendererDefinition(envelope.renderer);
   for (const forbidden of ["html", "jsx", "script", "javascript", "code"]) if (forbidden in envelope) throw new TypeError(`artifact output forbids ${forbidden}`);
-  if (envelope.renderer === "table" && (!Array.isArray(envelope.columns) || !Array.isArray(envelope.rows))) throw new TypeError("table renderer requires columns and rows");
-  if (envelope.renderer === "metric" && !Array.isArray(envelope.metrics)) throw new TypeError("metric renderer requires metrics");
-  if (envelope.renderer === "text" && typeof envelope.text !== "string") throw new TypeError("text renderer requires text");
-  if (envelope.renderer === "details" && !Array.isArray(envelope.entries)) throw new TypeError("details renderer requires entries");
-  if ((envelope.renderer === "chart" || envelope.renderer === "backtest-result") && envelope.availability !== "FUTURE_SLOT") throw new TypeError("future renderer cannot claim current availability");
+  const requireKeys = (keys: readonly string[]) => {
+    const actual = Object.keys(envelope).sort();
+    const expected = [...keys].sort();
+    if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) throw new TypeError("artifact renderer fields do not match the closed shape");
+  };
+  if (envelope.renderer === "table") { requireKeys(["renderer", "columns", "rows"]); if (!Array.isArray(envelope.columns) || !Array.isArray(envelope.rows)) throw new TypeError("table renderer requires columns and rows"); }
+  if (envelope.renderer === "metric") { requireKeys(["renderer", "metrics"]); if (!Array.isArray(envelope.metrics)) throw new TypeError("metric renderer requires metrics"); }
+  if (envelope.renderer === "text") { requireKeys(["renderer", "text"]); if (typeof envelope.text !== "string") throw new TypeError("text renderer requires text"); }
+  if (envelope.renderer === "details") { requireKeys(["renderer", "entries"]); if (!Array.isArray(envelope.entries)) throw new TypeError("details renderer requires entries"); }
+  if (envelope.renderer === "chart") { requireKeys(["renderer", "availability", "reason"]); if (envelope.availability !== "FUTURE_SLOT") throw new TypeError("future chart cannot claim current availability"); }
+  if (envelope.renderer === "backtest-result") {
+    if (envelope.availability === "FUTURE_SLOT") requireKeys(["renderer", "availability", "reason"]);
+    else {
+      requireKeys(["renderer", "resultId", "runSpecId", "nav", "fillCount", "diagnosticCount", "cashLedgerSummary", "feeLedgerSummary"]);
+      if (typeof envelope.resultId !== "string" || typeof envelope.runSpecId !== "string" || envelope.nav === null || typeof envelope.nav !== "object" || !Number.isInteger(envelope.fillCount) || !Number.isInteger(envelope.diagnosticCount)) throw new TypeError("backtest-result renderer shape is invalid");
+    }
+  }
 }
 
 export function statusTone(state: TimelineState | SessionStatus): "success" | "danger" | "warning" | "neutral" | "draft" {
@@ -216,8 +262,8 @@ export function statusTone(state: TimelineState | SessionStatus): "success" | "d
   return "neutral";
 }
 
-export const FUTURE_EXTENSION_SLOTS = Object.freeze([
-  { object: "TargetWeightVector", status: "NOT_CONNECTED", owner: "FUTURE_MAIN_CONTRACT" },
-  { object: "RiskAdjustedWeightVector", status: "NOT_CONNECTED", owner: "FUTURE_MAIN_CONTRACT" },
-  { object: "BacktestRunResult", status: "NOT_CONNECTED", owner: "FUTURE_MAIN_CONTRACT" }
+export const ROUND3_MAIN_CONTRACT_SLOTS = Object.freeze([
+  { object: "TargetWeightVector", status: "CONNECTED_READ_ONLY_MAIN_CONTRACT", owner: "CANONICAL_H" },
+  { object: "RiskAdjustedWeightVector", status: "CONNECTED_READ_ONLY_MAIN_CONTRACT", owner: "CANONICAL_I" },
+  { object: "BacktestRunResult", status: "CONNECTED_READ_ONLY_MAIN_CONTRACT", owner: "CANONICAL_J" }
 ] as const);

@@ -190,6 +190,8 @@ test("supervisor owns fixed spawn, handshake, capabilities, correlation, cancel,
   assert.equal(factory.tokens[0].length, 32);
   assert.equal(factory.specs[0].args.some((item) => item.includes(factory.tokens[0].toString("hex"))), false);
   assert.equal("PYTHONPATH" in factory.specs[0].env, false);
+  assert.equal(factory.specs[0].env.APPDATA, process.env.APPDATA);
+  for (const forbidden of ["V3_AGENT_EVIDENCE_MODE", "V3_BACKEND_PYTHON", "SUPERVISOR_TOKEN", "DATABASE_URL"]) assert.equal(forbidden in factory.specs[0].env, false);
   assert.equal(events[0].project_sequence, 1);
   factory.processes[0].stderr.write('{"level":"WARN","code":"MOCK_NOTICE","message":"redacted diagnostic"}\n');
   await waitFor(() => diagnostics.length === 1);

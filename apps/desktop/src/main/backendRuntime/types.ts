@@ -77,6 +77,7 @@ export interface SupervisorConfig {
   readonly crashLoopLimit?: number;
   readonly crashLoopWindowMs?: number;
   readonly autoReconnect?: boolean;
+  readonly backendModule?: "v3_backend.runtime.bootstrap" | "v3_backend.adapters.round3_evidence.development_runtime";
 }
 
 export interface RuntimeResponseError {

@@ -9,13 +9,19 @@ export interface RendererEventTarget {
 
 export class BackendRuntimeEventRelay {
   private readonly onEvent = (event: RuntimeEvent): void => {
+    if (event.event_type === "round3.research.evidence.bundle.v1") this.evidenceSnapshotValue = contextBridgeSafe(event);
     this.target.send(BACKEND_RUNTIME_CHANNELS.taskEvent, contextBridgeSafe(event));
   };
+  private evidenceSnapshotValue: RuntimeEvent | null = null;
   private readonly onState = (state: ConnectionState): void => {
     this.target.send(BACKEND_RUNTIME_CHANNELS.connectionState, state);
   };
 
   constructor(private readonly supervisor: BackendSupervisor, private readonly target: RendererEventTarget) {}
+
+  get evidenceSnapshot(): RuntimeEvent | null {
+    return this.evidenceSnapshotValue === null ? null : structuredClone(this.evidenceSnapshotValue);
+  }
 
   start(): void {
     this.supervisor.on("event", this.onEvent);
