@@ -4,6 +4,8 @@ Profile: `A_SHARE_DAILY_RESEARCH_V0`
 
 These definitions are identity-bearing. A change to any policy field produces a different policy hash and therefore a different analytics identity.
 
+V0 policy identity is also execution-authoritative: creation, canonical assertion, and engine admission share the same closed semantic validator. An identity-consistent policy with an unsupported convention is rejected as `UNSUPPORTED_RESULT_ANALYTICS_POLICY`; a content hash never substitutes for executable semantics.
+
 ## Policy identity
 
 | Field | Frozen V0 value | Meaning |
@@ -18,6 +20,8 @@ These definitions are identity-bearing. A change to any policy field produces a 
 | `period_return_convention` | `PERIOD_END_OVER_PREVIOUS_PERIOD_END` | Each completed observed period uses its final NAV and the preceding period's final NAV; the first observed period uses the first observed NAV as its base. |
 | `missing_data_policy` | `FAIL_CLOSED_EXACT_SESSIONS` | Duplicate/out-of-order dates, non-positive NAV, nonfinite decimals, or benchmark date mismatch are rejected. |
 | `numeric_precision` | `12` | Public numeric outputs are quantized to 12 decimal places with `ROUND_HALF_EVEN`, then serialized as canonical decimal strings. |
+
+`A_SHARE_DAILY_RESEARCH_V0` is frozen at annualization/ddof/sortino-target/precision `252/1/0/12`. Supported numeric variation uses the distinct `EXPLICIT_RESEARCH_ANALYTICS_V0` profile family, while retaining every closed convention token above.
 
 ## Return series
 
@@ -114,6 +118,8 @@ Benchmark input is optional and typed. V0 never downloads by symbol and never su
 
 A `BenchmarkSeriesVersion` identity includes exact date/value rows, name, provenance references, alignment policy, and Truth/Admission ceiling.
 
+Both creation and `assert_canonical()` revalidate those semantics. Until a formal Benchmark/Data Truth owner exists, caller-supplied benchmarks fail closed above the canonical `PRE_ALPHA` ceiling.
+
 - Absent benchmark: `BENCHMARK_NOT_AVAILABLE`; all benchmark-dependent metrics are typed `NOT_AVAILABLE`.
 - V0 alignment: strategy and benchmark date tuples must match exactly. Extra, missing, duplicated, or reordered dates reject the request.
 - Benchmark total return: `B[last] / B[first] - 1`.
@@ -124,6 +130,12 @@ A `BenchmarkSeriesVersion` identity includes exact date/value rows, name, proven
 - Alpha and beta: `NOT_AVAILABLE / OUTSIDE_V0_CLOSED_FORMULA`. V0 does not emit them because their regression, intercept, benchmark and sample policy are not yet identity-frozen.
 
 Analytics Truth/Admission is the meet of the source result and benchmark ceilings. It can never exceed the source `BacktestRunResult`.
+
+## Publication and product boundary
+
+`DeterministicResultAnalyticsEngine` is the only V0 publisher of `BacktestResultAnalytics`; the raw-values constructor is module-private and not exported. `BacktestResultAnalytics.assert_canonical()` proves typed payload and identity self-consistency. `engine.assert_output(...)` additionally recomputes from the exact Result, binding, policy, and optional benchmark, then requires exact object and wire equality. A self-consistent fabricated metric, cost, turnover, benchmark, or truth value therefore cannot pass output validation.
+
+The normal Result Lab entry is `CONNECTED_NO_ANALYTICS / NO_RESULT_ANALYTICS_AVAILABLE` until a canonical analytics transport is connected. It never substitutes the development fixture. Visual integration evidence enables the fixture only through explicit development mode and displays `DEVELOPMENT / INTEGRATION FIXTURE` in the page header. Benchmark absence omits relative-performance chart data; no drawdown episode, unrecovered drawdown, `NOT_AVAILABLE`, and `INSUFFICIENT_SAMPLE` remain typed display states rather than numeric zero.
 
 ## Nonfinite and typed availability rules
 

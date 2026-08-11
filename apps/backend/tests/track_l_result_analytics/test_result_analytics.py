@@ -20,6 +20,7 @@ from v3_backend.domain.backtest_runtime import (
     Side,
 )
 from v3_backend.domain.result_analytics import (
+    BacktestResultAnalytics,
     BenchmarkObservation,
     BenchmarkSeriesVersion,
     BenchmarkStatus,
@@ -28,7 +29,9 @@ from v3_backend.domain.result_analytics import (
     ResultAnalyticsError,
     ResultAnalyticsPolicyVersion,
     SourceResultBinding,
+    UnsupportedResultAnalyticsPolicy,
 )
+from v3_backend.provenance.canonical_hash import canonical_sha256
 
 
 def d(day: int, month: int = 1, year: int = 2026) -> date:
@@ -123,7 +126,10 @@ class ResultAnalyticsV0Tests(unittest.TestCase):
                 for key, value in self.policy._payload().items()
                 if key != "schema_version"
             }
-            | {"annualization_sessions": 250}
+            | {
+                "profile_name": "EXPLICIT_RESEARCH_ANALYTICS_V0",
+                "annualization_sessions": 250,
+            }
         )
         first = self.analyze(result)
         second = self.engine.analyze(result, binding(result), changed)
@@ -299,6 +305,137 @@ class ResultAnalyticsV0Tests(unittest.TestCase):
             self.analyze(
                 make_result(("100", "101"), fills=(fill,), cash_ledger=mismatched)
             )
+
+    def test_21_frozen_profile_and_unsupported_conventions_fail_closed(self):
+        base = {
+            key: value
+            for key, value in self.policy._payload().items()
+            if key != "schema_version"
+        }
+        mutations = (
+            {"annualization_sessions": 250},
+            {"return_convention": "LOG_RETURN"},
+            {"risk_free_policy": "NONZERO_MARKET_RATE", "risk_free_annual_rate": "0.05"},
+            {"drawdown_convention": "END_TO_END"},
+            {"turnover_convention": "HALF_GROSS"},
+            {"period_return_convention": "PERIOD_START_TO_END"},
+            {"missing_data_policy": "DROP_MISSING"},
+            {"numeric_rounding": "ROUND_DOWN"},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(
+                UnsupportedResultAnalyticsPolicy,
+                "UNSUPPORTED_RESULT_ANALYTICS_POLICY",
+            ):
+                ResultAnalyticsPolicyVersion.create(**(base | mutation))
+
+    def test_22_direct_hash_consistent_malformed_policy_rejects(self):
+        malformed = dataclasses.replace(self.policy, return_convention="LOG_RETURN")
+        digest = canonical_sha256(malformed._payload())
+        malformed = dataclasses.replace(
+            malformed, content_sha256=digest, policy_id="rap_sha256_" + digest
+        )
+        with self.assertRaisesRegex(
+            UnsupportedResultAnalyticsPolicy, "UNSUPPORTED_RESULT_ANALYTICS_POLICY"
+        ):
+            malformed.assert_canonical()
+        with self.assertRaises(UnsupportedResultAnalyticsPolicy):
+            self.engine.analyze(make_result(("100", "101")), binding(make_result(("100", "101"))), malformed)
+
+    def test_23_explicit_numeric_profile_changes_execution_consistently(self):
+        base = {
+            key: value
+            for key, value in self.policy._payload().items()
+            if key != "schema_version"
+        }
+        custom = ResultAnalyticsPolicyVersion.create(
+            **(base | {"profile_name": "EXPLICIT_RESEARCH_ANALYTICS_V0", "annualization_sessions": 250})
+        )
+        result = make_result(("100", "101", "102"))
+        canonical = self.analyze(result)
+        changed = self.engine.analyze(result, binding(result), custom)
+        self.assertNotEqual(canonical.analytics_id, changed.analytics_id)
+        self.assertNotEqual(canonical.annualized_return.value, changed.annualized_return.value)
+
+    def test_24_benchmark_semantics_revalidated_by_assert_canonical(self):
+        dates = (d(1), d(2))
+        valid = benchmark(dates, ("100", "101"))
+        valid.assert_canonical()
+        for mutation in (
+            {"source_provenance_refs": ()},
+            {"alignment_policy": "FORWARD_FILL"},
+            {"rows": tuple(reversed(valid.rows))},
+            {"truth_admission": FORMAL_ADMITTED_CEILING},
+        ):
+            malformed = dataclasses.replace(valid, **mutation)
+            digest = canonical_sha256(malformed._payload())
+            malformed = dataclasses.replace(
+                malformed,
+                content_sha256=digest,
+                benchmark_series_id="bmsv_sha256_" + digest,
+            )
+            with self.subTest(mutation=mutation), self.assertRaises(ResultAnalyticsError):
+                malformed.assert_canonical()
+
+    def test_25_analytics_is_engine_owned_and_exactly_recomputable(self):
+        result = make_result(("100", "101", "102"))
+        analytics = self.analyze(result)
+        self.assertFalse(hasattr(BacktestResultAnalytics, "create"))
+        analytics.assert_canonical()
+        self.engine.assert_output(result, binding(result), self.policy, None, analytics)
+
+    @staticmethod
+    def _self_consistent_analytics(
+        analytics: BacktestResultAnalytics, **changes
+    ) -> BacktestResultAnalytics:
+        changed = dataclasses.replace(analytics, **changes)
+        values = {
+            field: getattr(changed, field)
+            for field in changed.__dataclass_fields__
+            if field not in {"analytics_id", "content_sha256", "schema_version"}
+        }
+        digest = canonical_sha256(BacktestResultAnalytics._payload_from_values(values))
+        return dataclasses.replace(
+            changed, analytics_id="bra_sha256_" + digest, content_sha256=digest
+        )
+
+    def test_26_canonical_hash_does_not_replace_engine_output_authority(self):
+        result = make_result(("100", "101", "102"))
+        analytics = self.analyze(result)
+        wrong_id = dataclasses.replace(analytics, content_sha256="0" * 64)
+        with self.assertRaisesRegex(ResultAnalyticsError, "identity/content mismatch"):
+            wrong_id.assert_canonical()
+        fabricated = self._self_consistent_analytics(
+            analytics, total_return=analytics.total_return.available("9")
+        )
+        fabricated.assert_canonical()
+        with self.assertRaisesRegex(ResultAnalyticsError, "deterministic recomputation"):
+            self.engine.assert_output(result, binding(result), self.policy, None, fabricated)
+
+    def test_27_fabricated_cost_turnover_and_truth_fail_recomputation(self):
+        result = make_result(("100", "101", "102"))
+        analytics = self.analyze(result)
+        fabricated_cost = self._self_consistent_analytics(
+            analytics,
+            costs=dataclasses.replace(analytics.costs, total_fees="99"),
+            turnover=dataclasses.replace(
+                analytics.turnover, average_daily_nav="999"
+            ),
+        )
+        fabricated_cost.assert_canonical()
+        with self.assertRaisesRegex(ResultAnalyticsError, "deterministic recomputation"):
+            self.engine.assert_output(result, binding(result), self.policy, None, fabricated_cost)
+        fabricated_truth = self._self_consistent_analytics(
+            analytics, truth_admission=FORMAL_ADMITTED_CEILING
+        )
+        fabricated_truth.assert_canonical()
+        with self.assertRaisesRegex(ResultAnalyticsError, "deterministic recomputation"):
+            self.engine.assert_output(result, binding(result), self.policy, None, fabricated_truth)
+
+    def test_28_source_result_change_changes_analytics_identity(self):
+        first = make_result(("100", "101", "102"))
+        second = make_result(("100", "101", "103"))
+        self.assertNotEqual(self.analyze(first).analytics_id, self.analyze(second).analytics_id)
 
 
 if __name__ == "__main__":

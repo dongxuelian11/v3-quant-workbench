@@ -1,6 +1,14 @@
 /* Track L — dense, identity-forward Result Analytics Lab. */
 .result-analytics-header .analysis-title { min-width: 330px; }
 .result-analytics-header .result-boundary { padding: 2px 6px; border: 1px solid rgba(228,181,103,.38); color: var(--v3-warning); background: rgba(228,181,103,.07); font-weight: 650; letter-spacing: .35px; }
+.result-source-boundary { padding: 3px 8px; border: 1px solid rgba(240,118,118,.55); color: #ffaaaa; background: rgba(240,118,118,.12); font-size: 10px; font-weight: 800; letter-spacing: .65px; }
+.result-empty { background: var(--v3-canvas); }
+.result-empty-state { max-width: 620px; margin: 11vh auto; padding: 28px 30px; border: 1px solid var(--v3-border-strong); border-left: 3px solid var(--v3-warning); background: #0d1119; }
+.result-empty-state small { color: var(--v3-accent); font-size: 9px; letter-spacing: .75px; }
+.result-empty-state h2 { margin: 10px 0 8px; color: var(--v3-fg); font-size: 18px; }
+.result-empty-state p, .result-empty-detail { color: var(--v3-fg-muted); font-size: 11px; line-height: 1.6; }
+.result-empty-detail { margin: 14px; padding: 14px; border: 1px solid var(--v3-border-subtle); background: #0a0d13; }
+.result-unavailable { padding: 3px 7px; border: 1px solid rgba(228,181,103,.3); color: var(--v3-warning); background: rgba(228,181,103,.06); font-size: 9px; font-weight: 700; }
 .result-analytics-lab .analysis-contextline { min-width: 0; }
 .result-analytics-lab .analysis-contextline code { max-width: 420px; overflow: hidden; color: var(--v3-fg-secondary); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .result-analytics-primary { display: block; padding: 0; background: var(--v3-canvas); }

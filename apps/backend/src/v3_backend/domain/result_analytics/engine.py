@@ -25,6 +25,7 @@ from .model import (
     ReturnSeriesRow,
     SourceResultBinding,
     TurnoverAnalytics,
+    _create_backtest_result_analytics,
     exact_decimal_text,
 )
 
@@ -47,6 +48,7 @@ class DeterministicResultAnalyticsEngine:
             raise TypeError("benchmark must be BenchmarkSeriesVersion or None")
         self._assert_result(result, source_binding)
         policy.assert_canonical()
+        policy.assert_execution_compatible()
         if benchmark is not None:
             benchmark.assert_canonical()
 
@@ -99,7 +101,7 @@ class DeterministicResultAnalyticsEngine:
             if benchmark is None
             else meet_pair(result.truth_admission, benchmark.truth_admission)
         )
-        return BacktestResultAnalytics.create(
+        return _create_backtest_result_analytics(
             source_result_id=result.result_id,
             source_result_content_sha256=result.content_sha256,
             analytics_policy_id=policy.policy_id,
@@ -124,6 +126,23 @@ class DeterministicResultAnalyticsEngine:
             benchmark=benchmark_analytics,
             truth_admission=truth,
         )
+
+    def assert_output(
+        self,
+        result: BacktestRunResult,
+        source_binding: SourceResultBinding,
+        policy: ResultAnalyticsPolicyVersion,
+        benchmark: BenchmarkSeriesVersion | None,
+        analytics: BacktestResultAnalytics,
+    ) -> None:
+        if type(analytics) is not BacktestResultAnalytics:
+            raise TypeError("analytics must be BacktestResultAnalytics")
+        analytics.assert_canonical()
+        recomputed = self.analyze(result, source_binding, policy, benchmark)
+        if analytics != recomputed or analytics.to_wire() != recomputed.to_wire():
+            raise ResultAnalyticsError(
+                "analytics output does not exactly match deterministic recomputation"
+            )
 
     @staticmethod
     def _assert_result(
