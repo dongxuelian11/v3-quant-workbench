@@ -10,6 +10,8 @@ from v3_backend.contracts.common.truth_admission import (
 )
 from v3_backend.domain.reviewer_integration import (
     DEFAULT_REVIEWER_RULE_SET,
+    REGISTERED_REVIEWER_RULE_SETS,
+    V0_REVIEWER_RULE_SET_ID,
     ExactEvidenceBinding,
     FindingLifecycleLink,
     FindingRelation,
@@ -19,10 +21,13 @@ from v3_backend.domain.reviewer_integration import (
     ReviewEvidenceRef,
     ReviewerAgentDraft,
     ReviewerRuleSet,
+    ReviewerRuleSetAuthorityError,
     ReviewFact,
     ReviewOutcome,
+    ReviewRuleDefinition,
     review_research_scope,
     review_scope_from_round3_bundle,
+    validate_reviewer_rule_set_registry,
 )
 from v3_backend.adapters.round3_evidence.development_runtime import build_development_bundle
 
@@ -86,10 +91,10 @@ def complete_scope() -> ResearchReviewScope:
     spec = ref("BacktestRunSpec", "4")
     result = ref("BacktestRunResult", "5")
     records = (
-        record(snapshot, facts_value=facts(available_time="2026-01-02T00:00:00Z", source_truth="FORMAL")),
+        record(snapshot, facts_value=facts(available_time="2024-12-31T00:00:00Z", source_truth="FORMAL")),
         record(factor, bindings=(binding("snapshot", snapshot),)),
         record(split, facts_value=facts(train_period="1..100", validation_period="110..130", test_period="140..160", period_start="1", period_end="160", purge_observations="9", embargo_observations="9")),
-        record(dataset, bindings=(binding("snapshot", snapshot), binding("factor_evaluation", factor), binding("split_spec", split)), facts_value=facts(knowledge_cutoff="2026-01-02T00:00:00Z")),
+        record(dataset, bindings=(binding("snapshot", snapshot), binding("factor_evaluation", factor), binding("split_spec", split)), facts_value=facts(knowledge_cutoff="2024-12-31T23:59:59Z")),
         record(run, bindings=(binding("dataset", dataset), binding("factor_evaluation", factor))),
         record(attempt, bindings=(binding("experiment_run", run),)),
         record(training_request, bindings=(binding("dataset", dataset),)),
@@ -118,6 +123,10 @@ def with_record(scope: ResearchReviewScope, kind: str, transform) -> ResearchRev
 
 def check(report, rule_id: str):
     return next(value for value in report.deterministic_checks if value.rule_id == rule_id)
+
+
+def finding(report, rule_id: str):
+    return next(value for value in report.findings if value.rule_id == rule_id)
 
 
 class ReviewerIntegrationTests(unittest.TestCase):
@@ -228,6 +237,7 @@ class ReviewerIntegrationTests(unittest.TestCase):
         self.assertEqual(check(report, "O-003").outcome, ReviewOutcome.NOT_RUN)
         self.assertEqual(check(report, "O-004").outcome, ReviewOutcome.FINDING)
         self.assertEqual(check(report, "O-040").outcome, ReviewOutcome.NOT_RUN)
+        self.assertEqual(check(report, "O-050").outcome, ReviewOutcome.NOT_RUN)
 
     def test_exact_evidence_links_are_report_bound(self) -> None:
         scope = with_record(complete_scope(), "PredictionArtifact", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
@@ -256,13 +266,228 @@ class ReviewerIntegrationTests(unittest.TestCase):
         self.assertEqual(outcome.severity.value, "INFO")
         self.assertIn("No OVERFITTING_PASS/FAIL", outcome.explanation)
 
-    def test_ruleset_version_changes_report_identity(self) -> None:
+    def test_default_ruleset_is_exact_registered_execution_authority(self) -> None:
+        DEFAULT_REVIEWER_RULE_SET.assert_canonical()
+        self.assertEqual(DEFAULT_REVIEWER_RULE_SET.rule_set_id, V0_REVIEWER_RULE_SET_ID)
+        self.assertIs(REGISTERED_REVIEWER_RULE_SETS[V0_REVIEWER_RULE_SET_ID], DEFAULT_REVIEWER_RULE_SET)
+        self.assertEqual(review_research_scope(complete_scope()).rule_set_id, V0_REVIEWER_RULE_SET_ID)
+
+    def test_wrong_direct_ruleset_identity_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ReviewerRuleSetAuthorityError, "RULESET_IDENTITY_MISMATCH"):
+            ReviewerRuleSet(
+                "rrs_sha256_" + "0" * 64,
+                DEFAULT_REVIEWER_RULE_SET.version,
+                "0" * 64,
+                DEFAULT_REVIEWER_RULE_SET.rules,
+            )
+
+    def test_content_addressed_altered_required_rule_is_not_execution_authorized(self) -> None:
+        altered_rules = tuple(
+            replace(value, required=False) if value.rule_id == "O-003" else value
+            for value in DEFAULT_REVIEWER_RULE_SET.rules
+        )
+        altered = ReviewerRuleSet.create(DEFAULT_REVIEWER_RULE_SET.version, altered_rules)
+        validation_not_run = with_record(
+            complete_scope(),
+            "DatasetVersion",
+            lambda value: replace(value, validation_state=ValidationState.NOT_RUN),
+        )
+        self.assertEqual(
+            review_research_scope(validation_not_run).overall_status,
+            OverallReviewStatus.INCOMPLETE_REVIEW,
+        )
+        with self.assertRaisesRegex(ReviewerRuleSetAuthorityError, "UNREGISTERED_RULESET"):
+            review_research_scope(validation_not_run, altered)
+
+    def test_unregistered_ruleset_version_is_rejected(self) -> None:
         changed = ReviewerRuleSet.create("v3.reviewer-integration/2", DEFAULT_REVIEWER_RULE_SET.rules)
-        first = review_research_scope(complete_scope())
-        second = review_research_scope(complete_scope(), changed)
-        self.assertNotEqual(first.rule_set_id, second.rule_set_id)
-        self.assertNotEqual(first.review_report_id, second.review_report_id)
-        self.assertEqual(tuple(value.outcome for value in first.deterministic_checks), tuple(value.outcome for value in second.deterministic_checks))
+        with self.assertRaisesRegex(ReviewerRuleSetAuthorityError, "UNREGISTERED_RULESET"):
+            review_research_scope(complete_scope(), changed)
+
+    def test_registry_rejects_unknown_rule_without_key_error(self) -> None:
+        unknown = ReviewRuleDefinition("O-999", "1.0.0", "UNKNOWN", True, "Unknown rule.")
+        altered = ReviewerRuleSet.create(
+            DEFAULT_REVIEWER_RULE_SET.version,
+            (*DEFAULT_REVIEWER_RULE_SET.rules, unknown),
+        )
+        with self.assertRaisesRegex(
+            ReviewerRuleSetAuthorityError, "RULE_EXECUTABLE_COVERAGE_MISMATCH"
+        ):
+            validate_reviewer_rule_set_registry({altered.rule_set_id: altered})
+
+    def test_registry_rejects_missing_executable_mapping(self) -> None:
+        executable = {
+            value.rule_id
+            for value in DEFAULT_REVIEWER_RULE_SET.rules
+            if value.rule_id != "O-003"
+        }
+        with self.assertRaisesRegex(
+            ReviewerRuleSetAuthorityError, "RULE_EXECUTABLE_COVERAGE_MISMATCH"
+        ):
+            validate_reviewer_rule_set_registry(
+                REGISTERED_REVIEWER_RULE_SETS,
+                executable,
+            )
+
+    def test_valid_exact_bound_pit_chain_passes(self) -> None:
+        self.assertEqual(
+            check(review_research_scope(complete_scope()), "O-050").outcome,
+            ReviewOutcome.PASS,
+        )
+
+    def test_pit_missing_exact_binding_is_not_run(self) -> None:
+        scope = with_record(
+            complete_scope(),
+            "DatasetVersion",
+            lambda value: replace(
+                value,
+                bindings=tuple(item for item in value.bindings if item.relation != "snapshot"),
+            ),
+        )
+        self.assertEqual(check(review_research_scope(scope), "O-050").outcome, ReviewOutcome.NOT_RUN)
+
+    def test_pit_invalid_datetime_is_not_run(self) -> None:
+        scope = with_record(
+            complete_scope(),
+            "Snapshot",
+            lambda value: replace(value, facts=facts(available_time="not-a-time", source_truth="FORMAL")),
+        )
+        self.assertEqual(check(review_research_scope(scope), "O-050").outcome, ReviewOutcome.NOT_RUN)
+
+    def test_pit_available_time_after_knowledge_cutoff_is_finding(self) -> None:
+        scope = with_record(
+            complete_scope(),
+            "Snapshot",
+            lambda value: replace(value, facts=facts(available_time="2026-01-01T00:00:00Z", source_truth="FORMAL")),
+        )
+        self.assertEqual(check(review_research_scope(scope), "O-050").outcome, ReviewOutcome.FINDING)
+
+    def test_pit_reversed_period_is_finding(self) -> None:
+        scope = with_record(
+            complete_scope(),
+            "SplitSpec",
+            lambda value: replace(value, facts=facts(train_period="1..100", validation_period="110..130", test_period="140..160", period_start="160", period_end="1", purge_observations="9", embargo_observations="9")),
+        )
+        self.assertEqual(check(review_research_scope(scope), "O-050").outcome, ReviewOutcome.FINDING)
+
+    def test_pit_negative_purge_is_finding(self) -> None:
+        scope = with_record(
+            complete_scope(),
+            "SplitSpec",
+            lambda value: replace(value, facts=facts(train_period="1..100", validation_period="110..130", test_period="140..160", period_start="1", period_end="160", purge_observations="-1", embargo_observations="9")),
+        )
+        self.assertEqual(check(review_research_scope(scope), "O-050").outcome, ReviewOutcome.FINDING)
+
+    def test_pit_negative_embargo_is_finding(self) -> None:
+        scope = with_record(
+            complete_scope(),
+            "SplitSpec",
+            lambda value: replace(value, facts=facts(train_period="1..100", validation_period="110..130", test_period="140..160", period_start="1", period_end="160", purge_observations="9", embargo_observations="-1")),
+        )
+        self.assertEqual(check(review_research_scope(scope), "O-050").outcome, ReviewOutcome.FINDING)
+
+    def test_pit_global_fact_union_from_unrelated_records_cannot_pass(self) -> None:
+        scope = with_record(complete_scope(), "Snapshot", lambda value: replace(value, facts=facts(source_truth="FORMAL")))
+        scope = with_record(scope, "FactorEvaluation", lambda value: replace(value, facts=facts(available_time="2024-12-31T00:00:00Z")))
+        self.assertEqual(check(review_research_scope(scope), "O-050").outcome, ReviewOutcome.NOT_RUN)
+
+    def test_pit_insufficient_source_truth_is_not_run(self) -> None:
+        scope = with_record(
+            complete_scope(),
+            "Snapshot",
+            lambda value: replace(value, facts=facts(available_time="2024-12-31T00:00:00Z", source_truth="PRE_ALPHA")),
+        )
+        self.assertEqual(check(review_research_scope(scope), "O-050").outcome, ReviewOutcome.NOT_RUN)
+
+    def test_pit_missing_owner_timing_is_not_run(self) -> None:
+        scope = with_record(complete_scope(), "TargetWeightVector", lambda value: replace(value, facts=()))
+        self.assertEqual(check(review_research_scope(scope), "O-050").outcome, ReviewOutcome.NOT_RUN)
+
+    def test_pre_alpha_chain_never_pit_passes(self) -> None:
+        scope = with_record(
+            complete_scope(),
+            "Snapshot",
+            lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING),
+        )
+        self.assertEqual(check(review_research_scope(scope), "O-050").outcome, ReviewOutcome.NOT_RUN)
+
+    def test_resolves_rejects_current_finding(self) -> None:
+        prior_scope = with_record(complete_scope(), "PredictionArtifact", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        prior = review_research_scope(prior_scope)
+        current_scope = with_record(prior_scope, "ModelVersion", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        current = review_research_scope(current_scope)
+        with self.assertRaisesRegex(ValueError, "current same-rule PASS"):
+            FindingLifecycleLink.create(relation=FindingRelation.RESOLVES, current_report=current, current_finding=None, prior_report=prior, prior_finding=finding(prior, "O-004"))
+
+    def test_resolves_rejects_current_not_run(self) -> None:
+        prior_scope = with_record(complete_scope(), "Snapshot", lambda value: replace(value, facts=facts(available_time="2026-01-01T00:00:00Z", source_truth="FORMAL")))
+        prior = review_research_scope(prior_scope)
+        current_scope = with_record(complete_scope(), "TargetWeightVector", lambda value: replace(value, facts=()))
+        current = review_research_scope(current_scope)
+        with self.assertRaisesRegex(ValueError, "current same-rule PASS"):
+            FindingLifecycleLink.create(relation=FindingRelation.RESOLVES, current_report=current, current_finding=None, prior_report=prior, prior_finding=finding(prior, "O-050"))
+
+    def test_resolves_requires_null_current_finding(self) -> None:
+        prior_scope = with_record(complete_scope(), "PredictionArtifact", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        prior = review_research_scope(prior_scope)
+        current_scope = with_record(prior_scope, "ModelVersion", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        current = review_research_scope(current_scope)
+        with self.assertRaisesRegex(ValueError, "current_finding=None"):
+            FindingLifecycleLink.create(relation=FindingRelation.RESOLVES, current_report=current, current_finding=finding(current, "O-004"), prior_report=prior, prior_finding=finding(prior, "O-004"))
+
+    def test_valid_supersedes_same_rule_new_finding(self) -> None:
+        prior_scope = with_record(complete_scope(), "PredictionArtifact", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        prior = review_research_scope(prior_scope)
+        current_scope = with_record(prior_scope, "ModelVersion", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        current = review_research_scope(current_scope)
+        link = FindingLifecycleLink.create(relation=FindingRelation.SUPERSEDES, current_report=current, current_finding=finding(current, "O-004"), prior_report=prior, prior_finding=finding(prior, "O-004"))
+        self.assertEqual(link.current_finding_id, finding(current, "O-004").finding_id)
+
+    def test_supersedes_requires_current_finding(self) -> None:
+        prior_scope = with_record(complete_scope(), "PredictionArtifact", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        prior = review_research_scope(prior_scope)
+        current = review_research_scope(complete_scope())
+        with self.assertRaisesRegex(ValueError, "requires a current finding"):
+            FindingLifecycleLink.create(relation=FindingRelation.SUPERSEDES, current_report=current, current_finding=None, prior_report=prior, prior_finding=finding(prior, "O-004"))
+
+    def test_lifecycle_rejects_cross_session(self) -> None:
+        prior_scope = with_record(complete_scope(), "PredictionArtifact", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        prior = review_research_scope(prior_scope)
+        current = replace(review_research_scope(complete_scope()), session_id="other-session")
+        with self.assertRaisesRegex(ValueError, "same session"):
+            FindingLifecycleLink.create(relation=FindingRelation.RESOLVES, current_report=current, current_finding=None, prior_report=prior, prior_finding=finding(prior, "O-004"))
+
+    def test_lifecycle_rejects_different_targets(self) -> None:
+        prior_scope = with_record(complete_scope(), "PredictionArtifact", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        prior = review_research_scope(prior_scope)
+        current = replace(review_research_scope(complete_scope()), target_refs=(ref("BacktestRunResult", "9"),))
+        with self.assertRaisesRegex(ValueError, "same exact targets"):
+            FindingLifecycleLink.create(relation=FindingRelation.RESOLVES, current_report=current, current_finding=None, prior_report=prior, prior_finding=finding(prior, "O-004"))
+
+    def test_lifecycle_rejects_different_rule(self) -> None:
+        prior_scope = with_record(complete_scope(), "PredictionArtifact", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        prior = review_research_scope(prior_scope)
+        current_scope = with_record(complete_scope(), "Snapshot", lambda value: replace(value, facts=facts(available_time="2026-01-01T00:00:00Z", source_truth="FORMAL")))
+        current = review_research_scope(current_scope)
+        with self.assertRaisesRegex(ValueError, "same rule_id"):
+            FindingLifecycleLink.create(relation=FindingRelation.SUPERSEDES, current_report=current, current_finding=finding(current, "O-050"), prior_report=prior, prior_finding=finding(prior, "O-004"))
+
+    def test_lifecycle_rejects_forged_prior_finding_membership(self) -> None:
+        prior_scope = with_record(complete_scope(), "PredictionArtifact", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        prior = review_research_scope(prior_scope)
+        forged = replace(finding(prior, "O-004"), finding_id="rvf_sha256_" + "f" * 64)
+        current = review_research_scope(complete_scope())
+        with self.assertRaisesRegex(ValueError, "exact member of prior"):
+            FindingLifecycleLink.create(relation=FindingRelation.RESOLVES, current_report=current, current_finding=None, prior_report=prior, prior_finding=forged)
+
+    def test_lifecycle_rejects_forged_current_finding_membership(self) -> None:
+        prior_scope = with_record(complete_scope(), "PredictionArtifact", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        prior = review_research_scope(prior_scope)
+        current_scope = with_record(prior_scope, "ModelVersion", lambda value: replace(value, truth_admission=PRE_ALPHA_CEILING))
+        current = review_research_scope(current_scope)
+        forged = replace(finding(current, "O-004"), finding_id="rvf_sha256_" + "e" * 64)
+        with self.assertRaisesRegex(ValueError, "exact member of current"):
+            FindingLifecycleLink.create(relation=FindingRelation.SUPERSEDES, current_report=current, current_finding=forged, prior_report=prior, prior_finding=finding(prior, "O-004"))
 
 
 if __name__ == "__main__":

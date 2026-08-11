@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping
+from datetime import date, datetime, timezone
+from types import MappingProxyType
 
 from v3_backend.contracts.common.truth_admission import (
     AdmissionState,
@@ -15,6 +17,7 @@ from .model import (
     ReviewEvidenceRecord,
     ReviewEvidenceRef,
     ReviewerRuleSet,
+    ReviewerRuleSetAuthorityError,
     ReviewOutcome,
     ReviewRuleDefinition,
     ReviewSeverity,
@@ -40,6 +43,12 @@ DEFAULT_REVIEW_RULES = (
 )
 
 DEFAULT_REVIEWER_RULE_SET = ReviewerRuleSet.create("v3.reviewer-integration/1", DEFAULT_REVIEW_RULES)
+V0_REVIEWER_RULE_SET_ID = "rrs_sha256_e4a3dfcf23fd173b8b0c68c9a897a4f16ebb4a74951eb21e7f8bc3b50f2b2860"
+if DEFAULT_REVIEWER_RULE_SET.rule_set_id != V0_REVIEWER_RULE_SET_ID:
+    raise ReviewerRuleSetAuthorityError(
+        "V0_RULESET_IDENTITY_DRIFT",
+        "the V3-owned V0 ruleset no longer matches its registered exact identity",
+    )
 
 
 def _result(
@@ -200,14 +209,154 @@ def _check_target(rule: ReviewRuleDefinition, scope: ResearchReviewScope) -> Det
 
 
 def _check_pit(rule: ReviewRuleDefinition, scope: ResearchReviewScope) -> DeterministicReviewCheck:
-    applicable = tuple(value for value in scope.evidence_records if value.ref.object_kind in {"Snapshot", "DatasetVersion", "SplitSpec", "StrategyEvaluation", "TargetWeightVector"})
+    pit_kinds = {
+        "Snapshot",
+        "DatasetVersion",
+        "SplitSpec",
+        "StrategyEvaluation",
+        "PortfolioIntent",
+        "TargetWeightVector",
+    }
+    applicable = tuple(
+        value for value in scope.evidence_records if value.ref.object_kind in pit_kinds
+    )
     if not applicable:
         return _result(rule, ReviewOutcome.NOT_APPLICABLE, "PIT review not applicable", "No PIT-bearing research evidence is in scope.", "No remediation required.")
-    facts = {name for record in applicable for name in record.fact_map()}
-    required = {"available_time", "knowledge_cutoff", "period_start", "period_end", "purge_observations", "embargo_observations", "source_truth"}
-    if not required.issubset(facts):
-        return _result(rule, ReviewOutcome.NOT_RUN, "PIT evidence is insufficient", "Exact available-time, knowledge-cutoff, period/split, purge/embargo, and source-truth evidence is not all present. PRE_ALPHA alone is not PIT PASS.", "Load the missing canonical PIT evidence and re-review.", tuple(value.ref for value in applicable))
-    return _result(rule, ReviewOutcome.PASS, "PIT evidence is present within checked scope", "The required exact PIT facts are present; this contract check does not recompute a financial engine.", "No remediation required.", tuple(value.ref for value in applicable))
+
+    kinds = {
+        kind: scope.records_of_kind(kind)
+        for kind in pit_kinds
+    }
+    if any(len(kinds[kind]) != 1 for kind in pit_kinds):
+        return _result(
+            rule,
+            ReviewOutcome.NOT_RUN,
+            "PIT exact chain is unavailable",
+            "PIT PASS requires exactly one loaded Snapshot, DatasetVersion, SplitSpec, StrategyEvaluation, PortfolioIntent, and TargetWeightVector chain.",
+            "Load one exact bound PIT chain; unrelated record field unions are not evidence.",
+            tuple(value.ref for value in applicable),
+        )
+
+    snapshot = kinds["Snapshot"][0]
+    dataset = kinds["DatasetVersion"][0]
+    split = kinds["SplitSpec"][0]
+    strategy = kinds["StrategyEvaluation"][0]
+    portfolio = kinds["PortfolioIntent"][0]
+    target = kinds["TargetWeightVector"][0]
+    chain = (snapshot, dataset, split, strategy, portfolio, target)
+    exact_relations = (
+        (dataset, "snapshot", snapshot),
+        (dataset, "split_spec", split),
+        (strategy, "dataset", dataset),
+        (portfolio, "strategy", strategy),
+        (target, "portfolio_intent", portfolio),
+    )
+    if any(source.bindings_for(relation) != (bound.ref,) for source, relation, bound in exact_relations):
+        return _result(
+            rule,
+            ReviewOutcome.NOT_RUN,
+            "PIT exact binding is incomplete",
+            "The loaded PIT-bearing records do not form the exact Snapshot -> DatasetVersion/SplitSpec -> StrategyEvaluation -> PortfolioIntent -> TargetWeightVector chain.",
+            "Load exact owner-produced bindings; do not combine facts from unrelated records.",
+            tuple(value.ref for value in chain),
+        )
+
+    if any(
+        value.truth_admission.truth is not TruthState.FORMAL
+        or value.truth_admission.admission is not AdmissionState.FORMAL_ADMITTED
+        for value in chain
+    ) or snapshot.fact_map().get("source_truth") != "FORMAL":
+        return _result(
+            rule,
+            ReviewOutcome.NOT_RUN,
+            "PIT source truth is insufficient",
+            "The exact chain is below FORMAL/FORMAL_ADMITTED or source_truth is not the allowed FORMAL value. PRE_ALPHA alone never proves PIT.",
+            "Produce new owner-admitted temporal evidence and re-review it.",
+            tuple(value.ref for value in chain),
+        )
+
+    snapshot_facts = snapshot.fact_map()
+    dataset_facts = dataset.fact_map()
+    split_facts = split.fact_map()
+    strategy_facts = strategy.fact_map()
+    target_facts = target.fact_map()
+    try:
+        available_time = _parse_aware_datetime(snapshot_facts["available_time"])
+        dataset_cutoff = _parse_aware_datetime(dataset_facts["knowledge_cutoff"])
+        strategy_cutoff = _parse_aware_datetime(strategy_facts["knowledge_cutoff"])
+        target_time_value = target_facts.get("decision_time")
+        if target_time_value is None:
+            target_time_value = target_facts["effective_at"]
+        target_time = _parse_aware_datetime(target_time_value)
+        split_start, split_end = _parse_period_bounds(split_facts)
+        strategy_start, strategy_end = _parse_period_bounds(strategy_facts)
+        purge = _parse_nonnegative_integer(split_facts["purge_observations"])
+        embargo = _parse_nonnegative_integer(split_facts["embargo_observations"])
+    except (KeyError, TypeError, ValueError):
+        return _result(
+            rule,
+            ReviewOutcome.NOT_RUN,
+            "PIT typed temporal evidence is insufficient",
+            "A required datetime, period, purge, embargo, or owner timing fact is missing, unparseable, incomparable, or lacks an explicit timezone.",
+            "Load typed and parseable exact temporal evidence; invalid strings cannot PASS.",
+            tuple(value.ref for value in chain),
+        )
+
+    contradictions: list[ReviewEvidenceRef] = []
+    if available_time > dataset_cutoff or available_time > strategy_cutoff:
+        contradictions.extend((snapshot.ref, dataset.ref, strategy.ref))
+    if (
+        available_time > target_time
+        or dataset_cutoff > target_time
+        or strategy_cutoff > target_time
+    ):
+        contradictions.extend((snapshot.ref, dataset.ref, strategy.ref, target.ref))
+    if split_start > split_end:
+        contradictions.append(split.ref)
+    if strategy_start > strategy_end:
+        contradictions.append(strategy.ref)
+    if purge < 0 or embargo < 0:
+        contradictions.append(split.ref)
+    if contradictions:
+        return _result(
+            rule,
+            ReviewOutcome.FINDING,
+            "PIT temporal contradiction",
+            "The exact bound chain deterministically contradicts available-time/knowledge-cutoff/target timing, period ordering, or non-negative purge/embargo semantics.",
+            "Produce new owner-resolved evidence; Reviewer cannot waive or repair the contradiction.",
+            tuple(contradictions),
+        )
+    return _result(
+        rule,
+        ReviewOutcome.PASS,
+        "PIT relational proof is complete",
+        "One exact bound chain has FORMAL truth, timezone-aware temporal facts, ordered periods, non-negative purge/embargo, and verified available-time <= knowledge-cutoff/target timing relations.",
+        "No remediation required.",
+        tuple(value.ref for value in chain),
+    )
+
+
+def _parse_aware_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("datetime must have an explicit timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_period_bounds(facts: Mapping[str, str]) -> tuple[int | date, int | date]:
+    start = facts["period_start"]
+    end = facts["period_end"]
+    try:
+        return int(start), int(end)
+    except ValueError:
+        return date.fromisoformat(start), date.fromisoformat(end)
+
+
+def _parse_nonnegative_integer(value: str) -> int:
+    parsed = int(value)
+    if str(parsed) != value and not (value.startswith("+") and str(parsed) == value[1:]):
+        raise ValueError("integer fact must use an exact base-10 representation")
+    return parsed
 
 
 def _check_backtest(rule: ReviewRuleDefinition, scope: ResearchReviewScope) -> DeterministicReviewCheck:
@@ -251,12 +400,60 @@ _RULE_FUNCTIONS: dict[str, RuleFunction] = {
 }
 
 
+def validate_reviewer_rule_set_registry(
+    registry: Mapping[str, ReviewerRuleSet],
+    executable_rule_ids: Collection[str] | None = None,
+) -> None:
+    """Validate registry identity and exact executable coverage without admitting it."""
+
+    if not registry:
+        raise ReviewerRuleSetAuthorityError(
+            "EMPTY_RULESET_REGISTRY", "at least one V3-owned ruleset is required"
+        )
+    executable = set(_RULE_FUNCTIONS if executable_rule_ids is None else executable_rule_ids)
+    for registered_id, rule_set in registry.items():
+        rule_set.assert_canonical()
+        if registered_id != rule_set.rule_set_id:
+            raise ReviewerRuleSetAuthorityError(
+                "REGISTRY_ID_MISMATCH", "registry key must equal canonical rule_set_id"
+            )
+        rule_ids = {value.rule_id for value in rule_set.rules}
+        if rule_ids != executable:
+            raise ReviewerRuleSetAuthorityError(
+                "RULE_EXECUTABLE_COVERAGE_MISMATCH",
+                "registered rule IDs and executable rule IDs must have exact coverage",
+            )
+
+
+REGISTERED_REVIEWER_RULE_SETS: Mapping[str, ReviewerRuleSet] = MappingProxyType(
+    {V0_REVIEWER_RULE_SET_ID: DEFAULT_REVIEWER_RULE_SET}
+)
+validate_reviewer_rule_set_registry(REGISTERED_REVIEWER_RULE_SETS)
+
+
 def review_research_scope(
     scope: ResearchReviewScope,
     rule_set: ReviewerRuleSet = DEFAULT_REVIEWER_RULE_SET,
 ) -> ResearchReviewReport:
-    checks = tuple(_RULE_FUNCTIONS[rule.rule_id](rule, scope) for rule in rule_set.rules)
-    return ResearchReviewReport.create(scope=scope, rule_set=rule_set, checks=checks)
+    rule_set.assert_canonical()
+    registered = REGISTERED_REVIEWER_RULE_SETS.get(rule_set.rule_set_id)
+    if registered is None or registered != rule_set:
+        raise ReviewerRuleSetAuthorityError(
+            "UNREGISTERED_RULESET",
+            "review execution is limited to exact V3-owned registered rulesets",
+        )
+    validate_reviewer_rule_set_registry(REGISTERED_REVIEWER_RULE_SETS)
+    checks = tuple(
+        _RULE_FUNCTIONS[rule.rule_id](rule, scope) for rule in registered.rules
+    )
+    return ResearchReviewReport.create(scope=scope, rule_set=registered, checks=checks)
 
 
-__all__ = ["DEFAULT_REVIEWER_RULE_SET", "DEFAULT_REVIEW_RULES", "review_research_scope"]
+__all__ = [
+    "DEFAULT_REVIEWER_RULE_SET",
+    "DEFAULT_REVIEW_RULES",
+    "REGISTERED_REVIEWER_RULE_SETS",
+    "V0_REVIEWER_RULE_SET_ID",
+    "review_research_scope",
+    "validate_reviewer_rule_set_registry",
+]

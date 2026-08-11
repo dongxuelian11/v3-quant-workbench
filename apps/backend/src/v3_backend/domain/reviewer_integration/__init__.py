@@ -1,4 +1,11 @@
-from .engine import DEFAULT_REVIEWER_RULE_SET, DEFAULT_REVIEW_RULES, review_research_scope
+from .engine import (
+    DEFAULT_REVIEWER_RULE_SET,
+    DEFAULT_REVIEW_RULES,
+    REGISTERED_REVIEWER_RULE_SETS,
+    V0_REVIEWER_RULE_SET_ID,
+    review_research_scope,
+    validate_reviewer_rule_set_registry,
+)
 from .model import (
     DeterministicReviewCheck,
     ExactEvidenceBinding,
@@ -13,6 +20,7 @@ from .model import (
     ReviewerAgentDraft,
     ReviewerFinding,
     ReviewerRuleSet,
+    ReviewerRuleSetAuthorityError,
     ReviewFact,
     ReviewOutcome,
     ReviewRuleDefinition,
@@ -23,6 +31,7 @@ from .round3_adapter import review_scope_from_round3_bundle
 __all__ = [
     "DEFAULT_REVIEWER_RULE_SET",
     "DEFAULT_REVIEW_RULES",
+    "REGISTERED_REVIEWER_RULE_SETS",
     "DeterministicReviewCheck",
     "ExactEvidenceBinding",
     "FindingLifecycleLink",
@@ -36,10 +45,13 @@ __all__ = [
     "ReviewerAgentDraft",
     "ReviewerFinding",
     "ReviewerRuleSet",
+    "ReviewerRuleSetAuthorityError",
     "ReviewFact",
     "ReviewOutcome",
     "ReviewRuleDefinition",
     "ReviewSeverity",
+    "V0_REVIEWER_RULE_SET_ID",
     "review_research_scope",
     "review_scope_from_round3_bundle",
+    "validate_reviewer_rule_set_registry",
 ]

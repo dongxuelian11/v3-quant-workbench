@@ -48,6 +48,15 @@ class FindingRelation(StrEnum):
     SUPERSEDES = "SUPERSEDES"
 
 
+class ReviewerRuleSetAuthorityError(ValueError):
+    """Typed fail-closed error for invalid or unregistered Reviewer rulesets."""
+
+    def __init__(self, code: str, message: str) -> None:
+        _require_text(code, "ruleset authority error code")
+        super().__init__(f"{code}: {message}")
+        self.code = code
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewEvidenceRef:
     session_id: str
@@ -214,6 +223,9 @@ class ReviewerRuleSet:
     content_sha256: str
     rules: tuple[ReviewRuleDefinition, ...]
 
+    def __post_init__(self) -> None:
+        self.assert_canonical()
+
     @classmethod
     def create(cls, version: str, rules: tuple[ReviewRuleDefinition, ...]) -> ReviewerRuleSet:
         _require_text(version, "ruleset version")
@@ -223,6 +235,44 @@ class ReviewerRuleSet:
         payload = {"version": version, "rules": [value.to_wire() for value in ordered]}
         digest = canonical_sha256(payload)
         return cls("rrs_sha256_" + digest, version, digest, ordered)
+
+    def assert_canonical(self) -> None:
+        """Recompute and verify exact V3 ruleset identity, order, and content."""
+
+        try:
+            _require_text(self.version, "ruleset version")
+        except (TypeError, ValueError) as error:
+            raise ReviewerRuleSetAuthorityError(
+                "INVALID_RULESET_VERSION", str(error)
+            ) from error
+        if not isinstance(self.rules, tuple) or not self.rules:
+            raise ReviewerRuleSetAuthorityError(
+                "INVALID_RULESET_RULES", "rules must be a non-empty tuple"
+            )
+        if any(not isinstance(value, ReviewRuleDefinition) for value in self.rules):
+            raise ReviewerRuleSetAuthorityError(
+                "INVALID_RULESET_RULE", "every rule must be ReviewRuleDefinition"
+            )
+        ordered = tuple(sorted(self.rules, key=lambda value: value.rule_id))
+        if self.rules != ordered:
+            raise ReviewerRuleSetAuthorityError(
+                "NON_CANONICAL_RULE_ORDER", "rules must use canonical rule_id order"
+            )
+        if len({value.rule_id for value in self.rules}) != len(self.rules):
+            raise ReviewerRuleSetAuthorityError(
+                "DUPLICATE_RULE_ID", "ruleset rule IDs must be unique"
+            )
+        payload = {
+            "version": self.version,
+            "rules": [value.to_wire() for value in self.rules],
+        }
+        digest = canonical_sha256(payload)
+        expected_id = "rrs_sha256_" + digest
+        if self.content_sha256 != digest or self.rule_set_id != expected_id:
+            raise ReviewerRuleSetAuthorityError(
+                "RULESET_IDENTITY_MISMATCH",
+                "rule_set_id/content_sha256 do not match canonical versioned content",
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,6 +531,20 @@ class ResearchReviewReport:
             "truth_ceiling": self.truth_ceiling.to_wire(),
         }
 
+    def finding_by_id(self, finding_id: str) -> ReviewerFinding | None:
+        _require_text(finding_id, "finding_id")
+        return next(
+            (value for value in self.findings if value.finding_id == finding_id),
+            None,
+        )
+
+    def check_by_rule_id(self, rule_id: str) -> DeterministicReviewCheck | None:
+        _require_text(rule_id, "rule_id")
+        return next(
+            (value for value in self.deterministic_checks if value.rule_id == rule_id),
+            None,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class FindingLifecycleLink:
@@ -503,12 +567,46 @@ class FindingLifecycleLink:
     ) -> FindingLifecycleLink:
         if not isinstance(relation, FindingRelation):
             raise TypeError("finding lifecycle relation must use the closed enum")
-        if current_finding is not None and current_finding.review_report_id != current_report.review_report_id:
-            raise ValueError("current finding must bind the exact current report")
-        if prior_finding.review_report_id != prior_report.review_report_id:
-            raise ValueError("prior finding must bind the exact prior report")
         if current_report.review_report_id == prior_report.review_report_id:
             raise ValueError("re-review lifecycle must link distinct immutable reports")
+        prior_member = prior_report.finding_by_id(prior_finding.finding_id)
+        if prior_member is None or prior_member != prior_finding:
+            raise ValueError("prior finding must be an exact member of prior report.findings")
+        if current_report.session_id != prior_report.session_id:
+            raise ValueError("finding lifecycle reports must bind the same session")
+        if current_report.target_refs != prior_report.target_refs:
+            raise ValueError("finding lifecycle reports must bind the same exact targets")
+        prior_check = prior_report.check_by_rule_id(prior_finding.rule_id)
+        if prior_check is None or prior_check.check_id != prior_finding.check_id:
+            raise ValueError("prior finding must bind its report's exact deterministic check")
+
+        current_check = current_report.check_by_rule_id(prior_finding.rule_id)
+        if current_check is None:
+            raise ValueError("current report must contain the same rule as prior finding")
+        if relation is FindingRelation.RESOLVES:
+            if current_finding is not None:
+                raise ValueError("RESOLVES requires current_finding=None")
+            if current_check.outcome not in {
+                ReviewOutcome.PASS,
+                ReviewOutcome.NOT_APPLICABLE,
+            }:
+                raise ValueError(
+                    "RESOLVES requires current same-rule PASS or NOT_APPLICABLE"
+                )
+        else:
+            if current_finding is None:
+                raise ValueError("SUPERSEDES requires a current finding")
+            current_member = current_report.finding_by_id(current_finding.finding_id)
+            if current_member is None or current_member != current_finding:
+                raise ValueError(
+                    "current finding must be an exact member of current report.findings"
+                )
+            if current_finding.rule_id != prior_finding.rule_id:
+                raise ValueError("SUPERSEDES requires the same rule_id")
+            if current_check.check_id != current_finding.check_id:
+                raise ValueError(
+                    "current finding must bind its report's exact deterministic check"
+                )
         payload = {
             "relation": relation.value,
             "current_review_report_id": current_report.review_report_id,
@@ -573,6 +671,7 @@ __all__ = [
     "ReviewerAgentDraft",
     "ReviewerFinding",
     "ReviewerRuleSet",
+    "ReviewerRuleSetAuthorityError",
     "ReviewFact",
     "ReviewOutcome",
     "ReviewRuleDefinition",
