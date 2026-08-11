@@ -170,6 +170,13 @@ class TypedResearchViewWorkerTests(unittest.TestCase):
         payload = valid_payload()
         payload.update({"title": "s" * SHORT_TEXT_MAX, "blocks": [narrative]})
         ResearchViewSpecV1.model_validate(payload)
+        non_bmp_code_point = "\U0001f9ea"
+        for unicode_title in ("研" * SHORT_TEXT_MAX, non_bmp_code_point * SHORT_TEXT_MAX):
+            ResearchViewSpecV1.model_validate({**payload, "title": unicode_title})
+        ResearchViewSpecV1.model_validate({
+            **payload,
+            "blocks": [{**narrative, "text": non_bmp_code_point * BOUNDED_TEXT_MAX}],
+        })
 
         callout = {
             "type": "Callout",
@@ -184,7 +191,9 @@ class TypedResearchViewWorkerTests(unittest.TestCase):
 
         invalid_cases = [
             {**payload, "title": "s" * (SHORT_TEXT_MAX + 1)},
+            {**payload, "title": non_bmp_code_point * (SHORT_TEXT_MAX + 1)},
             {**payload, "blocks": [{**narrative, "text": "n" * (BOUNDED_TEXT_MAX + 1)}]},
+            {**payload, "blocks": [{**narrative, "text": non_bmp_code_point * (BOUNDED_TEXT_MAX + 1)}]},
             {**payload, "blocks": [{**narrative, "evidence_ids": list(evidence_ids)}]},
             {**payload, "blocks": [{**narrative, "evidence_ids": [evidence_ids[0], evidence_ids[0]]}]},
             {**payload, "blocks": [{**narrative, "evidence_ids": [f"MALFORMED_sha256_{'a' * 64}"]}]},
@@ -218,12 +227,32 @@ class TypedResearchViewWorkerTests(unittest.TestCase):
         }
         ResearchViewSpecV1.model_validate({**valid_payload(), "blocks": [time_series]})
         ResearchViewSpecV1.model_validate({**valid_payload(), "blocks": [{**time_series, "date_window": {"start": "2026-08-11T09:00:00+08:00", "end": "2026-08-11T01:00:01Z"}}]})
+        for timestamp in (
+            "2026-08-11T01:00:00Z",
+            "2026-08-11T01:00:00.1Z",
+            "2026-08-11T01:00:00.12Z",
+            "2026-08-11T01:00:00.123Z",
+        ):
+            with self.subTest(timestamp=timestamp):
+                ResearchViewSpecV1.model_validate({
+                    **valid_payload(),
+                    "blocks": [{**time_series, "date_window": {"start": timestamp, "end": timestamp}}],
+                })
+        ResearchViewSpecV1.model_validate({
+            **valid_payload(),
+            "blocks": [{**time_series, "date_window": {
+                "start": "2026-08-11T09:00:00.123+08:00",
+                "end": "2026-08-11T01:00:00.123Z",
+            }}],
+        })
 
         for date_window in (
             {"start": "2026-08-11T09:00:00", "end": "2026-08-12T00:00:00Z"},
             {"start": "Aug 11 2026", "end": "2026-08-12"},
             {"start": "2026-02-30", "end": "2026-08-12"},
             {"start": "2026-08-13", "end": "2026-08-12"},
+            {"start": "2026-08-11T01:00:00.0001Z", "end": "2026-08-11T01:00:00.0009Z"},
+            {"start": "2026-08-11T01:00:00.0009Z", "end": "2026-08-11T01:00:00.0001Z"},
         ):
             with self.subTest(date_window=date_window):
                 with self.assertRaises(ValidationError):
@@ -233,6 +262,29 @@ class TypedResearchViewWorkerTests(unittest.TestCase):
         percent_payload["blocks"][0]["metrics"][0]["selector"]["normalization"] = "PERCENT"
         with self.assertRaises(ValidationError):
             ResearchViewSpecV1.model_validate(percent_payload)
+
+    def test_pydantic_unsafe_text_uses_the_frozen_v0_grammar(self) -> None:
+        narrative = {
+            "type": "Narrative",
+            "block_id": "unsafe-text-parity",
+            "title": "Unsafe text parity",
+            "data_authority": "AGENT_DRAFT_DERIVED",
+            "evidence_ids": [EVIDENCE_ID],
+            "text": "Normal plain text.",
+        }
+        for accepted in ("Normal plain text.", "javascript :", "javascript   :"):
+            with self.subTest(accepted=accepted):
+                ResearchViewSpecV1.model_validate({
+                    **valid_payload(),
+                    "blocks": [{**narrative, "text": accepted}],
+                })
+        for rejected in ("<script", "<iframe", "javascript:", "2 < 3 > 1", "<ScRiPt", "<strong>text</strong>"):
+            with self.subTest(rejected=rejected):
+                with self.assertRaises(ValidationError):
+                    ResearchViewSpecV1.model_validate({
+                        **valid_payload(),
+                        "blocks": [{**narrative, "text": rejected}],
+                    })
 
     def test_worker_denies_l2_execute_and_l3_publish(self) -> None:
         for permission in (PermissionLevel.L2_EXECUTE, PermissionLevel.L3_PUBLISH):

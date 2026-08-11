@@ -309,7 +309,11 @@ test("ISO_DATE deterministically preserves date-only and normalizes timezone-awa
   const values = [
     ["2026-08-11", "2026-08-11"],
     ["2026-08-11T09:00:00+08:00", "2026-08-11T01:00:00.000Z"],
-    ["2026-08-11T01:00:00Z", "2026-08-11T01:00:00.000Z"]
+    ["2026-08-11T01:00:00Z", "2026-08-11T01:00:00.000Z"],
+    ["2026-08-11T01:00:00.1Z", "2026-08-11T01:00:00.100Z"],
+    ["2026-08-11T01:00:00.12Z", "2026-08-11T01:00:00.120Z"],
+    ["2026-08-11T01:00:00.123Z", "2026-08-11T01:00:00.123Z"],
+    ["2026-08-11T09:00:00.123+08:00", "2026-08-11T01:00:00.123Z"]
   ];
   for (const [source, expected] of values) {
     const evidence = [{
@@ -370,8 +374,8 @@ test("ISO_DATE resolved output is independent of the machine timezone", () => {
   }
 });
 
-test("ISO_DATE rejects timezone-naive, locale, and invalid calendar evidence values", () => {
-  for (const source of ["2026-08-11T09:00:00", "Aug 11 2026", "08/11/2026", "2026-02-30", "2026-08-11T25:00:00Z", "2026-08-11T09:00:00+24:00"]) {
+test("ISO_DATE rejects timezone-naive, over-precision, locale, and invalid calendar evidence values", () => {
+  for (const source of ["2026-08-11T09:00:00", "2026-08-11T01:00:00.1234Z", "Aug 11 2026", "08/11/2026", "2026-02-30", "2026-08-11T25:00:00Z", "2026-08-11T09:00:00+24:00"]) {
     const evidence = [{
       ...sessionEvidence[0],
       facts: [...sessionEvidence[0].facts.filter((fact) => fact.label !== "As of"), { label: "As of", value: source }]
@@ -405,11 +409,18 @@ test("TimeSeriesChart date_window uses the same strict temporal grammar and orde
     date_window: { start: "2026-08-11", end: "2026-08-12T00:00:00Z" }
   };
   assert.equal(parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [block] }, { sessionViewId: "session-a", evidence: sessionEvidence }).status, "VALID");
+  const millisecondEvidence = [{
+    ...sessionEvidence[0],
+    facts: [...sessionEvidence[0].facts.filter((fact) => fact.label !== "As of"), { label: "As of", value: "2026-08-11T01:00:00.001Z" }]
+  }];
+  assert.equal(parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [{ ...block, date_window: { start: "2026-08-11T01:00:00.001Z", end: "2026-08-11T01:00:00.002Z" } }] }, { sessionViewId: "session-a", evidence: millisecondEvidence }).status, "VALID");
   for (const date_window of [
     { start: "2026-08-11T00:00:00", end: "2026-08-12T00:00:00Z" },
     { start: "Aug 11 2026", end: "2026-08-12" },
     { start: "2026-02-30", end: "2026-08-12" },
-    { start: "2026-08-13", end: "2026-08-12" }
+    { start: "2026-08-13", end: "2026-08-12" },
+    { start: "2026-08-11T01:00:00.002Z", end: "2026-08-11T01:00:00.001Z" },
+    { start: "2026-08-11T01:00:00.0009Z", end: "2026-08-11T01:00:00.0001Z" }
   ]) {
     const parsed = parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [{ ...block, date_window }] }, { sessionViewId: "session-a", evidence: sessionEvidence });
     assert.equal(parsed.status, "INVALID", JSON.stringify(date_window));
@@ -444,6 +455,29 @@ test("arbitrary HTML in Agent-authored text is rejected", () => {
   assert.match(parsed.invalidBlocks[0].reason, /forbidden markup or script/);
 });
 
+test("unsafe Agent-authored text follows the frozen Python V0 grammar exactly", () => {
+  const parseNarrativeText = (text) => parseResearchViewSpec({
+    ...canonicalMetricSpec,
+    blocks: [{
+      type: "Narrative",
+      block_id: "unsafe-text-parity",
+      title: "Unsafe text parity",
+      data_authority: "AGENT_DRAFT_DERIVED",
+      evidence_ids: [evidenceId("a")],
+      text
+    }]
+  }, { sessionViewId: "session-a", evidence: sessionEvidence });
+
+  for (const accepted of ["Normal plain text.", "javascript :", "javascript   :"]) {
+    assert.equal(parseNarrativeText(accepted).status, "VALID", accepted);
+  }
+  for (const rejected of ["<script", "<iframe", "javascript:", "2 < 3 > 1", "<ScRiPt", "<strong>text</strong>"]) {
+    const parsed = parseNarrativeText(rejected);
+    assert.equal(parsed.status, "INVALID", rejected);
+    assert.match(parsed.invalidBlocks[0].reason, /forbidden/, rejected);
+  }
+});
+
 test("raw ECharts options and JavaScript formatter functions are rejected", () => {
   const base = {
     type: "BarChart",
@@ -475,6 +509,7 @@ test("extra fields fail the closed envelope schema", () => {
 });
 
 test("TS parser accepts exactly the Python ShortText and BoundedText length boundaries", () => {
+  const nonBmpCodePoint = "\u{1F9EA}";
   const narrative = {
     type: "Narrative",
     block_id: "narrative-boundary",
@@ -485,6 +520,13 @@ test("TS parser accepts exactly the Python ShortText and BoundedText length boun
   };
   const valid = parseResearchViewSpec({ ...canonicalMetricSpec, title: "s".repeat(256), blocks: [narrative] }, { sessionViewId: "session-a", evidence: sessionEvidence });
   assert.equal(valid.status, "VALID");
+  for (const title of ["研".repeat(256), nonBmpCodePoint.repeat(256)]) {
+    assert.equal(parseResearchViewSpec({ ...canonicalMetricSpec, title, blocks: [narrative] }, { sessionViewId: "session-a", evidence: sessionEvidence }).status, "VALID");
+  }
+  assert.equal(parseResearchViewSpec({
+    ...canonicalMetricSpec,
+    blocks: [{ ...narrative, text: nonBmpCodePoint.repeat(4096) }]
+  }, { sessionViewId: "session-a", evidence: sessionEvidence }).status, "VALID");
   const callout = parseResearchViewSpec({
     ...canonicalMetricSpec,
     blocks: [{
@@ -502,10 +544,16 @@ test("TS parser accepts exactly the Python ShortText and BoundedText length boun
   const longShortText = parseResearchViewSpec({ ...canonicalMetricSpec, title: "s".repeat(257), blocks: [narrative] }, { sessionViewId: "session-a", evidence: sessionEvidence });
   assert.equal(longShortText.status, "INVALID");
   assert.match(longShortText.error, /ShortText/);
+  const longUnicodeShortText = parseResearchViewSpec({ ...canonicalMetricSpec, title: nonBmpCodePoint.repeat(257), blocks: [narrative] }, { sessionViewId: "session-a", evidence: sessionEvidence });
+  assert.equal(longUnicodeShortText.status, "INVALID");
+  assert.match(longUnicodeShortText.error, /ShortText/);
 
   const longBoundedText = parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [{ ...narrative, text: "n".repeat(4097) }] }, { sessionViewId: "session-a", evidence: sessionEvidence });
   assert.equal(longBoundedText.status, "INVALID");
   assert.match(longBoundedText.invalidBlocks[0].reason, /BoundedText/);
+  const longUnicodeBoundedText = parseResearchViewSpec({ ...canonicalMetricSpec, blocks: [{ ...narrative, text: nonBmpCodePoint.repeat(4097) }] }, { sessionViewId: "session-a", evidence: sessionEvidence });
+  assert.equal(longUnicodeBoundedText.status, "INVALID");
+  assert.match(longUnicodeBoundedText.invalidBlocks[0].reason, /BoundedText/);
 });
 
 test("TS parser enforces the Python EvidenceId pattern and 1-128 unique evidence list", () => {

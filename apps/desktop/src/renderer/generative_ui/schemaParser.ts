@@ -137,7 +137,7 @@ const EVIDENCE_FIELDS = new Set<EvidenceField>([
 const NORMALIZATIONS = new Set<DisplayNormalization>(["NONE", "NUMBER", "ISO_DATE"]);
 const EVIDENCE_ID_PATTERN = new RegExp(GENERATIVE_RESEARCH_VIEW_EVIDENCE_ID_PATTERN);
 const ISO_DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
-const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|([+-])(\d{2}):(\d{2}))$/;
+const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|([+-])(\d{2}):(\d{2}))$/;
 
 export function parseResearchViewSpec(value: unknown, context: ResearchViewParseContext): ParsedResearchView {
   try {
@@ -531,7 +531,7 @@ function equal(actual: unknown, expected: string, message: string): void {
 }
 
 function shortText(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > GENERATIVE_RESEARCH_VIEW_LIMITS.SHORT_TEXT_MAX) throw new TypeError(`${label} must be ShortText with length 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.SHORT_TEXT_MAX}`);
+  if (typeof value !== "string" || codePointLength(value) === 0 || codePointLength(value) > GENERATIVE_RESEARCH_VIEW_LIMITS.SHORT_TEXT_MAX) throw new TypeError(`${label} must be ShortText with length 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.SHORT_TEXT_MAX} Unicode code points`);
   return value;
 }
 
@@ -540,12 +540,17 @@ function safeShortText(value: unknown, label: string): string {
 }
 
 function safeBoundedText(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > GENERATIVE_RESEARCH_VIEW_LIMITS.BOUNDED_TEXT_MAX) throw new TypeError(`${label} must be BoundedText with length 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.BOUNDED_TEXT_MAX}`);
+  if (typeof value !== "string" || codePointLength(value) === 0 || codePointLength(value) > GENERATIVE_RESEARCH_VIEW_LIMITS.BOUNDED_TEXT_MAX) throw new TypeError(`${label} must be BoundedText with length 1-${GENERATIVE_RESEARCH_VIEW_LIMITS.BOUNDED_TEXT_MAX} Unicode code points`);
   return rejectUnsafeText(value, label);
 }
 
+function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
+
 function rejectUnsafeText(result: string, label: string): string {
-  if (/<\/?[a-z][^>]*>/i.test(result) || /javascript\s*:/i.test(result)) throw new TypeError(`${label} contains forbidden markup or script`);
+  const lowered = result.toLowerCase();
+  if (lowered.includes("<script") || lowered.includes("<iframe") || lowered.includes("javascript:") || (result.includes("<") && result.includes(">"))) throw new TypeError(`${label} contains forbidden markup or script`);
   return result;
 }
 

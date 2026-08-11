@@ -21,7 +21,7 @@ MAX_BAR_POINTS = 100
 MAX_EVIDENCE_LIST_FIELDS = 10
 EVIDENCE_ID_PATTERN = r"^[a-z][a-z0-9_]*_sha256_[0-9a-f]{64}$"
 ISO_DATE_ONLY_PATTERN = r"^(\d{4})-(\d{2})-(\d{2})$"
-ISO_TIMESTAMP_PATTERN = r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$"
+ISO_TIMESTAMP_PATTERN = r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$"
 
 BoundedText = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=BOUNDED_TEXT_MAX)]
 ShortText = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=SHORT_TEXT_MAX)]

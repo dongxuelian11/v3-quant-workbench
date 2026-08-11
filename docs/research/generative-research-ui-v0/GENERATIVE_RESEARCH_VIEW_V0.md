@@ -24,8 +24,8 @@ Python/Pydantic and the TypeScript runtime parser accept the same V0 structural 
 
 | Contract item | Limit |
 |---|---:|
-| `ShortText` | 1..256 characters |
-| `BoundedText` | 1..4096 characters |
+| `ShortText` | 1..256 Unicode code points |
+| `BoundedText` | 1..4096 Unicode code points |
 | blocks per spec | 1..64 |
 | evidence IDs per block | 1..128, unique |
 | metrics per `MetricGroup` | 1..32 |
@@ -35,6 +35,8 @@ Python/Pydantic and the TypeScript runtime parser accept the same V0 structural 
 | evidence-list fields | 1..10 |
 
 Every evidence ID must match `^[a-z][a-z0-9_]*_sha256_[0-9a-f]{64}$`, even if a malformed key is present in the renderer context map. Every `block_id` must be unique within one spec. `block_id` is deterministic Draft-view identity, not canonical artifact identity.
+
+The V0 text-length unit is Unicode code points—not UTF-16 code units and not grapheme clusters. Agent-authored safe text also has one exact cross-language rejection rule: reject when its lowercase form contains `<script`, `<iframe` or `javascript:`, or when the source contains both `<` and `>`. Spaced forms such as `javascript :` are not the exact forbidden marker and are accepted unless another rejection condition applies.
 
 ## Approved selectors and display transforms
 
@@ -48,9 +50,9 @@ Display normalization is exactly `NONE`, `NUMBER` or `ISO_DATE`. V0 intentionall
 `NUMBER` accepts only a finite numeric literal and produces a display coordinate/value; it does not create canonical financial numeric authority. `ISO_DATE` accepts only:
 
 - a valid date-only value `YYYY-MM-DD`, preserved exactly; or
-- a valid timestamp `YYYY-MM-DDTHH:mm:ss(.fraction)?Z` / `YYYY-MM-DDTHH:mm:ss(.fraction)?±HH:mm`, deterministically normalized to UTC.
+- a valid timestamp `YYYY-MM-DDTHH:mm:ss(.fraction)?Z` / `YYYY-MM-DDTHH:mm:ss(.fraction)?±HH:mm`, where the optional fraction is exactly 1..3 decimal digits, deterministically normalized to UTC.
 
-Timezone-naive timestamps, locale date strings and invalid calendar/clock/offset values fail closed. `TimeSeriesChart.date_window` uses the same strict grammar and ordering. `DataTable` permits a declared column sort and bounded `top_n`; `BarChart` permits `INPUT`, `VALUE_ASC`, `VALUE_DESC` and bounded `top_n`. These are display transforms only; no formula or financial calculation engine exists.
+Timezone-naive timestamps, fractions longer than three digits, locale date strings and invalid calendar/clock/offset values fail closed. `TimeSeriesChart.date_window` uses the same millisecond-precision grammar and ordering, so no microsecond/millisecond comparison drift is admitted. `DataTable` permits a declared column sort and bounded `top_n`; `BarChart` permits `INPUT`, `VALUE_ASC`, `VALUE_DESC` and bounded `top_n`. These are display transforms only; no formula or financial calculation engine exists.
 
 ## Exact evidence binding
 
