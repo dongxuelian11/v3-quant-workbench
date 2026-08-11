@@ -43,6 +43,7 @@ const suites = [
   "ws_f_data_truth",
   "track_c_factor_dataset_experiment",
   "track_d_ai_copilot",
+  "track_e_model_prediction_runtime",
   "track_f_strategy_runtime"
 ];
 
@@ -69,4 +70,4 @@ const compile = spawnSync(
   { cwd: root, env, stdio: "inherit" }
 );
 if (compile.status !== 0) process.exit(compile.status ?? 1);
-console.log("Canonical Backend Foundation, Track A0 Truth/Admission, WS-F Data Truth, Track C V0, Track D L0/L1 Agents, and Track F Strategy Runtime V0: tests and compile gate passed.");
+console.log("Canonical Backend Foundation, Track A0 Truth/Admission, WS-F Data Truth, Track C V0, Track D L0/L1 Agents, Track E Model/Prediction Runtime V0, and Track F Strategy Runtime V0: tests and compile gate passed.");
