@@ -3,11 +3,18 @@ from __future__ import annotations
 import itertools
 import unittest
 
+from v3_backend.contracts.common.capability_state import (
+    CapabilityTruthState,
+    CapabilityTruthV1,
+    OperationalTruthState,
+)
 from v3_backend.contracts.common.truth_admission import (
     AdmissionState,
     CanonicalClaimKind,
     FORMAL_ADMITTED_CEILING,
     InvalidTruthAdmissionState,
+    LegacyTruthCompatibilityReason,
+    LegacyTruthVocabulary,
     NOT_FORMAL_CEILING,
     OrderRelation,
     PRE_ALPHA_CEILING,
@@ -25,6 +32,8 @@ from v3_backend.contracts.common.truth_admission import (
     meet_all,
     meet_pair,
     propagate_downstream_ceiling,
+    reconcile_capability_truth_ceiling,
+    reconcile_operational_truth_ceiling,
 )
 
 
@@ -88,13 +97,16 @@ class TruthAdmissionLatticeTests(unittest.TestCase):
             )
         with self.assertRaises(InvalidTruthAdmissionState):
             TruthAdmissionState.from_wire(
-                {"truth_state": "CERTAIN", "admission_state": "FORMAL_ADMITTED"}
+                {
+                    "canonical_truth_state": "CERTAIN",
+                    "canonical_admission_state": "FORMAL_ADMITTED",
+                }
             )
         with self.assertRaises(InvalidTruthAdmissionState):
             TruthAdmissionState.from_wire(
                 {
-                    "truth_state": "FORMAL",
-                    "admission_state": "FORMAL_ADMITTED",
+                    "canonical_truth_state": "FORMAL",
+                    "canonical_admission_state": "FORMAL_ADMITTED",
                     "fallback": True,
                 }
             )
@@ -204,6 +216,123 @@ class TruthAdmissionLatticeTests(unittest.TestCase):
                     UpstreamRequirement("snapshot", PRE_ALPHA_CEILING),
                     UpstreamRequirement("snapshot", FORMAL_ADMITTED_CEILING),
                 )
+            )
+
+    def test_canonical_wire_is_explicitly_separate_from_capability_wire(self) -> None:
+        canonical_wire = FORMAL_ADMITTED_CEILING.to_wire()
+        self.assertEqual(
+            canonical_wire,
+            {
+                "canonical_truth_state": "FORMAL",
+                "canonical_admission_state": "FORMAL_ADMITTED",
+            },
+        )
+        self.assertEqual(
+            TruthAdmissionState.from_wire(canonical_wire), FORMAL_ADMITTED_CEILING
+        )
+        capability_wire = CapabilityTruthV1(CapabilityTruthState.FORMAL).to_wire()
+        with self.assertRaises(InvalidTruthAdmissionState):
+            TruthAdmissionState.from_wire(capability_wire)
+        with self.assertRaises(InvalidTruthAdmissionState):
+            TruthAdmissionState.from_wire(
+                {"truth_state": "FORMAL", "admission_state": "FORMAL_ADMITTED"}
+            )
+
+    def test_capability_formal_is_not_canonical_truth_or_admission(self) -> None:
+        decision = reconcile_capability_truth_ceiling(
+            CapabilityTruthState.FORMAL, FORMAL_ADMITTED_CEILING
+        )
+        self.assertIs(decision.source_vocabulary, LegacyTruthVocabulary.CAPABILITY)
+        self.assertIs(decision.source_state, CapabilityTruthState.FORMAL)
+        self.assertEqual(decision.canonical_ceiling, NOT_FORMAL_CEILING)
+        self.assertIs(
+            decision.reason,
+            LegacyTruthCompatibilityReason.CAPABILITY_FORMAL_IS_NOT_CANONICAL_TRUTH,
+        )
+        self.assertNotEqual(decision.canonical_ceiling, FORMAL_ADMITTED_CEILING)
+        self.assertIs(decision.canonical_ceiling.truth, TruthState.NOT_FORMAL)
+        self.assertIs(decision.canonical_ceiling.admission, AdmissionState.UNKNOWN)
+
+    def test_capability_demo_and_unavailable_fail_closed(self) -> None:
+        for source_state, expected_reason in (
+            (
+                CapabilityTruthState.DEMO,
+                LegacyTruthCompatibilityReason.CAPABILITY_DEMO_FAILS_CLOSED,
+            ),
+            (
+                CapabilityTruthState.UNAVAILABLE,
+                LegacyTruthCompatibilityReason.CAPABILITY_UNAVAILABLE_FAILS_CLOSED,
+            ),
+        ):
+            decision = reconcile_capability_truth_ceiling(
+                source_state, FORMAL_ADMITTED_CEILING
+            )
+            self.assertEqual(decision.canonical_ceiling, UNKNOWN_CEILING)
+            self.assertIs(decision.reason, expected_reason)
+
+    def test_operational_nonformal_states_fail_closed(self) -> None:
+        for source_state in (
+            OperationalTruthState.DEMO,
+            OperationalTruthState.UNAVAILABLE,
+            OperationalTruthState.DEGRADED,
+        ):
+            decision = reconcile_operational_truth_ceiling(
+                source_state, FORMAL_ADMITTED_CEILING
+            )
+            self.assertEqual(decision.canonical_ceiling, UNKNOWN_CEILING)
+            self.assertIs(
+                decision.source_vocabulary, LegacyTruthVocabulary.OPERATIONAL
+            )
+
+    def test_operational_formal_is_not_canonical_truth_or_admission(self) -> None:
+        decision = reconcile_operational_truth_ceiling(
+            OperationalTruthState.FORMAL, FORMAL_ADMITTED_CEILING
+        )
+        self.assertEqual(decision.canonical_ceiling, NOT_FORMAL_CEILING)
+        self.assertIs(
+            decision.reason,
+            LegacyTruthCompatibilityReason.OPERATIONAL_FORMAL_IS_NOT_CANONICAL_TRUTH,
+        )
+
+    def test_compatibility_mapping_is_deterministic(self) -> None:
+        for source_state in CapabilityTruthState:
+            first = reconcile_capability_truth_ceiling(
+                source_state, FORMAL_ADMITTED_CEILING
+            )
+            second = reconcile_capability_truth_ceiling(
+                source_state, FORMAL_ADMITTED_CEILING
+            )
+            self.assertEqual(first, second)
+        for source_state in OperationalTruthState:
+            first = reconcile_operational_truth_ceiling(
+                source_state, FORMAL_ADMITTED_CEILING
+            )
+            second = reconcile_operational_truth_ceiling(
+                source_state, FORMAL_ADMITTED_CEILING
+            )
+            self.assertEqual(first, second)
+
+    def test_compatibility_mapping_cannot_exceed_canonical_upstream(self) -> None:
+        decision = reconcile_capability_truth_ceiling(
+            CapabilityTruthState.FORMAL, UNKNOWN_CEILING
+        )
+        self.assertEqual(decision.canonical_ceiling, UNKNOWN_CEILING)
+        self.assertTrue(
+            is_at_most(decision.canonical_ceiling, UNKNOWN_CEILING)
+        )
+
+    def test_compatibility_boundary_rejects_strings_and_other_enum_types(self) -> None:
+        with self.assertRaises(UnsupportedTruthAdmissionState):
+            reconcile_capability_truth_ceiling(  # type: ignore[arg-type]
+                "FORMAL", FORMAL_ADMITTED_CEILING
+            )
+        with self.assertRaises(UnsupportedTruthAdmissionState):
+            reconcile_capability_truth_ceiling(  # type: ignore[arg-type]
+                OperationalTruthState.FORMAL, FORMAL_ADMITTED_CEILING
+            )
+        with self.assertRaises(UnsupportedTruthAdmissionState):
+            reconcile_operational_truth_ceiling(  # type: ignore[arg-type]
+                CapabilityTruthState.FORMAL, FORMAL_ADMITTED_CEILING
             )
 
 

@@ -50,3 +50,17 @@ V3 remains the sole owner of truth/admission vocabulary, valid state combination
 ## Canonical boundary retained
 
 Publication and validation evidence remain separate from admission. `PUBLISHED + STRICT_PIT` cannot construct `FORMAL_ADMITTED`; `UNKNOWN` meets fail closed; a `PRE_ALPHA` required upstream caps downstream output; a proposal remains a proposal even when its proof state is strong. The implementation exposes no automatic promotion or nearest-state coercion.
+
+## Internal truth vocabulary compatibility
+
+The existing `CapabilityTruthState` and `OperationalTruthState` contracts describe whether an operation or capability is available in its declared product mode. They are not canonical market-truth evidence and are not aliases of `TruthAdmissionState`. In particular, the shared spelling `FORMAL` does not establish strict-PIT proof, canonical admission, formal market truth, or admitted canonical truth.
+
+The bounded compatibility design combines wire separation with an explicit typed adapter:
+
+- canonical state wires use `canonical_truth_state` and `canonical_admission_state`; existing capability DTOs retain `truth_state` and therefore cannot be silently parsed as canonical state;
+- the adapter accepts only the exact existing enum type, never strings or a different same-named enum;
+- capability or operational `FORMAL` yields at most `NOT_FORMAL / UNKNOWN`, explicitly recording that capability formality is not canonical truth;
+- `DEMO`, `UNAVAILABLE`, and operational `DEGRADED` yield `UNKNOWN / UNKNOWN` and therefore fail closed;
+- every compatibility result is met with an explicitly supplied canonical upstream ceiling, so it cannot exceed canonical upstream evidence.
+
+This is an ingress compatibility boundary, not a second authority: the legacy vocabularies remain unchanged, the canonical lattice remains the only owner of canonical truth/admission semantics, and the adapter can only preserve or lower the canonical ceiling. No DataSnapshot, Dataset, provider, or downstream runtime migration is included.

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 
+from .capability_state import CapabilityTruthState, OperationalTruthState
+
 
 class TruthAdmissionError(ValueError):
     """Base error for canonical truth/admission contract violations."""
@@ -53,6 +55,25 @@ class CanonicalClaimKind(str, Enum):
     ADMITTED_CANONICAL_TRUTH = "ADMITTED_CANONICAL_TRUTH"
 
 
+class LegacyTruthVocabulary(str, Enum):
+    CAPABILITY = "CAPABILITY"
+    OPERATIONAL = "OPERATIONAL"
+
+
+class LegacyTruthCompatibilityReason(str, Enum):
+    CAPABILITY_FORMAL_IS_NOT_CANONICAL_TRUTH = (
+        "CAPABILITY_FORMAL_IS_NOT_CANONICAL_TRUTH"
+    )
+    CAPABILITY_DEMO_FAILS_CLOSED = "CAPABILITY_DEMO_FAILS_CLOSED"
+    CAPABILITY_UNAVAILABLE_FAILS_CLOSED = "CAPABILITY_UNAVAILABLE_FAILS_CLOSED"
+    OPERATIONAL_FORMAL_IS_NOT_CANONICAL_TRUTH = (
+        "OPERATIONAL_FORMAL_IS_NOT_CANONICAL_TRUTH"
+    )
+    OPERATIONAL_DEMO_FAILS_CLOSED = "OPERATIONAL_DEMO_FAILS_CLOSED"
+    OPERATIONAL_UNAVAILABLE_FAILS_CLOSED = "OPERATIONAL_UNAVAILABLE_FAILS_CLOSED"
+    OPERATIONAL_DEGRADED_FAILS_CLOSED = "OPERATIONAL_DEGRADED_FAILS_CLOSED"
+
+
 _ADMISSIONS_ALLOWED_BY_TRUTH: Mapping[TruthState, frozenset[AdmissionState]] = MappingProxyType(
     {
         TruthState.UNKNOWN: frozenset({AdmissionState.UNKNOWN}),
@@ -87,13 +108,13 @@ class TruthAdmissionState:
     def from_wire(cls, payload: object) -> TruthAdmissionState:
         if not isinstance(payload, Mapping):
             raise InvalidTruthAdmissionState("truth/admission wire value must be an object")
-        expected = {"truth_state", "admission_state"}
+        expected = {"canonical_truth_state", "canonical_admission_state"}
         if set(payload) != expected:
             raise InvalidTruthAdmissionState(
                 f"truth/admission wire keys must be exactly {sorted(expected)}"
             )
-        truth_value = payload["truth_state"]
-        admission_value = payload["admission_state"]
+        truth_value = payload["canonical_truth_state"]
+        admission_value = payload["canonical_admission_state"]
         if not isinstance(truth_value, str) or not isinstance(admission_value, str):
             raise InvalidTruthAdmissionState("truth/admission wire states must be strings")
         try:
@@ -105,8 +126,8 @@ class TruthAdmissionState:
 
     def to_wire(self) -> dict[str, str]:
         return {
-            "truth_state": self.truth.value,
-            "admission_state": self.admission.value,
+            "canonical_truth_state": self.truth.value,
+            "canonical_admission_state": self.admission.value,
         }
 
 
@@ -119,6 +140,81 @@ PRE_ALPHA_CEILING = TruthAdmissionState(
 )
 FORMAL_ADMITTED_CEILING = TruthAdmissionState(
     TruthState.FORMAL, AdmissionState.FORMAL_ADMITTED
+)
+
+
+@dataclass(frozen=True)
+class LegacyTruthCompatibilityDecision:
+    source_vocabulary: LegacyTruthVocabulary
+    source_state: CapabilityTruthState | OperationalTruthState
+    canonical_ceiling: TruthAdmissionState
+    reason: LegacyTruthCompatibilityReason
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_vocabulary, LegacyTruthVocabulary):
+            raise UnsupportedTruthAdmissionState(
+                "source_vocabulary must be LegacyTruthVocabulary"
+            )
+        if self.source_vocabulary is LegacyTruthVocabulary.CAPABILITY:
+            if type(self.source_state) is not CapabilityTruthState:
+                raise UnsupportedTruthAdmissionState(
+                    "CAPABILITY compatibility requires exact CapabilityTruthState"
+                )
+        elif type(self.source_state) is not OperationalTruthState:
+            raise UnsupportedTruthAdmissionState(
+                "OPERATIONAL compatibility requires exact OperationalTruthState"
+            )
+        if not isinstance(self.canonical_ceiling, TruthAdmissionState):
+            raise UnsupportedTruthAdmissionState(
+                "canonical_ceiling must be TruthAdmissionState"
+            )
+        if not isinstance(self.reason, LegacyTruthCompatibilityReason):
+            raise UnsupportedTruthAdmissionState(
+                "reason must be LegacyTruthCompatibilityReason"
+            )
+
+
+_CAPABILITY_COMPATIBILITY: Mapping[
+    CapabilityTruthState,
+    tuple[TruthAdmissionState, LegacyTruthCompatibilityReason],
+] = MappingProxyType(
+    {
+        CapabilityTruthState.FORMAL: (
+            NOT_FORMAL_CEILING,
+            LegacyTruthCompatibilityReason.CAPABILITY_FORMAL_IS_NOT_CANONICAL_TRUTH,
+        ),
+        CapabilityTruthState.DEMO: (
+            UNKNOWN_CEILING,
+            LegacyTruthCompatibilityReason.CAPABILITY_DEMO_FAILS_CLOSED,
+        ),
+        CapabilityTruthState.UNAVAILABLE: (
+            UNKNOWN_CEILING,
+            LegacyTruthCompatibilityReason.CAPABILITY_UNAVAILABLE_FAILS_CLOSED,
+        ),
+    }
+)
+_OPERATIONAL_COMPATIBILITY: Mapping[
+    OperationalTruthState,
+    tuple[TruthAdmissionState, LegacyTruthCompatibilityReason],
+] = MappingProxyType(
+    {
+        OperationalTruthState.FORMAL: (
+            NOT_FORMAL_CEILING,
+            LegacyTruthCompatibilityReason.OPERATIONAL_FORMAL_IS_NOT_CANONICAL_TRUTH,
+        ),
+        OperationalTruthState.DEMO: (
+            UNKNOWN_CEILING,
+            LegacyTruthCompatibilityReason.OPERATIONAL_DEMO_FAILS_CLOSED,
+        ),
+        OperationalTruthState.UNAVAILABLE: (
+            UNKNOWN_CEILING,
+            LegacyTruthCompatibilityReason.OPERATIONAL_UNAVAILABLE_FAILS_CLOSED,
+        ),
+        OperationalTruthState.DEGRADED: (
+            UNKNOWN_CEILING,
+            LegacyTruthCompatibilityReason.OPERATIONAL_DEGRADED_FAILS_CLOSED,
+        ),
+    }
 )
 
 
@@ -213,6 +309,46 @@ def meet_pair(
     return TruthAdmissionState(
         truth=_TRUTH_MEET[frozenset({left.truth, right.truth})],
         admission=_ADMISSION_MEET[frozenset({left.admission, right.admission})],
+    )
+
+
+def reconcile_capability_truth_ceiling(
+    source_state: CapabilityTruthState,
+    canonical_upstream_ceiling: TruthAdmissionState,
+) -> LegacyTruthCompatibilityDecision:
+    if type(source_state) is not CapabilityTruthState:
+        raise UnsupportedTruthAdmissionState(
+            "source_state must be exact CapabilityTruthState; strings and other truth enums are forbidden"
+        )
+    canonical_upstream_ceiling = _require_state(
+        canonical_upstream_ceiling, "canonical_upstream_ceiling"
+    )
+    source_ceiling, reason = _CAPABILITY_COMPATIBILITY[source_state]
+    return LegacyTruthCompatibilityDecision(
+        source_vocabulary=LegacyTruthVocabulary.CAPABILITY,
+        source_state=source_state,
+        canonical_ceiling=meet_pair(source_ceiling, canonical_upstream_ceiling),
+        reason=reason,
+    )
+
+
+def reconcile_operational_truth_ceiling(
+    source_state: OperationalTruthState,
+    canonical_upstream_ceiling: TruthAdmissionState,
+) -> LegacyTruthCompatibilityDecision:
+    if type(source_state) is not OperationalTruthState:
+        raise UnsupportedTruthAdmissionState(
+            "source_state must be exact OperationalTruthState; strings and other truth enums are forbidden"
+        )
+    canonical_upstream_ceiling = _require_state(
+        canonical_upstream_ceiling, "canonical_upstream_ceiling"
+    )
+    source_ceiling, reason = _OPERATIONAL_COMPATIBILITY[source_state]
+    return LegacyTruthCompatibilityDecision(
+        source_vocabulary=LegacyTruthVocabulary.OPERATIONAL,
+        source_state=source_state,
+        canonical_ceiling=meet_pair(source_ceiling, canonical_upstream_ceiling),
+        reason=reason,
     )
 
 
