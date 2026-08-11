@@ -1,0 +1,3 @@
+# Track D uses only the provider-agnostic PydanticAI core. Provider SDKs and
+# orchestration extras are intentionally excluded from the V0 authority boundary.
+pydantic-ai-slim==2.27.0
