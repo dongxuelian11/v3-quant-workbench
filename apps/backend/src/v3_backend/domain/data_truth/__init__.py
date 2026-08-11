@@ -25,6 +25,17 @@ from .pit import (
     resolve_universe_as_of,
 )
 from .provider import ProviderAdapterPort, RawCaptureSink, RawCaptureSubmission, ingest_from_provider
+from .provider_ingestion import (
+    NORMALIZATION_VERSION,
+    MissingField,
+    MissingValueReason,
+    NormalizationError,
+    NormalizedEodObservation,
+    PitEvidenceState,
+    ResearchDataSnapshot,
+    ResearchUniverseInput,
+    normalize_a_share_eod,
+)
 
 __all__ = [
     "AdjustmentDoubleCountError",
@@ -36,19 +47,28 @@ __all__ = [
     "CorporateAction",
     "ExecutionPriceBasis",
     "InstrumentLifecycle",
+    "MissingField",
+    "MissingValueReason",
+    "NORMALIZATION_VERSION",
+    "NormalizationError",
+    "NormalizedEodObservation",
     "PitCapabilityUnavailable",
     "ProviderAdapterPort",
     "ProviderDescriptor",
+    "PitEvidenceState",
     "RawCaptureEnvelope",
     "RevisionSemantics",
     "RawCaptureSink",
     "RawCaptureSubmission",
+    "ResearchDataSnapshot",
+    "ResearchUniverseInput",
     "TradingSession",
     "TradingStatus",
     "UniverseMembershipInterval",
     "UniverseResolution",
     "assert_execution_price_policy",
     "ingest_from_provider",
+    "normalize_a_share_eod",
     "resolve_eod_as_of",
     "resolve_universe_as_of",
 ]
