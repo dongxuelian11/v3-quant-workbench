@@ -1,0 +1,55 @@
+.generative-research-view { margin: 8px 10px 12px; border: 1px solid var(--v3-border); background: #0c1118; color: var(--v3-fg); }
+.generative-research-head { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border-bottom: 1px solid var(--v3-border-subtle); background: linear-gradient(100deg, #111a24, #0d131b); }
+.generative-research-head > div:first-child { display: grid; gap: 2px; }
+.generative-research-head small, .generative-block header small { color: var(--v3-accent); font-size: 8px; letter-spacing: .7px; }
+.generative-research-head b { font-size: 12px; }
+.generative-boundary { display: grid; justify-items: end; gap: 2px; text-align: right; }
+.generative-boundary span { color: var(--v3-warning); font-size: 8px; font-weight: 700; }
+.generative-boundary code { color: var(--v3-fg-muted); font-size: 8px; }
+.generative-invalid-view { display: grid; gap: 3px; padding: 10px; border-bottom: 1px solid #56313a; background: #211319; }
+.generative-invalid-view strong, .generative-block.invalid small { color: #ff8b94; }
+.generative-invalid-view span, .generative-invalid-view small, .generative-block.invalid span { font-size: 9px; color: var(--v3-fg-secondary); }
+.generative-block-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 8px; }
+.generative-block { min-width: 0; border: 1px solid var(--v3-border-subtle); background: #0f151e; }
+.generative-block.type-datatable, .generative-block.type-timeserieschart, .generative-block.type-barchart, .generative-block.type-evidencelist { grid-column: 1 / -1; }
+.generative-block > header { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--v3-border-subtle); }
+.generative-block > header > div { display: grid; gap: 2px; }
+.generative-block > header b { font-size: 10px; }
+.generative-block > header > span { padding: 2px 5px; border: 1px solid; font-size: 7px; letter-spacing: .45px; }
+.generative-block > header > span.canonical { color: #8dd9b8; border-color: #285a48; background: #10251f; }
+.generative-block > header > span.draft { color: #ffd278; border-color: #68532b; background: #2a2213; }
+.generative-block-body { padding: 9px; }
+.generative-narrative, .generative-callout p { margin: 0; color: var(--v3-fg-secondary); font-size: 10px; line-height: 1.55; white-space: pre-wrap; }
+.generative-callout { display: grid; gap: 5px; padding: 8px; border-left: 3px solid #5c7ea0; background: #101b27; }
+.generative-callout[data-tone="WARNING"] { border-color: #d0a34b; background: #211b10; }
+.generative-callout[data-tone="BLOCKED"] { border-color: #d56a73; background: #211318; }
+.generative-callout strong { font-size: 8px; letter-spacing: .6px; }
+.generative-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 6px; }
+.generative-metrics > div { display: grid; gap: 3px; min-width: 0; padding: 7px; border: 1px solid var(--v3-border-subtle); background: #0b1017; }
+.generative-metrics small { color: var(--v3-fg-muted); font-size: 8px; text-transform: uppercase; }
+.generative-metrics b { color: #e4edf5; font: 600 15px/1.2 var(--v3-mono); }
+.generative-metrics code { overflow: hidden; color: var(--v3-fg-muted); font-size: 7px; text-overflow: ellipsis; }
+.generative-table-wrap { max-height: 230px; overflow: auto; }
+.generative-table-wrap table { width: 100%; border-collapse: collapse; font-size: 9px; }
+.generative-table-wrap th { position: sticky; top: 0; z-index: 1; padding: 6px 7px; background: #141d28; color: var(--v3-fg-muted); text-align: left; }
+.generative-table-wrap td { padding: 6px 7px; border-top: 1px solid var(--v3-border-subtle); color: var(--v3-fg-secondary); }
+.generative-table-wrap tbody tr:hover, .generative-table-wrap tbody tr:focus-within { background: #152131; }
+.generative-table-select { padding: 0; border: 0; background: transparent; color: var(--v3-accent); font: inherit; text-align: left; cursor: pointer; }
+.generative-table-select:focus-visible { outline: 2px solid var(--v3-accent); outline-offset: 2px; }
+.generative-chart { width: 100%; height: 230px; }
+.generative-evidence-list { display: grid; gap: 6px; }
+.generative-evidence-list > section { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 7px; border: 1px solid var(--v3-border-subtle); }
+.generative-evidence-list > section > div:first-child { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 7px; }
+.generative-evidence-list span { display: grid; gap: 2px; }
+.generative-evidence-list small { color: var(--v3-fg-muted); font-size: 7px; }
+.generative-evidence-list b { font-size: 9px; }
+.generative-inline-actions, .generative-bindings section > div { display: flex; align-items: center; gap: 4px; }
+.generative-research-view button { padding: 3px 6px; border: 1px solid var(--v3-border); background: #121c28; color: var(--v3-fg-secondary); font: 8px var(--v3-mono); cursor: pointer; }
+.generative-research-view button:hover, .generative-research-view button:focus-visible { border-color: var(--v3-accent); color: var(--v3-fg); outline: 1px solid var(--v3-accent); outline-offset: 1px; }
+.generative-bindings { border-top: 1px solid var(--v3-border-subtle); }
+.generative-bindings summary { padding: 5px 8px; color: var(--v3-fg-muted); font-size: 8px; cursor: pointer; }
+.generative-bindings > div { display: grid; gap: 4px; padding: 0 8px 7px; }
+.generative-bindings section { display: grid; grid-template-columns: minmax(140px, .7fr) minmax(140px, 1fr) auto; align-items: center; gap: 6px; }
+.generative-bindings code { overflow: hidden; color: var(--v3-accent); font-size: 8px; text-overflow: ellipsis; }
+.generative-bindings section > span { overflow: hidden; color: var(--v3-fg-secondary); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 980px) { .generative-block-grid { grid-template-columns: minmax(0, 1fr); } .generative-block { grid-column: 1 !important; } .generative-research-head { align-items: flex-start; flex-direction: column; } .generative-boundary { justify-items: start; text-align: left; } .generative-evidence-list > section, .generative-bindings section { grid-template-columns: minmax(0, 1fr); } }

@@ -50,7 +50,8 @@ const suites = [
   "track_h_portfolio_construction",
   "round3_track_i_risk_runtime",
   "track_j_a_share_backtest_core",
-  "round3_integration_closure"
+  "round3_integration_closure",
+  "track_m_generative_research_ui"
 ];
 
 for (const suite of suites) {

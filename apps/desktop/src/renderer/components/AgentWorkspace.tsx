@@ -13,6 +13,8 @@ import {
   type EvidenceView,
   type ResearchSessionView
 } from "../agentWorkspace";
+import { GenerativeResearchView } from "../generative_ui/GenerativeResearchView";
+import { createGenerativeResearchViewFixture } from "../generative_ui/integrationFixture";
 import { ArtifactViewer } from "./ArtifactViewer";
 
 export function AgentWorkspace({ session, data, boundary, connectionState, onOpenLab }: {
@@ -31,6 +33,10 @@ export function AgentWorkspace({ session, data, boundary, connectionState, onOpe
   const [localDrafts, setLocalDrafts] = useState<Record<string, string>>({});
   const selectedEvidence = resolveSessionEvidenceSelection(sessionScope.evidence, selectedEvidenceId);
   const selectedArtifact = resolveSessionArtifact(selectedEvidence, data.artifacts);
+  const generativeResearchViewSpec = useMemo(
+    () => createGenerativeResearchViewFixture(session.sessionViewId, sessionScope.evidence),
+    [session.sessionViewId, sessionScope.evidence]
+  );
 
   useEffect(() => {
     setSelectedEvidenceId((currentObjectId) => resolveSessionEvidenceSelection(sessionScope.evidence, currentObjectId)?.objectId ?? null);
@@ -78,6 +84,8 @@ export function AgentWorkspace({ session, data, boundary, connectionState, onOpe
             <div className="statement-content"><small>{statement.authorityStatus} · {statement.lifecycleState} · {statement.type}</small><h2>{statement.title}</h2><p>{statement.body}</p><div className="statement-evidence">{statement.evidenceIds.map((objectId) => <button key={objectId} onClick={() => selectEvidence(objectId)} title={objectId}>Evidence · {compactId(objectId)}</button>)}</div></div>
           </article>)}
         </section>
+
+        <GenerativeResearchView spec={generativeResearchViewSpec} sessionViewId={session.sessionViewId} evidence={sessionScope.evidence} onSelectEvidence={selectEvidence} onOpenLab={onOpenLab}/>
 
         <ArtifactViewer artifact={selectedArtifact}/>
       </main>
