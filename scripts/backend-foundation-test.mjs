@@ -33,6 +33,7 @@ const env = {
 };
 
 const suites = [
+  "track_a0_truth_admission",
   "ws_a_contracts",
   "ws_b_catalog",
   "ws_c_artifact",
@@ -65,4 +66,4 @@ const compile = spawnSync(
   { cwd: root, env, stdio: "inherit" }
 );
 if (compile.status !== 0) process.exit(compile.status ?? 1);
-console.log("Canonical Backend Foundation and WS-F Data Truth: tests and compile gate passed.");
+console.log("Canonical Backend Foundation, Track A0 Truth/Admission, and WS-F Data Truth: tests and compile gate passed.");
