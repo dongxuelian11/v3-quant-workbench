@@ -16,6 +16,7 @@ import { discoverySourceFromAgentWorkspaceBoundary } from "../evidence_explorer/
 import { GenerativeResearchView } from "../generative_ui/GenerativeResearchView";
 import { createGenerativeResearchViewFixture } from "../generative_ui/integrationFixture";
 import { ArtifactViewer } from "./ArtifactViewer";
+import { ReviewerPanel } from "../reviewer";
 
 export function AgentWorkspace({ session, data, boundary, connectionState, onOpenLab }: {
   session: ResearchSessionView;
@@ -75,6 +76,8 @@ export function AgentWorkspace({ session, data, boundary, connectionState, onOpe
         <section className="permission-strip" aria-label="Agent permission surface">
           {PERMISSION_SURFACE.map((permission) => <div key={permission.level} data-allowed={permission.allowed}><span>{permission.level}</span><b>{permission.allowed ? "AVAILABLE" : "DENIED"}</b><small>{permission.label}</small></div>)}
         </section>
+
+        <ReviewerPanel session={session} evidence={sessionScope.evidence} statements={sessionScope.statements} onSelectEvidence={selectEvidence}/>
 
         <section className="agent-stream" aria-label="Agent drafts and findings">
           <header><div><small>AGENT WORKSPACE</small><b>Research / Data / Reviewer</b></div><span>AI statement ≠ Evidence fact</span></header>

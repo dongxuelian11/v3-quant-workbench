@@ -52,7 +52,8 @@ const suites = [
   "track_j_a_share_backtest_core",
   "round3_integration_closure",
   "track_l_result_analytics",
-  "track_m_generative_research_ui"
+  "track_m_generative_research_ui",
+  "reviewer_integration"
 ];
 
 for (const suite of suites) {

@@ -736,6 +736,50 @@ h1, h2, h3, strong, b { font-family: "Segoe UI Variable Display", "Segoe UI Vari
 .permission-strip small { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--v3-fg-muted); font-size: 8px; }
 .permission-strip > div[data-allowed="false"] { background: repeating-linear-gradient(135deg, transparent 0 8px, rgba(242,109,118,.025) 8px 16px); }
 .permission-strip > div[data-allowed="false"] b { color: var(--v3-error); }
+.reviewer-panel { margin: 9px 10px; border: 1px solid var(--v3-border); background: #0C1118; }
+.reviewer-panel-head { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border-bottom: 1px solid var(--v3-border-subtle); }
+.reviewer-panel-head > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.reviewer-panel-head small, .review-summary small, .reviewer-layer-grid header small, .finding-list header small, .finding-detail small { color: var(--v3-accent); font-size: 8px; letter-spacing: .7px; }
+.reviewer-panel-head code { overflow: hidden; max-width: 410px; text-overflow: ellipsis; white-space: nowrap; color: var(--v3-fg-muted); font-size: 7px; }
+.review-summary { display: grid; grid-template-columns: minmax(230px,1fr) minmax(340px,1.5fr); border-bottom: 1px solid var(--v3-border-subtle); }
+.review-overall { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border-right: 1px solid var(--v3-border-subtle); }
+.review-overall b { color: var(--v3-warning); font-size: 11px; }
+.review-overall code { color: var(--v3-fg-muted); font-size: 7px; }
+.review-counts { display: grid; grid-template-columns: repeat(5,1fr); }
+.review-counts > div { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 6px; border-right: 1px solid var(--v3-border-subtle); }
+.review-counts span { color: var(--v3-fg-muted); font-size: 7px; }
+.review-counts strong { font-size: 14px; }
+.reviewer-layer-grid { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(240px,.8fr); border-bottom: 1px solid var(--v3-border-subtle); }
+.reviewer-layer-grid > section { min-width: 0; }
+.reviewer-layer-grid > section + section { border-left: 1px solid var(--v3-border-subtle); }
+.reviewer-layer-grid header, .finding-list header, .finding-detail header { display: flex; align-items: baseline; gap: 7px; padding: 7px 9px; border-bottom: 1px solid var(--v3-border-subtle); }
+.reviewer-layer-grid header span, .finding-list header span { margin-left: auto; color: var(--v3-fg-muted); font-size: 7px; }
+.review-check-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); }
+.review-check-grid article { min-width: 0; display: grid; grid-template-columns: auto auto; gap: 2px 6px; padding: 6px 8px; border-right: 1px solid var(--v3-border-subtle); border-bottom: 1px solid var(--v3-border-subtle); }
+.review-check-grid article code, .review-check-grid article small { color: var(--v3-fg-muted); font-size: 7px; }
+.review-check-grid article b { justify-self: end; color: var(--v3-warning); font-size: 8px; }
+.review-check-grid article span { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
+.review-check-grid article[data-review-outcome="PASS"] b { color: var(--v3-success-alt); }
+.review-check-grid article[data-review-outcome="FINDING"] b, .review-check-grid article[data-review-outcome="BLOCKED"] b { color: var(--v3-error); }
+.reviewer-agent-boundary { display: grid; gap: 4px; padding: 8px 9px; }
+.reviewer-agent-boundary > div { display: grid; grid-template-columns: 58px minmax(0,1fr); gap: 6px; }
+.reviewer-agent-boundary b { color: #C4B5FD; font-size: 8px; }
+.reviewer-agent-boundary span, .reviewer-agent-boundary small { color: var(--v3-fg-muted); font-size: 7px; line-height: 1.4; }
+.reviewer-agent-layer > article { display: flex; flex-direction: column; gap: 3px; padding: 8px 9px; border-top: 1px solid var(--v3-border-subtle); }
+.reviewer-agent-layer > article small { color: #C4B5FD; font-size: 7px; }
+.reviewer-agent-layer > article p { margin: 0; color: var(--v3-fg-secondary); font-size: 8px; }
+.reviewer-agent-layer > article button, .finding-evidence-links button { max-width: 100%; overflow: hidden; padding: 3px 5px; text-overflow: ellipsis; white-space: nowrap; color: var(--v3-fg-muted); background: #090D13; font: 7px ui-monospace, monospace; }
+.reviewer-finding-grid { display: grid; grid-template-columns: minmax(200px,.7fr) minmax(0,1.3fr); }
+.finding-list { border-right: 1px solid var(--v3-border-subtle); }
+.finding-list > button { width: 100%; display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 5px; padding: 6px 8px; border: 0; border-bottom: 1px solid var(--v3-border-subtle); border-radius: 0; text-align: left; background: #0B0F16; }
+.finding-list > button.active { background: var(--v3-accent-soft); }
+.finding-list > button span, .finding-list > button code { color: var(--v3-error); font-size: 7px; }
+.finding-list > button b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
+.finding-list > p, .finding-detail > p { margin: 0; padding: 8px 9px; color: var(--v3-fg-muted); font-size: 8px; }
+.finding-detail dl { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 4px 7px; margin: 0; padding: 8px 9px; border-top: 1px solid var(--v3-border-subtle); }
+.finding-detail dt, .finding-detail dd { margin: 0; color: var(--v3-fg-muted); font-size: 7px; }
+.finding-evidence-links, .finding-lifecycle { display: flex; flex-direction: column; gap: 4px; padding: 8px 9px; border-top: 1px solid var(--v3-border-subtle); }
+.finding-lifecycle code, .finding-lifecycle span { color: var(--v3-fg-muted); font-size: 7px; }
 .agent-stream > header, .evidence-inspector > header, .artifact-viewer > header, .execution-timeline > header { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 11px; border-bottom: 1px solid var(--v3-border-subtle); }
 .agent-stream > header > div, .evidence-inspector > header > div, .artifact-viewer > header > div, .execution-timeline > header > div { display: flex; flex-direction: column; }
 .agent-stream > header small, .evidence-inspector > header small, .artifact-viewer > header small, .execution-timeline > header small { color: var(--v3-accent); font-size: 8px; letter-spacing: .75px; }
