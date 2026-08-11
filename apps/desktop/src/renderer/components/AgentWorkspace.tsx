@@ -3,16 +3,15 @@ import type { LabId } from "../../../../../packages/contracts/src/index";
 import type { RuntimeConnectionState } from "../../preload/backendRuntime/types";
 import {
   PERMISSION_SURFACE,
-  ROUND3_MAIN_CONTRACT_SLOTS,
   deriveAgentWorkspaceSessionScope,
   resolveSessionArtifact,
   resolveSessionEvidenceSelection,
   statusTone,
   type AgentWorkspaceBoundary,
   type AgentWorkspaceData,
-  type EvidenceView,
   type ResearchSessionView
 } from "../agentWorkspace";
+import { EvidenceExplorer } from "../evidence_explorer/EvidenceExplorer";
 import { ArtifactViewer } from "./ArtifactViewer";
 
 export function AgentWorkspace({ session, data, boundary, connectionState, onOpenLab }: {
@@ -79,16 +78,11 @@ export function AgentWorkspace({ session, data, boundary, connectionState, onOpe
           </article>)}
         </section>
 
-        <ArtifactViewer artifact={selectedArtifact}/>
+        <ArtifactViewer artifact={selectedArtifact} evidence={selectedEvidence} exactRelations={data.exactRelations ?? []} onOpenLab={onOpenLab}/>
       </main>
 
-      <aside className="evidence-inspector" aria-label="Evidence Inspector" data-testid="evidence-inspector">
-        <header><div><small>EVIDENCE INSPECTOR</small><b>Exact authority view</b></div><span>{sessionScope.evidence.length} linked</span></header>
-        <div className="evidence-index" role="list" aria-label="Session evidence objects">
-          {sessionScope.evidence.map((item) => <button key={item.objectId} data-evidence-object-id={item.objectId} data-truth-state={item.canonicalTruthState} data-admission-state={item.canonicalAdmissionState} className={item.objectId === selectedEvidence?.objectId ? "active" : ""} onClick={() => selectEvidence(item.objectId)} role="listitem"><span>{item.kind}</span><code>{compactId(item.objectId)}</code><small>{item.canonicalTruthState} / {item.canonicalAdmissionState}</small></button>)}
-        </div>
-        {selectedEvidence ? <EvidenceDetails evidence={selectedEvidence} onOpenLab={onOpenLab}/> : <div className="evidence-empty" data-testid="session-evidence-empty"><small>SESSION EVIDENCE</small><b>{connectionState === "READY" ? "No canonical evidence available" : "Backend evidence unavailable"}</b><p>{connectionState === "READY" ? "The backend is connected, but no canonical Round 3 evidence is available for this session." : `WS-E backendRuntime is ${connectionState}. No demo evidence has been substituted.`}</p></div>}
-        <section className="future-slots"><h3>Round 3 main-contract connections</h3>{ROUND3_MAIN_CONTRACT_SLOTS.map((slot) => <div key={slot.object}><b>{slot.object}</b><span>{slot.status}</span><small>{slot.owner}</small></div>)}</section>
+      <aside className="evidence-inspector" aria-label="Evidence Inspector" data-testid="evidence-inspector" data-open-in-lab-route="Open in canonical Lab">
+        <EvidenceExplorer sessions={data.sessions} activeSessionId={session.sessionViewId} evidence={data.evidence} artifacts={data.artifacts} exactRelations={data.exactRelations ?? []} selectedEvidenceId={selectedEvidence?.objectId ?? null} connectionState={connectionState} onSelectEvidence={selectEvidence} onOpenLab={onOpenLab}/>
       </aside>
     </div>
 
@@ -101,26 +95,6 @@ export function AgentWorkspace({ session, data, boundary, connectionState, onOpe
   </section>;
 }
 
-function EvidenceDetails({ evidence, onOpenLab }: { evidence: EvidenceView; onOpenLab: (lab: LabId) => void }) {
-  return <div className="evidence-details">
-    <div className="evidence-kind"><small>{evidence.kind.toUpperCase()}</small><h2>{evidence.title}</h2><p>{evidence.summary}</p></div>
-    <div className="exact-object-id"><small>EXACT OBJECT ID</small><code>{evidence.objectId}</code></div>
-    <div className="truth-admission-grid">
-      <div><small>CANONICAL TRUTH</small><b>{evidence.canonicalTruthState}</b></div>
-      <div><small>ADMISSION</small><b>{evidence.canonicalAdmissionState}</b></div>
-      <div><small>VALIDATION</small><b className={evidence.validationState === "PASSED" ? "ok" : evidence.validationState === "FAILED" ? "error" : "muted"}>{evidence.validationState}</b></div>
-    </div>
-    <dl>{evidence.facts.map((fact) => <React.Fragment key={fact.label}><dt>{fact.label}</dt><dd>{fact.value}</dd></React.Fragment>)}</dl>
-    <section><h3>Provenance refs</h3>{evidence.provenanceRefs.map((reference) => <code key={reference}>{reference}</code>)}</section>
-    <section><h3>Reviewer finding</h3><p>{evidence.reviewerFinding ?? "No linked blocking finding in this view."}</p></section>
-    <button className="open-in-lab" onClick={() => onOpenLab(evidence.openInLab)}>Open in {labLabel(evidence.openInLab)} Lab</button>
-  </div>;
-}
-
 function compactId(value: string) {
   return value.length > 28 ? `${value.slice(0, 17)}…${value.slice(-8)}` : value;
-}
-
-function labLabel(lab: LabId) {
-  return lab[0].toUpperCase() + lab.slice(1);
 }

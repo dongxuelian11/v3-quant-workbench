@@ -1,0 +1,112 @@
+{
+  "schema_version": "1.0",
+  "task_id": "V3-ROUND4-TRACK-N-EVIDENCE-ARTIFACT-UX-V0-01",
+  "phase_id": "ROUND4_TRACK_N",
+  "target_root": "D:\\V3OpenSource\\.codex\\worktrees\\round4-track-n-evidence-artifact-ux-v0-01",
+  "expected_branch": "codex/round4-track-n-evidence-artifact-ux-v0-01",
+  "expected_starting_head": "0d9799f0d47285d10246c23f9f1494105f20848a",
+  "output_mode": "stdout-only",
+  "permissions": {
+    "run_tests": false,
+    "network": false,
+    "git_write": false,
+    "archive_read": false,
+    "write_reports": false,
+    "large_file_hash": false
+  },
+  "goal": "Upgrade the existing Evidence Inspector and Artifact Viewer into a session-scoped, read-only Evidence & Lineage Explorer built only from explicit exact provenance relations.",
+  "repository": "dongxuelian11/v3-quant-workbench",
+  "branch": "codex/round4-track-n-evidence-artifact-ux-v0-01",
+  "base_branch": "main",
+  "base_sha": "0d9799f0d47285d10246c23f9f1494105f20848a",
+  "head_sha_at_last_checkpoint": "0d9799f0d47285d10246c23f9f1494105f20848a",
+  "head_note": "The implementation is not committed at this checkpoint; final exact branch HEAD is observed and reported after commit/push rather than self-referenced inside its own commit.",
+  "github_current_verified": true,
+  "github_current_ci": {
+    "status": "PASS",
+    "run_id": 31497373057,
+    "url": "https://github.com/dongxuelian11/v3-quant-workbench/actions/runs/31497373057"
+  },
+  "open_prs_at_start": [],
+  "sibling_write_sets": {
+    "L": "NO_OPEN_PR",
+    "M": "NO_OPEN_PR",
+    "O": "NO_OPEN_PR",
+    "rule": "Do not read, copy, or depend on unmerged sibling code or contracts."
+  },
+  "write_set": {
+    "allowed": [
+      "apps/desktop/src/renderer/evidence_explorer/**",
+      "apps/desktop/src/renderer/components/ArtifactViewer.tsx",
+      "apps/desktop/src/renderer/components/AgentWorkspace.tsx (minimal additive mount/navigation only)",
+      "apps/desktop/src/renderer/agentWorkspace.ts (minimal additive view input only if required)",
+      "Track-N-owned tests",
+      "docs/research/evidence-artifact-ux-v0/**",
+      ".codex/context/V3-ROUND4-TRACK-N-EVIDENCE-ARTIFACT-UX-V0-01_STATE.json"
+    ],
+    "protected": [
+      "apps/backend/src/v3_backend/domain/weights/**",
+      "apps/backend/src/v3_backend/domain/portfolio_construction/**",
+      "apps/backend/src/v3_backend/domain/risk_runtime/**",
+      "apps/backend/src/v3_backend/domain/backtest_runtime/**",
+      "apps/backend/src/v3_backend/adapters/round3_evidence/**",
+      "packages/contracts/src/round3Evidence.ts"
+    ],
+    "backend_adapter": "NOT_REQUIRED_UNLESS_PROVEN"
+  },
+  "reuse": {
+    "status": "PASS",
+    "matrix": "docs/research/evidence-artifact-ux-v0/REUSE_ADOPTION_MATRIX.md",
+    "decision": "DIRECT_REUSE existing ArtifactViewer, Round 3 exact evidence transport, and installed @xyflow/react; THIN_ADAPTER for read-only view mapping; external systems are design references only; inferred/similarity graph generation is REJECTED."
+  },
+  "graph_source_scope": {
+    "status": "PASS",
+    "allowed": "Explicit exact Round 3 lineage edges and exact artifact/provenance/object references visible in the active session only.",
+    "forbidden": "Symbol/time/name similarity, AI inference, and ID/hash prefix similarity.",
+    "missing_relation": "NO_KNOWN_RELATION"
+  },
+  "node_edge_model": {
+    "status": "PASS",
+    "node_identity": "Exact artifact/evidence/object ID plus exact content hash when supplied by the canonical transport.",
+    "edge_identity": "Explicit sourceObjectId, targetObjectId, relationKind, sourceContentHash, targetContentHash, sourceRecordId.",
+    "reverse_used_by": "Derived only by reversing an admitted explicit exact edge.",
+    "fail_closed": "Reject wrong exact hashes and conflicting duplicate node identities; missing relation produces no edge."
+  },
+  "discovery_completeness": "DISCOVERY_SCOPE_LIMITED",
+  "artifact_integrity": {
+    "byte_verification": "NOT_RUN",
+    "reason": "No canonical byte verifier is exposed to the desktop view input; file existence is never promoted to PASS.",
+    "view_validation": "PASS",
+    "view_validation_scope": "Exact identifier/hash consistency and passive safe renderer-state validation only."
+  },
+  "session_scope": "PASS; defaults to the active Research Session, visible-workspace scope requires an explicit user switch, and there is no global fallback.",
+  "five_labs": ["research", "strategy", "model", "backtest", "result"],
+  "tests": {
+    "focused": "PASS; 31/31 unit tests, including 13 Track N exact-lineage tests",
+    "typecheck": "PASS",
+    "lint": "PASS",
+    "build": "PASS",
+    "electron_smoke": "PASS; capture and restart",
+    "renderer_console_errors": "PASS; 0 capture errors and 0 restart errors",
+    "validate": "PASS",
+    "validate_public": "PASS"
+  },
+  "visual_acceptance": "PASS; 21 distinct required visual states, bounded graph/list, active-session default, exact-lineage detail, and zero renderer console errors. One initial screenshot-redraw flake was kept as a failed attempt and the complete Electron capture was rerun before PASS.",
+  "pr": {
+    "status": "PENDING",
+    "number": null,
+    "url": null
+  },
+  "ci": {
+    "status": "PENDING",
+    "head_sha": null,
+    "url": null
+  },
+  "blocked": [],
+  "warnings": [
+    "Context7 MCP was UNAVAILABLE; current official project documentation and repositories were used for the reuse matrix.",
+    "The local validator reported Python 3.14.5 versus the authority patch 3.14.7 as an existing warning; required compile/tests still passed.",
+    "The isolated npm install lacked the Electron binary payload; the exact local 39.8.10 Electron distribution was reused only under ignored node_modules for smoke execution."
+  ],
+  "next_action": "Collect a bounded read-only evidence snapshot, commit the owned write set, re-fetch GitHub CURRENT, push without force, open a PR, and wait for exact-head CI. Do not merge."
+}

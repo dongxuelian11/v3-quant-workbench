@@ -1,4 +1,6 @@
 import type { LabId } from "../../../../packages/contracts/src/index";
+import type { ExactLineageRelationInput } from "./evidence_explorer/contracts";
+import type { EvidenceIntegrityStatus } from "./evidence_explorer/model";
 
 export const AGENT_WORKSPACE_BOUNDARY = Object.freeze({
   mode: "LIVE_READ_ONLY" as const,
@@ -76,6 +78,10 @@ export interface EvidenceView {
   facts: { label: string; value: string }[];
   openInLab: LabId;
   artifactId: string | null;
+  /** Exact content hash declared by the canonical source when available. */
+  contentSha256?: string;
+  /** Byte integrity is never inferred from renderer validation or file existence. */
+  integrityStatus?: EvidenceIntegrityStatus;
 }
 
 export interface TimelineEntryView {
@@ -114,6 +120,13 @@ export interface ArtifactView {
   mediaType: string;
   provenanceRef: string;
   payload: ArtifactPayload;
+  contentSha256?: string;
+  sourceObjectId?: string;
+  provenanceRefs?: readonly string[];
+  lineageRefs?: readonly string[];
+  integrityStatus?: EvidenceIntegrityStatus;
+  validationState?: ValidationState;
+  openInLab?: LabId;
 }
 
 export interface AgentWorkspaceFixture {
@@ -136,6 +149,8 @@ export interface AgentWorkspaceData {
   timeline: readonly TimelineEntryView[];
   evidence: readonly EvidenceView[];
   artifacts: readonly ArtifactView[];
+  /** Exact relations from existing canonical owners; optional for older fixtures. */
+  exactRelations?: readonly ExactLineageRelationInput[];
 }
 
 export function deriveAgentWorkspaceSessionScope(
