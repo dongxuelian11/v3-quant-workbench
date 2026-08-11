@@ -63,7 +63,10 @@ async function shot(win, geometry, name, size) {
     win.setContentSize(size[0], size[1]);
     await delay(850);
   }
-  const image = await win.webContents.capturePage();
+  win.webContents.invalidate();
+  await delay(120);
+  const bounds = win.getContentBounds();
+  const image = await win.webContents.capturePage({ x: 0, y: 0, width: bounds.width, height: bounds.height }, { stayHidden: false, stayAwake: true });
   fs.writeFileSync(path.resolve(screenshots, name), image.toPNG());
   geometry.push(await measurement(win, name));
 }
@@ -237,8 +240,11 @@ app.whenReady().then(async () => {
     await click(win, "[data-lab='backtest']", 800);
     if (!await evaluate(win, "Boolean(document.querySelector('[data-truth-classification]'))")) throw new Error("Backtest provenance missing");
     await shot(win, geometry, "12-backtest-review.png", [1536, 864]);
+    await evaluate(win, "history.replaceState(null,'',location.pathname+'?resultAnalyticsFixture=development')");
     await click(win, "[data-lab='result']", 800);
-    if (!await evaluate(win, "document.body.innerText.includes('DEMO · 非正式金融输出')")) throw new Error("Result truth label missing");
+    interactionEvidence.resultAnalytics = await evaluate(win, "(()=>{const surface=document.querySelector('[data-result-analytics-id]');const chart=document.querySelector('[data-testid=result-analytics-chart]');return {analyticsId:surface?.getAttribute('data-result-analytics-id')??null,resultId:surface?.getAttribute('data-result-id')??null,policyId:surface?.getAttribute('data-policy-id')??null,benchmarkId:surface?.getAttribute('data-benchmark-id')??null,truth:document.body.innerText.includes('NOT_FORMAL · PRE_ALPHA'),policy:document.body.innerText.includes('A_SHARE_DAILY_RESEARCH_V0'),developmentBoundary:document.body.innerText.includes('DEVELOPMENT / INTEGRATION FIXTURE'),chartBound:Boolean(chart),chartAnalyticsId:chart?.getAttribute('data-analytics-id')??null}})()");
+    const resultAnalytics = interactionEvidence.resultAnalytics;
+    if (!resultAnalytics.analyticsId?.startsWith("bra_sha256_") || !resultAnalytics.resultId?.startsWith("btrr_sha256_") || !resultAnalytics.policyId?.startsWith("rap_sha256_") || !resultAnalytics.benchmarkId?.startsWith("bmsv_sha256_") || !resultAnalytics.truth || !resultAnalytics.policy || !resultAnalytics.developmentBoundary || !resultAnalytics.chartBound || resultAnalytics.chartAnalyticsId !== resultAnalytics.analyticsId) throw new Error(`Result Analytics identity/truth/policy/chart binding missing ${JSON.stringify(resultAnalytics)}`);
     await shot(win, geometry, "13-result-review.png", [1536, 864]);
 
     await evaluate(win, "document.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true}))");
