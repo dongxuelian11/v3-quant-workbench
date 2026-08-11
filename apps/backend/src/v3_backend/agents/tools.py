@@ -44,6 +44,43 @@ DEFAULT_TOOL_CATALOG = (
 )
 
 
+RESEARCH_EVIDENCE_READ_TOOL_CATALOG = (
+    ToolDescriptor(
+        name="get_snapshot_evidence",
+        required_permission=PermissionLevel.L0_READ,
+        effect=ToolEffect.READ,
+    ),
+    ToolDescriptor(
+        name="get_dataset_evidence",
+        required_permission=PermissionLevel.L0_READ,
+        effect=ToolEffect.READ,
+    ),
+    ToolDescriptor(
+        name="get_experiment_evidence",
+        required_permission=PermissionLevel.L0_READ,
+        effect=ToolEffect.READ,
+    ),
+    ToolDescriptor(
+        name="get_reward_vector_evidence",
+        required_permission=PermissionLevel.L0_READ,
+        effect=ToolEffect.READ,
+    ),
+    ToolDescriptor(
+        name="get_provenance_refs",
+        required_permission=PermissionLevel.L0_READ,
+        effect=ToolEffect.READ,
+    ),
+    ToolDescriptor(
+        name="get_known_reviewer_evidence",
+        required_permission=PermissionLevel.L0_READ,
+        effect=ToolEffect.READ,
+    ),
+)
+
+
+TRUSTED_TOOL_CATALOG = DEFAULT_TOOL_CATALOG + RESEARCH_EVIDENCE_READ_TOOL_CATALOG
+
+
 _SAFE_EFFECTS = frozenset({ToolEffect.READ, ToolEffect.DRAFT})
 
 
@@ -85,7 +122,7 @@ class TrustedToolBindings:
     __slots__ = ("_bindings_by_name",)
 
     def __init__(self, registrations: tuple[ToolBinding, ...]) -> None:
-        catalog_by_name = {descriptor.name: descriptor for descriptor in DEFAULT_TOOL_CATALOG}
+        catalog_by_name = {descriptor.name: descriptor for descriptor in TRUSTED_TOOL_CATALOG}
         bindings_by_name: dict[str, ToolBinding] = {}
         for registration in registrations:
             name = registration.descriptor.name

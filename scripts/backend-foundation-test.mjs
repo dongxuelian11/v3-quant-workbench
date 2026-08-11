@@ -42,7 +42,8 @@ const suites = [
   "br1_foundation_integration",
   "ws_f_data_truth",
   "track_c_factor_dataset_experiment",
-  "track_d_ai_copilot"
+  "track_d_ai_copilot",
+  "track_g_ai_research_evidence_integration"
 ];
 
 for (const suite of suites) {
@@ -68,4 +69,4 @@ const compile = spawnSync(
   { cwd: root, env, stdio: "inherit" }
 );
 if (compile.status !== 0) process.exit(compile.status ?? 1);
-console.log("Canonical Backend Foundation, Track A0 Truth/Admission, WS-F Data Truth, Track C V0, and Track D L0/L1 Agents: tests and compile gate passed.");
+console.log("Canonical Backend Foundation, Track A0 Truth/Admission, WS-F Data Truth, Track C V0, Track D L0/L1 Agents, and Track G read-only research evidence integration: tests and compile gate passed.");

@@ -27,6 +27,8 @@ from .pydantic_worker import (
 )
 from .tools import (
     DEFAULT_TOOL_CATALOG,
+    RESEARCH_EVIDENCE_READ_TOOL_CATALOG,
+    TRUSTED_TOOL_CATALOG,
     ToolBinding,
     ToolDescriptor,
     ToolEffect,
@@ -43,6 +45,8 @@ __all__ = [
     "AgentProvenance",
     "AlphaMiningRequestIntent",
     "DEFAULT_TOOL_CATALOG",
+    "RESEARCH_EVIDENCE_READ_TOOL_CATALOG",
+    "TRUSTED_TOOL_CATALOG",
     "DataFinding",
     "DataFindingKind",
     "DataFindingsPayload",
