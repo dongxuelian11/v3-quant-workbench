@@ -20,6 +20,7 @@ This closure is a read-only view and transport integration. It does not add or o
 | Persisted H/I/J discovery | NOT_NEEDED | Current repositories expose no canonical H/I/J discovery contract; production returns explicit no-evidence until official persistence exists |
 | `Round3EvidenceProvider` | THIN_ADAPTER | Read-only provider seam; production unavailable/empty and explicit development provider share the same projection path |
 | Canonical projection builder | THIN_ADAPTER | Validates exact H→I→J lineage and copies canonical truth/admission only |
+| `Round3ResearchEvidenceBundleV1` 1.1.0 | BOUNDED_EXTENSION | Closed kind vocabulary with variable H/I cardinality, structured canonical schedule bindings, exact coverage, and no orphan RiskAdjusted evidence |
 | WS-E framed runtime and event replay | DIRECT_REUSE | Canonical projection bundle crosses the existing authenticated transport |
 | `BackendSupervisor` | BOUNDED_EXTENSION | Optional explicit backend module for integration fixture; default production bootstrap unchanged |
 | `BackendRuntimeEventRelay` | BOUNDED_EXTENSION | Cache the latest validated evidence event for race-free read-only snapshot delivery |
@@ -44,6 +45,12 @@ The official Artifact/Provenance repository protocols remain the only storage au
 ## Why the projection is not financial authority
 
 Every projection carries the canonical source object ID and content SHA-256 and is built only from existing owner `to_wire()` output. It creates no finance IDs, factories, truth state, admission state, weights, risk decision, run spec, or backtest result. Any lineage mismatch fails closed.
+
+## Multi-rebalance cardinality and ordering
+
+Bundle `v3.round3_research_evidence_bundle/1.1.0` keeps the six-kind vocabulary closed while admitting all canonical upstream objects required by one RunSpec: zero-to-many deduplicated Intent/Target/RiskAdjusted/RiskDecision projections and exactly one RunSpec/Result. A valid emitted bundle has at least one scheduled RiskAdjusted chain.
+
+Projections are ordered first by the fixed kind order and then by canonical object ID. Structured `schedule_bindings` remain in canonical RunSpec `effective_at` order and carry index, timestamp, RiskAdjusted ID, and content SHA-256. Every scheduled vector must have one exact projected chain, every projected RiskAdjusted must be scheduled, and each receipt-bound edge uses that chain's actual receipt ID. Shared upstream objects are deduplicated by `(kind, canonical ID)`; duplicate wire projections, conflicting hashes, missing schedule evidence, orphan risk evidence, and extra lineage edges fail closed.
 
 ## Frozen exact write-set
 

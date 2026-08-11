@@ -7,6 +7,7 @@ authority and never creates portfolio, risk, backtest, truth, or admission IDs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -21,7 +22,7 @@ from v3_backend.provenance.canonical_hash import canonical_sha256
 
 
 PROJECTION_SCHEMA_VERSION = "v3.round3_canonical_evidence_projection/1.0.0"
-BUNDLE_SCHEMA_VERSION = "v3.round3_research_evidence_bundle/1.0.0"
+BUNDLE_SCHEMA_VERSION = "v3.round3_research_evidence_bundle/1.1.0"
 EVIDENCE_KINDS = (
     "PortfolioIntent",
     "TargetWeightVector",
@@ -30,6 +31,15 @@ EVIDENCE_KINDS = (
     "BacktestRunSpec",
     "BacktestRunResult",
 )
+_KIND_ORDER = {kind: index for index, kind in enumerate(EVIDENCE_KINDS)}
+_EDGE_RELATION_ORDER = {
+    "PORTFOLIO_INTENT_SOURCE": 0,
+    "RISK_APPLICATION_TARGET_BINDING": 1,
+    "RISK_DECISION_TARGET_BINDING": 2,
+    "RISK_DECISION_OUTPUT_BINDING": 3,
+    "SCHEDULED_WEIGHTS_VECTOR": 4,
+    "BACKTEST_RUN_SPEC_RESULT_BINDING": 5,
+}
 
 
 class EvidenceSourceMode(StrEnum):
@@ -39,6 +49,15 @@ class EvidenceSourceMode(StrEnum):
 
 class EvidenceLineageBindingError(ValueError):
     """Canonical source objects do not form one exact H -> I -> J chain."""
+
+
+@dataclass(frozen=True, slots=True)
+class Round3RebalanceEvidence:
+    """Canonical upstream owner outputs for one scheduled risk vector."""
+
+    portfolio_intent: PortfolioIntent
+    portfolio_result: PortfolioConstructionResult
+    risk_result: RiskRuntimeResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +86,32 @@ class LineageEdgeV1:
             "target_content_sha256": self.target_content_sha256,
             "relation": self.relation,
             "binding_object_id": self.binding_object_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleBindingV1:
+    schedule_index: int
+    effective_at: datetime
+    risk_adjusted_weight_vector_id: str
+    content_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schedule_index < 0:
+            raise ValueError("schedule_index must be non-negative")
+        if self.effective_at.tzinfo is None:
+            raise ValueError("schedule binding effective_at must be timezone-aware")
+        if _canonical_digest_from_id(
+            self.risk_adjusted_weight_vector_id, "rawv_sha256_"
+        ) != self.content_sha256:
+            raise EvidenceLineageBindingError("schedule binding ID/hash mismatch")
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "schedule_index": self.schedule_index,
+            "effective_at": self.effective_at.isoformat(),
+            "risk_adjusted_weight_vector_id": self.risk_adjusted_weight_vector_id,
+            "content_sha256": self.content_sha256,
         }
 
 
@@ -110,6 +155,7 @@ class Round3ResearchEvidenceBundleV1:
     session_view_id: str
     source_mode: EvidenceSourceMode
     projections: tuple[CanonicalEvidenceProjectionV1, ...]
+    schedule_bindings: tuple[ScheduleBindingV1, ...]
     lineage_edges: tuple[LineageEdgeV1, ...]
 
     @property
@@ -119,8 +165,80 @@ class Round3ResearchEvidenceBundleV1:
     def __post_init__(self) -> None:
         if not self.session_view_id or self.session_view_id != self.session_view_id.strip():
             raise ValueError("session_view_id must be a non-empty exact string")
-        if tuple(value.source_artifact_type for value in self.projections) != EVIDENCE_KINDS:
-            raise ValueError("Round 3 projections must use the deterministic closed kind order")
+        if not self.schedule_bindings:
+            raise ValueError(
+                "Round 3 bundle requires at least one scheduled RiskAdjusted vector"
+            )
+        observed_keys: dict[tuple[str, str], str] = {}
+        for projection in self.projections:
+            if projection.source_artifact_type not in _KIND_ORDER:
+                raise ValueError(
+                    "Round 3 projection kind is outside the closed vocabulary"
+                )
+            key = (projection.source_artifact_type, projection.source_object_id)
+            prior_hash = observed_keys.get(key)
+            if prior_hash is not None:
+                if prior_hash != projection.source_content_sha256:
+                    raise EvidenceLineageBindingError(
+                        "same canonical kind/ID carries different hashes"
+                    )
+                raise EvidenceLineageBindingError("duplicate canonical projection")
+            observed_keys[key] = projection.source_content_sha256
+        ordered = tuple(
+            sorted(
+                self.projections,
+                key=lambda value: (
+                    _KIND_ORDER[value.source_artifact_type],
+                    value.source_object_id,
+                ),
+            )
+        )
+        if self.projections != ordered:
+            raise ValueError(
+                "Round 3 projections must use deterministic kind/canonical-ID order"
+            )
+        by_kind = {
+            kind: tuple(
+                value
+                for value in self.projections
+                if value.source_artifact_type == kind
+            )
+            for kind in EVIDENCE_KINDS
+        }
+        if (
+            len(by_kind["BacktestRunSpec"]) != 1
+            or len(by_kind["BacktestRunResult"]) != 1
+        ):
+            raise ValueError("Round 3 bundle requires exactly one RunSpec and Result")
+        adjusted = by_kind["RiskAdjustedWeightVector"]
+        if not adjusted:
+            raise ValueError("Round 3 bundle requires scheduled RiskAdjusted evidence")
+        if tuple(value.schedule_index for value in self.schedule_bindings) != tuple(
+            range(len(self.schedule_bindings))
+        ):
+            raise ValueError("schedule bindings must use contiguous canonical indices")
+        if tuple(value.effective_at for value in self.schedule_bindings) != tuple(
+            sorted(value.effective_at for value in self.schedule_bindings)
+        ):
+            raise ValueError(
+                "schedule bindings must preserve canonical effective_at order"
+            )
+        adjusted_keys = {
+            (value.source_object_id, value.source_content_sha256)
+            for value in adjusted
+        }
+        schedule_keys = {
+            (value.risk_adjusted_weight_vector_id, value.content_sha256)
+            for value in self.schedule_bindings
+        }
+        if len(schedule_keys) != len(self.schedule_bindings):
+            raise EvidenceLineageBindingError(
+                "duplicate scheduled RiskAdjusted binding"
+            )
+        if schedule_keys != adjusted_keys:
+            raise EvidenceLineageBindingError(
+                "schedule coverage must exactly equal projected RiskAdjusted evidence"
+            )
 
     def to_wire(self) -> dict[str, Any]:
         return {
@@ -128,6 +246,9 @@ class Round3ResearchEvidenceBundleV1:
             "session_view_id": self.session_view_id,
             "source_mode": self.source_mode.value,
             "projections": [value.to_wire() for value in self.projections],
+            "schedule_bindings": [
+                value.to_wire() for value in self.schedule_bindings
+            ],
             "lineage_edges": [value.to_wire() for value in self.lineage_edges],
         }
 
@@ -241,7 +362,7 @@ def _projection(
     )
 
 
-def build_round3_evidence_bundle(
+def _build_single_rebalance_bundle(
     *,
     session_view_id: str,
     source_mode: EvidenceSourceMode,
@@ -343,14 +464,16 @@ def build_round3_evidence_bundle(
         raise EvidenceLineageBindingError(
             "RiskDecisionReport source Target ID/hash mismatch"
         )
-    for scheduled in backtest_run_spec.schedule:
-        if (
-            scheduled.vector.risk_adjusted_weight_vector_id != adjusted_id
-            or scheduled.vector.content_sha256 != adjusted_hash
-        ):
-            raise EvidenceLineageBindingError(
-                "BacktestRunSpec schedule contains unregistered RiskAdjusted evidence"
-            )
+    matching_schedule = tuple(
+        scheduled
+        for scheduled in backtest_run_spec.schedule
+        if scheduled.vector.risk_adjusted_weight_vector_id == adjusted_id
+        and scheduled.vector.content_sha256 == adjusted_hash
+    )
+    if len(matching_schedule) != 1:
+        raise EvidenceLineageBindingError(
+            "each RiskAdjusted evidence chain must bind exactly one RunSpec schedule entry"
+        )
     if backtest_run_result.run_spec_id != spec_id:
         raise EvidenceLineageBindingError(
             "BacktestRunResult run_spec_id does not match BacktestRunSpec"
@@ -489,7 +612,22 @@ def build_round3_evidence_bundle(
             ],
         },
     )
-    schedule_ids = [value.vector.risk_adjusted_weight_vector_id for value in backtest_run_spec.schedule]
+    schedule_ids = [
+        value.vector.risk_adjusted_weight_vector_id
+        for value in backtest_run_spec.schedule
+    ]
+    schedule_fact_values = tuple(
+        item
+        for index, scheduled in enumerate(backtest_run_spec.schedule)
+        for item in (
+            (f"schedule[{index}].effective_at", scheduled.effective_at),
+            (
+                f"schedule[{index}].risk_adjusted_weight_vector_id",
+                scheduled.vector.risk_adjusted_weight_vector_id,
+            ),
+            (f"schedule[{index}].content_sha256", scheduled.vector.content_sha256),
+        )
+    )
     spec_projection = _projection(
         kind="BacktestRunSpec",
         object_id=spec_id,
@@ -501,23 +639,26 @@ def build_round3_evidence_bundle(
             (
                 ("run_spec_id", spec_id),
                 ("content_sha256", spec_hash),
-                ("risk_adjusted_schedule_ids", ",".join(schedule_ids)),
                 ("rule_profile_id", backtest_run_spec.rule_profile.profile_id),
                 ("cost_policy_id", backtest_run_spec.cost_policy.policy_id),
                 ("execution_timing_profile_id", backtest_run_spec.execution_timing_profile.profile_id),
                 ("engine_version", backtest_run_spec.engine_version),
             )
+            + schedule_fact_values
         ),
         renderer_key="details",
         renderer_payload={
             "renderer": "details",
             "entries": [
                 {"label": "run_spec_id", "value": spec_id},
-                {"label": "risk_adjusted_schedule_ids", "value": ",".join(schedule_ids)},
                 {"label": "rule_profile_id", "value": backtest_run_spec.rule_profile.profile_id},
                 {"label": "cost_policy_id", "value": backtest_run_spec.cost_policy.policy_id},
                 {"label": "execution_timing_profile_id", "value": backtest_run_spec.execution_timing_profile.profile_id},
                 {"label": "engine_version", "value": backtest_run_spec.engine_version},
+            ]
+            + [
+                {"label": label, "value": _text(value)}
+                for label, value in schedule_fact_values
             ],
         },
     )
@@ -582,6 +723,146 @@ def build_round3_evidence_bundle(
             spec_projection,
             result_projection,
         ),
+        schedule_bindings=(
+            ScheduleBindingV1(
+                0,
+                matching_schedule[0].effective_at,
+                adjusted_id,
+                adjusted_hash,
+            ),
+        ),
+        lineage_edges=edges,
+    )
+
+
+def build_round3_evidence_bundle(
+    *,
+    session_view_id: str,
+    source_mode: EvidenceSourceMode,
+    rebalance_evidence: tuple[Round3RebalanceEvidence, ...],
+    backtest_run_spec: BacktestRunSpec,
+    backtest_run_result: BacktestRunResult,
+) -> Round3ResearchEvidenceBundleV1:
+    """Project the complete exact upstream graph for one canonical RunSpec."""
+
+    if not rebalance_evidence:
+        raise EvidenceLineageBindingError(
+            "at least one canonical rebalance evidence chain is required"
+        )
+    if any(
+        not isinstance(value, Round3RebalanceEvidence)
+        for value in rebalance_evidence
+    ):
+        raise TypeError(
+            "rebalance_evidence must contain Round3RebalanceEvidence values"
+        )
+
+    partials = tuple(
+        _build_single_rebalance_bundle(
+            session_view_id=session_view_id,
+            source_mode=source_mode,
+            portfolio_intent=value.portfolio_intent,
+            portfolio_result=value.portfolio_result,
+            risk_result=value.risk_result,
+            backtest_run_spec=backtest_run_spec,
+            backtest_run_result=backtest_run_result,
+        )
+        for value in rebalance_evidence
+    )
+
+    projection_by_key: dict[
+        tuple[str, str], CanonicalEvidenceProjectionV1
+    ] = {}
+    for partial in partials:
+        for projection in partial.projections:
+            key = (projection.source_artifact_type, projection.source_object_id)
+            prior = projection_by_key.get(key)
+            if prior is not None and prior.source_content_sha256 != projection.source_content_sha256:
+                raise EvidenceLineageBindingError(
+                    "same canonical kind/ID carries different hashes"
+                )
+            if prior is not None and prior != projection:
+                raise EvidenceLineageBindingError(
+                    "same canonical projection identity carries different view content"
+                )
+            projection_by_key[key] = projection
+
+    projections = tuple(
+        sorted(
+            projection_by_key.values(),
+            key=lambda value: (
+                _KIND_ORDER[value.source_artifact_type],
+                value.source_object_id,
+            ),
+        )
+    )
+    adjusted_by_id = {
+        value.source_object_id: value
+        for value in projections
+        if value.source_artifact_type == "RiskAdjustedWeightVector"
+    }
+    schedule_bindings: list[ScheduleBindingV1] = []
+    scheduled_ids: set[str] = set()
+    for index, scheduled in enumerate(backtest_run_spec.schedule):
+        adjusted_id = scheduled.vector.risk_adjusted_weight_vector_id
+        projection = adjusted_by_id.get(adjusted_id)
+        if (
+            projection is None
+            or projection.source_content_sha256 != scheduled.vector.content_sha256
+        ):
+            raise EvidenceLineageBindingError(
+                "BacktestRunSpec schedule is missing exact RiskAdjusted evidence"
+            )
+        if adjusted_id in scheduled_ids:
+            raise EvidenceLineageBindingError(
+                "BacktestRunSpec schedule repeats one RiskAdjusted evidence identity"
+            )
+        scheduled_ids.add(adjusted_id)
+        schedule_bindings.append(
+            ScheduleBindingV1(
+                index,
+                scheduled.effective_at,
+                adjusted_id,
+                scheduled.vector.content_sha256,
+            )
+        )
+    orphan_ids = set(adjusted_by_id) - scheduled_ids
+    if orphan_ids:
+        raise EvidenceLineageBindingError(
+            "orphan RiskAdjusted evidence is outside the exact RunSpec schedule: "
+            + ",".join(sorted(orphan_ids))
+        )
+
+    edge_by_key: dict[
+        tuple[str, str, str, str, str, str | None], LineageEdgeV1
+    ] = {}
+    for partial in partials:
+        for edge in partial.lineage_edges:
+            key = (
+                edge.relation,
+                edge.source_object_id,
+                edge.source_content_sha256,
+                edge.target_object_id,
+                edge.target_content_sha256,
+                edge.binding_object_id,
+            )
+            edge_by_key[key] = edge
+    edges = tuple(
+        sorted(
+            edge_by_key.values(),
+            key=lambda value: (
+                _EDGE_RELATION_ORDER[value.relation],
+                value.source_object_id,
+                value.target_object_id,
+                value.binding_object_id or "",
+            ),
+        )
+    )
+    return Round3ResearchEvidenceBundleV1(
+        session_view_id=session_view_id,
+        source_mode=source_mode,
+        projections=projections,
+        schedule_bindings=tuple(schedule_bindings),
         lineage_edges=edges,
     )
 
@@ -594,7 +875,9 @@ __all__ = [
     "EvidenceSourceMode",
     "LineageEdgeV1",
     "PROJECTION_SCHEMA_VERSION",
+    "Round3RebalanceEvidence",
     "Round3ResearchEvidenceBundleV1",
+    "ScheduleBindingV1",
     "ViewFactV1",
     "build_round3_evidence_bundle",
 ]

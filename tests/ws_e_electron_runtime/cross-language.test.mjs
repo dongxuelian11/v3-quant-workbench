@@ -30,7 +30,7 @@ test("real Python bootstrap completes framed authenticated handshake and gracefu
   assert.deepEqual(diagnostics, []);
 });
 
-test("real canonical H/I/J chain crosses Python backend, WS-E transport, parser, and Agent Workspace projection", { timeout: 15_000 }, async () => {
+test("real canonical two-rebalance H/I/J graph crosses Python backend, WS-E transport, parser, and Agent Workspace", { timeout: 15_000 }, async () => {
   const root = resolve(import.meta.dirname, "../..");
   const supervisor = new BackendSupervisor({
     pythonExecutable: process.env.V3_TEST_PYTHON ?? "python",
@@ -62,14 +62,24 @@ test("real canonical H/I/J chain crosses Python backend, WS-E transport, parser,
 
   const bundle = parseRound3ResearchEvidenceBundle(events[0].body);
   assert.equal(bundle.source_mode, "DEVELOPMENT_INTEGRATION_FIXTURE");
-  assert.deepEqual(bundle.projections.map((item) => item.source_object_id), [
+  const exactEvidenceIds = [
     "pint_sha256_011e48a40e65b1ff92213b5ce1a4895f0412f91c0b534f8aa78c03e49df96a9e",
-    "twv_sha256_7e9aa3d18cd1d4c1ea2dca665fdd760c866907c2043be3c467dc25df1152b9cd",
-    "rawv_sha256_d6f24bd4402608eb8a7c844137162c68d8effd9ad535509efe4cf586203ff2fa",
-    "rdr_sha256_060f64b4c30726126071aa15d407c1731ebf6fbec78d2d2494471117ec56cdf0",
-    "btrs_sha256_d39992efac79dd077ab0919b59bc4072adb0f987c624c25bbfd019fef31490be",
-    "btrr_sha256_4f08d474405ec0a5451bfc898851848db37a893479bf6e51af0afaf9ed06c09f"
+    "pint_sha256_146f74ad6f8d8d2be0d21e3590f573125a7e57d566f9fc4357b30a74a23789de",
+    "twv_sha256_208750185bacf5ce2758e4ba1eff8ecbfea197f792d5894954d02565ffc4bc32",
+    "twv_sha256_9d9d92d3de1d30e4149879183aab5b2bdf2f0e93227526054e477d8bc86ffabd",
+    "rawv_sha256_2afb77846c2f39a7c92ef883767416b336bf4a9c8762a3636c68eb749bfa0efb",
+    "rawv_sha256_d088399d897adb9b91d1126d5bc68415a6633a180017de5d43949f01a0579eaa",
+    "rdr_sha256_b732c998ff2c2f65f81303c128dc0f368059eacb91d66b4321f36e915de339e4",
+    "rdr_sha256_f0c13729801864cb98a96f9ae3bf30e17d0ad2e390db2203529f10324c51c8ec",
+    "btrs_sha256_30a3debc8b915903d748c6e5613375a1219bed7ca8397f9a3539a49ddcebf7ba",
+    "btrr_sha256_e21779419581527099a019c32512b3e10c3c74ca962cfd266f7a63c689d1722d"
+  ];
+  assert.deepEqual(bundle.projections.map((item) => item.source_object_id), exactEvidenceIds);
+  assert.deepEqual(bundle.schedule_bindings.map((item) => [item.schedule_index, item.effective_at, item.risk_adjusted_weight_vector_id]), [
+    [0, "2026-01-06T01:00:00+00:00", "rawv_sha256_d088399d897adb9b91d1126d5bc68415a6633a180017de5d43949f01a0579eaa"],
+    [1, "2026-01-07T01:00:00+00:00", "rawv_sha256_2afb77846c2f39a7c92ef883767416b336bf4a9c8762a3636c68eb749bfa0efb"]
   ]);
+  assert.equal(bundle.lineage_edges.length, 11);
   assert.equal(bundle.projections.every((item) => item.validation_state === "NOT_RUN"), true);
   assert.equal(bundle.projections.every((item) => item.canonical_admission_state === "PRE_ALPHA"), true);
   const unknown = structuredClone(events[0].body);
@@ -88,11 +98,33 @@ test("real canonical H/I/J chain crosses Python backend, WS-E transport, parser,
   const unsupportedSchema = structuredClone(events[0].body);
   unsupportedSchema.bundle_schema_version = "v3.round3_research_evidence_bundle/2.0.0";
   assert.throws(() => parseRound3ResearchEvidenceBundle(unsupportedSchema), /unsupported Round 3 bundle schema/);
+  const duplicate = structuredClone(events[0].body);
+  duplicate.projections.splice(1, 0, structuredClone(duplicate.projections[0]));
+  assert.throws(() => parseRound3ResearchEvidenceBundle(duplicate), /duplicate canonical/);
+  const missingScheduledRisk = structuredClone(events[0].body);
+  missingScheduledRisk.projections.splice(4, 1);
+  assert.throws(() => parseRound3ResearchEvidenceBundle(missingScheduledRisk), /missing exact RiskAdjusted evidence/);
+  const orphanRisk = structuredClone(events[0].body);
+  orphanRisk.schedule_bindings.splice(1, 1);
+  assert.throws(() => parseRound3ResearchEvidenceBundle(orphanRisk), /orphan RiskAdjusted evidence/);
+  const wrongChainEdge = structuredClone(events[0].body);
+  wrongChainEdge.lineage_edges.find((item) => item.relation === "RISK_APPLICATION_TARGET_BINDING").target_object_id = "rawv_sha256_" + "0".repeat(64);
+  assert.throws(() => parseRound3ResearchEvidenceBundle(wrongChainEdge), /missing, wrong, or extra edges/);
+  const wrongReceiptBinding = structuredClone(events[0].body);
+  const riskBEdge = wrongReceiptBinding.lineage_edges.find((item) => item.source_object_id === "twv_sha256_208750185bacf5ce2758e4ba1eff8ecbfea197f792d5894954d02565ffc4bc32" && item.relation === "RISK_APPLICATION_TARGET_BINDING");
+  riskBEdge.binding_object_id = "rar_sha256_2d20d5593550d6835e43e378c69a4538d781c8f020b72b0fac815a98eda5eb9d";
+  assert.throws(() => parseRound3ResearchEvidenceBundle(wrongReceiptBinding), /missing, wrong, or extra edges/);
 
   const connected = applyRound3ConnectionState(initialRound3AgentWorkspaceState(), "READY");
   const state = applyRound3EvidenceEvent(connected, events[0]);
   assert.equal(state.boundary.mode, "DEVELOPMENT_INTEGRATION_FIXTURE");
   assert.deepEqual(state.data.sessions[0].evidenceIds, bundle.projections.map((item) => item.source_object_id));
+  assert.deepEqual(
+    Object.fromEntries(["TargetWeightVector", "RiskAdjustedWeightVector", "RiskDecisionReport", "BacktestRunSpec", "BacktestRunResult"].map((kind) => [kind, state.data.evidence.filter((item) => item.kind === kind).length])),
+    { TargetWeightVector: 2, RiskAdjustedWeightVector: 2, RiskDecisionReport: 2, BacktestRunSpec: 1, BacktestRunResult: 1 }
+  );
+  assert.equal(state.data.artifacts.length, 10);
+  assert.equal(state.data.timeline.length, 10);
   assert.equal(state.data.statements.length, 0);
   assert.equal(state.data.timeline.every((item) => item.authority === "EVIDENCE" && item.state === "PRE_ALPHA"), true);
   assert.equal(state.data.timeline.some((item) => /executed|succeeded/i.test(item.title)), false);

@@ -120,11 +120,15 @@ app.whenReady().then(async () => {
     }
     const exactEvidenceIds = [
       "pint_sha256_011e48a40e65b1ff92213b5ce1a4895f0412f91c0b534f8aa78c03e49df96a9e",
-      "twv_sha256_7e9aa3d18cd1d4c1ea2dca665fdd760c866907c2043be3c467dc25df1152b9cd",
-      "rawv_sha256_d6f24bd4402608eb8a7c844137162c68d8effd9ad535509efe4cf586203ff2fa",
-      "rdr_sha256_060f64b4c30726126071aa15d407c1731ebf6fbec78d2d2494471117ec56cdf0",
-      "btrs_sha256_d39992efac79dd077ab0919b59bc4072adb0f987c624c25bbfd019fef31490be",
-      "btrr_sha256_4f08d474405ec0a5451bfc898851848db37a893479bf6e51af0afaf9ed06c09f"
+      "pint_sha256_146f74ad6f8d8d2be0d21e3590f573125a7e57d566f9fc4357b30a74a23789de",
+      "twv_sha256_208750185bacf5ce2758e4ba1eff8ecbfea197f792d5894954d02565ffc4bc32",
+      "twv_sha256_9d9d92d3de1d30e4149879183aab5b2bdf2f0e93227526054e477d8bc86ffabd",
+      "rawv_sha256_2afb77846c2f39a7c92ef883767416b336bf4a9c8762a3636c68eb749bfa0efb",
+      "rawv_sha256_d088399d897adb9b91d1126d5bc68415a6633a180017de5d43949f01a0579eaa",
+      "rdr_sha256_b732c998ff2c2f65f81303c128dc0f368059eacb91d66b4321f36e915de339e4",
+      "rdr_sha256_f0c13729801864cb98a96f9ae3bf30e17d0ad2e390db2203529f10324c51c8ec",
+      "btrs_sha256_30a3debc8b915903d748c6e5613375a1219bed7ca8397f9a3539a49ddcebf7ba",
+      "btrr_sha256_e21779419581527099a019c32512b3e10c3c74ca962cfd266f7a63c689d1722d"
     ];
     interactionEvidence.agentWorkspace = await evaluate(win, `(()=>{
       const permissions=Array.from(document.querySelectorAll('.permission-strip > div')).map((item)=>({level:item.querySelector('span')?.textContent,status:item.querySelector('b')?.textContent,allowed:item.getAttribute('data-allowed')}));
@@ -144,6 +148,7 @@ app.whenReady().then(async () => {
         timelineSessions:Array.from(document.querySelectorAll('[data-timeline-id]')).map((item)=>item.getAttribute('data-session-id')),
         timelineStates:Array.from(document.querySelectorAll('[data-timeline-id]')).map((item)=>({state:item.getAttribute('data-timeline-state'),successClass:item.classList.contains('success'),title:item.querySelector('strong')?.textContent})),
         evidenceIds:Array.from(document.querySelectorAll('[data-evidence-object-id]')).map((item)=>item.getAttribute('data-evidence-object-id')),
+        evidenceKinds:Array.from(document.querySelectorAll('[data-evidence-object-id]')).map((item)=>item.querySelector('span')?.textContent),
         connectionSlots:Array.from(document.querySelectorAll('.future-slots > div')).map((item)=>({object:item.querySelector('b')?.textContent,status:item.querySelector('span')?.textContent,owner:item.querySelector('small')?.textContent}))
       };
     })()`);
@@ -154,24 +159,29 @@ app.whenReady().then(async () => {
       { level: "L3_PUBLISH", status: "DENIED", allowed: "false" }
     ]);
     const defaultSessionId = "session-view-round3-integration-001";
-    if (interactionEvidence.agentWorkspace.defaultSurface !== "agent" || interactionEvidence.agentWorkspace.boundary !== "DEVELOPMENT_INTEGRATION_FIXTURE" || interactionEvidence.agentWorkspace.connection !== "READY" || !interactionEvidence.agentWorkspace.navigator || !interactionEvidence.agentWorkspace.inspector || !interactionEvidence.agentWorkspace.artifactViewer || !interactionEvidence.agentWorkspace.timeline || !permissionContract || interactionEvidence.agentWorkspace.forbiddenActions.length || interactionEvidence.agentWorkspace.agentRoles.length || interactionEvidence.agentWorkspace.statementSessions.length || interactionEvidence.agentWorkspace.timelineSessions.some((item)=>item!==defaultSessionId) || JSON.stringify(interactionEvidence.agentWorkspace.evidenceIds)!==JSON.stringify(exactEvidenceIds) || interactionEvidence.agentWorkspace.timelineStates.length!==6 || interactionEvidence.agentWorkspace.timelineStates.some((item)=>item.state!=="PRE_ALPHA"||item.successClass||/executed|succeeded/i.test(item.title??'')) || JSON.stringify(interactionEvidence.agentWorkspace.connectionSlots.map((item)=>item.owner))!==JSON.stringify(["CANONICAL_H","CANONICAL_I","CANONICAL_J"]) || interactionEvidence.agentWorkspace.connectionSlots.some((item)=>item.status!=="CONNECTED_READ_ONLY_MAIN_CONTRACT")) throw new Error(`Agent workspace contract failed ${JSON.stringify(interactionEvidence.agentWorkspace)}`);
+    const evidenceKindCounts = Object.fromEntries(["PortfolioIntent","TargetWeightVector","RiskAdjustedWeightVector","RiskDecisionReport","BacktestRunSpec","BacktestRunResult"].map((kind)=>[kind,interactionEvidence.agentWorkspace.evidenceKinds.filter((value)=>value===kind).length]));
+    if (interactionEvidence.agentWorkspace.defaultSurface !== "agent" || interactionEvidence.agentWorkspace.boundary !== "DEVELOPMENT_INTEGRATION_FIXTURE" || interactionEvidence.agentWorkspace.connection !== "READY" || !interactionEvidence.agentWorkspace.navigator || !interactionEvidence.agentWorkspace.inspector || !interactionEvidence.agentWorkspace.artifactViewer || !interactionEvidence.agentWorkspace.timeline || !permissionContract || interactionEvidence.agentWorkspace.forbiddenActions.length || interactionEvidence.agentWorkspace.agentRoles.length || interactionEvidence.agentWorkspace.statementSessions.length || interactionEvidence.agentWorkspace.timelineSessions.some((item)=>item!==defaultSessionId) || JSON.stringify(interactionEvidence.agentWorkspace.evidenceIds)!==JSON.stringify(exactEvidenceIds) || JSON.stringify(evidenceKindCounts)!==JSON.stringify({PortfolioIntent:2,TargetWeightVector:2,RiskAdjustedWeightVector:2,RiskDecisionReport:2,BacktestRunSpec:1,BacktestRunResult:1}) || interactionEvidence.agentWorkspace.timelineStates.length!==10 || interactionEvidence.agentWorkspace.timelineStates.some((item)=>item.state!=="PRE_ALPHA"||item.successClass||/executed|succeeded/i.test(item.title??'')) || JSON.stringify(interactionEvidence.agentWorkspace.connectionSlots.map((item)=>item.owner))!==JSON.stringify(["CANONICAL_H","CANONICAL_I","CANONICAL_J"]) || interactionEvidence.agentWorkspace.connectionSlots.some((item)=>item.status!=="CONNECTED_READ_ONLY_MAIN_CONTRACT")) throw new Error(`Agent workspace contract failed ${JSON.stringify(interactionEvidence.agentWorkspace)}`);
     await evaluate(win, `(()=>{const input=document.querySelector('textarea[aria-label="Research question"]');const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(input,'Audit the exact dataset evidence before drafting a conclusion.');input.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
     await clickText(win, "Save L1 draft", 300);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=local-agent-draft]'))", "saved local L1 draft");
-    await click(win, `[data-evidence-object-id='${exactEvidenceIds[1]}']`, 250);
+    await click(win, `[data-evidence-object-id='${exactEvidenceIds[2]}']`, 250);
     if (!await evaluate(win, "document.querySelector('.open-in-lab')?.textContent==='Open in Strategy Lab'")) throw new Error("TargetWeightVector Open-in-Lab route label is not Strategy");
     await click(win, ".open-in-lab", 500);
     if (await evaluate(win, "document.querySelector('[data-lab-workbench]')?.getAttribute('data-lab-workbench')") !== "strategy") throw new Error("TargetWeightVector did not route to Strategy Lab");
     await click(win, "[data-surface='agent']", 400);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace]'))", "return from TargetWeightVector Strategy route");
-    for (const exactId of [exactEvidenceIds[2], exactEvidenceIds[4], exactEvidenceIds[5]]) {
+    for (const exactId of exactEvidenceIds.slice(2)) {
       await click(win, `[data-evidence-object-id='${exactId}']`, 250);
       const binding = await evaluate(win, `(()=>({objectId:document.querySelector('.exact-object-id code')?.textContent,artifactId:document.querySelector('[data-testid=artifact-viewer]')?.getAttribute('data-artifact-id'),truth:Array.from(document.querySelectorAll('.truth-admission-grid b')).map((item)=>item.textContent)}))()`);
       if (binding.objectId!==exactId || binding.artifactId!==exactId || binding.truth.join(',')!=="NOT_FORMAL,PRE_ALPHA,NOT_RUN") throw new Error(`Exact canonical evidence binding failed ${JSON.stringify(binding)}`);
+      if (exactId===exactEvidenceIds[8]) {
+        const runSpecText=await evaluate(win,"document.querySelector('[data-testid=artifact-viewer]')?.textContent??''");
+        if (!runSpecText.includes(exactEvidenceIds[4]) || !runSpecText.includes(exactEvidenceIds[5]) || !runSpecText.includes('2026-01-06T01:00:00+00:00') || !runSpecText.includes('2026-01-07T01:00:00+00:00')) throw new Error(`RunSpec multi-rebalance schedule rendering failed ${runSpecText}`);
+      }
     }
     interactionEvidence.evidenceInspector = await evaluate(win, `(()=>({objectId:document.querySelector('.exact-object-id code')?.textContent,truth:Array.from(document.querySelectorAll('.truth-admission-grid b')).map((item)=>item.textContent)}))()`);
     interactionEvidence.backtestResult = await evaluate(win, `(()=>({renderer:document.querySelector('[data-testid=artifact-viewer]')?.getAttribute('data-renderer'),actual:Boolean(document.querySelector('[data-testid=canonical-backtest-result]')),body:document.querySelector('[data-testid=canonical-backtest-result]')?.textContent}))()`);
-    if (interactionEvidence.evidenceInspector.objectId !== exactEvidenceIds[5] || interactionEvidence.evidenceInspector.truth.join(',') !== 'NOT_FORMAL,PRE_ALPHA,NOT_RUN' || interactionEvidence.backtestResult.renderer !== 'backtest-result' || !interactionEvidence.backtestResult.actual || !interactionEvidence.backtestResult.body.includes(exactEvidenceIds[5]) || !interactionEvidence.backtestResult.body.includes(exactEvidenceIds[4])) throw new Error(`Canonical BacktestRunResult rendering failed ${JSON.stringify(interactionEvidence)}`);
+    if (interactionEvidence.evidenceInspector.objectId !== exactEvidenceIds[9] || interactionEvidence.evidenceInspector.truth.join(',') !== 'NOT_FORMAL,PRE_ALPHA,NOT_RUN' || interactionEvidence.backtestResult.renderer !== 'backtest-result' || !interactionEvidence.backtestResult.actual || !interactionEvidence.backtestResult.body.includes(exactEvidenceIds[9]) || !interactionEvidence.backtestResult.body.includes(exactEvidenceIds[8])) throw new Error(`Canonical BacktestRunResult rendering failed ${JSON.stringify(interactionEvidence)}`);
     await shot(win, geometry, "00-round3-canonical-agent-workspace.png", [1920, 1080]);
     await click(win, ".open-in-lab", 700);
     if (await evaluate(win, "document.querySelector('[data-lab-workbench]')?.getAttribute('data-lab-workbench')") !== "result") throw new Error("Canonical BacktestRunResult did not route to Result Lab");

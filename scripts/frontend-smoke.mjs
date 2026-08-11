@@ -66,7 +66,10 @@ if (byName["09-model-dataset-family-run-workflow.png"].primary_panel_id !== "mod
 if (!capture.interactionEvidence?.commandPalette?.openedByKeyboard || !capture.interactionEvidence?.commandPalette?.inputFocused) throw new Error("Command palette keyboard/focus evidence failed");
 if (!capture.interactionEvidence?.dockview?.focusable || !capture.interactionEvidence?.motion?.reducedMotionRulePresent) throw new Error("Dockview focus or reduced-motion evidence failed");
 const round3 = capture.interactionEvidence?.agentWorkspace;
-if (round3?.boundary !== "DEVELOPMENT_INTEGRATION_FIXTURE" || round3?.connection !== "READY" || round3?.evidenceIds?.length !== 6) throw new Error("Round 3 canonical Agent Workspace evidence missing");
+if (round3?.boundary !== "DEVELOPMENT_INTEGRATION_FIXTURE" || round3?.connection !== "READY" || round3?.evidenceIds?.length !== 10) throw new Error("Round 3 canonical multi-rebalance Agent Workspace evidence missing");
+for (const [kind, count] of Object.entries({ PortfolioIntent: 2, TargetWeightVector: 2, RiskAdjustedWeightVector: 2, RiskDecisionReport: 2, BacktestRunSpec: 1, BacktestRunResult: 1 })) {
+  if (round3.evidenceKinds.filter((value) => value === kind).length !== count) throw new Error(`Round 3 ${kind} cardinality mismatch`);
+}
 if (round3.timelineStates.some((item) => item.state !== "PRE_ALPHA" || item.successClass) || round3.forbiddenActions.length) throw new Error("Round 3 truth or permission surface was promoted");
 if (!capture.interactionEvidence?.backtestResult?.actual || capture.interactionEvidence.backtestResult.renderer !== "backtest-result") throw new Error("Canonical BacktestRunResult renderer evidence missing");
 console.log(`Visual frontend evidence PASS: ${expected.length} distinct real-Electron states, chart geometry gates, restart layout, and secure preferences asserted.`);

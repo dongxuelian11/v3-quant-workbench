@@ -4,7 +4,9 @@ from .projection import (
     CanonicalEvidenceProjectionV1,
     EvidenceLineageBindingError,
     LineageEdgeV1,
+    Round3RebalanceEvidence,
     Round3ResearchEvidenceBundleV1,
+    ScheduleBindingV1,
     ViewFactV1,
     build_round3_evidence_bundle,
 )
@@ -20,8 +22,10 @@ __all__ = [
     "EvidenceLineageBindingError",
     "InMemoryRound3EvidenceProvider",
     "LineageEdgeV1",
+    "Round3RebalanceEvidence",
     "Round3EvidenceProvider",
     "Round3ResearchEvidenceBundleV1",
+    "ScheduleBindingV1",
     "ViewFactV1",
     "build_round3_evidence_bundle",
 ]

@@ -10,8 +10,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, replace
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,11 @@ from v3_backend.domain.backtest_runtime import (
     ScheduledWeights,
     cn_a_share_2023_08_28_cost_policy,
 )
+from v3_backend.domain.portfolio_construction import (
+    ConstructionMethod,
+    IntentConstraintNormalization,
+    IntentExposureMode,
+)
 from v3_backend.domain.risk_runtime import (
     RiskPolicyDefinition,
     RiskPolicySetVersion,
@@ -41,7 +46,11 @@ from v3_backend.runtime.composition_root import RuntimePorts, build_runtime, def
 from v3_backend.runtime.framed_stdio import ProtocolViolation
 from v3_backend.runtime.handshake import read_supervisor_token
 
-from .projection import EvidenceSourceMode, build_round3_evidence_bundle
+from .projection import (
+    EvidenceSourceMode,
+    Round3RebalanceEvidence,
+    build_round3_evidence_bundle,
+)
 
 
 BACKEND_VERSION = "0.1.0-round3-integration-fixture"
@@ -54,11 +63,21 @@ SESSION_VIEW_ID = "session-view-round3-integration-001"
 class DevelopmentCanonicalChain:
     """Test-only references to the actual canonical H/I/J owner outputs."""
 
-    portfolio_intent: Any
-    portfolio_result: Any
-    risk_result: Any
+    rebalance_evidence: tuple[Round3RebalanceEvidence, ...]
     backtest_run_spec: BacktestRunSpec
     backtest_run_result: Any
+
+    @property
+    def portfolio_intent(self) -> Any:
+        return self.rebalance_evidence[0].portfolio_intent
+
+    @property
+    def portfolio_result(self) -> Any:
+        return self.rebalance_evidence[0].portfolio_result
+
+    @property
+    def risk_result(self) -> Any:
+        return self.rebalance_evidence[0].risk_result
 
 
 def _diagnostic(level: str, code: str, message: str) -> None:
@@ -87,11 +106,51 @@ def _board(instrument_id: str) -> Board:
     return Board.SSE_MAIN
 
 
-def build_development_chain() -> DevelopmentCanonicalChain:
+def build_development_chain(
+    *, rebalance_count: int = 2, shared_intent: bool = False
+) -> DevelopmentCanonicalChain:
+    if rebalance_count not in {1, 2}:
+        raise ValueError("development fixture supports exactly one or two rebalances")
     fixture_type = _load_portfolio_fixture_type()
     fixture = fixture_type(methodName="runTest")
     fixture.setUp()
-    portfolio_result = fixture.construct()
+    portfolio_result_a = fixture.construct(
+        rebalance_time=fixture.rebalance_time - timedelta(minutes=30)
+    )
+    canonical_rebalances: list[tuple[Any, Any]] = [
+        (fixture.intent, portfolio_result_a)
+    ]
+    if rebalance_count == 2:
+        if shared_intent:
+            intent_b = fixture.intent
+            spec_b = fixture.spec()
+        else:
+            intent_b = fixture.recreate_intent(
+                (
+                    replace(fixture.intent.items[0], desired_exposure="0.8"),
+                    replace(fixture.intent.items[1], desired_exposure="0.2"),
+                ),
+                exposure_mode=IntentExposureMode.RELATIVE_DESIRED_EXPOSURE.value,
+                constraints={
+                    "proposal_only": True,
+                    "normalization": (
+                        IntentConstraintNormalization.RELATIVE_DESIRED_EXPOSURE.value
+                    ),
+                    "portfolio_service_required": True,
+                },
+            )
+            spec_b = fixture.spec(ConstructionMethod.NORMALIZED_DESIRED_EXPOSURE)
+        portfolio_result_b = fixture.construct(
+            intent=intent_b,
+            spec=spec_b,
+            as_of=fixture.as_of,
+            decision_time=fixture.decision_time,
+            rebalance_time=(
+                fixture.rebalance_time + timedelta(days=1, minutes=-30)
+            ),
+            valid_until=fixture.valid_until + timedelta(days=1),
+        )
+        canonical_rebalances.append((intent_b, portfolio_result_b))
 
     risk_runtime = RuntimeIdentity(
         code_version="git:round3-integration-fixture",
@@ -102,28 +161,41 @@ def build_development_chain() -> DevelopmentCanonicalChain:
         code_version=risk_runtime.code_version,
         runtime_profile_id=risk_runtime.runtime_profile_id,
     )
-    risk_result = apply_risk(
-        source_target=portfolio_result.target,
-        policy_set=RiskPolicySetVersion.create((policy,)),
-        runtime_identity=risk_runtime,
+    policy_set = RiskPolicySetVersion.create((policy,))
+    rebalance_evidence = tuple(
+        Round3RebalanceEvidence(
+            portfolio_intent=intent,
+            portfolio_result=portfolio_result,
+            risk_result=apply_risk(
+                source_target=portfolio_result.target,
+                policy_set=policy_set,
+                runtime_identity=risk_runtime,
+            ),
+        )
+        for intent, portfolio_result in canonical_rebalances
     )
 
-    target = portfolio_result.target
-    adjusted = risk_result.adjusted_weights
+    targets = tuple(value.portfolio_result.target for value in rebalance_evidence)
+    adjusted_vectors = tuple(
+        value.risk_result.adjusted_weights for value in rebalance_evidence
+    )
     # The canonical H fixture already carries an aware Asia/Shanghai rebalance
     # timestamp. Preserve its calendar date without consulting host tzdata.
-    market_date = target.rebalance_time.date()
+    market_dates = tuple(target.rebalance_time.date() for target in targets)
     instruments = tuple(
         InstrumentDefinition(instrument_id, _board(instrument_id))
-        for instrument_id in target.source.universe_instrument_ids
+        for instrument_id in targets[0].source.universe_instrument_ids
     )
-    session = MarketSession(
-        market_date,
-        True,
-        tuple(
-            DailyMarketState(instrument_id, "10", "10")
-            for instrument_id in target.source.universe_instrument_ids
-        ),
+    sessions = tuple(
+        MarketSession(
+            market_date,
+            True,
+            tuple(
+                DailyMarketState(instrument_id, "10", "10")
+                for instrument_id in targets[0].source.universe_instrument_ids
+            ),
+        )
+        for market_date in market_dates
     )
     effective_from = date(2026, 1, 1)
     rule_profile = AshareTradingRuleProfileVersion.create(
@@ -169,8 +241,11 @@ def build_development_chain() -> DevelopmentCanonicalChain:
         initial_cash="100000",
         initial_holdings=(),
         instruments=instruments,
-        sessions=(session,),
-        schedule=(ScheduledWeights(target.rebalance_time, adjusted),),
+        sessions=sessions,
+        schedule=tuple(
+            ScheduledWeights(target.rebalance_time, adjusted)
+            for target, adjusted in zip(targets, adjusted_vectors, strict=True)
+        ),
         rule_profile=rule_profile,
         cost_policy=cn_a_share_2023_08_28_cost_policy(
             commission_rate="0.0003",
@@ -186,9 +261,7 @@ def build_development_chain() -> DevelopmentCanonicalChain:
     )
     run_result = DeterministicAshareBacktestEngine().run(run_spec)
     return DevelopmentCanonicalChain(
-        portfolio_intent=fixture.intent,
-        portfolio_result=portfolio_result,
-        risk_result=risk_result,
+        rebalance_evidence=rebalance_evidence,
         backtest_run_spec=run_spec,
         backtest_run_result=run_result,
     )
@@ -199,9 +272,7 @@ def build_development_bundle():
     return build_round3_evidence_bundle(
         session_view_id=SESSION_VIEW_ID,
         source_mode=EvidenceSourceMode.DEVELOPMENT_INTEGRATION_FIXTURE,
-        portfolio_intent=chain.portfolio_intent,
-        portfolio_result=chain.portfolio_result,
-        risk_result=chain.risk_result,
+        rebalance_evidence=chain.rebalance_evidence,
         backtest_run_spec=chain.backtest_run_spec,
         backtest_run_result=chain.backtest_run_result,
     )
@@ -214,7 +285,7 @@ class _SingleBundleReplay:
             "project_id": PROJECT_ID,
             "project_sequence": 1,
             "event_type": "round3.research.evidence.bundle.v1",
-            "occurred_at": "2026-01-06T01:31:00Z",
+            "occurred_at": "2026-01-07T01:31:00Z",
             "body": build_development_bundle().to_wire(),
         }
 
