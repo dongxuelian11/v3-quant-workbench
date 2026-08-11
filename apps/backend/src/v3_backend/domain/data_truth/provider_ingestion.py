@@ -66,6 +66,7 @@ class NormalizedEodObservation:
     amount: Decimal | None
     available_time: datetime | None
     acquisition_time: datetime
+    acquisition_id: str
     revision_id: str | None
     raw_capture_id: str
     missing_fields: tuple[MissingField, ...]
@@ -84,6 +85,8 @@ class NormalizedEodObservation:
             "volume": self.volume,
             "amount": None if self.amount is None else format(self.amount, "f"),
             "available_time": self.available_time,
+            "acquisition_time": self.acquisition_time,
+            "acquisition_id": self.acquisition_id,
             "revision_id": self.revision_id,
             "raw_capture_id": self.raw_capture_id,
             "missing_fields": tuple(
@@ -106,6 +109,7 @@ class ResearchDataSnapshot:
     snapshot_id: str
     normalization_version: str
     raw_capture_ids: tuple[str, ...]
+    acquisition_ids: tuple[str, ...]
     records: tuple[NormalizedEodObservation, ...]
     truth_ceiling: TruthAdmissionState
     pit_evidence: PitEvidenceState
@@ -200,8 +204,43 @@ def _records(submission: RawCaptureSubmission) -> tuple[Mapping[str, object], ..
     return tuple(rows)
 
 
+def _acquisition_provenance(
+    submission: RawCaptureSubmission,
+) -> tuple[str, datetime]:
+    metadata = submission.source_metadata
+    acquisition_id = metadata.get("acquisition_id")
+    acquisition_time = metadata.get("acquired_at")
+    provider_version = metadata.get("provider_package_version")
+    request_fingerprint = metadata.get("request_fingerprint")
+    if not isinstance(acquisition_id, str) or not acquisition_id:
+        raise NormalizationError("acquisition identity evidence is unavailable")
+    if not isinstance(acquisition_time, datetime):
+        raise NormalizationError("acquisition time evidence is unavailable")
+    if acquisition_time.tzinfo is None or acquisition_time.utcoffset() is None:
+        raise NormalizationError("acquisition time evidence must be timezone-aware")
+    if not isinstance(provider_version, str) or not provider_version:
+        raise NormalizationError("provider version evidence is unavailable")
+    if not isinstance(request_fingerprint, str) or not request_fingerprint:
+        raise NormalizationError("request fingerprint evidence is unavailable")
+    expected_id = "acq_sha256_" + canonical_sha256(
+        {
+            "provider_id": submission.envelope.provider_id,
+            "provider_version": provider_version,
+            "request_fingerprint": request_fingerprint,
+            "acquired_at": acquisition_time,
+        }
+    )
+    if acquisition_id != expected_id:
+        raise NormalizationError("acquisition identity does not match its provenance")
+    return acquisition_id, acquisition_time
+
+
 def _normalize_row(
-    row: Mapping[str, object], submission: RawCaptureSubmission
+    row: Mapping[str, object],
+    submission: RawCaptureSubmission,
+    *,
+    acquisition_id: str,
+    acquisition_time: datetime,
 ) -> NormalizedEodObservation:
     symbol = str(row["股票代码"])
     exchange = _exchange(symbol)
@@ -226,9 +265,6 @@ def _normalize_row(
             open_price, close_price
         ):
             raise NormalizationError("provider OHLC envelope is inconsistent")
-    acquisition_time = submission.source_metadata.get("acquired_at")
-    if not isinstance(acquisition_time, datetime):
-        raise NormalizationError("acquisition time evidence is unavailable")
     return NormalizedEodObservation(
         instrument_id=f"ins_cn_{exchange.lower()}_{symbol}",
         symbol=symbol,
@@ -243,6 +279,7 @@ def _normalize_row(
         amount=amount,
         available_time=None,
         acquisition_time=acquisition_time,
+        acquisition_id=acquisition_id,
         revision_id=None,
         raw_capture_id=submission.envelope.raw_capture_id,
         missing_fields=tuple(sorted(missing, key=lambda item: item.field)),
@@ -257,12 +294,22 @@ def normalize_a_share_eod(
     """Normalize one capture and bind it to the A0 ceiling without promotion."""
 
     rows = _records(submission)
+    acquisition_id, acquisition_time = _acquisition_provenance(submission)
     records = tuple(
         sorted(
-            (_normalize_row(row, submission) for row in rows),
+            (
+                _normalize_row(
+                    row,
+                    submission,
+                    acquisition_id=acquisition_id,
+                    acquisition_time=acquisition_time,
+                )
+                for row in rows
+            ),
             key=lambda item: (item.instrument_id, item.session_date),
         )
     )
+    acquisition_ids = (acquisition_id,)
     ceiling = propagate_downstream_ceiling(
         proposed_state,
         (
@@ -276,6 +323,7 @@ def normalize_a_share_eod(
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "normalization_version": NORMALIZATION_VERSION,
         "raw_capture_content_hash": submission.envelope.content_hash,
+        "acquisition_ids": acquisition_ids,
         "records": tuple(record.identity_wire() for record in records),
         "truth_ceiling": ceiling,
         "pit_evidence": PitEvidenceState.UNKNOWN,
@@ -299,6 +347,7 @@ def normalize_a_share_eod(
         snapshot_id=snapshot_id,
         normalization_version=NORMALIZATION_VERSION,
         raw_capture_ids=(submission.envelope.raw_capture_id,),
+        acquisition_ids=acquisition_ids,
         records=records,
         truth_ceiling=ceiling,
         pit_evidence=PitEvidenceState.UNKNOWN,

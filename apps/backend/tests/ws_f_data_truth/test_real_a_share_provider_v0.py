@@ -144,12 +144,10 @@ class RealAShareProviderV0Tests(unittest.TestCase):
     def test_deterministic_normalization_and_snapshot_identity(self) -> None:
         first = normalize_a_share_eod(adapter(FakeAkshare(ROWS)).capture(REQUEST))
         second = normalize_a_share_eod(
-            adapter(
-                FakeAkshare(list(reversed(ROWS))),
-                acquired_at=ACQUIRED_AT + timedelta(days=1),
-            ).capture(REQUEST)
+            adapter(FakeAkshare(list(reversed(ROWS)))).capture(REQUEST)
         )
         self.assertEqual(first.snapshot_id, second.snapshot_id)
+        self.assertEqual(first.acquisition_ids, second.acquisition_ids)
         self.assertEqual(
             [record.session_date.isoformat() for record in first.records],
             ["2026-01-05", "2026-01-06"],
@@ -157,6 +155,33 @@ class RealAShareProviderV0Tests(unittest.TestCase):
         self.assertEqual(
             first.research_universe_input.instrument_ids,
             ("ins_cn_szse_000001",),
+        )
+
+    def test_snapshot_identity_binds_acquisition_provenance(self) -> None:
+        first_capture = adapter(FakeAkshare(ROWS)).capture(REQUEST)
+        later_capture = adapter(
+            FakeAkshare(list(reversed(ROWS))),
+            acquired_at=ACQUIRED_AT + timedelta(days=1),
+        ).capture(REQUEST)
+        first = normalize_a_share_eod(first_capture)
+        later = normalize_a_share_eod(later_capture)
+
+        self.assertEqual(
+            first_capture.envelope.raw_capture_id,
+            later_capture.envelope.raw_capture_id,
+        )
+        self.assertNotEqual(first.acquisition_ids, later.acquisition_ids)
+        self.assertNotEqual(first.snapshot_id, later.snapshot_id)
+        self.assertEqual(
+            first.acquisition_ids,
+            (first_capture.source_metadata["acquisition_id"],),
+        )
+        self.assertTrue(
+            all(
+                record.acquisition_id == first.acquisition_ids[0]
+                and record.acquisition_time == ACQUIRED_AT
+                for record in first.records
+            )
         )
 
     def test_missing_values_and_absent_fields_are_explicit(self) -> None:
