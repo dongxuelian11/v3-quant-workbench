@@ -23,7 +23,7 @@ from .contracts import (
     deterministic_json,
 )
 from .permissions import require_permission
-from .tools import ToolBinding, filter_tool_bindings
+from .tools import TrustedToolBindings, UntrustedToolBindingError, filter_tool_bindings
 
 
 PYDANTIC_AI_VERIFIED_VERSION = "2.27.0"
@@ -61,7 +61,8 @@ class PydanticAgentWorker:
         model_name: str,
         provider_name: str,
         prompt_version: str,
-        tool_bindings: tuple[ToolBinding, ...] = (),
+        tool_registry: TrustedToolBindings | None = None,
+        requested_tool_names: tuple[str, ...] = (),
     ) -> None:
         try:
             installed = version("pydantic-ai-slim")
@@ -76,7 +77,21 @@ class PydanticAgentWorker:
         self._model_name = model_name
         self._provider_name = provider_name
         self._prompt_version = prompt_version
-        self._tool_bindings = filter_tool_bindings(permission, tool_bindings)
+        if tool_registry is None:
+            if requested_tool_names:
+                raise UntrustedToolBindingError("tool requests require a V3 trusted registry")
+            self._tool_bindings = ()
+        else:
+            if type(tool_registry) is not TrustedToolBindings:
+                raise UntrustedToolBindingError(
+                    "an exact V3 TrustedToolBindings authority is required"
+                )
+            resolved_bindings = tool_registry.resolve(requested_tool_names)
+            self._tool_bindings = filter_tool_bindings(
+                permission,
+                resolved_bindings,
+                registry=tool_registry,
+            )
 
     @property
     def visible_tool_names(self) -> tuple[str, ...]:

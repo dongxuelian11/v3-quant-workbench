@@ -9,6 +9,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from v3_backend.agents import (
     AgentOutputRejected,
+    DEFAULT_TOOL_CATALOG,
     DataFindingsPayload,
     PermissionDenied,
     PermissionLevel,
@@ -20,6 +21,8 @@ from v3_backend.agents import (
     ToolBinding,
     ToolDescriptor,
     ToolEffect,
+    TrustedToolBindings,
+    UntrustedToolBindingError,
     filter_tool_bindings,
 )
 
@@ -32,7 +35,33 @@ def execute_task(task: str) -> str:
     raise AssertionError(f"execute tool must never be exposed: {task}")
 
 
+def draft_research_spec(objective: str) -> str:
+    return f"draft:{objective}"
+
+
+def authority_tool(value: str) -> str:
+    raise AssertionError(f"authority tool must never be exposed: {value}")
+
+
 class PydanticWorkerTests(unittest.TestCase):
+    @staticmethod
+    def _descriptor(name: str) -> ToolDescriptor:
+        return next(item for item in DEFAULT_TOOL_CATALOG if item.name == name)
+
+    @classmethod
+    def _registry(cls) -> TrustedToolBindings:
+        return TrustedToolBindings(
+            (
+                ToolBinding(cls._descriptor("read_structured_input"), read_evidence),
+                ToolBinding(cls._descriptor("draft_research_spec"), draft_research_spec),
+                ToolBinding(cls._descriptor("execute_task"), execute_task),
+                ToolBinding(cls._descriptor("publish_artifact"), authority_tool),
+                ToolBinding(cls._descriptor("allocate_canonical_id"), authority_tool),
+                ToolBinding(cls._descriptor("promote_canonical_truth"), authority_tool),
+                ToolBinding(cls._descriptor("own_durable_task"), authority_tool),
+            )
+        )
+
     @staticmethod
     def _model_response(_messages: list[object], info: AgentInfo) -> ModelResponse:
         instructions = info.instructions or ""
@@ -75,31 +104,14 @@ class PydanticWorkerTests(unittest.TestCase):
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, payload)])
 
     def _worker(self, permission: object = PermissionLevel.L1_DRAFT) -> PydanticAgentWorker:
-        bindings = (
-            ToolBinding(
-                ToolDescriptor(
-                    name="read_structured_input",
-                    required_permission=PermissionLevel.L0_READ,
-                    effect=ToolEffect.READ,
-                ),
-                read_evidence,
-            ),
-            ToolBinding(
-                ToolDescriptor(
-                    name="execute_task",
-                    required_permission=PermissionLevel.L2_EXECUTE,
-                    effect=ToolEffect.EXECUTE,
-                ),
-                execute_task,
-            ),
-        )
         return PydanticAgentWorker(
             model=FunctionModel(self._model_response, model_name="track-d-function-model"),
             permission=permission,
             model_name="pydantic-test-model",
             provider_name="pydantic-test-provider",
             prompt_version="track-d-prompt-v0.1",
-            tool_bindings=bindings,
+            tool_registry=self._registry(),
+            requested_tool_names=("read_structured_input", "execute_task"),
         )
 
     def test_exact_verified_sdk_is_installed(self) -> None:
@@ -167,33 +179,168 @@ class PydanticWorkerTests(unittest.TestCase):
         for forbidden in ("execute", "publish", "admit", "allocate_canonical_id", "accept", "persist"):
             self.assertFalse(hasattr(worker, forbidden))
 
-    def test_duplicate_tool_names_fail_closed_before_registration(self) -> None:
-        safe = ToolDescriptor(
-            name="shared_name",
+    def test_exact_registered_read_binding_is_allowed_at_l0_and_l1(self) -> None:
+        registry = self._registry()
+        registered_read = registry.resolve(("read_structured_input",))
+        self.assertEqual(
+            filter_tool_bindings(
+                PermissionLevel.L0_READ,
+                registered_read,
+                registry=registry,
+            ),
+            registered_read,
+        )
+        self.assertEqual(
+            filter_tool_bindings(
+                PermissionLevel.L1_DRAFT,
+                registered_read,
+                registry=registry,
+            ),
+            registered_read,
+        )
+
+    def test_exact_registered_draft_binding_is_allowed_only_at_l1(self) -> None:
+        registry = self._registry()
+        registered_draft = registry.resolve(("draft_research_spec",))
+        self.assertEqual(
+            filter_tool_bindings(
+                PermissionLevel.L0_READ,
+                registered_draft,
+                registry=registry,
+            ),
+            (),
+        )
+        self.assertEqual(
+            filter_tool_bindings(
+                PermissionLevel.L1_DRAFT,
+                registered_draft,
+                registry=registry,
+            ),
+            registered_draft,
+        )
+
+    def test_registered_descriptor_with_different_callable_is_rejected(self) -> None:
+        registry = self._registry()
+        registered = registry.resolve(("read_structured_input",))[0]
+        relabeled = ToolBinding(registered.descriptor, execute_task)
+        with self.assertRaisesRegex(UntrustedToolBindingError, "canonical V3 registration"):
+            filter_tool_bindings(
+                PermissionLevel.L1_DRAFT,
+                (relabeled,),
+                registry=registry,
+            )
+
+    def test_worker_cannot_accept_or_invoke_untrusted_callable_relabelled_as_read(self) -> None:
+        calls: list[str] = []
+
+        def untrusted_side_effect(value: str) -> str:
+            calls.append(value)
+            return value
+
+        registry = self._registry()
+        registered = registry.resolve(("read_structured_input",))[0]
+        relabeled = ToolBinding(registered.descriptor, untrusted_side_effect)
+        with self.assertRaisesRegex(UntrustedToolBindingError, "canonical V3 registration"):
+            filter_tool_bindings(
+                PermissionLevel.L1_DRAFT,
+                (relabeled,),
+                registry=registry,
+            )
+        with self.assertRaisesRegex(TypeError, "unexpected keyword argument 'tool_bindings'"):
+            PydanticAgentWorker(
+                model=FunctionModel(self._model_response, model_name="track-d-function-model"),
+                permission=PermissionLevel.L1_DRAFT,
+                model_name="pydantic-test-model",
+                provider_name="pydantic-test-provider",
+                prompt_version="track-d-prompt-v0.1",
+                tool_bindings=(relabeled,),
+            )
+        self.assertEqual(calls, [])
+
+    def test_forged_safe_descriptor_binding_is_rejected_unless_registry_resolved(self) -> None:
+        registry = self._registry()
+        registered = registry.resolve(("read_structured_input",))[0]
+        forged_descriptor = ToolDescriptor(
+            name="read_structured_input",
             required_permission=PermissionLevel.L0_READ,
             effect=ToolEffect.READ,
         )
-        unsafe = ToolDescriptor(
-            name="shared_name",
-            required_permission=PermissionLevel.L2_EXECUTE,
-            effect=ToolEffect.EXECUTE,
-        )
-        with self.assertRaisesRegex(ValueError, "duplicate tool binding names fail closed"):
+        forged_binding = ToolBinding(forged_descriptor, registered.function)
+        with self.assertRaisesRegex(UntrustedToolBindingError, "canonical V3 registration"):
             filter_tool_bindings(
                 PermissionLevel.L1_DRAFT,
-                (ToolBinding(safe, read_evidence), ToolBinding(unsafe, execute_task)),
+                (forged_binding,),
+                registry=registry,
             )
 
     def test_unregistered_safe_looking_tool_is_not_exposed(self) -> None:
-        forged = ToolDescriptor(
-            name="forged_read",
-            required_permission=PermissionLevel.L0_READ,
-            effect=ToolEffect.READ,
+        with self.assertRaisesRegex(UntrustedToolBindingError, "not registered"):
+            self._registry().resolve(("forged_read",))
+
+    def test_duplicate_binding_names_are_rejected(self) -> None:
+        descriptor = self._descriptor("read_structured_input")
+        with self.assertRaisesRegex(UntrustedToolBindingError, "duplicate tool binding names"):
+            TrustedToolBindings(
+                (
+                    ToolBinding(descriptor, read_evidence),
+                    ToolBinding(descriptor, execute_task),
+                )
+            )
+        with self.assertRaisesRegex(UntrustedToolBindingError, "duplicate tool binding names"):
+            self._registry().resolve(("read_structured_input", "read_structured_input"))
+
+    def test_authority_bindings_are_never_exposed_at_l1(self) -> None:
+        registry = self._registry()
+        forbidden_names = (
+            "execute_task",
+            "publish_artifact",
+            "allocate_canonical_id",
+            "promote_canonical_truth",
+            "own_durable_task",
         )
+        resolved = registry.resolve(forbidden_names)
         self.assertEqual(
-            filter_tool_bindings(PermissionLevel.L1_DRAFT, (ToolBinding(forged, read_evidence),)),
+            filter_tool_bindings(
+                PermissionLevel.L1_DRAFT,
+                resolved,
+                registry=registry,
+            ),
             (),
         )
+
+    def test_worker_rejects_unregistered_tool_names(self) -> None:
+        with self.assertRaisesRegex(UntrustedToolBindingError, "not registered"):
+            PydanticAgentWorker(
+                model=FunctionModel(self._model_response, model_name="track-d-function-model"),
+                permission=PermissionLevel.L1_DRAFT,
+                model_name="pydantic-test-model",
+                provider_name="pydantic-test-provider",
+                prompt_version="track-d-prompt-v0.1",
+                tool_registry=self._registry(),
+                requested_tool_names=("forged_read",),
+            )
+
+    def test_worker_and_filter_reject_duck_typed_or_subclassed_registries(self) -> None:
+        class ForgedRegistry(TrustedToolBindings):
+            pass
+
+        forged_registry = ForgedRegistry(())
+        with self.assertRaisesRegex(UntrustedToolBindingError, "exact V3 TrustedToolBindings"):
+            PydanticAgentWorker(
+                model=FunctionModel(self._model_response, model_name="track-d-function-model"),
+                permission=PermissionLevel.L1_DRAFT,
+                model_name="pydantic-test-model",
+                provider_name="pydantic-test-provider",
+                prompt_version="track-d-prompt-v0.1",
+                tool_registry=forged_registry,
+                requested_tool_names=(),
+            )
+        with self.assertRaisesRegex(UntrustedToolBindingError, "exact V3 TrustedToolBindings"):
+            filter_tool_bindings(
+                PermissionLevel.L1_DRAFT,
+                (),
+                registry=forged_registry,
+            )
 
     def test_reviewer_rejects_non_proposal_models(self) -> None:
         with self.assertRaisesRegex(AgentOutputRejected, "non-canonical proposal"):

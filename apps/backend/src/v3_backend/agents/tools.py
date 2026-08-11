@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Callable, Literal
 
 from .contracts import PermissionDecision, PermissionLevel, ShortText, StrictAgentModel
@@ -74,12 +75,74 @@ class ToolBinding:
             raise TypeError("tool binding function must be callable")
 
 
+class UntrustedToolBindingError(ValueError):
+    """A tool name, descriptor, or callable is outside the V3 trusted registry."""
+
+
+class TrustedToolBindings:
+    """Immutable V3-owned mapping from registered names to canonical bindings."""
+
+    __slots__ = ("_bindings_by_name",)
+
+    def __init__(self, registrations: tuple[ToolBinding, ...]) -> None:
+        catalog_by_name = {descriptor.name: descriptor for descriptor in DEFAULT_TOOL_CATALOG}
+        bindings_by_name: dict[str, ToolBinding] = {}
+        for registration in registrations:
+            name = registration.descriptor.name
+            if name in bindings_by_name:
+                raise UntrustedToolBindingError("duplicate tool binding names fail closed")
+            catalog_descriptor = catalog_by_name.get(name)
+            if catalog_descriptor is None or registration.descriptor != catalog_descriptor:
+                raise UntrustedToolBindingError(f"tool descriptor is not in the V3 catalog: {name}")
+            bindings_by_name[name] = ToolBinding(catalog_descriptor, registration.function)
+        self._bindings_by_name = MappingProxyType(bindings_by_name)
+
+    @property
+    def registered_names(self) -> tuple[str, ...]:
+        return tuple(self._bindings_by_name)
+
+    def resolve(self, requested_names: tuple[str, ...]) -> tuple[ToolBinding, ...]:
+        if any(not isinstance(name, str) or not name for name in requested_names):
+            raise UntrustedToolBindingError("tool requests must use non-empty registered names")
+        if len(requested_names) != len(set(requested_names)):
+            raise UntrustedToolBindingError("duplicate tool binding names fail closed")
+        resolved: list[ToolBinding] = []
+        for name in requested_names:
+            binding = self._bindings_by_name.get(name)
+            if binding is None:
+                raise UntrustedToolBindingError(f"tool name is not registered: {name}")
+            resolved.append(binding)
+        return tuple(resolved)
+
+    def require_canonical(self, binding: ToolBinding) -> ToolBinding:
+        canonical = self._bindings_by_name.get(binding.descriptor.name)
+        if canonical is None:
+            raise UntrustedToolBindingError(
+                f"tool binding is not registered: {binding.descriptor.name}"
+            )
+        if binding is not canonical or binding.function is not canonical.function:
+            raise UntrustedToolBindingError(
+                f"tool binding is not the canonical V3 registration: {binding.descriptor.name}"
+            )
+        return canonical
+
+
 def filter_tool_bindings(
     requested_permission: object,
     bindings: tuple[ToolBinding, ...],
+    *,
+    registry: TrustedToolBindings,
 ) -> tuple[ToolBinding, ...]:
+    if type(registry) is not TrustedToolBindings:
+        raise UntrustedToolBindingError("an exact V3 TrustedToolBindings authority is required")
     names = tuple(item.descriptor.name for item in bindings)
     if len(names) != len(set(names)):
-        raise ValueError("duplicate tool binding names fail closed")
-    exposure = filter_tools(requested_permission)
-    return tuple(item for item in bindings if item.descriptor in exposure.visible_tools)
+        raise UntrustedToolBindingError("duplicate tool binding names fail closed")
+    canonical_bindings = tuple(registry.require_canonical(item) for item in bindings)
+    exposure = filter_tools(
+        requested_permission,
+        tuple(item.descriptor for item in canonical_bindings),
+    )
+    return tuple(
+        item for item in canonical_bindings if item.descriptor in exposure.visible_tools
+    )

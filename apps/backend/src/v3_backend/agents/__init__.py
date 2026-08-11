@@ -31,6 +31,8 @@ from .tools import (
     ToolDescriptor,
     ToolEffect,
     ToolExposure,
+    TrustedToolBindings,
+    UntrustedToolBindingError,
     filter_tool_bindings,
     filter_tools,
 )
@@ -62,6 +64,8 @@ __all__ = [
     "ToolDescriptor",
     "ToolEffect",
     "ToolExposure",
+    "TrustedToolBindings",
+    "UntrustedToolBindingError",
     "decide_permission",
     "filter_tool_bindings",
     "filter_tools",
