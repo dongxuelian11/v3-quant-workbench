@@ -27,7 +27,7 @@ const labContext: Record<LabId, { object: string; phase: string }> = {
   strategy: { object: "StrategyDraft / demo-v8", phase: "构建与审阅" },
   model: { object: "Study S-014 / LightGBM", phase: "训练工作流" },
   backtest: { object: "BT-DEMO-021", phase: "执行复盘" },
-  result: { object: "ResultVersion / demo-result-v21", phase: "绩效分析" }
+  result: { object: "BacktestResultAnalytics / PRE_ALPHA", phase: "确定性绩效分析" }
 };
 
 export function App() {
