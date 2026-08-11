@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 from datetime import datetime, timezone
 
 from v3_backend.contracts.common.truth_admission import (
     FORMAL_ADMITTED_CEILING,
     PRE_ALPHA_CEILING,
+    UNKNOWN_CEILING,
     UpstreamRequirement,
 )
 from v3_backend.domain.datasets import (
@@ -22,6 +24,7 @@ from v3_backend.domain.factors import (
     FactorEvaluationContext,
     FeatureMaterialization,
     FeatureNode,
+    UnresolvedIdUpstreamTruthBinding,
     default_operator_registry,
 )
 
@@ -40,11 +43,6 @@ class DatasetIdentityTests(unittest.TestCase):
         self.result = self.evaluator.evaluate(
             self.definition, {"close": [1.0, 2.0, None, 4.0]}
         )
-        self.upstream = (
-            UpstreamRequirement("snapshot-truth", PRE_ALPHA_CEILING),
-            UpstreamRequirement("universe-truth", FORMAL_ADMITTED_CEILING),
-        )
-
     def context(
         self,
         snapshot_id: str = "snapshot-1",
@@ -54,12 +52,17 @@ class DatasetIdentityTests(unittest.TestCase):
         return FactorEvaluationContext(
             snapshot_id=snapshot_id,
             universe_version_id=universe_id,
+            snapshot_truth_binding=UnresolvedIdUpstreamTruthBinding.snapshot(
+                snapshot_id, PRE_ALPHA_CEILING
+            ),
+            universe_truth_binding=UnresolvedIdUpstreamTruthBinding.universe(
+                universe_id, FORMAL_ADMITTED_CEILING
+            ),
             knowledge_cutoff=datetime(2026, 1, 5, cutoff_hour, tzinfo=timezone.utc),
             calendar_version_id="calendar-1",
             schema_version_id="schema-1",
             environment_fingerprint="python-3.14-talib-0.7.1",
             evaluator_version=self.evaluator.evaluator_version,
-            upstream_requirements=self.upstream,
         )
 
     def evaluation(self, context: FactorEvaluationContext, suffix: str):
@@ -91,13 +94,20 @@ class DatasetIdentityTests(unittest.TestCase):
             embargo_observations=1,
         )
 
-    def dataset(self, context: FactorEvaluationContext, suffix: str) -> DatasetVersion:
+    def dataset(
+        self,
+        context: FactorEvaluationContext,
+        suffix: str,
+        binding: DatasetBinding | None = None,
+    ) -> DatasetVersion:
         _, evaluation = self.evaluation(context, suffix)
         feature_set = FeatureSetVersion.create((evaluation,), artifact("f"))
         label = LabelSpec.create("next_return", "close", 1, 0)
-        binding = DatasetBinding(
+        binding = binding or DatasetBinding(
             snapshot_id=context.snapshot_id,
             universe_version_id=context.universe_version_id,
+            snapshot_truth_binding=context.snapshot_truth_binding,
+            universe_truth_binding=context.universe_truth_binding,
             knowledge_cutoff=context.knowledge_cutoff,
             calendar_version_id=context.calendar_version_id,
             schema_version_id=context.schema_version_id,
@@ -112,9 +122,125 @@ class DatasetIdentityTests(unittest.TestCase):
             binding=binding,
             dataset_artifact_id=artifact("d"),
             provenance_artifact_id=artifact("c"),
-            required_upstreams=self.upstream,
             proposed_state=FORMAL_ADMITTED_CEILING,
         )
+
+    def test_snapshot_and_universe_truth_bindings_are_exact(self) -> None:
+        context = self.context()
+        self.assertEqual(
+            tuple(item.source_id for item in context.upstream_requirements),
+            (context.snapshot_id, context.universe_version_id),
+        )
+        self.assertEqual(
+            context.snapshot_truth_binding.source_id,
+            context.snapshot_id,
+        )
+        self.assertEqual(
+            context.universe_truth_binding.source_id,
+            context.universe_version_id,
+        )
+
+    def test_mismatched_and_synthetic_core_source_ids_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "exact bound identity"):
+            FactorEvaluationContext(
+                snapshot_id="snapshot-1",
+                universe_version_id="universe-1",
+                snapshot_truth_binding=UnresolvedIdUpstreamTruthBinding.snapshot(
+                    "snapshot-truth", PRE_ALPHA_CEILING
+                ),
+                universe_truth_binding=UnresolvedIdUpstreamTruthBinding.universe(
+                    "universe-1", PRE_ALPHA_CEILING
+                ),
+                knowledge_cutoff=datetime(2026, 1, 5, 8, tzinfo=timezone.utc),
+                calendar_version_id="calendar-1",
+                schema_version_id="schema-1",
+                environment_fingerprint="python-3.14-talib-0.7.1",
+                evaluator_version=self.evaluator.evaluator_version,
+            )
+        with self.assertRaisesRegex(ValueError, "exact bound identity"):
+            FactorEvaluationContext(
+                snapshot_id="snapshot-1",
+                universe_version_id="universe-1",
+                snapshot_truth_binding=UnresolvedIdUpstreamTruthBinding.snapshot(
+                    "snapshot-1", PRE_ALPHA_CEILING
+                ),
+                universe_truth_binding=UnresolvedIdUpstreamTruthBinding.universe(
+                    "universe-truth", PRE_ALPHA_CEILING
+                ),
+                knowledge_cutoff=datetime(2026, 1, 5, 8, tzinfo=timezone.utc),
+                calendar_version_id="calendar-1",
+                schema_version_id="schema-1",
+                environment_fingerprint="python-3.14-talib-0.7.1",
+                evaluator_version=self.evaluator.evaluator_version,
+            )
+
+    def test_old_synthetic_upstream_requirement_injection_is_rejected(self) -> None:
+        with self.assertRaisesRegex(TypeError, "upstream_requirements"):
+            FactorEvaluationContext(  # type: ignore[call-arg]
+                snapshot_id="snapshot-1",
+                universe_version_id="universe-1",
+                snapshot_truth_binding=UnresolvedIdUpstreamTruthBinding.snapshot(
+                    "snapshot-1", PRE_ALPHA_CEILING
+                ),
+                universe_truth_binding=UnresolvedIdUpstreamTruthBinding.universe(
+                    "universe-1", PRE_ALPHA_CEILING
+                ),
+                knowledge_cutoff=datetime(2026, 1, 5, 8, tzinfo=timezone.utc),
+                calendar_version_id="calendar-1",
+                schema_version_id="schema-1",
+                environment_fingerprint="python-3.14-talib-0.7.1",
+                evaluator_version=self.evaluator.evaluator_version,
+                upstream_requirements=(
+                    UpstreamRequirement("snapshot-truth", PRE_ALPHA_CEILING),
+                    UpstreamRequirement("universe-truth", FORMAL_ADMITTED_CEILING),
+                ),
+            )
+
+    def test_raw_formal_state_is_capped_and_propagates_to_dataset(self) -> None:
+        context = FactorEvaluationContext(
+            snapshot_id="snapshot-formal-claim",
+            universe_version_id="universe-formal-claim",
+            snapshot_truth_binding=UnresolvedIdUpstreamTruthBinding.snapshot(
+                "snapshot-formal-claim", FORMAL_ADMITTED_CEILING
+            ),
+            universe_truth_binding=UnresolvedIdUpstreamTruthBinding.universe(
+                "universe-formal-claim", FORMAL_ADMITTED_CEILING
+            ),
+            knowledge_cutoff=datetime(2026, 1, 5, 8, tzinfo=timezone.utc),
+            calendar_version_id="calendar-1",
+            schema_version_id="schema-1",
+            environment_fingerprint="python-3.14-talib-0.7.1",
+            evaluator_version=self.evaluator.evaluator_version,
+        )
+        materialization, evaluation = self.evaluation(context, "a")
+        dataset = self.dataset(context, "a")
+        self.assertEqual(context.snapshot_truth_binding.truth_ceiling, PRE_ALPHA_CEILING)
+        self.assertEqual(context.universe_truth_binding.truth_ceiling, PRE_ALPHA_CEILING)
+        self.assertEqual(materialization.truth_admission, PRE_ALPHA_CEILING)
+        self.assertEqual(evaluation.truth_admission, PRE_ALPHA_CEILING)
+        self.assertEqual(dataset.truth_admission, PRE_ALPHA_CEILING)
+
+    def test_dataset_rejects_conflicting_context_authority_binding(self) -> None:
+        context = self.context()
+        conflicting_binding = DatasetBinding(
+            snapshot_id=context.snapshot_id,
+            universe_version_id=context.universe_version_id,
+            snapshot_truth_binding=UnresolvedIdUpstreamTruthBinding.snapshot(
+                context.snapshot_id, UNKNOWN_CEILING
+            ),
+            universe_truth_binding=context.universe_truth_binding,
+            knowledge_cutoff=context.knowledge_cutoff,
+            calendar_version_id=context.calendar_version_id,
+            schema_version_id=context.schema_version_id,
+            environment_fingerprint=context.environment_fingerprint,
+            evaluator_version=context.evaluator_version,
+        )
+        with self.assertRaisesRegex(ValueError, "must match every FactorEvaluation"):
+            self.dataset(context, "a", conflicting_binding)
+
+    def test_dataset_has_no_independent_upstream_authority_parameter(self) -> None:
+        parameters = inspect.signature(DatasetVersion.create).parameters
+        self.assertNotIn("required_upstreams", parameters)
 
     def test_definition_identity_is_independent_from_evaluation_identity(self) -> None:
         first_materialization, first_evaluation = self.evaluation(

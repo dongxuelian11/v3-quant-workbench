@@ -9,7 +9,11 @@ from v3_backend.contracts.common.truth_admission import (
     UpstreamRequirement,
     propagate_downstream_ceiling,
 )
-from v3_backend.domain.factors import FactorEvaluation
+from v3_backend.domain.factors import (
+    CoreUpstreamAuthority,
+    FactorEvaluation,
+    UnresolvedIdUpstreamTruthBinding,
+)
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
 
@@ -223,6 +227,8 @@ class SplitSpec:
 class DatasetBinding:
     snapshot_id: str
     universe_version_id: str
+    snapshot_truth_binding: UnresolvedIdUpstreamTruthBinding
+    universe_truth_binding: UnresolvedIdUpstreamTruthBinding
     knowledge_cutoff: datetime
     calendar_version_id: str
     schema_version_id: str
@@ -240,11 +246,47 @@ class DatasetBinding:
         ):
             _require_text(getattr(self, name), name)
         _wire_time(self.knowledge_cutoff)
+        if self.snapshot_id == self.universe_version_id:
+            raise ValueError("Snapshot and Universe upstream identities must be distinct")
+        self._require_core_binding(
+            self.snapshot_truth_binding,
+            CoreUpstreamAuthority.SNAPSHOT,
+            self.snapshot_id,
+        )
+        self._require_core_binding(
+            self.universe_truth_binding,
+            CoreUpstreamAuthority.UNIVERSE,
+            self.universe_version_id,
+        )
+
+    @staticmethod
+    def _require_core_binding(
+        binding: UnresolvedIdUpstreamTruthBinding,
+        authority: CoreUpstreamAuthority,
+        expected_source_id: str,
+    ) -> None:
+        if not isinstance(binding, UnresolvedIdUpstreamTruthBinding):
+            raise TypeError("Dataset core upstream truth binding must be typed")
+        if binding.authority is not authority:
+            raise ValueError(f"Dataset {authority.value} binding has the wrong authority type")
+        if binding.source_id != expected_source_id:
+            raise ValueError(
+                f"Dataset {authority.value} truth binding must match the exact bound identity"
+            )
+
+    @property
+    def upstream_requirements(self) -> tuple[UpstreamRequirement, ...]:
+        return (
+            self.snapshot_truth_binding.to_requirement(),
+            self.universe_truth_binding.to_requirement(),
+        )
 
     def to_wire(self) -> dict[str, object]:
         return {
             "snapshot_id": self.snapshot_id,
             "universe_version_id": self.universe_version_id,
+            "snapshot_truth_binding": self.snapshot_truth_binding.to_wire(),
+            "universe_truth_binding": self.universe_truth_binding.to_wire(),
             "knowledge_cutoff": _wire_time(self.knowledge_cutoff),
             "calendar_version_id": self.calendar_version_id,
             "schema_version_id": self.schema_version_id,
@@ -275,7 +317,6 @@ class DatasetVersion:
         binding: DatasetBinding,
         dataset_artifact_id: str,
         provenance_artifact_id: str,
-        required_upstreams: tuple[UpstreamRequirement, ...],
         proposed_state: TruthAdmissionState,
     ) -> DatasetVersion:
         _require_artifact(dataset_artifact_id, "dataset_artifact_id")
@@ -293,6 +334,8 @@ class DatasetVersion:
             observed = (
                 context.snapshot_id,
                 context.universe_version_id,
+                context.snapshot_truth_binding,
+                context.universe_truth_binding,
                 context.knowledge_cutoff,
                 context.calendar_version_id,
                 context.schema_version_id,
@@ -302,6 +345,8 @@ class DatasetVersion:
             expected = (
                 binding.snapshot_id,
                 binding.universe_version_id,
+                binding.snapshot_truth_binding,
+                binding.universe_truth_binding,
                 binding.knowledge_cutoff,
                 binding.calendar_version_id,
                 binding.schema_version_id,
@@ -311,7 +356,7 @@ class DatasetVersion:
             if observed != expected:
                 raise ValueError("Dataset binding must match every FactorEvaluation context")
         upstreams = (
-            *required_upstreams,
+            *binding.upstream_requirements,
             *(
                 UpstreamRequirement(value.factor_evaluation_id, value.truth_admission)
                 for value in evaluations

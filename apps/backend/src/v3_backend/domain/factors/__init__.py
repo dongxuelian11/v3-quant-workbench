@@ -6,7 +6,13 @@ from .evaluator import (
     Scalar,
     Series,
 )
-from .evaluation import FactorEvaluation, FactorEvaluationContext, FeatureMaterialization
+from .evaluation import (
+    CoreUpstreamAuthority,
+    FactorEvaluation,
+    FactorEvaluationContext,
+    FeatureMaterialization,
+    UnresolvedIdUpstreamTruthBinding,
+)
 from .ir import (
     AvailabilitySemantics,
     BackendBinding,
@@ -33,6 +39,7 @@ from .ir import (
 __all__ = [
     "AvailabilitySemantics",
     "BackendBinding",
+    "CoreUpstreamAuthority",
     "DeterministicReferenceEvaluator",
     "EvaluationResult",
     "ExternalExpressionTranslator",
@@ -57,6 +64,7 @@ __all__ = [
     "Series",
     "UnknownOperator",
     "UnsafeFactorExpression",
+    "UnresolvedIdUpstreamTruthBinding",
     "ValueType",
     "default_operator_registry",
     "validate_factor_node",

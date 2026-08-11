@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 
 from v3_backend.contracts.common.truth_admission import (
+    PRE_ALPHA_CEILING,
     TruthAdmissionState,
     UpstreamRequirement,
+    meet_pair,
     propagate_downstream_ceiling,
 )
 from v3_backend.provenance.canonical_hash import canonical_sha256
@@ -37,16 +40,64 @@ def _upstreams_wire(
     ]
 
 
+class CoreUpstreamAuthority(StrEnum):
+    SNAPSHOT = "SNAPSHOT"
+    UNIVERSE = "UNIVERSE"
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedIdUpstreamTruthBinding:
+    """Identity-bound V0 boundary for an upstream without a canonical receipt."""
+
+    authority: CoreUpstreamAuthority
+    source_id: str
+    truth_ceiling: TruthAdmissionState
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.authority, CoreUpstreamAuthority):
+            raise TypeError("authority must be CoreUpstreamAuthority")
+        _require_text(self.source_id, "source_id")
+        object.__setattr__(
+            self,
+            "truth_ceiling",
+            meet_pair(self.truth_ceiling, PRE_ALPHA_CEILING),
+        )
+
+    @classmethod
+    def snapshot(
+        cls, snapshot_id: str, proposed_ceiling: TruthAdmissionState
+    ) -> UnresolvedIdUpstreamTruthBinding:
+        return cls(CoreUpstreamAuthority.SNAPSHOT, snapshot_id, proposed_ceiling)
+
+    @classmethod
+    def universe(
+        cls, universe_version_id: str, proposed_ceiling: TruthAdmissionState
+    ) -> UnresolvedIdUpstreamTruthBinding:
+        return cls(CoreUpstreamAuthority.UNIVERSE, universe_version_id, proposed_ceiling)
+
+    def to_requirement(self) -> UpstreamRequirement:
+        return UpstreamRequirement(self.source_id, self.truth_ceiling)
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "authority": self.authority.value,
+            "source_id": self.source_id,
+            "resolution": "UNRESOLVED_RAW_ID",
+            "truth_ceiling": self.truth_ceiling.to_wire(),
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class FactorEvaluationContext:
     snapshot_id: str
     universe_version_id: str
+    snapshot_truth_binding: UnresolvedIdUpstreamTruthBinding
+    universe_truth_binding: UnresolvedIdUpstreamTruthBinding
     knowledge_cutoff: datetime
     calendar_version_id: str
     schema_version_id: str
     environment_fingerprint: str
     evaluator_version: str
-    upstream_requirements: tuple[UpstreamRequirement, ...]
 
     def __post_init__(self) -> None:
         for name in (
@@ -59,19 +110,53 @@ class FactorEvaluationContext:
         ):
             _require_text(getattr(self, name), name)
         _require_aware(self.knowledge_cutoff, "knowledge_cutoff")
-        if not self.upstream_requirements:
-            raise ValueError("Factor evaluation requires canonical upstream ceilings")
+        if self.snapshot_id == self.universe_version_id:
+            raise ValueError("Snapshot and Universe upstream identities must be distinct")
+        self._require_core_binding(
+            self.snapshot_truth_binding,
+            CoreUpstreamAuthority.SNAPSHOT,
+            self.snapshot_id,
+        )
+        self._require_core_binding(
+            self.universe_truth_binding,
+            CoreUpstreamAuthority.UNIVERSE,
+            self.universe_version_id,
+        )
+
+    @staticmethod
+    def _require_core_binding(
+        binding: UnresolvedIdUpstreamTruthBinding,
+        authority: CoreUpstreamAuthority,
+        expected_source_id: str,
+    ) -> None:
+        if not isinstance(binding, UnresolvedIdUpstreamTruthBinding):
+            raise TypeError("core upstream truth binding must be typed")
+        if binding.authority is not authority:
+            raise ValueError(f"{authority.value} truth binding has the wrong authority type")
+        if binding.source_id != expected_source_id:
+            raise ValueError(
+                f"{authority.value} truth binding must match the exact bound identity"
+            )
+
+    @property
+    def upstream_requirements(self) -> tuple[UpstreamRequirement, ...]:
+        return (
+            self.snapshot_truth_binding.to_requirement(),
+            self.universe_truth_binding.to_requirement(),
+        )
 
     def to_wire(self) -> dict[str, object]:
         return {
             "snapshot_id": self.snapshot_id,
             "universe_version_id": self.universe_version_id,
+            "snapshot_truth_binding": self.snapshot_truth_binding.to_wire(),
+            "universe_truth_binding": self.universe_truth_binding.to_wire(),
             "knowledge_cutoff": _wire_time(self.knowledge_cutoff),
             "calendar_version_id": self.calendar_version_id,
             "schema_version_id": self.schema_version_id,
             "environment_fingerprint": self.environment_fingerprint,
             "evaluator_version": self.evaluator_version,
-            "upstream_requirements": _upstreams_wire(self.upstream_requirements),
+            "core_upstream_requirements": _upstreams_wire(self.upstream_requirements),
         }
 
 
@@ -201,7 +286,9 @@ class FactorEvaluation:
 
 
 __all__ = [
+    "CoreUpstreamAuthority",
     "FactorEvaluation",
     "FactorEvaluationContext",
     "FeatureMaterialization",
+    "UnresolvedIdUpstreamTruthBinding",
 ]

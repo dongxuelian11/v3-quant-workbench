@@ -12,7 +12,6 @@ from v3_backend.adapters.alphalens import (
 from v3_backend.contracts.common.truth_admission import (
     FORMAL_ADMITTED_CEILING,
     PRE_ALPHA_CEILING,
-    UpstreamRequirement,
 )
 from v3_backend.domain.datasets import (
     DatasetBinding,
@@ -42,6 +41,7 @@ from v3_backend.domain.factors import (
     FactorEvaluationContext,
     FeatureMaterialization,
     FeatureNode,
+    UnresolvedIdUpstreamTruthBinding,
     default_operator_registry,
 )
 
@@ -59,15 +59,17 @@ def build_bindings():
     context = FactorEvaluationContext(
         snapshot_id="snapshot-1",
         universe_version_id="universe-1",
+        snapshot_truth_binding=UnresolvedIdUpstreamTruthBinding.snapshot(
+            "snapshot-1", PRE_ALPHA_CEILING
+        ),
+        universe_truth_binding=UnresolvedIdUpstreamTruthBinding.universe(
+            "universe-1", FORMAL_ADMITTED_CEILING
+        ),
         knowledge_cutoff=datetime(2026, 1, 5, 8, tzinfo=timezone.utc),
         calendar_version_id="calendar-1",
         schema_version_id="schema-1",
         environment_fingerprint="python-3.14-talib-0.7.1",
         evaluator_version=evaluator.evaluator_version,
-        upstream_requirements=(
-            UpstreamRequirement("snapshot-truth", PRE_ALPHA_CEILING),
-            UpstreamRequirement("universe-truth", FORMAL_ADMITTED_CEILING),
-        ),
     )
     result = evaluator.evaluate(definition, {"close": [1.0, 2.0, 3.0]})
     materialization = FeatureMaterialization.create(
@@ -91,6 +93,8 @@ def build_bindings():
     binding = DatasetBinding(
         context.snapshot_id,
         context.universe_version_id,
+        context.snapshot_truth_binding,
+        context.universe_truth_binding,
         context.knowledge_cutoff,
         context.calendar_version_id,
         context.schema_version_id,
@@ -105,7 +109,6 @@ def build_bindings():
         binding=binding,
         dataset_artifact_id=artifact("d"),
         provenance_artifact_id=artifact("e"),
-        required_upstreams=context.upstream_requirements,
         proposed_state=FORMAL_ADMITTED_CEILING,
     )
     experiment = ExperimentVersion.create(
@@ -233,6 +236,9 @@ class ExperimentTests(unittest.TestCase):
             proposed_state=FORMAL_ADMITTED_CEILING,
         )
         result = ExperimentResult.create(self.run, attempt, reward)
+        self.assertEqual(self.evaluation.truth_admission, PRE_ALPHA_CEILING)
+        self.assertEqual(self.dataset.truth_admission, PRE_ALPHA_CEILING)
+        self.assertEqual(self.run.truth_admission, PRE_ALPHA_CEILING)
         self.assertTrue(reward.reward_vector_id.startswith("rwv_sha256_"))
         self.assertEqual(reward.provenance_artifact_id, artifact("8"))
         self.assertEqual(reward.truth_admission, PRE_ALPHA_CEILING)
