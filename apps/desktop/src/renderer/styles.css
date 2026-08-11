@@ -797,6 +797,11 @@ h1, h2, h3, strong, b { font-family: "Segoe UI Variable Display", "Segoe UI Vari
 .future-renderer-slot p { margin: 4px 0; color: var(--v3-fg-muted); font-size: 9px; }
 .future-renderer-slot span { color: var(--v3-warning); font-size: 8px; }
 .artifact-viewer footer { display: grid; gap: 3px; padding: 7px 10px; border-top: 1px solid var(--v3-border-subtle); }
+.artifact-empty > p, .evidence-empty { margin: 0; padding: 14px; color: var(--v3-fg-muted); font-size: 9px; line-height: 1.55; }
+.evidence-empty { display: grid; gap: 4px; border-bottom: 1px solid var(--v3-border-subtle); }
+.evidence-empty small { color: var(--v3-accent); font-size: 8px; letter-spacing: .65px; }
+.evidence-empty b { color: var(--v3-fg-primary); font-size: 13px; }
+.evidence-empty p { margin: 0; }
 
 /* Unified task/tool/experiment timeline */
 .execution-timeline { min-width: 0; min-height: 0; border-top: 1px solid var(--v3-border); background: #0B0E14; }

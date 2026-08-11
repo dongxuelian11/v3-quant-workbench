@@ -108,7 +108,7 @@ export function App() {
       </>}
     </aside>
 
-    <main className="workspace">{surface === "agent" ? <AgentWorkspace key={activeSession.sessionViewId} session={activeSession} onOpenLab={openLab}/> : <Workbench/>}</main>
+    <main className="workspace">{surface === "agent" ? <AgentWorkspace session={activeSession} onOpenLab={openLab}/> : <Workbench/>}</main>
 
     {surface !== "agent" && s.inspectorOpen && <aside className="inspector" aria-label="上下文检查器" data-testid="inspector" data-inspector-width>
       <div className="inspector-head"><div><Icon name="inspector" size={15}/><span>{s.inspectorEvidence.eyebrow}</span></div><button onClick={s.toggleInspector} aria-label="关闭检查器"><Icon name="close" size={15}/></button></div>

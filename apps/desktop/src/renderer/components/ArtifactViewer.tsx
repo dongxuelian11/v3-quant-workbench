@@ -1,10 +1,11 @@
 import React from "react";
 import { ARTIFACT_RENDERER_REGISTRY, assertSafeArtifactOutput, type ArtifactView } from "../agentWorkspace";
 
-export function ArtifactViewer({ artifact }: { artifact: ArtifactView }) {
+export function ArtifactViewer({ artifact }: { artifact: ArtifactView | null }) {
+  if (!artifact) return <section className="artifact-viewer artifact-empty" data-testid="artifact-viewer" data-renderer="none" data-empty="true"><header><div><small>ARTIFACT VIEWER</small><b>No session artifact selected</b></div><span className="status-badge neutral">EMPTY</span></header><p>Only an Artifact explicitly linked by the selected evidence in this Research Session can render here.</p></section>;
   assertSafeArtifactOutput(artifact.payload);
   const renderer = ARTIFACT_RENDERER_REGISTRY[artifact.payload.renderer];
-  return <section className="artifact-viewer" data-testid="artifact-viewer" data-renderer={artifact.payload.renderer}>
+  return <section className="artifact-viewer" data-testid="artifact-viewer" data-artifact-id={artifact.artifactId} data-renderer={artifact.payload.renderer}>
     <header>
       <div><small>ARTIFACT VIEWER · {renderer.label.toUpperCase()}</small><b>{artifact.title}</b></div>
       <span className={renderer.availability === "AVAILABLE" ? "status-badge success" : "status-badge neutral"}>{renderer.availability}</span>

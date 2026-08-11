@@ -3,8 +3,8 @@ import { readFile, stat } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 
 import { DEMO_TRUTH, LAB_IDS } from "../packages/contracts/src/index.ts";
-import { AGENT_WORKSPACE_BOUNDARY, ARTIFACT_RENDERER_REGISTRY, PERMISSION_SURFACE } from "../apps/desktop/src/renderer/agentWorkspace.ts";
-import { evidenceViews, researchSessions, timelineEntries } from "../apps/desktop/src/renderer/agentWorkspaceFixture.ts";
+import { AGENT_WORKSPACE_BOUNDARY, ARTIFACT_RENDERER_REGISTRY, PERMISSION_SURFACE, validateAgentWorkspaceFixture } from "../apps/desktop/src/renderer/agentWorkspace.ts";
+import { agentStatements, artifactViews, evidenceViews, researchSessions, timelineEntries } from "../apps/desktop/src/renderer/agentWorkspaceFixture.ts";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -106,6 +106,7 @@ assert.equal(AGENT_WORKSPACE_BOUNDARY.mode, "DEMO_DEVELOPMENT_ONLY");
 assert.deepEqual(PERMISSION_SURFACE.filter((item) => item.allowed).map((item) => item.level), ["L0_READ", "L1_DRAFT"]);
 assert.deepEqual(Object.keys(ARTIFACT_RENDERER_REGISTRY), ["table", "metric", "text", "details", "chart", "backtest-result"]);
 assert.ok(researchSessions.length >= 3 && evidenceViews.length >= 12 && timelineEntries.length >= 8, "Agent-first fixture coverage is incomplete");
+assert.equal(validateAgentWorkspaceFixture({ sessions: researchSessions, statements: agentStatements, timeline: timelineEntries, evidence: evidenceViews, artifacts: artifactViews }), true);
 
 assert.equal(DEMO_TRUTH.classification, "DEMO");
 assert.match(DEMO_TRUTH.label, /NOT FORMAL FINANCIAL OUTPUT/);

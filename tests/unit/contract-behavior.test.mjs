@@ -8,10 +8,16 @@ import {
   FUTURE_EXTENSION_SLOTS,
   PERMISSION_SURFACE,
   assertSafeArtifactOutput,
+  deriveAgentWorkspaceSessionScope,
   getRendererDefinition,
+  resolveSessionArtifact,
+  resolveSessionEvidenceSelection,
+  validateAgentWorkspaceFixture,
   statusTone
 } from "../../apps/desktop/src/renderer/agentWorkspace.ts";
 import { agentStatements, artifactViews, evidenceViews, researchSessions, timelineEntries } from "../../apps/desktop/src/renderer/agentWorkspaceFixture.ts";
+
+const workspaceFixture = { sessions: researchSessions, statements: agentStatements, timeline: timelineEntries, evidence: evidenceViews, artifacts: artifactViews };
 
 test("product contract exposes exactly one ordered five-Lab workflow", () => {
   assert.deepEqual([...LAB_IDS], ["research", "strategy", "model", "backtest", "result"]);
@@ -50,6 +56,78 @@ test("Agent Workspace fixture is explicit development-only view data", () => {
   assert.ok(timelineEntries.some((entry) => entry.authority === "TOOL"));
   assert.ok(timelineEntries.some((entry) => entry.authority === "EXPERIMENT"));
   assert.ok(timelineEntries.some((entry) => entry.authority === "REVIEWER"));
+  assert.equal(validateAgentWorkspaceFixture(workspaceFixture), true);
+});
+
+test("default Research Session scopes Agent statements and timeline exactly", () => {
+  const session = researchSessions[0];
+  const scope = deriveAgentWorkspaceSessionScope(session, agentStatements, timelineEntries, evidenceViews);
+  assert.ok(scope.statements.length > 0);
+  assert.ok(scope.timeline.length > 0);
+  assert.ok(scope.statements.every((item) => item.sessionViewId === session.sessionViewId));
+  assert.ok(scope.timeline.every((item) => item.sessionViewId === session.sessionViewId));
+  assert.ok(!scope.statements.some((item) => item.id === "draft-data-002"));
+  assert.ok(!scope.timeline.some((item) => item.id === "tl-10"));
+});
+
+test("switching Research Session replaces statements, timeline, and evidence set", () => {
+  const first = deriveAgentWorkspaceSessionScope(researchSessions[0], agentStatements, timelineEntries, evidenceViews);
+  const second = deriveAgentWorkspaceSessionScope(researchSessions[1], agentStatements, timelineEntries, evidenceViews);
+  assert.deepEqual(second.statements.map((item) => item.id), ["draft-data-002"]);
+  assert.deepEqual(second.timeline.map((item) => item.id), ["tl-09", "tl-10", "tl-11", "tl-12"]);
+  assert.deepEqual(second.evidence.map((item) => item.objectId), researchSessions[1].evidenceIds);
+  assert.ok(first.statements.every((item) => !second.statements.includes(item)));
+  assert.ok(first.timeline.every((item) => !second.timeline.includes(item)));
+});
+
+test("Evidence navigation accepts linked evidence and rejects unlinked evidence as a no-op", () => {
+  const scope = deriveAgentWorkspaceSessionScope(researchSessions[1], agentStatements, timelineEntries, evidenceViews);
+  const current = scope.evidence[0];
+  const linked = resolveSessionEvidenceSelection(scope.evidence, current.objectId, scope.evidence[1].objectId);
+  const unlinked = resolveSessionEvidenceSelection(scope.evidence, linked.objectId, researchSessions[0].evidenceIds[1]);
+  assert.equal(linked.objectId, scope.evidence[1].objectId);
+  assert.equal(unlinked.objectId, linked.objectId);
+});
+
+test("switching session resets an invalid selected evidence and artifact without global fallback", () => {
+  const first = deriveAgentWorkspaceSessionScope(researchSessions[0], agentStatements, timelineEntries, evidenceViews);
+  const second = deriveAgentWorkspaceSessionScope(researchSessions[1], agentStatements, timelineEntries, evidenceViews);
+  const prior = first.evidence.find((item) => item.kind === "RewardVector");
+  const reset = resolveSessionEvidenceSelection(second.evidence, prior.objectId);
+  const artifact = resolveSessionArtifact(reset, artifactViews);
+  assert.equal(reset.objectId, researchSessions[1].evidenceIds[0]);
+  assert.equal(artifact.artifactId, reset.artifactId);
+  assert.notEqual(artifact.artifactId, prior.artifactId);
+});
+
+test("zero-evidence Research Session has explicit null evidence and artifact state", () => {
+  const emptySession = researchSessions.find((session) => session.sessionViewId === "session-view-empty-004");
+  const scope = deriveAgentWorkspaceSessionScope(emptySession, agentStatements, timelineEntries, evidenceViews);
+  const selected = resolveSessionEvidenceSelection(scope.evidence, researchSessions[0].evidenceIds[0]);
+  assert.deepEqual(scope, { statements: [], timeline: [], evidence: [] });
+  assert.equal(selected, null);
+  assert.equal(resolveSessionArtifact(selected, artifactViews), null);
+});
+
+test("fixture validator rejects statement evidence crossing a session boundary", () => {
+  const fixture = structuredClone(workspaceFixture);
+  fixture.statements.find((item) => item.id === "draft-research-001").evidenceIds.push(researchSessions[1].evidenceIds[0]);
+  assert.throws(() => validateAgentWorkspaceFixture(fixture), /cross-session evidence/);
+});
+
+test("fixture validator rejects timeline evidence crossing a session boundary", () => {
+  const fixture = structuredClone(workspaceFixture);
+  fixture.timeline.find((item) => item.id === "tl-10").sessionViewId = researchSessions[0].sessionViewId;
+  assert.throws(() => validateAgentWorkspaceFixture(fixture), /cross-session evidence/);
+});
+
+test("fixture validator permits shared evidence only through each session's explicit link", () => {
+  const shared = researchSessions[0].evidenceIds.find((objectId) => researchSessions[1].evidenceIds.includes(objectId));
+  assert.ok(shared);
+  assert.equal(validateAgentWorkspaceFixture(workspaceFixture), true);
+  const fixture = structuredClone(workspaceFixture);
+  fixture.sessions[1].evidenceIds = fixture.sessions[1].evidenceIds.filter((objectId) => objectId !== shared);
+  assert.throws(() => validateAgentWorkspaceFixture(fixture), /cross-session evidence/);
 });
 
 test("Agent permission surface allows only L0 read and L1 draft", () => {

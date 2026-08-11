@@ -12,7 +12,7 @@ export const researchSessions: ResearchSessionView[] = [
     linkedExperimentRunId: `exprun_sha256_${hex("4")}`,
     linkedTaskId: "Task_01JTRACKKDEMO000000000001",
     lastEvidenceUpdate: "2026-08-11 16:12 CST",
-    evidenceIds: [`dsv_sha256_${hex("2")}`, `fev_sha256_${hex("3")}`, `exprun_sha256_${hex("4")}`, `rve_sha256_${hex("c")}`]
+    evidenceIds: [`dsv_sha256_${hex("2")}`, `fev_sha256_${hex("3")}`, `exprun_sha256_${hex("4")}`, `expatt_sha256_${hex("5")}`, `rwv_sha256_${hex("6")}`, `rve_sha256_${hex("c")}`]
   },
   {
     sessionViewId: "session-view-provider-revision-002",
@@ -32,28 +32,50 @@ export const researchSessions: ResearchSessionView[] = [
     linkedExperimentRunId: `exprun_sha256_${hex("4")}`,
     linkedTaskId: null,
     lastEvidenceUpdate: "2026-08-11 14:30 CST",
-    evidenceIds: [`mdv_sha256_${hex("7")}`, `pred_sha256_${hex("8")}`, `sdv_sha256_${hex("9")}`, `sig_sha256_${hex("a")}`, `pint_sha256_${hex("b")}`]
+    evidenceIds: [`exprun_sha256_${hex("4")}`, `mdv_sha256_${hex("7")}`, `pred_sha256_${hex("8")}`, `sdv_sha256_${hex("9")}`, `sig_sha256_${hex("a")}`, `pint_sha256_${hex("b")}`]
+  },
+  {
+    sessionViewId: "session-view-empty-004",
+    title: "Unlinked evidence intake",
+    goal: "Keep the workspace empty until exact evidence links are admitted to this derived session view.",
+    status: "DRAFT",
+    linkedExperimentRunId: null,
+    linkedTaskId: null,
+    lastEvidenceUpdate: "No evidence linked",
+    evidenceIds: []
   }
 ];
 
 export const agentStatements: AgentStatementView[] = [
   {
-    id: "draft-research-001", role: "RESEARCH", type: "RESEARCH_DRAFT", authorityStatus: "NON_CANONICAL", lifecycleState: "DRAFT", permission: "L1_DRAFT",
+    id: "draft-research-001", sessionViewId: "session-view-momentum-pit-001", role: "RESEARCH", type: "RESEARCH_DRAFT", authorityStatus: "NON_CANONICAL", lifecycleState: "DRAFT", permission: "L1_DRAFT",
     title: "Research plan draft",
     body: "Test the 12-month momentum definition against the exact DatasetVersion and FactorEvaluation, then stop if available-time or reviewer evidence is incomplete.",
     evidenceIds: [`dsv_sha256_${hex("2")}`, `fev_sha256_${hex("3")}`]
   },
   {
-    id: "draft-data-002", role: "DATA", type: "DATA_REVIEW_FINDINGS", authorityStatus: "NON_CANONICAL", lifecycleState: "DRAFT", permission: "L1_DRAFT",
+    id: "draft-data-002", sessionViewId: "session-view-provider-revision-002", role: "DATA", type: "DATA_REVIEW_FINDINGS", authorityStatus: "NON_CANONICAL", lifecycleState: "DRAFT", permission: "L1_DRAFT",
     title: "Data finding",
     body: "The fixture exposes a revision warning and keeps validation at NOT_RUN. This statement cannot raise the upstream truth ceiling.",
     evidenceIds: [`snp_sha256_${hex("1")}`, `dsv_sha256_${hex("2")}`]
   },
   {
-    id: "draft-reviewer-003", role: "REVIEWER", type: "REVIEWER_FINDINGS", authorityStatus: "NON_CANONICAL", lifecycleState: "DRAFT", permission: "L1_DRAFT",
+    id: "draft-reviewer-003", sessionViewId: "session-view-momentum-pit-001", role: "REVIEWER", type: "REVIEWER_FINDINGS", authorityStatus: "NON_CANONICAL", lifecycleState: "DRAFT", permission: "L1_DRAFT",
     title: "Reviewer finding",
     body: "Multiple-testing robustness remains NOT_RUN, so the conclusion remains PRE_ALPHA and is not publishable.",
     evidenceIds: [`rve_sha256_${hex("c")}`, `rwv_sha256_${hex("6")}`]
+  },
+  {
+    id: "draft-data-004", sessionViewId: "session-view-momentum-pit-001", role: "DATA", type: "DATA_REVIEW_FINDINGS", authorityStatus: "NON_CANONICAL", lifecycleState: "DRAFT", permission: "L1_DRAFT",
+    title: "Dataset scope finding",
+    body: "The DatasetVersion is explicitly linked to this momentum session; provider snapshot evidence remains outside this active scope.",
+    evidenceIds: [`dsv_sha256_${hex("2")}`]
+  },
+  {
+    id: "draft-research-005", sessionViewId: "session-view-signal-lineage-003", role: "RESEARCH", type: "RESEARCH_DRAFT", authorityStatus: "NON_CANONICAL", lifecycleState: "DRAFT", permission: "L1_DRAFT",
+    title: "Signal lineage draft",
+    body: "Trace the exact model, prediction, strategy, signal, and intent objects without promoting PortfolioIntent to weights or execution.",
+    evidenceIds: [`mdv_sha256_${hex("7")}`, `pred_sha256_${hex("8")}`, `sig_sha256_${hex("a")}`, `pint_sha256_${hex("b")}`]
   }
 ];
 
@@ -103,14 +125,21 @@ export const evidenceViews: EvidenceView[] = [
 ];
 
 export const timelineEntries: TimelineEntryView[] = [
-  { id: "tl-01", authority: "AGENT", state: "DRAFT", title: "Research draft proposed", detail: "L1_DRAFT · NON_CANONICAL", objectId: "draft-research-001", at: "16:01:04" },
-  { id: "tl-02", authority: "PLAN", state: "PENDING", title: "PIT evidence plan", detail: "Await exact revision review", objectId: null, at: "16:01:06" },
-  { id: "tl-03", authority: "TOOL", state: "READ", title: "get_dataset_version", detail: "TrustedToolBindings · read only", objectId: `dsv_sha256_${hex("2")}`, at: "16:01:09" },
-  { id: "tl-04", authority: "TASK", state: "QUEUED", title: "Evidence retrieval task", detail: "Task state remains QUEUED", objectId: "Task_01JTRACKKDEMO000000000001", at: "16:01:10" },
-  { id: "tl-05", authority: "EXPERIMENT", state: "SUCCEEDED", title: "Experiment Attempt 1", detail: "Fixture result linked; no live execution", objectId: `expatt_sha256_${hex("5")}`, at: "16:07:42" },
-  { id: "tl-06", authority: "EVIDENCE", state: "PRE_ALPHA", title: "Evidence ready", detail: "NOT_FORMAL / PRE_ALPHA", objectId: `rwv_sha256_${hex("6")}`, at: "16:08:03" },
-  { id: "tl-07", authority: "REVIEWER", state: "BLOCKED", title: "Multiple-testing evidence", detail: "BLOCKING_EVIDENCE", objectId: `rve_sha256_${hex("c")}`, at: "16:10:21" },
-  { id: "tl-08", authority: "VALIDATION", state: "NOT_RUN", title: "Formal admission validation", detail: "No PASS claim", objectId: null, at: "16:10:22" }
+  { id: "tl-01", sessionViewId: "session-view-momentum-pit-001", authority: "AGENT", state: "DRAFT", title: "Research draft proposed", detail: "L1_DRAFT · NON_CANONICAL", objectId: "draft-research-001", at: "16:01:04" },
+  { id: "tl-02", sessionViewId: "session-view-momentum-pit-001", authority: "PLAN", state: "PENDING", title: "PIT evidence plan", detail: "Await exact revision review", objectId: null, at: "16:01:06" },
+  { id: "tl-03", sessionViewId: "session-view-momentum-pit-001", authority: "TOOL", state: "READ", title: "get_dataset_version", detail: "TrustedToolBindings · read only", objectId: `dsv_sha256_${hex("2")}`, at: "16:01:09" },
+  { id: "tl-04", sessionViewId: "session-view-momentum-pit-001", authority: "TASK", state: "QUEUED", title: "Evidence retrieval task", detail: "Task state remains QUEUED", objectId: "Task_01JTRACKKDEMO000000000001", at: "16:01:10" },
+  { id: "tl-05", sessionViewId: "session-view-momentum-pit-001", authority: "EXPERIMENT", state: "SUCCEEDED", title: "Experiment Attempt 1", detail: "Fixture result linked; no live execution", objectId: `expatt_sha256_${hex("5")}`, at: "16:07:42" },
+  { id: "tl-06", sessionViewId: "session-view-momentum-pit-001", authority: "EVIDENCE", state: "PRE_ALPHA", title: "Evidence ready", detail: "NOT_FORMAL / PRE_ALPHA", objectId: `rwv_sha256_${hex("6")}`, at: "16:08:03" },
+  { id: "tl-07", sessionViewId: "session-view-momentum-pit-001", authority: "REVIEWER", state: "BLOCKED", title: "Multiple-testing evidence", detail: "BLOCKING_EVIDENCE", objectId: `rve_sha256_${hex("c")}`, at: "16:10:21" },
+  { id: "tl-08", sessionViewId: "session-view-momentum-pit-001", authority: "VALIDATION", state: "NOT_RUN", title: "Formal admission validation", detail: "No PASS claim", objectId: null, at: "16:10:22" },
+  { id: "tl-09", sessionViewId: "session-view-provider-revision-002", authority: "AGENT", state: "DRAFT", title: "Provider audit finding", detail: "L1_DRAFT · NON_CANONICAL", objectId: "draft-data-002", at: "15:42:04" },
+  { id: "tl-10", sessionViewId: "session-view-provider-revision-002", authority: "TOOL", state: "READ", title: "get_snapshot", detail: "TrustedToolBindings · read only", objectId: `snp_sha256_${hex("1")}`, at: "15:42:08" },
+  { id: "tl-11", sessionViewId: "session-view-provider-revision-002", authority: "TASK", state: "BLOCKED", title: "Revision confirmation", detail: "Task remains blocked", objectId: "Task_01JTRACKKDEMO000000000002", at: "15:47:00" },
+  { id: "tl-12", sessionViewId: "session-view-provider-revision-002", authority: "VALIDATION", state: "NOT_RUN", title: "Provider admission validation", detail: "No PASS claim", objectId: null, at: "15:47:02" },
+  { id: "tl-13", sessionViewId: "session-view-signal-lineage-003", authority: "AGENT", state: "DRAFT", title: "Signal lineage proposed", detail: "L1_DRAFT · NON_CANONICAL", objectId: "draft-research-005", at: "14:21:10" },
+  { id: "tl-14", sessionViewId: "session-view-signal-lineage-003", authority: "TOOL", state: "READ", title: "get_prediction_artifact", detail: "TrustedToolBindings · read only", objectId: `pred_sha256_${hex("8")}`, at: "14:22:15" },
+  { id: "tl-15", sessionViewId: "session-view-signal-lineage-003", authority: "EVIDENCE", state: "PRE_ALPHA", title: "Portfolio intent ready", detail: "Intent only / no weights", objectId: `pint_sha256_${hex("b")}`, at: "14:30:00" }
 ];
 
 export const artifactViews: ArtifactView[] = [
