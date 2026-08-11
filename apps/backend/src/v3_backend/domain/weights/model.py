@@ -432,6 +432,10 @@ def _canonical_rows(
         raise WeightContractError("weight rows must be unique by instrument_id")
     if not set(instrument_ids).issubset(universe_instrument_ids):
         raise WeightContractError("weight row instrument is outside exact universe membership")
+    if any(_decimal(value.target_weight).is_zero() for value in ordered):
+        raise WeightContractError(
+            "explicit zero weight rows are forbidden; AbsentMemberPolicy.ZERO is canonical"
+        )
     return ordered
 
 
@@ -526,10 +530,16 @@ class TargetWeightVector:
         canonical_cash = normalize_weight_decimal(cash_weight, "cash_weight")
         _validate_long_only_budget(ordered_rows, canonical_cash)
         ordered_evidence = _canonical_references(evidence_refs)
+        allowed_evidence_kinds = {
+            ReferenceKind.DIAGNOSTICS,
+            ReferenceKind.PROVENANCE,
+        }
         evidence_kinds = {value.reference_kind for value in ordered_evidence}
-        if not {ReferenceKind.DIAGNOSTICS, ReferenceKind.PROVENANCE}.issubset(
-            evidence_kinds
-        ):
+        if not evidence_kinds.issubset(allowed_evidence_kinds):
+            raise WeightContractError(
+                "TargetWeightVector evidence_refs allow only DIAGNOSTICS and PROVENANCE"
+            )
+        if not allowed_evidence_kinds.issubset(evidence_kinds):
             raise WeightContractError(
                 "TargetWeightVector requires exact DIAGNOSTICS and PROVENANCE evidence refs"
             )
@@ -690,6 +700,9 @@ class RiskStageEvidence:
 class RiskApplicationReceipt:
     risk_application_receipt_id: str
     content_sha256: str
+    source_target: TargetWeightVector
+    source_target_weight_vector_id: str
+    source_target_content_sha256: str
     risk_policy_set: UnresolvedExactReference
     decision: RiskDecision
     decision_reason: RiskDecisionReason
@@ -706,6 +719,7 @@ class RiskApplicationReceipt:
     def create(
         cls,
         *,
+        source_target: TargetWeightVector,
         risk_policy_set: UnresolvedExactReference,
         decision: RiskDecision,
         decision_reason: RiskDecisionReason,
@@ -713,6 +727,9 @@ class RiskApplicationReceipt:
         supporting_refs: tuple[UnresolvedExactReference, ...],
         runtime_identity: RuntimeIdentity,
     ) -> RiskApplicationReceipt:
+        if not isinstance(source_target, TargetWeightVector):
+            raise TypeError("source_target must be TargetWeightVector")
+        source_target.assert_canonical()
         if (
             not isinstance(risk_policy_set, UnresolvedExactReference)
             or risk_policy_set.reference_kind is not ReferenceKind.RISK_POLICY_SET
@@ -736,10 +753,28 @@ class RiskApplicationReceipt:
         if len({value.stage_id for value in stages}) != len(stages):
             raise WeightContractError("risk stage IDs must be unique")
         ordered_refs = _canonical_references(supporting_refs)
+        allowed_supporting_kinds = {
+            ReferenceKind.RISK_MODEL,
+            ReferenceKind.RISK_STATE,
+            ReferenceKind.RISK_EVIDENCE,
+            ReferenceKind.PROVENANCE,
+        }
+        if any(
+            value.reference_kind not in allowed_supporting_kinds
+            for value in ordered_refs
+        ):
+            raise WeightContractError(
+                "RiskApplicationReceipt supporting_refs allow only "
+                "RISK_MODEL, RISK_STATE, RISK_EVIDENCE, and PROVENANCE"
+            )
         stage_digest = canonical_sha256([value.to_wire() for value in stages])
         truth = propagate_downstream_ceiling(
             FORMAL_ADMITTED_CEILING,
             (
+                UpstreamRequirement(
+                    "source_target:" + source_target.target_weight_vector_id,
+                    source_target.truth_admission,
+                ),
                 UpstreamRequirement(
                     "risk_policy_set:" + risk_policy_set.source_id,
                     risk_policy_set.truth_admission,
@@ -754,6 +789,8 @@ class RiskApplicationReceipt:
             ),
         )
         payload = cls._payload(
+            source_target_weight_vector_id=source_target.target_weight_vector_id,
+            source_target_content_sha256=source_target.content_sha256,
             risk_policy_set=risk_policy_set,
             decision=decision,
             decision_reason=decision_reason,
@@ -767,6 +804,9 @@ class RiskApplicationReceipt:
         return cls(
             risk_application_receipt_id="rar_sha256_" + digest,
             content_sha256=digest,
+            source_target=source_target,
+            source_target_weight_vector_id=source_target.target_weight_vector_id,
+            source_target_content_sha256=source_target.content_sha256,
             risk_policy_set=risk_policy_set,
             decision=decision,
             decision_reason=decision_reason,
@@ -781,6 +821,8 @@ class RiskApplicationReceipt:
     def _payload(
         cls,
         *,
+        source_target_weight_vector_id: str,
+        source_target_content_sha256: str,
         risk_policy_set: UnresolvedExactReference,
         decision: RiskDecision,
         decision_reason: RiskDecisionReason,
@@ -793,6 +835,8 @@ class RiskApplicationReceipt:
         return {
             "schema_version": cls.schema_version,
             "publisher_service": cls.publisher_service,
+            "source_target_weight_vector_id": source_target_weight_vector_id,
+            "source_target_content_sha256": source_target_content_sha256,
             "risk_policy_set": risk_policy_set.to_wire(),
             "decision": decision.value,
             "decision_reason": decision_reason.value,
@@ -805,6 +849,7 @@ class RiskApplicationReceipt:
 
     def assert_canonical(self) -> None:
         rebuilt = type(self).create(
+            source_target=self.source_target,
             risk_policy_set=self.risk_policy_set,
             decision=self.decision,
             decision_reason=self.decision_reason,
@@ -822,6 +867,8 @@ class RiskApplicationReceipt:
             "risk_application_receipt_id": self.risk_application_receipt_id,
             "content_sha256": self.content_sha256,
             **self._payload(
+                source_target_weight_vector_id=self.source_target_weight_vector_id,
+                source_target_content_sha256=self.source_target_content_sha256,
                 risk_policy_set=self.risk_policy_set,
                 decision=self.decision,
                 decision_reason=self.decision_reason,
@@ -864,6 +911,15 @@ class RiskAdjustedWeightVector:
         if not isinstance(risk_application, RiskApplicationReceipt):
             raise TypeError("risk_application must be RiskApplicationReceipt")
         risk_application.assert_canonical()
+        if (
+            risk_application.source_target_weight_vector_id
+            != source_target.target_weight_vector_id
+            or risk_application.source_target_content_sha256
+            != source_target.content_sha256
+        ):
+            raise WeightContractError(
+                "RiskApplicationReceipt exact source TargetWeightVector binding mismatch"
+            )
         if not isinstance(runtime_identity, RuntimeIdentity):
             raise TypeError("runtime_identity must be RuntimeIdentity")
         ordered_rows = _canonical_rows(rows, source_target.source.universe_instrument_ids)

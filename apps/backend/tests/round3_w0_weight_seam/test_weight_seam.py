@@ -92,6 +92,7 @@ class WeightSeamFixture(unittest.TestCase):
         *,
         source: PortfolioIntentSource | None = None,
         construction_spec: UnresolvedExactReference | None = None,
+        evidence_refs: tuple[UnresolvedExactReference, ...] | None = None,
         rows: tuple[TargetWeightRow, ...] | None = None,
         cash_weight: str = "0.1",
         as_of: datetime | None = None,
@@ -99,7 +100,7 @@ class WeightSeamFixture(unittest.TestCase):
         return TargetWeightVector.create(
             source=source or self.source,
             construction_spec=construction_spec or self.construction,
-            evidence_refs=self.evidence,
+            evidence_refs=evidence_refs if evidence_refs is not None else self.evidence,
             runtime_identity=self.runtime,
             base_currency="CNY",
             as_of=as_of or self.as_of,
@@ -108,14 +109,21 @@ class WeightSeamFixture(unittest.TestCase):
             valid_until=self.valid_until,
             cash_weight=cash_weight,
             rows=rows
-            or (
+            if rows is not None
+            else (
                 TargetWeightRow("000002.SZ", "0.4000"),
                 TargetWeightRow("000001.SZ", "0.50"),
             ),
         )
 
-    def risk_receipt(self) -> RiskApplicationReceipt:
+    def risk_receipt(
+        self,
+        source_target: TargetWeightVector | None = None,
+        *,
+        supporting_refs: tuple[UnresolvedExactReference, ...] = (),
+    ) -> RiskApplicationReceipt:
         return RiskApplicationReceipt.create(
+            source_target=source_target or self.target(),
             risk_policy_set=self.reference(
                 ReferenceKind.RISK_POLICY_SET,
                 "risk_policy_set_pass_through_1",
@@ -131,7 +139,7 @@ class WeightSeamFixture(unittest.TestCase):
                     sha("8"),
                 ),
             ),
-            supporting_refs=(),
+            supporting_refs=supporting_refs,
             runtime_identity=self.runtime,
         )
 
@@ -206,6 +214,46 @@ class TargetWeightContractTests(WeightSeamFixture):
         self.assertNotIn("UNCHANGED", str(target.to_wire()))
         with self.assertRaisesRegex(WeightContractError, "outside exact universe"):
             self.target(rows=(TargetWeightRow("999999.SZ", "0.9"),))
+
+    def test_zero_rows_are_forbidden_and_all_cash_is_canonical(self) -> None:
+        with self.assertRaisesRegex(WeightContractError, "explicit zero"):
+            self.target(
+                rows=(
+                    TargetWeightRow("000001.SZ", "0.9"),
+                    TargetWeightRow("000002.SZ", "0"),
+                )
+            )
+
+        all_cash = self.target(rows=(), cash_weight="1")
+        self.assertEqual(all_cash.rows, ())
+        self.assertEqual(all_cash.cash_weight, "1")
+        self.assertEqual(
+            set(all_cash.source.universe_instrument_ids),
+            {"000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"},
+        )
+        self.assertIs(all_cash.absent_member_policy, AbsentMemberPolicy.ZERO)
+
+    def test_target_reference_kinds_are_strictly_domain_scoped(self) -> None:
+        for forbidden_kind in (
+            ReferenceKind.RISK_POLICY_SET,
+            ReferenceKind.RISK_MODEL,
+        ):
+            with self.subTest(kind=forbidden_kind), self.assertRaisesRegex(
+                WeightContractError, "allow only DIAGNOSTICS and PROVENANCE"
+            ):
+                self.target(
+                    evidence_refs=(
+                        *self.evidence,
+                        self.reference(forbidden_kind, "foreign_domain_ref", "f"),
+                    )
+                )
+
+        accepted = self.target(evidence_refs=tuple(reversed(self.evidence)))
+        self.assertEqual(accepted, self.target())
+        self.assertEqual(
+            tuple(ref.reference_kind for ref in accepted.evidence_refs),
+            (ReferenceKind.DIAGNOSTICS, ReferenceKind.PROVENANCE),
+        )
 
     def test_portfolio_intent_source_requires_exact_current_main_objects(self) -> None:
         wrong_intent = dataclasses.replace(
@@ -341,7 +389,7 @@ class RiskAdjustedWeightContractTests(WeightSeamFixture):
         with self.assertRaisesRegex(WeightContractError, "TargetWeightVector"):
             RiskAdjustedWeightVector.create(
                 source_target=tampered,
-                risk_application=self.risk_receipt(),
+                risk_application=self.risk_receipt(target),
                 runtime_identity=self.runtime,
                 cash_weight=tampered.cash_weight,
                 rows=tampered.rows,
@@ -351,7 +399,7 @@ class RiskAdjustedWeightContractTests(WeightSeamFixture):
         target = self.target()
         adjusted = RiskAdjustedWeightVector.create(
             source_target=target,
-            risk_application=self.risk_receipt(),
+            risk_application=self.risk_receipt(target),
             runtime_identity=self.runtime,
             cash_weight=target.cash_weight,
             rows=tuple(reversed(target.rows)),
@@ -380,7 +428,7 @@ class RiskAdjustedWeightContractTests(WeightSeamFixture):
         with self.assertRaisesRegex(WeightContractError, "semantically equal"):
             RiskAdjustedWeightVector.create(
                 source_target=target,
-                risk_application=self.risk_receipt(),
+                risk_application=self.risk_receipt(target),
                 runtime_identity=self.runtime,
                 cash_weight="0.2",
                 rows=(
@@ -393,7 +441,7 @@ class RiskAdjustedWeightContractTests(WeightSeamFixture):
         target = self.target()
         adjusted = RiskAdjustedWeightVector.create(
             source_target=target,
-            risk_application=self.risk_receipt(),
+            risk_application=self.risk_receipt(target),
             runtime_identity=self.runtime,
             cash_weight=target.cash_weight,
             rows=target.rows,
@@ -425,12 +473,14 @@ class RiskAdjustedWeightContractTests(WeightSeamFixture):
             )
 
     def test_risk_stage_order_and_wire_identity_are_deterministic(self) -> None:
-        first_receipt = self.risk_receipt()
-        second_receipt = self.risk_receipt()
+        target = self.target()
+        first_receipt = self.risk_receipt(target)
+        second_receipt = self.risk_receipt(target)
         self.assertEqual(first_receipt, second_receipt)
         self.assertEqual(first_receipt.to_wire(), second_receipt.to_wire())
         with self.assertRaisesRegex(WeightContractError, "contiguous"):
             RiskApplicationReceipt.create(
+                source_target=target,
                 risk_policy_set=self.reference(
                     ReferenceKind.RISK_POLICY_SET,
                     "risk_policy_set_ordered",
@@ -442,6 +492,120 @@ class RiskAdjustedWeightContractTests(WeightSeamFixture):
                 supporting_refs=(),
                 runtime_identity=self.runtime,
             )
+
+    def test_risk_receipt_exactly_binds_the_attested_target(self) -> None:
+        target_a = self.target()
+        target_b = self.target(
+            rows=(
+                TargetWeightRow("000001.SZ", "0.6"),
+                TargetWeightRow("000002.SZ", "0.3"),
+            )
+        )
+        receipt_a = self.risk_receipt(target_a)
+        receipt_b = self.risk_receipt(target_b)
+
+        adjusted = RiskAdjustedWeightVector.create(
+            source_target=target_a,
+            risk_application=receipt_a,
+            runtime_identity=self.runtime,
+            cash_weight=target_a.cash_weight,
+            rows=target_a.rows,
+        )
+        self.assertNotEqual(
+            receipt_a.risk_application_receipt_id,
+            receipt_b.risk_application_receipt_id,
+        )
+        with self.assertRaisesRegex(WeightContractError, "binding mismatch"):
+            RiskAdjustedWeightVector.create(
+                source_target=target_b,
+                risk_application=receipt_a,
+                runtime_identity=self.runtime,
+                cash_weight=target_b.cash_weight,
+                rows=target_b.rows,
+            )
+
+        receipt_wire = receipt_a.to_wire()
+        adjusted_wire = adjusted.to_wire()
+        self.assertEqual(
+            receipt_wire["source_target_weight_vector_id"],
+            target_a.target_weight_vector_id,
+        )
+        self.assertEqual(
+            receipt_wire["source_target_content_sha256"],
+            target_a.content_sha256,
+        )
+        self.assertEqual(
+            adjusted_wire["risk_application_receipt_id"],
+            receipt_a.risk_application_receipt_id,
+        )
+        self.assertEqual(
+            adjusted_wire["source_target_weight_vector_id"],
+            receipt_wire["source_target_weight_vector_id"],
+        )
+
+    def test_tampered_receipt_target_binding_is_rejected(self) -> None:
+        target = self.target()
+        receipt = self.risk_receipt(target)
+        tampered = dataclasses.replace(
+            receipt,
+            source_target_content_sha256=sha("0"),
+        )
+        with self.assertRaisesRegex(WeightContractError, "RiskApplicationReceipt"):
+            tampered.assert_canonical()
+
+    def test_risk_adjusted_explicit_zero_row_is_rejected(self) -> None:
+        target = self.target()
+        with self.assertRaisesRegex(WeightContractError, "explicit zero"):
+            RiskAdjustedWeightVector.create(
+                source_target=target,
+                risk_application=self.risk_receipt(target),
+                runtime_identity=self.runtime,
+                cash_weight=target.cash_weight,
+                rows=(*target.rows, TargetWeightRow("000003.SZ", "0")),
+            )
+
+    def test_risk_supporting_reference_kinds_are_strictly_domain_scoped(self) -> None:
+        target = self.target()
+        for forbidden_kind in (
+            ReferenceKind.CONSTRUCTION_SPEC,
+            ReferenceKind.DIAGNOSTICS,
+        ):
+            with self.subTest(kind=forbidden_kind), self.assertRaisesRegex(
+                WeightContractError, "supporting_refs allow only"
+            ):
+                self.risk_receipt(
+                    target,
+                    supporting_refs=(
+                        self.reference(forbidden_kind, "foreign_domain_ref", "f"),
+                    ),
+                )
+
+        allowed_refs = (
+            self.reference(ReferenceKind.RISK_MODEL, "risk_model_ref", "1"),
+            self.reference(ReferenceKind.RISK_STATE, "risk_state_ref", "2"),
+            self.reference(ReferenceKind.RISK_EVIDENCE, "risk_evidence_ref", "3"),
+            self.reference(ReferenceKind.PROVENANCE, "risk_provenance_ref", "4"),
+        )
+        ordered = self.risk_receipt(target, supporting_refs=allowed_refs)
+        reversed_order = self.risk_receipt(
+            target,
+            supporting_refs=tuple(reversed(allowed_refs)),
+        )
+        empty = self.risk_receipt(target)
+        self.assertEqual(ordered, reversed_order)
+        self.assertNotEqual(
+            ordered.risk_application_receipt_id,
+            empty.risk_application_receipt_id,
+        )
+        self.assertEqual(
+            tuple(ref.reference_kind for ref in ordered.supporting_refs),
+            (
+                ReferenceKind.PROVENANCE,
+                ReferenceKind.RISK_EVIDENCE,
+                ReferenceKind.RISK_MODEL,
+                ReferenceKind.RISK_STATE,
+            ),
+        )
 
 
 if __name__ == "__main__":
