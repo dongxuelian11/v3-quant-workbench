@@ -18,6 +18,7 @@ import {
   exactRelationsForNode,
   filterEvidenceGraph,
   type DiscoveryScopeMode,
+  type DiscoverySource,
   type EvidenceGraphFilter,
   type EvidenceGraphView,
   type EvidenceNodeView,
@@ -40,6 +41,7 @@ export function EvidenceExplorer({
   evidence,
   artifacts,
   exactRelations,
+  discoverySource,
   selectedEvidenceId,
   connectionState,
   onSelectEvidence,
@@ -50,6 +52,7 @@ export function EvidenceExplorer({
   evidence: readonly EvidenceView[];
   artifacts: readonly ArtifactView[];
   exactRelations: readonly ExactLineageRelationInput[];
+  discoverySource: DiscoverySource;
   selectedEvidenceId: string | null;
   connectionState: RuntimeConnectionState;
   onSelectEvidence: (exactId: string) => void;
@@ -68,9 +71,10 @@ export function EvidenceExplorer({
     evidence,
     artifacts,
     exactRelations,
+    discoverySource,
     scopeMode,
     explicitWorkspaceScope: scopeMode === "VISIBLE_WORKSPACE"
-  }), [activeSessionId, artifacts, evidence, exactRelations, scopeMode, sessions]);
+  }), [activeSessionId, artifacts, discoverySource, evidence, exactRelations, scopeMode, sessions]);
   const filtered = useMemo(() => filterEvidenceGraph(graph, filter), [filter, graph]);
   const bounded = useMemo(
     () => boundedEvidenceNeighborhood(filtered, focusExactId, direction, maxHops, 60),
@@ -103,10 +107,11 @@ export function EvidenceExplorer({
   const activeSession = sessions.find((session) => session.sessionViewId === activeSessionId);
   const activeSessionNodes = (activeSession?.evidenceIds ?? []).map((exactId) => graph.nodes.find((node) => node.exactId === exactId)).filter((node): node is EvidenceNodeView => node !== undefined);
 
-  return <div className="evidence-explorer" data-testid="evidence-lineage-explorer" data-scope={scopeMode} data-discovery={graph.discoveryScope.completeness}>
+  return <div className="evidence-explorer" data-testid="evidence-lineage-explorer" data-scope={scopeMode} data-discovery={graph.discoveryScope.completeness} data-discovery-source={graph.discoveryScope.source}>
     <header className="evidence-explorer-head">
       <div><small>EVIDENCE &amp; LINEAGE EXPLORER</small><b>Exact relations · read-only view</b></div>
       <div className="explorer-statuses"><span>{graph.discoveryScope.completeness}</span><em>{graph.nodes.length} nodes · {graph.edges.length} exact edges</em></div>
+      <code className="explorer-source-authority">{graph.discoveryScope.source}</code>
     </header>
 
     <div className="evidence-index explorer-evidence-index" role="list" aria-label="Session evidence objects">
@@ -224,7 +229,10 @@ function EvidenceNodeInspector({ node, graph, onFocusId, onOpenLab }: { node: Ev
   return <aside className="lineage-detail" aria-label="Exact evidence detail inspector" data-testid="lineage-detail-inspector">
     <header><small>{node.nodeType.toUpperCase()}</small><b>{node.displayLabel}</b><span>{relations.availability}</span></header>
     <section className="lineage-exact-identity exact-object-id"><label>EXACT ID</label><code>{node.exactId}</code><CopyExactButton label="Copy ID" value={node.exactId}/><label>CONTENT SHA-256</label><code>{node.contentSha256}</code><CopyExactButton label="Copy hash" value={node.contentSha256}/></section>
-    <div className="lineage-state-grid"><div className="truth-admission-grid"><StateCell label="TRUTH" value={node.canonicalTruthState}/><StateCell label="ADMISSION" value={node.canonicalAdmissionState}/><StateCell label="VALIDATION" value={node.validationState}/></div><StateCell label="INTEGRITY" value={node.integrityStatus}/></div>
+    {node.nodeType === "Artifact" ? <>
+      <section className="lineage-authority-section artifact-owned-status"><h3>Artifact-owned status</h3><div className="truth-admission-grid"><StateCell label="ARTIFACT TRUTH" value={node.canonicalTruthState}/><StateCell label="ARTIFACT ADMISSION" value={node.canonicalAdmissionState}/><StateCell label="ARTIFACT VALIDATION" value={node.validationState}/><StateCell label="INTEGRITY" value={node.integrityStatus}/></div></section>
+      <section className="lineage-authority-section source-evidence-authority"><h3>Source Evidence authority</h3>{node.sourceEvidenceAuthorities.length === 0 ? <p>UNKNOWN / UNLINKED</p> : node.sourceEvidenceAuthorities.map((source) => <div key={source.sourceObjectId} className="source-evidence-status"><small>SOURCE OBJECT</small><code>{source.sourceObjectId}</code><StateCell label="SOURCE TRUTH" value={source.canonicalTruthState}/><StateCell label="SOURCE ADMISSION" value={source.canonicalAdmissionState}/><StateCell label="SOURCE VALIDATION" value={source.validationState}/></div>)}</section>
+    </> : <div className="lineage-state-grid"><div className="truth-admission-grid"><StateCell label="TRUTH" value={node.canonicalTruthState}/><StateCell label="ADMISSION" value={node.canonicalAdmissionState}/><StateCell label="VALIDATION" value={node.validationState}/></div><StateCell label="INTEGRITY" value={node.integrityStatus}/></div>}
     <RelationList title="Derived from" edges={relations.derivedFrom} endpoint="source" onFocusId={onFocusId}/>
     <RelationList title="Used by" edges={relations.usedBy} endpoint="target" onFocusId={onFocusId}/>
     <ReferenceList title="Provenance refs" values={node.provenanceRefs}/>

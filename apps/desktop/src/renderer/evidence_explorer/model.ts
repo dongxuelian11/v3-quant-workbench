@@ -1,5 +1,6 @@
 import type { LabId } from "../../../../../packages/contracts/src/index";
 import type {
+  AgentWorkspaceBoundary,
   ArtifactView,
   CanonicalAdmissionState,
   CanonicalTruthState,
@@ -13,6 +14,12 @@ import type { ExactLineageRelationInput } from "./contracts";
 export type EvidenceIntegrityStatus = "VERIFIED" | "FAILED" | "UNKNOWN" | "NOT_RUN";
 export type DiscoveryScopeMode = "ACTIVE_SESSION" | "VISIBLE_WORKSPACE";
 export type DiscoveryCompleteness = "DISCOVERY_SCOPE_LIMITED";
+export type DiscoverySource =
+  | "CURRENT_MAIN_CANONICAL_PROJECTION_VISIBLE_SCOPE"
+  | "DEVELOPMENT_INTEGRATION_FIXTURE_VISIBLE_SCOPE"
+  | "NO_CANONICAL_EVIDENCE_AVAILABLE_VISIBLE_SCOPE"
+  | "BACKEND_RUNTIME_UNAVAILABLE_VISIBLE_SCOPE"
+  | "UNKNOWN_SOURCE_VISIBLE_SCOPE";
 export type RelationAvailability = "EXACT_RELATIONS_AVAILABLE" | "NO_KNOWN_RELATION";
 export type LineageDirection = "UPSTREAM" | "DOWNSTREAM" | "BOTH";
 
@@ -22,7 +29,14 @@ export interface DiscoveryScope {
   readonly visibleSessionIds: readonly string[];
   readonly explicitlySelected: boolean;
   readonly completeness: DiscoveryCompleteness;
-  readonly source: "LOADED_OFFICIAL_REPOSITORY_VISIBLE_SCOPE";
+  readonly source: DiscoverySource;
+}
+
+export interface SourceEvidenceAuthorityView {
+  readonly sourceObjectId: string;
+  readonly canonicalTruthState: CanonicalTruthState;
+  readonly canonicalAdmissionState: CanonicalAdmissionState;
+  readonly validationState: ValidationState;
 }
 
 export interface EvidenceNodeView {
@@ -40,6 +54,7 @@ export interface EvidenceNodeView {
   readonly sessionLinks: readonly string[];
   readonly reviewerFinding: string | null;
   readonly openInLab: LabId;
+  readonly sourceEvidenceAuthorities: readonly SourceEvidenceAuthorityView[];
 }
 
 export interface EvidenceEdgeView {
@@ -79,6 +94,7 @@ export interface BuildEvidenceGraphInput {
   readonly evidence: readonly EvidenceView[];
   readonly artifacts: readonly ArtifactView[];
   readonly exactRelations: readonly ExactLineageRelationInput[];
+  readonly discoverySource: DiscoverySource | undefined;
   readonly scopeMode?: DiscoveryScopeMode;
   readonly explicitWorkspaceScope?: boolean;
 }
@@ -88,6 +104,14 @@ const SHA256 = /^[0-9a-f]{64}$/;
 export function exactSha256FromId(value: string): string | null {
   const match = /(?:^|_)sha256_([0-9a-f]{64})$/.exec(value);
   return match?.[1] ?? null;
+}
+
+export function discoverySourceFromAgentWorkspaceBoundary(boundary: AgentWorkspaceBoundary): DiscoverySource {
+  if (boundary.mode === "LIVE_READ_ONLY" && boundary.source === "CURRENT_MAIN_CANONICAL_PROJECTION") return "CURRENT_MAIN_CANONICAL_PROJECTION_VISIBLE_SCOPE";
+  if (boundary.mode === "DEVELOPMENT_INTEGRATION_FIXTURE" && boundary.source === "ACTUAL_CANONICAL_H_I_J_TEST_CHAIN") return "DEVELOPMENT_INTEGRATION_FIXTURE_VISIBLE_SCOPE";
+  if (boundary.mode === "LIVE_READ_ONLY_NO_EVIDENCE" && boundary.source === "NO_CANONICAL_EVIDENCE_AVAILABLE") return "NO_CANONICAL_EVIDENCE_AVAILABLE_VISIBLE_SCOPE";
+  if (boundary.mode === "BACKEND_DISCONNECTED" && boundary.source === "BACKEND_RUNTIME_UNAVAILABLE") return "BACKEND_RUNTIME_UNAVAILABLE_VISIBLE_SCOPE";
+  return "UNKNOWN_SOURCE_VISIBLE_SCOPE";
 }
 
 export function labForEvidenceKind(kind: EvidenceKind | "Artifact", fallback: LabId = "research"): LabId {
@@ -129,7 +153,8 @@ export function buildEvidenceGraphView(input: BuildEvidenceGraphInput): Evidence
       contentSha256: existing.contentSha256 === "UNKNOWN" ? node.contentSha256 : existing.contentSha256,
       provenanceRefs: unique([...existing.provenanceRefs, ...node.provenanceRefs]),
       artifactRefs: unique([...existing.artifactRefs, ...node.artifactRefs]),
-      sessionLinks: unique([...existing.sessionLinks, ...node.sessionLinks])
+      sessionLinks: unique([...existing.sessionLinks, ...node.sessionLinks]),
+      sourceEvidenceAuthorities: mergeSourceEvidenceAuthorities(existing.sourceEvidenceAuthorities, node.sourceEvidenceAuthorities)
     });
   };
 
@@ -157,7 +182,8 @@ export function buildEvidenceGraphView(input: BuildEvidenceGraphInput): Evidence
       artifactRefs: item.artifactId ? [item.artifactId] : [],
       sessionLinks,
       reviewerFinding: item.reviewerFinding,
-      openInLab: labForEvidenceKind(item.kind, item.openInLab)
+      openInLab: labForEvidenceKind(item.kind, item.openInLab),
+      sourceEvidenceAuthorities: []
     });
   }
 
@@ -173,15 +199,21 @@ export function buildEvidenceGraphView(input: BuildEvidenceGraphInput): Evidence
         displayLabel: artifact.title,
         summary: `${artifact.mediaType} · passive renderer view`,
         contentSha256: artifact.contentSha256 ?? exactSha256FromId(artifact.artifactId) ?? "UNKNOWN",
-        canonicalTruthState: evidenceNode.canonicalTruthState,
-        canonicalAdmissionState: evidenceNode.canonicalAdmissionState,
-        validationState: artifact.validationState ?? evidenceNode.validationState,
+        canonicalTruthState: "UNKNOWN",
+        canonicalAdmissionState: "UNKNOWN",
+        validationState: artifact.validationState ?? "NOT_RUN",
         integrityStatus: artifact.integrityStatus ?? "NOT_RUN",
         provenanceRefs: artifact.provenanceRefs ?? [artifact.provenanceRef],
         artifactRefs: [],
         sessionLinks: [...evidenceNode.sessionLinks],
-        reviewerFinding: evidenceNode.reviewerFinding,
-        openInLab: artifact.openInLab ?? evidenceNode.openInLab
+        reviewerFinding: null,
+        openInLab: artifact.openInLab ?? evidenceNode.openInLab,
+        sourceEvidenceAuthorities: [{
+          sourceObjectId: evidenceNode.exactId,
+          canonicalTruthState: evidenceNode.canonicalTruthState,
+          canonicalAdmissionState: evidenceNode.canonicalAdmissionState,
+          validationState: evidenceNode.validationState
+        }]
       });
     }
   }
@@ -240,7 +272,7 @@ export function buildEvidenceGraphView(input: BuildEvidenceGraphInput): Evidence
       visibleSessionIds: visibleSessions.map((session) => session.sessionViewId),
       explicitlySelected: scopeMode === "VISIBLE_WORKSPACE",
       completeness: "DISCOVERY_SCOPE_LIMITED",
-      source: "LOADED_OFFICIAL_REPOSITORY_VISIBLE_SCOPE"
+      source: input.discoverySource ?? "UNKNOWN_SOURCE_VISIBLE_SCOPE"
     },
     relationAvailability: sortedEdges.length > 0 ? "EXACT_RELATIONS_AVAILABLE" : "NO_KNOWN_RELATION",
     nodes: sortedNodes,
@@ -350,4 +382,21 @@ function edgeOrder(left: EvidenceEdgeView, right: EvidenceEdgeView) {
 
 function unique<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
+}
+
+function mergeSourceEvidenceAuthorities(
+  left: readonly SourceEvidenceAuthorityView[],
+  right: readonly SourceEvidenceAuthorityView[]
+): SourceEvidenceAuthorityView[] {
+  const merged = new Map(left.map((item) => [item.sourceObjectId, item]));
+  for (const item of right) {
+    const existing = merged.get(item.sourceObjectId);
+    if (existing && (existing.canonicalTruthState !== item.canonicalTruthState
+      || existing.canonicalAdmissionState !== item.canonicalAdmissionState
+      || existing.validationState !== item.validationState)) {
+      throw new TypeError(`conflicting source Evidence authority for ${item.sourceObjectId}`);
+    }
+    merged.set(item.sourceObjectId, item);
+  }
+  return [...merged.values()].sort((a, b) => a.sourceObjectId.localeCompare(b.sourceObjectId));
 }

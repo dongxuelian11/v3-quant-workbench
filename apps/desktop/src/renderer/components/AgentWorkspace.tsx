@@ -12,6 +12,7 @@ import {
   type ResearchSessionView
 } from "../agentWorkspace";
 import { EvidenceExplorer } from "../evidence_explorer/EvidenceExplorer";
+import { discoverySourceFromAgentWorkspaceBoundary } from "../evidence_explorer/model";
 import { ArtifactViewer } from "./ArtifactViewer";
 
 export function AgentWorkspace({ session, data, boundary, connectionState, onOpenLab }: {
@@ -82,7 +83,7 @@ export function AgentWorkspace({ session, data, boundary, connectionState, onOpe
       </main>
 
       <aside className="evidence-inspector" aria-label="Evidence Inspector" data-testid="evidence-inspector" data-open-in-lab-route="Open in canonical Lab">
-        <EvidenceExplorer sessions={data.sessions} activeSessionId={session.sessionViewId} evidence={data.evidence} artifacts={data.artifacts} exactRelations={data.exactRelations ?? []} selectedEvidenceId={selectedEvidence?.objectId ?? null} connectionState={connectionState} onSelectEvidence={selectEvidence} onOpenLab={onOpenLab}/>
+        <EvidenceExplorer sessions={data.sessions} activeSessionId={session.sessionViewId} evidence={data.evidence} artifacts={data.artifacts} exactRelations={data.exactRelations ?? []} discoverySource={discoverySourceFromAgentWorkspaceBoundary(boundary)} selectedEvidenceId={selectedEvidence?.objectId ?? null} connectionState={connectionState} onSelectEvidence={selectEvidence} onOpenLab={onOpenLab}/>
       </aside>
     </div>
 

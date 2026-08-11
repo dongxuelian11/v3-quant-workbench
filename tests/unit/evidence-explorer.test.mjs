@@ -5,6 +5,7 @@ import { LAB_IDS } from "../../packages/contracts/src/index.ts";
 import {
   boundedEvidenceNeighborhood,
   buildEvidenceGraphView,
+  discoverySourceFromAgentWorkspaceBoundary,
   exactBreadcrumb,
   exactRelationsForNode,
   filterEvidenceGraph,
@@ -83,7 +84,7 @@ function relation(sourceExactId, targetExactId, relationType, bindingRef = null)
 }
 
 function graph(overrides = {}) {
-  return buildEvidenceGraphView({ sessions, activeSessionId: "session-a", evidence: evidenceItems, artifacts, exactRelations, ...overrides });
+  return buildEvidenceGraphView({ sessions, activeSessionId: "session-a", evidence: evidenceItems, artifacts, exactRelations, discoverySource: "CURRENT_MAIN_CANONICAL_PROJECTION_VISIBLE_SCOPE", ...overrides });
 }
 
 test("exact Round 3 lineage and explicit Artifact refs are the only graph edges", () => {
@@ -135,7 +136,27 @@ test("broader workspace scope is explicit only and remains discovery-limited", (
   const workspace = graph({ scopeMode: "VISIBLE_WORKSPACE", explicitWorkspaceScope: true });
   assert.equal(workspace.discoveryScope.explicitlySelected, true);
   assert.equal(workspace.discoveryScope.completeness, "DISCOVERY_SCOPE_LIMITED");
-  assert.equal(workspace.discoveryScope.source, "LOADED_OFFICIAL_REPOSITORY_VISIBLE_SCOPE");
+  assert.equal(workspace.discoveryScope.source, "CURRENT_MAIN_CANONICAL_PROJECTION_VISIBLE_SCOPE");
+});
+
+test("discovery source is mapped from the real Agent Workspace boundary", () => {
+  assert.equal(discoverySourceFromAgentWorkspaceBoundary({ mode: "LIVE_READ_ONLY", source: "CURRENT_MAIN_CANONICAL_PROJECTION" }), "CURRENT_MAIN_CANONICAL_PROJECTION_VISIBLE_SCOPE");
+  assert.equal(discoverySourceFromAgentWorkspaceBoundary({ mode: "DEVELOPMENT_INTEGRATION_FIXTURE", source: "ACTUAL_CANONICAL_H_I_J_TEST_CHAIN" }), "DEVELOPMENT_INTEGRATION_FIXTURE_VISIBLE_SCOPE");
+  assert.doesNotMatch(discoverySourceFromAgentWorkspaceBoundary({ mode: "DEVELOPMENT_INTEGRATION_FIXTURE", source: "ACTUAL_CANONICAL_H_I_J_TEST_CHAIN" }), /OFFICIAL_REPOSITORY/);
+});
+
+test("scope expansion never changes upstream discovery source authority", () => {
+  const active = graph({ discoverySource: "DEVELOPMENT_INTEGRATION_FIXTURE_VISIBLE_SCOPE" });
+  const workspace = graph({ discoverySource: "DEVELOPMENT_INTEGRATION_FIXTURE_VISIBLE_SCOPE", scopeMode: "VISIBLE_WORKSPACE", explicitWorkspaceScope: true });
+  assert.equal(active.discoveryScope.source, "DEVELOPMENT_INTEGRATION_FIXTURE_VISIBLE_SCOPE");
+  assert.equal(workspace.discoveryScope.source, active.discoveryScope.source);
+});
+
+test("empty, disconnected, and missing discovery sources remain explicit and fail closed", () => {
+  assert.equal(discoverySourceFromAgentWorkspaceBoundary({ mode: "LIVE_READ_ONLY_NO_EVIDENCE", source: "NO_CANONICAL_EVIDENCE_AVAILABLE" }), "NO_CANONICAL_EVIDENCE_AVAILABLE_VISIBLE_SCOPE");
+  assert.equal(discoverySourceFromAgentWorkspaceBoundary({ mode: "BACKEND_DISCONNECTED", source: "BACKEND_RUNTIME_UNAVAILABLE" }), "BACKEND_RUNTIME_UNAVAILABLE_VISIBLE_SCOPE");
+  assert.equal(graph({ discoverySource: undefined }).discoveryScope.source, "UNKNOWN_SOURCE_VISIBLE_SCOPE");
+  assert.equal(discoverySourceFromAgentWorkspaceBoundary({ mode: "LIVE_READ_ONLY", source: "BACKEND_RUNTIME_UNAVAILABLE" }), "UNKNOWN_SOURCE_VISIBLE_SCOPE");
 });
 
 test("truth, admission, validation, content hash, and integrity remain distinct", () => {
@@ -145,6 +166,30 @@ test("truth, admission, validation, content hash, and integrity remain distinct"
   assert.equal(result.validationState, "PASSED");
   assert.equal(result.contentSha256, sha("5"));
   assert.equal(result.integrityStatus, "NOT_RUN");
+});
+
+test("distinct Artifact owns no inherited Truth, Admission, Validation, or integrity state", () => {
+  const artifactWithoutAuthority = { ...artifacts[0] };
+  delete artifactWithoutAuthority.validationState;
+  delete artifactWithoutAuthority.integrityStatus;
+  const artifactNode = graph({ artifacts: [artifactWithoutAuthority] }).nodes.find((node) => node.exactId === artifactId);
+  assert.equal(artifactNode.canonicalTruthState, "UNKNOWN");
+  assert.equal(artifactNode.canonicalAdmissionState, "UNKNOWN");
+  assert.equal(artifactNode.validationState, "NOT_RUN");
+  assert.equal(artifactNode.integrityStatus, "NOT_RUN");
+  assert.equal(artifactNode.contentSha256, sha("6"));
+});
+
+test("source Evidence authority stays separately visible on a distinct Artifact", () => {
+  const artifactNode = graph().nodes.find((node) => node.exactId === artifactId);
+  assert.deepEqual(artifactNode.sourceEvidenceAuthorities, [{
+    sourceObjectId: resultId,
+    canonicalTruthState: "NOT_FORMAL",
+    canonicalAdmissionState: "PRE_ALPHA",
+    validationState: "PASSED"
+  }]);
+  assert.equal(artifactNode.validationState, "PASSED");
+  assert.equal(artifactNode.integrityStatus, "NOT_RUN");
 });
 
 test("graph and list consume one bounded node set; focus expansion is directional", () => {
@@ -178,7 +223,7 @@ test("bounded large fixture returns promptly without rendering a hairball", () =
   const largeEvidence = ids.map((exactId, index) => evidence("DatasetVersion", exactId, `Node ${index}`));
   const largeRelations = ids.slice(1).map((exactId, index) => relation(ids[index], exactId, "EXPLICIT_TEST_CHAIN"));
   const started = performance.now();
-  const bounded = boundedEvidenceNeighborhood(buildEvidenceGraphView({ sessions: [largeSession], activeSessionId: "large", evidence: largeEvidence, artifacts: [], exactRelations: largeRelations }), ids[300], "BOTH", 30, 60);
+  const bounded = boundedEvidenceNeighborhood(buildEvidenceGraphView({ sessions: [largeSession], activeSessionId: "large", evidence: largeEvidence, artifacts: [], exactRelations: largeRelations, discoverySource: "CURRENT_MAIN_CANONICAL_PROJECTION_VISIBLE_SCOPE" }), ids[300], "BOTH", 30, 60);
   assert.ok(performance.now() - started < 1000);
   assert.equal(bounded.nodes.length, 60);
   assert.equal(bounded.truncated, true);
@@ -190,6 +235,10 @@ test("Artifact Viewer and Explorer keep unsupported content passive and expose k
   assert.match(artifactSource, /Unsupported renderer · passive safe state/);
   assert.match(artifactSource, /No HTML, script, embedded active content, or filesystem target was executed/);
   assert.match(artifactSource, /CONTENT SHA-256/);
+  assert.match(artifactSource, /ARTIFACT VALIDATION/);
+  assert.match(artifactSource, /SOURCE EVIDENCE VALIDATION/);
+  assert.doesNotMatch(artifactSource, /artifact\.validationState \?\? evidence\?\.validationState/);
+  assert.doesNotMatch(artifactSource, /artifact\.integrityStatus \?\? evidence\?\.integrityStatus/);
   assert.match(artifactSource, /Copy artifact ID/);
   assert.match(explorerSource, /ArrowDown/);
   assert.match(explorerSource, /aria-label="Exact lineage breadcrumb"/);

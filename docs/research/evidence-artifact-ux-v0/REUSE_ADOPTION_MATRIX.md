@@ -34,6 +34,13 @@ The implementation will directly reuse the merged Round 3 parser/edge set, curre
 
 The production source is currently connected but session-bounded and not a proven global discovery owner. The explorer therefore reports `DISCOVERY_SCOPE_LIMITED` even when a local query has no results. Artifact byte verification is not exposed to the renderer; the UI reports `NOT_RUN`/`UNKNOWN` rather than inferring integrity from a file path, renderer validation, or file existence.
 
+## PR #22 authority closure
+
+- Discovery provenance is supplied by the actual `AgentWorkspaceBoundary`. Current-main canonical projection, development/integration fixture, connected-empty, disconnected, and unknown inputs remain distinct closed source values. Expanding from active session to loaded workspace changes visibility only and never relabels the upstream source.
+- `EXPLICIT_ARTIFACT_REF` means only an exact reference from the loaded Evidence/Artifact view with full endpoint hashes. Relation presence does not assert byte integrity.
+- A distinct Artifact node never inherits Truth, Admission, Validation, integrity, or reviewer status from its source Evidence. Without Artifact-owned authority, Artifact Truth/Admission are `UNKNOWN`, Artifact Validation is `NOT_RUN`, and byte Integrity remains `NOT_RUN`.
+- Source Evidence object, Truth, Admission, and Validation remain separately visible as source authority metadata. They are not displayed as Artifact-owned state.
+
 ## Research limitation
 
 The repository instruction prefers Context7 for library documentation. No Context7 tool was available in this session, so current official documentation and official repository metadata were used instead. No non-official implementation guide was used as authority.

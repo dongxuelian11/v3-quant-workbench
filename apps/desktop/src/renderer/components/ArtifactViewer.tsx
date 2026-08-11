@@ -21,8 +21,9 @@ export function ArtifactViewer({ artifact, evidence = null, exactRelations = [],
   }
   const contentSha256 = artifact.contentSha256 ?? exactSha256FromId(artifact.artifactId) ?? "UNKNOWN";
   const sourceObjectId = artifact.sourceObjectId ?? evidence?.objectId ?? "UNKNOWN";
-  const integrityStatus = artifact.integrityStatus ?? evidence?.integrityStatus ?? "NOT_RUN";
-  const validationState = artifact.validationState ?? evidence?.validationState ?? "NOT_RUN";
+  const sourceEvidence = evidence?.objectId === sourceObjectId ? evidence : null;
+  const integrityStatus = artifact.integrityStatus ?? "NOT_RUN";
+  const validationState = artifact.validationState ?? "NOT_RUN";
   const lineage = exactRelations.filter((edge) => edge.sourceExactId === sourceObjectId || edge.targetExactId === sourceObjectId);
   const openInLab = artifact.openInLab ?? evidence?.openInLab;
   return <section className="artifact-viewer" data-testid="artifact-viewer" data-artifact-id={artifact.artifactId} data-renderer={renderer ? artifact.payload.renderer : "unsupported-safe"} data-integrity={integrityStatus}>
@@ -30,13 +31,15 @@ export function ArtifactViewer({ artifact, evidence = null, exactRelations = [],
       <div><small>ARTIFACT VIEWER · {(renderer?.label ?? "UNSUPPORTED SAFE").toUpperCase()}</small><b>{artifact.title}</b></div>
       <span className={renderer?.availability === "AVAILABLE" ? "status-badge success" : renderer ? "status-badge neutral" : "status-badge warning"}>{renderer?.availability ?? "UNSUPPORTED_SAFE"}</span>
     </header>
-    <div className="artifact-meta"><code>{artifact.artifactId}</code><span>{artifact.mediaType}</span></div>
-    <div className="artifact-integrity-grid">
-      <div><small>CONTENT SHA-256</small><code>{contentSha256}</code></div>
+    <section className="artifact-authority-section artifact-identity"><h3>Artifact identity</h3><div className="artifact-meta"><small>ARTIFACT ID</small><code>{artifact.artifactId}</code><span>{artifact.mediaType}</span></div><div><small>CONTENT SHA-256</small><code>{contentSha256}</code></div></section>
+    <section className="artifact-authority-section artifact-owned-status"><h3>Artifact-owned status</h3><div className="artifact-integrity-grid">
+      <div><small>ARTIFACT TRUTH</small><b>UNKNOWN</b></div>
+      <div><small>ARTIFACT ADMISSION</small><b>UNKNOWN</b></div>
       <div><small>INTEGRITY</small><b>{integrityStatus}</b></div>
-      <div><small>VALIDATION</small><b>{validationState}</b></div>
-      <div><small>RENDERER</small><b>{renderer?.availability ?? "UNSUPPORTED_SAFE"}</b></div>
-    </div>
+      <div><small>ARTIFACT VALIDATION</small><b>{validationState}</b></div>
+    </div></section>
+    <section className="artifact-authority-section source-evidence-authority"><h3>Source Evidence authority</h3><div className="artifact-source-status"><div><small>SOURCE OBJECT</small><code>{sourceEvidence?.objectId ?? "UNKNOWN / UNLINKED"}</code></div><div><small>SOURCE TRUTH</small><b>{sourceEvidence?.canonicalTruthState ?? "UNKNOWN"}</b></div><div><small>SOURCE ADMISSION</small><b>{sourceEvidence?.canonicalAdmissionState ?? "UNKNOWN"}</b></div><div><small>SOURCE EVIDENCE VALIDATION</small><b>{sourceEvidence?.validationState ?? "NOT_RUN"}</b></div></div></section>
+    <div className="artifact-renderer-state"><small>RENDERER</small><b>{renderer?.availability ?? "UNSUPPORTED_SAFE"}</b></div>
     <div className="artifact-copy-actions"><CopyButton label="Copy artifact ID" value={artifact.artifactId}/><CopyButton label="Copy hash" value={contentSha256}/>{openInLab && onOpenLab && <button type="button" className="open-in-lab" onClick={() => onOpenLab(openInLab)}>Open in {labLabel(openInLab)} Lab</button>}</div>
     {renderer ? <ArtifactBody artifact={artifact}/> : <div className="artifact-unsupported-safe" data-testid="artifact-unsupported-safe"><b>Unsupported renderer · passive safe state</b><p>{rendererError}. No HTML, script, embedded active content, or filesystem target was executed.</p></div>}
     <div className="artifact-lineage-meta"><small>SOURCE OBJECT</small><code>{sourceObjectId}</code><small>EXACT LINEAGE</small>{lineage.length === 0 ? <code>NO_KNOWN_RELATION · DISCOVERY_SCOPE_LIMITED</code> : lineage.map((edge) => <code key={`${edge.sourceExactId}-${edge.relationType}-${edge.targetExactId}`}>{edge.sourceExactId} — {edge.relationType} → {edge.targetExactId}{edge.bindingRef ? ` · binding ${edge.bindingRef}` : ""}</code>)}</div>

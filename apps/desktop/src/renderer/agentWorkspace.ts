@@ -18,10 +18,16 @@ export const DEVELOPMENT_INTEGRATION_BOUNDARY = Object.freeze({
   authority: "READ_ONLY_VIEW_MODEL" as const
 });
 
+export type AgentWorkspaceBoundarySource =
+  | "CURRENT_MAIN_CANONICAL_PROJECTION"
+  | "ACTUAL_CANONICAL_H_I_J_TEST_CHAIN"
+  | "NO_CANONICAL_EVIDENCE_AVAILABLE"
+  | "BACKEND_RUNTIME_UNAVAILABLE";
+
 export interface AgentWorkspaceBoundary {
   readonly mode: "LIVE_READ_ONLY" | "LIVE_READ_ONLY_NO_EVIDENCE" | "BACKEND_DISCONNECTED" | "DEVELOPMENT_INTEGRATION_FIXTURE";
   readonly label: string;
-  readonly source: string;
+  readonly source: AgentWorkspaceBoundarySource;
   readonly transport: string;
   readonly authority: "READ_ONLY_VIEW_MODEL";
 }
