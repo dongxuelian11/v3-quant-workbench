@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import unittest
 from datetime import datetime, timezone
@@ -43,6 +44,7 @@ class DatasetIdentityTests(unittest.TestCase):
         self.result = self.evaluator.evaluate(
             self.definition, {"close": [1.0, 2.0, None, 4.0]}
         )
+
     def context(
         self,
         snapshot_id: str = "snapshot-1",
@@ -81,6 +83,29 @@ class DatasetIdentityTests(unittest.TestCase):
         )
         return materialization, evaluation
 
+    def alternate_evaluation(
+        self, context: FactorEvaluationContext, suffix: str
+    ) -> FactorEvaluation:
+        definition = FactorDefinitionVersion.create(
+            "open", FeatureNode("open", "eod.open/1.0.0"), self.registry
+        )
+        result = self.evaluator.evaluate(
+            definition, {"open": [1.5, 2.5, None, 4.5]}
+        )
+        materialization = FeatureMaterialization.create(
+            definition,
+            result,
+            context,
+            artifact(suffix),
+            FORMAL_ADMITTED_CEILING,
+        )
+        return FactorEvaluation.create(
+            definition,
+            materialization,
+            artifact("g"),
+            FORMAL_ADMITTED_CEILING,
+        )
+
     @staticmethod
     def split() -> SplitSpec:
         return SplitSpec.create(
@@ -101,7 +126,15 @@ class DatasetIdentityTests(unittest.TestCase):
         binding: DatasetBinding | None = None,
     ) -> DatasetVersion:
         _, evaluation = self.evaluation(context, suffix)
-        feature_set = FeatureSetVersion.create((evaluation,), artifact("f"))
+        return self.dataset_from_evaluations(context, (evaluation,), binding)
+
+    def dataset_from_evaluations(
+        self,
+        context: FactorEvaluationContext,
+        evaluations: tuple[FactorEvaluation, ...],
+        binding: DatasetBinding | None = None,
+    ) -> DatasetVersion:
+        feature_set = FeatureSetVersion.create(evaluations, artifact("f"))
         label = LabelSpec.create("next_return", "close", 1, 0)
         binding = binding or DatasetBinding(
             snapshot_id=context.snapshot_id,
@@ -116,7 +149,7 @@ class DatasetIdentityTests(unittest.TestCase):
         )
         return DatasetVersion.create(
             feature_set=feature_set,
-            evaluations=(evaluation,),
+            evaluations=evaluations,
             label_spec=label,
             split_spec=self.split(),
             binding=binding,
@@ -241,6 +274,33 @@ class DatasetIdentityTests(unittest.TestCase):
     def test_dataset_has_no_independent_upstream_authority_parameter(self) -> None:
         parameters = inspect.signature(DatasetVersion.create).parameters
         self.assertNotIn("required_upstreams", parameters)
+        self.assertNotIn("factor_evaluation_ids", parameters)
+
+    def test_dataset_membership_is_derived_deterministic_and_immutable(self) -> None:
+        context = self.context()
+        _, first_evaluation = self.evaluation(context, "a")
+        second_evaluation = self.alternate_evaluation(context, "b")
+        first = self.dataset_from_evaluations(
+            context, (first_evaluation, second_evaluation)
+        )
+        reordered = self.dataset_from_evaluations(
+            context, (second_evaluation, first_evaluation)
+        )
+        single = self.dataset_from_evaluations(context, (first_evaluation,))
+        expected = tuple(
+            sorted(
+                (
+                    first_evaluation.factor_evaluation_id,
+                    second_evaluation.factor_evaluation_id,
+                )
+            )
+        )
+        self.assertEqual(first.factor_evaluation_ids, expected)
+        self.assertEqual(first.to_wire()["factor_evaluation_ids"], list(expected))
+        self.assertEqual(first.dataset_version_id, reordered.dataset_version_id)
+        self.assertNotEqual(first.dataset_version_id, single.dataset_version_id)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            first.factor_evaluation_ids = ()  # type: ignore[misc]
 
     def test_definition_identity_is_independent_from_evaluation_identity(self) -> None:
         first_materialization, first_evaluation = self.evaluation(

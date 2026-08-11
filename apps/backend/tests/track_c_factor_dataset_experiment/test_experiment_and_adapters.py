@@ -154,6 +154,62 @@ class ExperimentTests(unittest.TestCase):
         )
         return finding, evidence
 
+    def test_dataset_member_factor_evaluation_is_accepted(self) -> None:
+        self.assertIn(
+            self.evaluation.factor_evaluation_id,
+            self.dataset.factor_evaluation_ids,
+        )
+        self.assertEqual(
+            self.run.factor_evaluation_id,
+            self.evaluation.factor_evaluation_id,
+        )
+
+    def test_same_environment_non_member_factor_evaluation_is_rejected(self) -> None:
+        registry = default_operator_registry()
+        definition = FactorDefinitionVersion.create(
+            "open", FeatureNode("open", "eod.open/1.0.0"), registry
+        )
+        evaluator = DeterministicReferenceEvaluator(registry)
+        result = evaluator.evaluate(definition, {"open": [1.5, 2.5, 3.5]})
+        materialization = FeatureMaterialization.create(
+            definition,
+            result,
+            self.evaluation.context,
+            artifact("9"),
+            FORMAL_ADMITTED_CEILING,
+        )
+        non_member = FactorEvaluation.create(
+            definition,
+            materialization,
+            artifact("a"),
+            FORMAL_ADMITTED_CEILING,
+        )
+        self.assertEqual(
+            non_member.context.environment_fingerprint,
+            self.dataset.binding.environment_fingerprint,
+        )
+        self.assertNotIn(
+            non_member.factor_evaluation_id,
+            self.dataset.factor_evaluation_ids,
+        )
+        experiment = ExperimentVersion.create(
+            "membership-check", "reject same-environment non-member", "1.0.0"
+        )
+        with self.assertRaisesRegex(ValueError, "exact DatasetVersion"):
+            ExperimentRun.create(
+                experiment=experiment,
+                dataset=self.dataset,
+                factor_evaluation=non_member,
+                code_version="track-c-v0/1",
+                environment_fingerprint=self.dataset.binding.environment_fingerprint,
+                input_artifact_ids=(
+                    self.dataset.dataset_artifact_id,
+                    materialization.output_artifact_id,
+                ),
+                run_provenance_artifact_id=artifact("b"),
+                proposed_state=FORMAL_ADMITTED_CEILING,
+            )
+
     def test_run_binding_is_immutable(self) -> None:
         with self.assertRaises(dataclasses.FrozenInstanceError):
             self.run.dataset_version_id = "different"  # type: ignore[misc]

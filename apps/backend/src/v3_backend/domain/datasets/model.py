@@ -299,6 +299,7 @@ class DatasetBinding:
 class DatasetVersion:
     dataset_version_id: str
     feature_set_version_id: str
+    factor_evaluation_ids: tuple[str, ...]
     label_spec_id: str
     split_spec_id: str
     binding: DatasetBinding
@@ -365,6 +366,7 @@ class DatasetVersion:
         truth_admission = propagate_downstream_ceiling(proposed_state, upstreams)
         payload = {
             "feature_set_version_id": feature_set.feature_set_version_id,
+            "factor_evaluation_ids": list(exact_evaluation_ids),
             "label_spec_id": label_spec.label_spec_id,
             "split_spec_id": split_spec.split_spec_id,
             "binding": binding.to_wire(),
@@ -375,6 +377,7 @@ class DatasetVersion:
         return cls(
             dataset_version_id="dsv_sha256_" + canonical_sha256(payload),
             feature_set_version_id=feature_set.feature_set_version_id,
+            factor_evaluation_ids=exact_evaluation_ids,
             label_spec_id=label_spec.label_spec_id,
             split_spec_id=split_spec.split_spec_id,
             binding=binding,
@@ -387,6 +390,7 @@ class DatasetVersion:
         return {
             "dataset_version_id": self.dataset_version_id,
             "feature_set_version_id": self.feature_set_version_id,
+            "factor_evaluation_ids": list(self.factor_evaluation_ids),
             "label_spec_id": self.label_spec_id,
             "split_spec_id": self.split_spec_id,
             "binding": self.binding.to_wire(),

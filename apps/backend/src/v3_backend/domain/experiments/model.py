@@ -118,6 +118,10 @@ class ExperimentRun:
             raise ValueError("ExperimentRun environment must match DatasetVersion")
         if factor_evaluation.context.environment_fingerprint != environment_fingerprint:
             raise ValueError("ExperimentRun environment must match FactorEvaluation")
+        if factor_evaluation.factor_evaluation_id not in dataset.factor_evaluation_ids:
+            raise ValueError(
+                "ExperimentRun FactorEvaluation must belong to the exact DatasetVersion"
+            )
         if not input_artifact_ids:
             raise ValueError("ExperimentRun requires immutable input Artifact linkage")
         ordered_artifacts = tuple(sorted(input_artifact_ids))
