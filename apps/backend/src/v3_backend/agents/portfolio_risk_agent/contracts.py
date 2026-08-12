@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
-from v3_backend.agents.contracts import ProposalBoundary, StrictAgentModel
+from v3_backend.agents.contracts import ProposalBoundary, StrictAgentModel, deterministic_json
 
 
 ExactId = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=256)]
+CanonicalWireText = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=65536)]
 Sha256Exact = Annotated[str, StringConstraints(strict=True, pattern=r"[0-9a-f]{64}")]
 ExactMetricName = Literal[
     "total_return",
@@ -21,6 +23,14 @@ ExactMetricName = Literal[
     "turnover",
 ]
 ExactObjectiveDirection = Literal["MINIMIZE", "MAXIMIZE"]
+
+
+def _nested_tuples(value: object) -> object:
+    """Recursively convert JSON lists to tuples for strict nested tuple fields."""
+
+    if isinstance(value, list):
+        return tuple(_nested_tuples(item) for item in value)
+    return value
 
 
 class PortfolioRiskDraftKind(StrEnum):
@@ -445,7 +455,7 @@ class BacktestResultEvidenceView(StrictAgentModel):
     @field_validator("diagnostic_summary", "nav_points", "scheduled_risk_adjusted_vector_ids", mode="before")
     @classmethod
     def arrays_to_tuples(cls, value: object) -> object:
-        return tuple(value) if isinstance(value, list) else value
+        return _nested_tuples(value)
 
 
 class AnalyticsMetricEvidence(StrictAgentModel):
@@ -503,11 +513,18 @@ class ReviewerEvidenceView(StrictAgentModel):
     @field_validator("target_refs", "findings", mode="before")
     @classmethod
     def arrays_to_tuples(cls, value: object) -> object:
-        return tuple(value) if isinstance(value, list) else value
+        return _nested_tuples(value)
 
 
 class ScenarioEvidenceBundle(StrictAgentModel):
-    """Exact canonical evidence chain for one scenario, resolved by the system.
+    """Untrusted evidence projection DTO for one scenario.
+
+    This model is a public, plainly constructible data view intended for
+    rendering/serialization only.  It carries no authority: a deterministic
+    hash, `binding_gaps == ()`, copied ids/hashes or ordinary JSON
+    deserialization cannot confer trusted status.  Trusted R consumers accept
+    only `ResolvedScenarioEvidenceBundle` instances produced by
+    `resolve_scenario_evidence` over canonical owner objects.
 
     Chain invariant: intent -> target -> risk-adjusted -> backtest -> analytics.
     `binding_gaps` lists links the current canonical owners could not prove;
@@ -542,27 +559,168 @@ class ScenarioEvidenceBundle(StrictAgentModel):
         return self
 
     @property
-    def invariant_context_key(self) -> tuple[tuple[str, str], ...]:
-        analytics_policy = self.analytics.analytics_policy_id if self.analytics is not None else ""
-        benchmark = self.analytics.benchmark_series_id if self.analytics is not None else ""
-        if self.analytics is None and benchmark == "":
-            benchmark = ""
-        return (
-            ("portfolio_intent_id", self.intent.portfolio_intent_id),
-            ("universe_version_id", self.intent.universe_version_id),
-            ("knowledge_cutoff", self.intent.knowledge_cutoff.isoformat()),
-            ("base_currency", self.intent.base_currency),
-            ("analytics_policy_id", analytics_policy),
-            ("benchmark_series_id", benchmark),
-        )
-
-    @property
     def treatment_context_key(self) -> tuple[tuple[str, str], ...]:
         return (
             ("construction_spec_version_id", self.construction_spec_version_id),
             ("risk_policy_set_version_id", self.risk_policy_set.risk_policy_set_version_id),
             ("cost_policy_id", self.cost_policy.policy_id),
         )
+
+
+def comparison_invariant_content(
+    *,
+    portfolio_intent_id: ExactId,
+    portfolio_intent_content_sha256: Sha256Exact,
+    universe_version_id: ExactId,
+    universe_membership_artifact_id: ExactId,
+    knowledge_cutoff: datetime,
+    snapshot_id: ExactId,
+    calendar_version_id: ExactId,
+    base_currency: str,
+    analytics_policy_id: ExactId,
+    analytics_policy_content_sha256: Sha256Exact,
+    benchmark_series_id: ExactId | None,
+    initial_cash: str,
+    initial_holdings: tuple[tuple[ExactId, int, str], ...],
+    instruments: tuple[tuple[ExactId, str], ...],
+    session_dates: tuple[str, ...],
+    session_market_state_inputs: str,
+    corporate_action_events: str,
+    exact_input_references: str,
+    rule_profile_id: ExactId,
+    rule_profile_content_sha256: Sha256Exact,
+    execution_timing_profile_id: ExactId,
+    execution_timing_profile_content_sha256: Sha256Exact,
+    execution_convention: ExactId,
+    runtime_identity: str,
+    engine_version: ExactId,
+    valuation_mode: str,
+) -> dict[str, object]:
+    """Exact non-treatment dimensions used for the deterministic invariant identity."""
+
+    return {
+        "portfolio_intent_id": portfolio_intent_id,
+        "portfolio_intent_content_sha256": portfolio_intent_content_sha256,
+        "universe_version_id": universe_version_id,
+        "universe_membership_artifact_id": universe_membership_artifact_id,
+        "knowledge_cutoff": knowledge_cutoff.isoformat(),
+        "snapshot_id": snapshot_id,
+        "calendar_version_id": calendar_version_id,
+        "base_currency": base_currency,
+        "analytics_policy_id": analytics_policy_id,
+        "analytics_policy_content_sha256": analytics_policy_content_sha256,
+        "benchmark_series_id": benchmark_series_id,
+        "initial_cash": initial_cash,
+        "initial_holdings": [list(item) for item in initial_holdings],
+        "instruments": [list(item) for item in instruments],
+        "session_dates": list(session_dates),
+        "session_market_state_inputs": session_market_state_inputs,
+        "corporate_action_events": corporate_action_events,
+        "exact_input_references": exact_input_references,
+        "rule_profile_id": rule_profile_id,
+        "rule_profile_content_sha256": rule_profile_content_sha256,
+        "execution_timing_profile_id": execution_timing_profile_id,
+        "execution_timing_profile_content_sha256": execution_timing_profile_content_sha256,
+        "execution_convention": execution_convention,
+        "runtime_identity": runtime_identity,
+        "engine_version": engine_version,
+        "valuation_mode": valuation_mode,
+    }
+
+
+def comparison_invariant_identity(**dimensions: object) -> str:
+    """Deterministic content hash over the exact non-treatment dimensions."""
+
+    return hashlib.sha256(deterministic_json(comparison_invariant_content(**dimensions)).encode("utf-8")).hexdigest()
+
+
+class ScenarioComparisonInvariant(StrictAgentModel):
+    """Resolver-derived deterministic comparison invariant (R-D).
+
+    Derived exclusively by the system resolver from canonical scenario and
+    backtest evidence — especially the exact BacktestRunSpec and its pinned
+    canonical inputs.  Callers cannot claim comparison equivalence: the
+    `invariant_id` is the content hash of every non-treatment execution and
+    evaluation dimension below, recomputed and verified on construction.
+
+    Treatment dimensions (construction spec, risk policy set, cost policy) are
+    deliberately absent so that disclosed experimental treatments remain
+    comparable under exact invariant equality.
+    """
+
+    invariant_id: Sha256Exact
+    portfolio_intent_id: ExactId
+    portfolio_intent_content_sha256: Sha256Exact
+    universe_version_id: ExactId
+    universe_membership_artifact_id: ExactId
+    knowledge_cutoff: datetime
+    snapshot_id: ExactId
+    calendar_version_id: ExactId
+    base_currency: str = Field(pattern=r"^[A-Z]{3}$")
+    analytics_policy_id: ExactId
+    analytics_policy_content_sha256: Sha256Exact
+    benchmark_series_id: ExactId | None = None
+    initial_cash: str
+    initial_holdings: tuple[tuple[ExactId, int, str], ...] = ()
+    instruments: tuple[tuple[ExactId, str], ...] = Field(min_length=1)
+    session_dates: tuple[str, ...] = Field(min_length=1)
+    session_market_state_inputs: CanonicalWireText
+    corporate_action_events: CanonicalWireText
+    exact_input_references: CanonicalWireText
+    rule_profile_id: ExactId
+    rule_profile_content_sha256: Sha256Exact
+    execution_timing_profile_id: ExactId
+    execution_timing_profile_content_sha256: Sha256Exact
+    execution_convention: ExactId
+    runtime_identity: CanonicalWireText
+    engine_version: ExactId
+    valuation_mode: Literal["RAW_EOD_CLOSE_FAIL_CLOSED"] = "RAW_EOD_CLOSE_FAIL_CLOSED"
+
+    @field_validator("knowledge_cutoff", mode="after")
+    @classmethod
+    def timezone_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("comparison invariant knowledge_cutoff must be timezone-aware")
+        return value
+
+    @field_validator("initial_holdings", "instruments", "session_dates", mode="before")
+    @classmethod
+    def arrays_to_tuples(cls, value: object) -> object:
+        return tuple(tuple(item) if isinstance(item, list) else item for item in value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def exact_invariant_identity(self) -> "ScenarioComparisonInvariant":
+        expected = comparison_invariant_identity(
+            portfolio_intent_id=self.portfolio_intent_id,
+            portfolio_intent_content_sha256=self.portfolio_intent_content_sha256,
+            universe_version_id=self.universe_version_id,
+            universe_membership_artifact_id=self.universe_membership_artifact_id,
+            knowledge_cutoff=self.knowledge_cutoff,
+            snapshot_id=self.snapshot_id,
+            calendar_version_id=self.calendar_version_id,
+            base_currency=self.base_currency,
+            analytics_policy_id=self.analytics_policy_id,
+            analytics_policy_content_sha256=self.analytics_policy_content_sha256,
+            benchmark_series_id=self.benchmark_series_id,
+            initial_cash=self.initial_cash,
+            initial_holdings=self.initial_holdings,
+            instruments=self.instruments,
+            session_dates=self.session_dates,
+            session_market_state_inputs=self.session_market_state_inputs,
+            corporate_action_events=self.corporate_action_events,
+            exact_input_references=self.exact_input_references,
+            rule_profile_id=self.rule_profile_id,
+            rule_profile_content_sha256=self.rule_profile_content_sha256,
+            execution_timing_profile_id=self.execution_timing_profile_id,
+            execution_timing_profile_content_sha256=self.execution_timing_profile_content_sha256,
+            execution_convention=self.execution_convention,
+            runtime_identity=self.runtime_identity,
+            engine_version=self.engine_version,
+            valuation_mode=self.valuation_mode,
+        )
+        if self.invariant_id != expected:
+            raise ValueError("scenario comparison invariant id must be the exact content hash of its dimensions")
+        return self
 
 
 class ComparisonStatus(StrEnum):

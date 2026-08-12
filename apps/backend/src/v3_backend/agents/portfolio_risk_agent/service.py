@@ -4,7 +4,7 @@ from collections import Counter
 from datetime import datetime
 from decimal import Decimal
 
-from v3_backend.agents.contracts import AgentProvenance, PermissionLevel
+from v3_backend.agents.contracts import AgentProvenance, PermissionLevel, deterministic_json
 from v3_backend.agents.permissions import decide_permission
 from v3_backend.domain.backtest_runtime import (
     BacktestRunResult,
@@ -57,11 +57,28 @@ from .contracts import (
     RiskPolicySetEvidenceView,
     RiskStageSummary,
     ScenarioComparison,
+    ScenarioComparisonInvariant,
     ScenarioEvidenceBundle,
     ScenarioEvidenceExplanation,
     TargetWeightEvidenceRow,
     TargetWeightEvidenceView,
+    comparison_invariant_content,
+    comparison_invariant_identity,
 )
+from .trusted import _RESOLVER_ORIGIN, ResolvedScenarioEvidenceBundle
+
+
+_VALUATION_MODE = "RAW_EOD_CLOSE_FAIL_CLOSED"
+
+
+def _require_trusted_bundle(bundle: object, *, role: str) -> ResolvedScenarioEvidenceBundle:
+    if type(bundle) is not ResolvedScenarioEvidenceBundle:
+        raise TypeError(
+            f"{role} requires resolver-produced trusted evidence "
+            "(an exact ResolvedScenarioEvidenceBundle); plain/manual "
+            "ScenarioEvidenceBundle values are not a trust path"
+        )
+    return bundle
 
 
 class PortfolioRiskAgentBindingError(ValueError):
@@ -454,6 +471,76 @@ def read_reviewer_report(report: ResearchReviewReport) -> ReviewerEvidenceView:
     )
 
 
+def _derive_comparison_invariant(
+    *,
+    intent: PortfolioIntent,
+    source: PortfolioIntentSource,
+    binding: StrategyEvaluationBindingVersion,
+    base_currency: str,
+    backtest_spec: BacktestRunSpec,
+    analytics: BacktestResultAnalytics,
+) -> ScenarioComparisonInvariant:
+    """Resolver-owned derivation of the exact comparison invariant (R-D).
+
+    Derived only from canonical owner objects: the exact BacktestRunSpec and
+    its pinned canonical inputs, the PortfolioIntent identity/content, the
+    universe, knowledge cutoff/as-of context, base currency, analytics policy
+    and benchmark context.  Treatment dimensions (construction spec, risk
+    policy set, cost policy) are intentionally not part of the invariant.
+    """
+
+    sessions = backtest_spec.sessions
+    dimensions = {
+        "portfolio_intent_id": intent.portfolio_intent_id,
+        "portfolio_intent_content_sha256": source.portfolio_intent_content_sha256,
+        "universe_version_id": source.universe_version_id,
+        "universe_membership_artifact_id": source.membership_artifact_id,
+        "knowledge_cutoff": binding.knowledge_cutoff,
+        "snapshot_id": binding.snapshot.snapshot_id,
+        "calendar_version_id": binding.calendar.calendar_version_id,
+        "base_currency": base_currency,
+        "analytics_policy_id": analytics.analytics_policy_id,
+        "analytics_policy_content_sha256": analytics.analytics_policy_content_sha256,
+        "benchmark_series_id": analytics.benchmark_series_id,
+        "initial_cash": backtest_spec.initial_cash,
+        "initial_holdings": tuple(
+            (item.instrument_id, item.quantity, item.acquired_on.isoformat())
+            for item in backtest_spec.initial_holdings
+        ),
+        "instruments": tuple(
+            (item.instrument_id, item.board.value) for item in backtest_spec.instruments
+        ),
+        "session_dates": tuple(session.session_date.isoformat() for session in sessions),
+        "session_market_state_inputs": deterministic_json(
+            [
+                [session.session_date.isoformat(), [state.to_wire() for state in session.states]]
+                for session in sessions
+            ]
+        ),
+        "corporate_action_events": deterministic_json(
+            [
+                [session.session_date.isoformat(), [action.to_wire() for action in session.corporate_actions]]
+                for session in sessions
+            ]
+        ),
+        "exact_input_references": deterministic_json(
+            [reference.to_wire() for reference in backtest_spec.exact_references]
+        ),
+        "rule_profile_id": backtest_spec.rule_profile.profile_id,
+        "rule_profile_content_sha256": backtest_spec.rule_profile.content_sha256,
+        "execution_timing_profile_id": backtest_spec.execution_timing_profile.profile_id,
+        "execution_timing_profile_content_sha256": backtest_spec.execution_timing_profile.content_sha256,
+        "execution_convention": backtest_spec.execution_timing_profile.execution_convention,
+        "runtime_identity": deterministic_json(backtest_spec.runtime_identity.to_wire()),
+        "engine_version": backtest_spec.engine_version,
+        "valuation_mode": _VALUATION_MODE,
+    }
+    return ScenarioComparisonInvariant(
+        invariant_id=comparison_invariant_identity(**dimensions),
+        **dimensions,
+    )
+
+
 def resolve_scenario_evidence(
     *,
     intent: PortfolioIntent,
@@ -470,13 +557,16 @@ def resolve_scenario_evidence(
     backtest_spec: BacktestRunSpec | None = None,
     analytics: BacktestResultAnalytics | None = None,
     reviewer_reports: tuple[ResearchReviewReport, ...] = (),
-) -> ScenarioEvidenceBundle:
+) -> ResolvedScenarioEvidenceBundle:
     """System-owned scenario evidence resolver over canonical owner objects.
 
     Only actual canonical owner objects are accepted; arbitrary prebuilt
-    evidence projections are never proof. Links that the current owners cannot
-    prove are listed in `binding_gaps` and the bundle never becomes
-    EVIDENCE_BOUND.
+    evidence projections are never proof.  The result is the resolver-owned
+    trusted representation (ResolvedScenarioEvidenceBundle): manual DTO
+    construction, copied hashes, `binding_gaps == ()` or JSON
+    deserialization cannot obtain trusted status.  Links that the current
+    owners cannot prove are listed in `binding_gaps` and never become
+    EVIDENCE_BOUND; such bundles also carry no comparison invariant.
     """
 
     if not isinstance(intent, PortfolioIntent):
@@ -526,6 +616,12 @@ def resolve_scenario_evidence(
         _binding(risk_adjusted.risk_application.risk_policy_set.content_sha256 == risk_policy_set.content_sha256, "risk-adjusted does not bind the exact policy set content hash")
         adjusted_view = read_risk_adjusted_evidence(risk_adjusted, decision_report)
 
+    if decision_report is not None:
+        if not isinstance(decision_report, RiskDecisionReport):
+            raise TypeError("decision_report must be the canonical RiskDecisionReport object")
+        _binding(decision_report.risk_policy_set_version_id == risk_policy_set.risk_policy_set_version_id, "risk decision report does not bind the exact scenario RiskPolicySetVersion")
+        _binding(decision_report.risk_policy_set_content_sha256 == risk_policy_set.content_sha256, "risk decision report does not bind the exact scenario RiskPolicySetVersion content hash")
+
     if backtest_result is not None:
         if not isinstance(backtest_result, BacktestRunResult):
             raise TypeError("backtest_result must be the canonical BacktestRunResult object")
@@ -567,7 +663,7 @@ def resolve_scenario_evidence(
             _binding(matches, "reviewer report does not target the exact scenario BacktestRunResult")
         reviewer_views = (*reviewer_views, view)
 
-    return ScenarioEvidenceBundle(
+    payload = ScenarioEvidenceBundle(
         intent=intent_view,
         construction_spec_version_id=construction_spec.source_id,
         construction_spec_content_sha256=construction_spec.content_sha256,
@@ -580,6 +676,19 @@ def resolve_scenario_evidence(
         reviewer_reports=reviewer_views,
         binding_gaps=tuple(gaps),
     )
+
+    comparison_invariant: ScenarioComparisonInvariant | None = None
+    if not gaps and backtest_spec is not None and backtest_result is not None and analytics is not None:
+        comparison_invariant = _derive_comparison_invariant(
+            intent=intent,
+            source=source,
+            binding=binding,
+            base_currency=base_currency,
+            backtest_spec=backtest_spec,
+            analytics=analytics,
+        )
+
+    return ResolvedScenarioEvidenceBundle(payload, comparison_invariant, _RESOLVER_ORIGIN)
 
 
 def draft_portfolio_construct(
@@ -733,42 +842,111 @@ def _metric_map(view: ResultAnalyticsEvidenceView) -> dict[str, AnalyticsMetricE
     return result
 
 
+_INVARIANT_DIMENSION_NAMES = (
+    "portfolio_intent_id",
+    "portfolio_intent_content_sha256",
+    "universe_version_id",
+    "universe_membership_artifact_id",
+    "knowledge_cutoff",
+    "snapshot_id",
+    "calendar_version_id",
+    "base_currency",
+    "analytics_policy_id",
+    "analytics_policy_content_sha256",
+    "benchmark_series_id",
+    "initial_cash",
+    "initial_holdings",
+    "instruments",
+    "session_dates",
+    "session_market_state_inputs",
+    "corporate_action_events",
+    "exact_input_references",
+    "rule_profile_id",
+    "rule_profile_content_sha256",
+    "execution_timing_profile_id",
+    "execution_timing_profile_content_sha256",
+    "execution_convention",
+    "runtime_identity",
+    "engine_version",
+    "valuation_mode",
+)
+
+
+def _invariant_mismatch_names(
+    left: ScenarioComparisonInvariant,
+    right: ScenarioComparisonInvariant,
+) -> tuple[str, ...]:
+    mismatches = tuple(
+        name
+        for name in _INVARIANT_DIMENSION_NAMES
+        if getattr(left, name) != getattr(right, name)
+    )
+    if not mismatches and left.invariant_id != right.invariant_id:
+        mismatches = ("comparison_invariant",)
+    return mismatches
+
+
 def compare_scenarios(
-    left: ScenarioEvidenceBundle,
-    right: ScenarioEvidenceBundle,
+    left: ResolvedScenarioEvidenceBundle,
+    right: ResolvedScenarioEvidenceBundle,
     *,
     objective_metric: str | None = None,
     objective_direction: str | None = None,
 ) -> ScenarioComparison:
-    if not isinstance(left, ScenarioEvidenceBundle) or not isinstance(right, ScenarioEvidenceBundle):
-        raise TypeError("comparison requires exact ScenarioEvidenceBundle objects")
-    invariant_left = dict(left.invariant_context_key)
-    invariant_right = dict(right.invariant_context_key)
-    invariant_mismatches: tuple[str, ...] = ()
-    if invariant_left != invariant_right:
-        invariant_mismatches = tuple(
-            sorted(name for name in invariant_left if invariant_left[name] != invariant_right.get(name))
-        )
+    """Trusted scenario comparison over resolver-derived comparison invariants.
+
+    Order of authority: trusted resolved evidence -> exact comparison
+    invariant -> invariant equality -> disclosed treatment differences ->
+    metrics/ranking.  Metrics never override invariant mismatch, and
+    evidence-binding gaps always fail closed.
+    """
+
+    left = _require_trusted_bundle(left, role="scenario comparison")
+    right = _require_trusted_bundle(right, role="scenario comparison")
+    left_payload = left.payload
+    right_payload = right.payload
+
+    left_analytics_id = left_payload.analytics.analytics_id if left_payload.analytics is not None else "NOT_AVAILABLE"
+    right_analytics_id = right_payload.analytics.analytics_id if right_payload.analytics is not None else "NOT_AVAILABLE"
+
+    gaps = tuple(sorted(set(left_payload.binding_gaps) | set(right_payload.binding_gaps)))
+    if gaps:
         return ScenarioComparison(
             status=ComparisonStatus.INCOMPARABLE_CONTEXT,
-            left_analytics_id=left.analytics.analytics_id if left.analytics is not None else "NOT_AVAILABLE",
-            right_analytics_id=right.analytics.analytics_id if right.analytics is not None else "NOT_AVAILABLE",
-            context_mismatches=invariant_mismatches,
+            left_analytics_id=left_analytics_id,
+            right_analytics_id=right_analytics_id,
+            context_mismatches=("EVIDENCE_BINDING_UNAVAILABLE", *gaps),
         )
-    if left.analytics is None or right.analytics is None:
+    if left_payload.analytics is None or right_payload.analytics is None:
         return ScenarioComparison(
             status=ComparisonStatus.INCOMPARABLE_CONTEXT,
-            left_analytics_id=left.analytics.analytics_id if left.analytics is not None else "NOT_AVAILABLE",
-            right_analytics_id=right.analytics.analytics_id if right.analytics is not None else "NOT_AVAILABLE",
+            left_analytics_id=left_analytics_id,
+            right_analytics_id=right_analytics_id,
             context_mismatches=("analytics",),
         )
-    treatment_left = dict(left.treatment_context_key)
-    treatment_right = dict(right.treatment_context_key)
+    if left.comparison_invariant is None or right.comparison_invariant is None:
+        return ScenarioComparison(
+            status=ComparisonStatus.INCOMPARABLE_CONTEXT,
+            left_analytics_id=left_analytics_id,
+            right_analytics_id=right_analytics_id,
+            context_mismatches=("comparison_invariant",),
+        )
+    left_invariant = left.comparison_invariant
+    right_invariant = right.comparison_invariant
+    if left_invariant.invariant_id != right_invariant.invariant_id:
+        return ScenarioComparison(
+            status=ComparisonStatus.INCOMPARABLE_CONTEXT,
+            left_analytics_id=left_analytics_id,
+            right_analytics_id=right_analytics_id,
+            context_mismatches=_invariant_mismatch_names(left_invariant, right_invariant),
+        )
+    treatment_left = dict(left_payload.treatment_context_key)
+    treatment_right = dict(right_payload.treatment_context_key)
     scenario_differences = tuple(
         sorted(name for name in treatment_left if treatment_left[name] != treatment_right.get(name))
     )
-    left_metrics = _metric_map(left.analytics)
-    right_metrics = _metric_map(right.analytics)
+    left_metrics = _metric_map(left_payload.analytics)
+    right_metrics = _metric_map(right_payload.analytics)
     deltas: list[MetricDelta] = []
     for name in (*_METRIC_ORDER, "turnover"):
         left_metric = left_metrics[name]
@@ -801,8 +979,8 @@ def compare_scenarios(
                 ranking = "LEFT" if difference > 0 else "RIGHT"
     return ScenarioComparison(
         status=ComparisonStatus.COMPARABLE,
-        left_analytics_id=left.analytics.analytics_id,
-        right_analytics_id=right.analytics.analytics_id,
+        left_analytics_id=left_payload.analytics.analytics_id,
+        right_analytics_id=right_payload.analytics.analytics_id,
         scenario_differences=scenario_differences,
         metric_deltas=tuple(deltas),
         objective_metric=objective_metric,
@@ -813,33 +991,33 @@ def compare_scenarios(
 
 def explain_scenario(
     *,
-    bundle: ScenarioEvidenceBundle,
+    bundle: ResolvedScenarioEvidenceBundle,
     next_action_proposals: tuple[str, ...] = (),
 ) -> ScenarioEvidenceExplanation:
-    if not isinstance(bundle, ScenarioEvidenceBundle):
-        raise TypeError("explanation requires an exact ScenarioEvidenceBundle")
+    bundle = _require_trusted_bundle(bundle, role="scenario explanation")
+    payload = bundle.payload
     missing: list[str] = []
     for name, value in (
-        ("target", bundle.target),
-        ("risk_adjusted", bundle.risk_adjusted),
-        ("backtest", bundle.backtest),
-        ("analytics", bundle.analytics),
+        ("target", payload.target),
+        ("risk_adjusted", payload.risk_adjusted),
+        ("backtest", payload.backtest),
+        ("analytics", payload.analytics),
     ):
         if value is None:
             missing.append(name)
-    cited: list[str] = [bundle.intent.portfolio_intent_id, bundle.construction_spec_version_id, bundle.risk_policy_set.risk_policy_set_version_id, bundle.cost_policy.policy_id]
-    if bundle.target is not None:
-        cited.append(bundle.target.target_weight_vector_id)
-    if bundle.risk_adjusted is not None:
-        cited.append(bundle.risk_adjusted.risk_adjusted_weight_vector_id)
-    if bundle.backtest is not None:
-        cited.append(bundle.backtest.result_id)
-    if bundle.analytics is not None:
-        cited.append(bundle.analytics.analytics_id)
-    for report in bundle.reviewer_reports:
+    cited: list[str] = [payload.intent.portfolio_intent_id, payload.construction_spec_version_id, payload.risk_policy_set.risk_policy_set_version_id, payload.cost_policy.policy_id]
+    if payload.target is not None:
+        cited.append(payload.target.target_weight_vector_id)
+    if payload.risk_adjusted is not None:
+        cited.append(payload.risk_adjusted.risk_adjusted_weight_vector_id)
+    if payload.backtest is not None:
+        cited.append(payload.backtest.result_id)
+    if payload.analytics is not None:
+        cited.append(payload.analytics.analytics_id)
+    for report in payload.reviewer_reports:
         cited.append(report.review_report_id)
 
-    if bundle.binding_gaps:
+    if payload.binding_gaps:
         status = "EVIDENCE_BINDING_UNAVAILABLE"
     elif missing:
         status = "EVIDENCE_MISSING"
@@ -849,39 +1027,39 @@ def explain_scenario(
     constraint_statements: list[str] = []
     weight_change_statements: list[str] = []
     risk_diagnostic_statements: list[str] = []
-    if bundle.risk_adjusted is not None:
-        if bundle.risk_adjusted.stage_summaries:
-            for stage in bundle.risk_adjusted.stage_summaries:
+    if payload.risk_adjusted is not None:
+        if payload.risk_adjusted.stage_summaries:
+            for stage in payload.risk_adjusted.stage_summaries:
                 statement = f"stage {stage.stage_order} {stage.policy_id} {stage.status}: {stage.reason}"
                 risk_diagnostic_statements.append(statement)
                 if stage.status in ("ADJUSTED", "REJECTED"):
                     constraint_statements.append(statement)
-        if bundle.target is not None:
-            target_rows = {row.instrument_id: Decimal(row.target_weight) for row in bundle.target.rows}
-            adjusted_rows = {row.instrument_id: Decimal(row.target_weight) for row in bundle.risk_adjusted.rows}
+        if payload.target is not None:
+            target_rows = {row.instrument_id: Decimal(row.target_weight) for row in payload.target.rows}
+            adjusted_rows = {row.instrument_id: Decimal(row.target_weight) for row in payload.risk_adjusted.rows}
             for instrument_id in sorted(set(target_rows) | set(adjusted_rows)):
                 before = target_rows.get(instrument_id)
                 after = adjusted_rows.get(instrument_id)
                 if before != after:
                     weight_change_statements.append(f"{instrument_id}: {before} -> {after}")
-            if bundle.target.cash_weight != bundle.risk_adjusted.cash_weight:
-                weight_change_statements.append(f"cash: {bundle.target.cash_weight} -> {bundle.risk_adjusted.cash_weight}")
-        weight_change_statements.append(f"decision: {bundle.risk_adjusted.decision} ({bundle.risk_adjusted.decision_reason})")
+            if payload.target.cash_weight != payload.risk_adjusted.cash_weight:
+                weight_change_statements.append(f"cash: {payload.target.cash_weight} -> {payload.risk_adjusted.cash_weight}")
+        weight_change_statements.append(f"decision: {payload.risk_adjusted.decision} ({payload.risk_adjusted.decision_reason})")
 
     cost_statements: list[str] = [
-        f"CostPolicy {bundle.cost_policy.policy_name} {bundle.cost_policy.policy_id} commission={bundle.cost_policy.commission_rate} stamp_duty_sell={bundle.cost_policy.stamp_duty_sell_rate}",
+        f"CostPolicy {payload.cost_policy.policy_name} {payload.cost_policy.policy_id} commission={payload.cost_policy.commission_rate} stamp_duty_sell={payload.cost_policy.stamp_duty_sell_rate}",
     ]
     analytics_statements: list[str] = []
-    if bundle.analytics is not None:
-        for metric in (*bundle.analytics.metrics, bundle.analytics.turnover):
+    if payload.analytics is not None:
+        for metric in (*payload.analytics.metrics, payload.analytics.turnover):
             if metric.status == "AVAILABLE":
                 analytics_statements.append(f"{metric.name}: {metric.value}")
             else:
                 analytics_statements.append(f"{metric.name}: {metric.status}" + (f" ({metric.reason})" if metric.reason else ""))
-        cost_statements.append(f"fills={bundle.analytics.fill_count} total_fees={bundle.analytics.total_fees}")
+        cost_statements.append(f"fills={payload.analytics.fill_count} total_fees={payload.analytics.total_fees}")
 
     reviewer_statements: list[str] = []
-    for report in bundle.reviewer_reports:
+    for report in payload.reviewer_reports:
         for kind, severity, summary in report.findings:
             reviewer_statements.append(f"{report.review_report_id} {kind} {severity}: {summary}")
         if not report.findings:

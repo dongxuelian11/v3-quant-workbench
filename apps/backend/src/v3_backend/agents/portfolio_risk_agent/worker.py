@@ -17,9 +17,9 @@ from .contracts import (
     PortfolioRiskNarrative,
     PortfolioRiskProposal,
     PortfolioRiskScenarioContext,
-    ScenarioEvidenceBundle,
 )
 from .service import (
+    _require_trusted_bundle,
     build_portfolio_risk_proposal,
     compare_scenarios,
     draft_backtest_run,
@@ -27,6 +27,7 @@ from .service import (
     draft_risk_apply,
 )
 from .tools import PortfolioRiskReadTools
+from .trusted import ResolvedScenarioEvidenceBundle
 
 
 _INSTRUCTION_VERSION = "round5-r-portfolio-risk-agent/1.1"
@@ -225,8 +226,8 @@ class PortfolioRiskAgentWorker:
         self,
         *,
         research_goal: str,
-        left: ScenarioEvidenceBundle,
-        right: ScenarioEvidenceBundle,
+        left: ResolvedScenarioEvidenceBundle,
+        right: ResolvedScenarioEvidenceBundle,
         objective_metric: str | None = None,
         objective_direction: str | None = None,
     ) -> PortfolioRiskNarrative:
@@ -235,9 +236,12 @@ class PortfolioRiskAgentWorker:
         The system resolves both bundles, computes the deterministic
         `compare_scenarios`, and the model MUST consume the exact
         compare_scenarios tool result. No evidence tool call => fail closed.
+        Only resolver-produced trusted evidence may enter this path.
         """
 
         require_permission(self._permission, PermissionLevel.L1_DRAFT)
+        left = _require_trusted_bundle(left, role="compare proposal")
+        right = _require_trusted_bundle(right, role="compare proposal")
         left_id = left.deterministic_sha256
         right_id = right.deterministic_sha256
         for tool, object_id in (("get_scenario_bundle", left_id), ("get_scenario_bundle", right_id)):

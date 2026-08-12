@@ -64,19 +64,52 @@ becomes `EVIDENCE_BOUND`; explanations then report `EVIDENCE_BINDING_UNAVAILABLE
 Reviewer binding: the bundle accepts a report only when its exact `target_refs` (projected
 verbatim) include the scenario's exact `BacktestRunResult` id + content hash; unrelated
 reports fail closed. Backtest binding: the projected result view carries the spec id/hash,
-the scheduled risk-adjusted vector ids, and the exact bound vector id.
+the scheduled risk-adjusted vector ids, and the exact bound vector id. The decision report is
+explicitly exact-bound to the scenario `RiskPolicySetVersion` id + content hash.
+
+### Resolver trust boundary (Finding R-C final closure)
+
+`ScenarioEvidenceBundle` is an **explicitly untrusted projection DTO** for rendering and
+serialization only. Trusted R consumers accept only `ResolvedScenarioEvidenceBundle`, a
+frozen resolver-owned representation produced exclusively by `resolve_scenario_evidence`.
+Its constructor requires the module-private resolver origin, so none of the following is a
+trust path: constructing the public DTO, setting `binding_gaps=()`, setting any boolean,
+copying ids or content hashes, reproducing a deterministic content hash, or deserializing
+JSON into the public DTO. There is no caller-settable trust flag.
+
+Trusted consumers: `compare_scenarios`, `explain_scenario`, the `PortfolioRiskReadTools`
+scenario inventory (`bundles`/`get_scenario_bundle`), and the compare worker path accept
+**only** exact `ResolvedScenarioEvidenceBundle` instances and fail closed with `TypeError`
+otherwise. The trusted wrapper's deterministic identity covers both the payload and the
+resolver-derived comparison invariant.
 
 ## Scenario comparison semantics (Finding R-D)
 
-`compare_scenarios` separates **invariant research context**
-(`portfolio_intent_id`, `universe_version_id`, `knowledge_cutoff`, `base_currency`,
-`analytics_policy_id`, `benchmark_series_id`) from **scenario treatment** (construction spec,
-risk policy set, cost policy). Invariant mismatch => `INCOMPARABLE_CONTEXT` with the exact
-mismatched fields and no ranking. Treatment differences under an exact invariant context =>
-`COMPARABLE` with the differences disclosed in `scenario_differences` — deliberate
-risk/cost-treatment changes are visible, not hidden, and no context-free "best" claim is
-produced. Ranking is allowed only with an explicit objective metric + direction whose delta
-is `AVAILABLE` on both sides; missing metrics remain `NOT_RUN / NOT_AVAILABLE /
+`compare_scenarios` accepts only resolver-produced trusted evidence and separates
+**comparison invariant** from **scenario treatment**. The invariant is the resolver-derived
+`ScenarioComparisonInvariant`, whose `invariant_id` is the deterministic content hash of
+every non-treatment execution/evaluation dimension, recomputed and verified on
+construction. Dimensions covered: `PortfolioIntent` identity/content; universe
+identity/membership; knowledge cutoff; snapshot and calendar references; base currency;
+analytics policy id/content; benchmark series; `initial_cash`; `initial_holdings`;
+instrument set; exact session dates; exact per-session market-state inputs; exact
+corporate-action events; exact pinned data/snapshot/calendar/corporate-action references;
+A-share rule profile id/content; execution timing profile id/content and convention;
+runtime identity; engine version; valuation mode.
+
+Treatment dimensions (construction spec, risk policy set, cost policy) are deliberately
+absent from the invariant: they may differ while scenarios remain `COMPARABLE`, and the
+differences are disclosed explicitly in `scenario_differences`.
+
+Comparison order of authority: trusted resolved evidence -> derived comparison invariant ->
+invariant equality. Any evidence-binding gap fails closed as `INCOMPARABLE_CONTEXT` with
+`EVIDENCE_BINDING_UNAVAILABLE`; any missing analytics/invariant fails closed as
+`INCOMPARABLE_CONTEXT`; any invariant mismatch returns the exact mismatched dimension names
+and **never** a ranking or metric deltas. Only under exact invariant equality are treatment
+differences disclosed and metrics/ranking computed. A higher Sharpe or lower drawdown can
+never make incomparable scenarios comparable, and no context-free "best" claim is produced.
+Ranking is allowed only with an explicit objective metric + direction whose delta is
+`AVAILABLE` on both sides; missing metrics remain `NOT_RUN / NOT_AVAILABLE /
 INSUFFICIENT_SAMPLE` with no zero fill.
 
 ## PydanticAI worker evidence requirements
@@ -103,8 +136,15 @@ triple (`RISK_V0_BACKEND = "v3-native-decimal"`).
 
 ## Test coverage
 
-`apps/backend/tests/round5_r_portfolio_risk_agent/test_portfolio_risk_agent.py` (64 tests)
+`apps/backend/tests/round5_r_portfolio_risk_agent/test_portfolio_risk_agent.py` (91 tests)
 covers the original 20 R categories plus the correction matrix: R-A confirmation authority
 (5), R-B exact construct/risk/backtest binding (17), R-C evidence resolver and binding (7),
-R-D evidence-grounded comparison and treatment semantics (7), worker evidence gates, and all
-existing A-share / no-second-authority regressions.
+R-D evidence-grounded comparison and treatment semantics (7), worker evidence gates, all
+existing A-share / no-second-authority regressions, and the final closure matrix: R-C trust
+boundary negatives (10: manual DTO, empty gaps, reproduced hashes, read-tools admission,
+compare-worker admission, unrelated/wrong-identity reviewer reports, broken cost-policy and
+decision-report relations, full valid chain) and R-D invariant negatives/positives (17:
+initial cash, holdings, instruments, session range, market-state inputs, data/calendar/
+corporate-action references, A-share rule profile, execution timing, runtime identity,
+engine version, analytics policy, benchmark context -> `INCOMPARABLE_CONTEXT`; construction
+spec / risk policy set / cost policy -> `COMPARABLE` with disclosed treatment differences).

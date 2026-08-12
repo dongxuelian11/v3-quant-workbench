@@ -14,10 +14,10 @@ from .contracts import (
     RiskAdjustedEvidenceView,
     RiskPolicySetEvidenceView,
     ScenarioComparison,
-    ScenarioEvidenceBundle,
     TargetWeightEvidenceView,
 )
 from .service import compare_scenarios
+from .trusted import ResolvedScenarioEvidenceBundle
 
 
 class PortfolioRiskAgentToolError(ValueError):
@@ -52,8 +52,15 @@ class PortfolioRiskReadTools:
         results: tuple[BacktestResultEvidenceView, ...] = (),
         analytics: tuple[ResultAnalyticsEvidenceView, ...] = (),
         reviews: tuple[ReviewerEvidenceView, ...] = (),
-        bundles: tuple[ScenarioEvidenceBundle, ...] = (),
+        bundles: tuple[ResolvedScenarioEvidenceBundle, ...] = (),
     ) -> None:
+        for bundle in bundles:
+            if type(bundle) is not ResolvedScenarioEvidenceBundle:
+                raise TypeError(
+                    "trusted scenario inventory accepts only resolver-produced "
+                    "ResolvedScenarioEvidenceBundle evidence; plain/manual "
+                    "ScenarioEvidenceBundle values cannot enter"
+                )
         self._intents = MappingProxyType({value.portfolio_intent_id: value for value in intents})
         self._targets = MappingProxyType({value.target_weight_vector_id: value for value in targets})
         self._policy_sets = MappingProxyType({value.risk_policy_set_version_id: value for value in policy_sets})
@@ -158,7 +165,7 @@ class PortfolioRiskReadTools:
     def get_reviewer_report(self, review_report_id: str) -> ReviewerEvidenceView:
         return self._fetch("get_reviewer_report", review_report_id, self._reviews)
 
-    def get_scenario_bundle(self, bundle_sha256: str) -> ScenarioEvidenceBundle:
+    def get_scenario_bundle(self, bundle_sha256: str) -> ResolvedScenarioEvidenceBundle:
         return self._fetch("get_scenario_bundle", bundle_sha256, self._bundles)
 
     def compare_scenarios(self, comparison_key: str) -> ScenarioComparison:

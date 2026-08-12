@@ -36,12 +36,14 @@ from .contracts import (
     RiskPolicySetEvidenceView,
     RiskStageSummary,
     ScenarioComparison,
+    ScenarioComparisonInvariant,
     ScenarioEvidenceBundle,
     ScenarioEvidenceExplanation,
     TargetWeightEvidenceRow,
     TargetWeightEvidenceView,
     UserConfirmation,
 )
+from .trusted import ResolvedScenarioEvidenceBundle
 from .service import (
     PortfolioRiskAgentBindingError,
     build_portfolio_risk_proposal,
@@ -89,6 +91,7 @@ __all__ = [
     "PortfolioRiskScenarioContext",
     "ResultAnalyticsEvidenceView",
     "ResultCompareDraftPayload",
+    "ResolvedScenarioEvidenceBundle",
     "ReviewRunDraftPayload",
     "ReviewerEvidenceView",
     "ReviewerTargetEvidence",
@@ -98,6 +101,7 @@ __all__ = [
     "RiskPolicySetEvidenceView",
     "RiskStageSummary",
     "ScenarioComparison",
+    "ScenarioComparisonInvariant",
     "ScenarioEvidenceBundle",
     "ScenarioEvidenceExplanation",
     "TargetWeightEvidenceRow",
