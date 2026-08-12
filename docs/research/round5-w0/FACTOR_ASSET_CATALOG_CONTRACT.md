@@ -12,8 +12,8 @@ Every accepted output follows:
 
 - `FormulaDocumentVersion` preserves exact source text/hash, language, parser compatibility profile, AST digest, outputs, and provenance.
 - `FormulaOutputBinding` binds one exact document output to one exact `FactorDefinitionVersion` and typed output.
-- `FactorImportReceipt` records source digest/revision, license provenance, translator, OperatorRegistry, data-semantic profile, warnings, and resulting definition. Warnings, missing evidence, or missing definition cannot be `ADMITTED`.
-- `FactorAssetVersion` is display/discovery metadata around an exact definition and binding. Its lifecycle (`DRAFT`, `CANDIDATE`, `REVIEWED`, `PROMOTED`, `DEPRECATED`) is not Truth or Admission.
+- `FactorImportReceipt` records source digest/revision, license provenance, translator, exact compatibility profile, OperatorRegistry, data-semantic profile, and resulting definition. Raw `create(..., ADMITTED)` is closed. User-authored formulas use `create_from_user_formula(...)` and bind the source SHA, registered profiles, translator result, and exact definition without inventing a third-party license. External packs use `create_from_pack_item(...)` and additionally bind the actual canonical manifest, exact member item/digest/revision/license/status; non-`SUPPORTED` items cannot admit.
+- `FactorAssetVersion` is display/discovery metadata around an exact definition and binding. Generic create only permits `DRAFT` or `CANDIDATE`; `REVIEWED`, `PROMOTED`, and `DEPRECATED` fail with `LIFECYCLE_TRANSITION_NOT_AUTHORIZED` until a separate owner transition is formally implemented. Lifecycle remains independent of Truth and Admission.
 - `FactorCatalogSnapshotVersion` contains only exact asset key/version refs. It does not copy formulas or execute factors.
 
 Catalog discovery supports asset key, source family, pack manifest, tag/category, output type, maximum lookback, frequency, lifecycle, operator dependency, and compatibility status. Performance remains `NOT_EVALUATED` unless an explicit existing Evaluation context is provided; otherwise `EVALUATION_CONTEXT_REQUIRED` is raised.

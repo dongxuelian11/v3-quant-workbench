@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from dataclasses import replace
 
 from v3_backend.adapters.talib import TalibOperatorAdapter
 from v3_backend.domain.factors import (
@@ -14,6 +15,10 @@ from v3_backend.domain.factors import (
     MissingSemantics,
     OperatorNode,
     NumericLiteralNode,
+    LiteralBroadcastSemantics,
+    OperatorRegistry,
+    OperatorSpec,
+    BackendBinding,
     UnknownOperator,
     UnsafeFactorExpression,
     ValueType,
@@ -88,6 +93,10 @@ class FactorIrTests(unittest.TestCase):
             FactorDefinitionVersion.create(
                 "constant", NumericLiteralNode.create(1), self.registry
             )
+        with self.assertRaisesRegex(FactorIrError, "value_type"):
+            NumericLiteralNode("1", ValueType.BOOLEAN_SERIES)
+        with self.assertRaisesRegex(FactorIrError, "broadcast_semantics"):
+            NumericLiteralNode("1", ValueType.FLOAT_SERIES, "FORGED")  # type: ignore[arg-type]
 
     def test_signal_types_are_closed_and_propagate_to_metadata(self) -> None:
         threshold = OperatorNode(
@@ -140,10 +149,14 @@ class ReferenceEvaluatorTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first.values, (2.0, None, None, 2.0))
         self.assertIs(first.output_type, ValueType.FLOAT_SERIES)
-        self.assertEqual(first.evaluator_version, "v3-factor-reference-evaluator/1.1.0")
+        self.assertEqual(first.evaluator_version, "v3-factor-reference-evaluator/1.1.1")
 
     def test_legacy_numeric_registry_and_evaluator_identity_remain_exact(self) -> None:
         legacy_registry = default_operator_registry()
+        self.assertEqual(
+            legacy_registry.registry_version,
+            "opreg_sha256_17a1aee967f6cfcd7078da32c85c3b627279361bc60bf12eb9c4b46efa9d2733",
+        )
         self.assertNotEqual(legacy_registry.registry_version, self.registry.registry_version)
         definition = FactorDefinitionVersion.create(
             "legacy_close", FeatureNode("close", "field/1.0.0"), legacy_registry
@@ -156,6 +169,42 @@ class ReferenceEvaluatorTests(unittest.TestCase):
         with self.assertRaisesRegex(FactorEvaluationError, "registry version mismatch"):
             DeterministicReferenceEvaluator(self.registry).evaluate(
                 definition, {"close": [1, 2]}
+            )
+
+    def test_custom_native_specs_cannot_claim_v3_execution_semantics(self) -> None:
+        specs = self.registry.to_wire()["operators"]
+        cross = self.registry.resolve("CROSS", "1.0.0")
+        for forged in (
+            replace(cross, fixed_lookback=0),
+            replace(cross, output_type=ValueType.FLOAT_SERIES),
+            replace(self.registry.resolve("GT", "1.0.0"), missing_semantics=MissingSemantics.DIVIDE_BY_ZERO_IS_MISSING),
+            replace(self.registry.resolve("AND", "1.0.0"), fixed_lookback=1),
+        ):
+            all_specs = []
+            for value in self.registry.to_wire()["operators"]:
+                original = self.registry.resolve(value["name"], value["semantic_version"])
+                all_specs.append(forged if original.key == forged.key else original)
+            with self.assertRaisesRegex(FactorEvaluationError, "OPERATOR_EXECUTION_SEMANTICS_MISMATCH"):
+                DeterministicReferenceEvaluator(OperatorRegistry(tuple(all_specs)))
+
+    def test_native_result_is_revalidated_against_declared_output_type(self) -> None:
+        class WrongNativeResultEvaluator(DeterministicReferenceEvaluator):
+            @staticmethod
+            def _execute_native(name, inputs, parameters):
+                return (1.0,) * len(inputs[0])
+
+        definition = FactorDefinitionVersion.create(
+            "wrong_native_boolean",
+            OperatorNode(
+                "GT", "1.0.0",
+                (FeatureNode("left", "field/1"), FeatureNode("right", "field/1")),
+                {},
+            ),
+            self.registry,
+        )
+        with self.assertRaisesRegex(FactorEvaluationError, "must be bool or None"):
+            WrongNativeResultEvaluator(self.registry).evaluate(
+                definition, {"left": [1.0], "right": [0.0]}
             )
 
     def test_literal_comparison_boolean_and_cross_execute_without_numeric_coercion(self) -> None:

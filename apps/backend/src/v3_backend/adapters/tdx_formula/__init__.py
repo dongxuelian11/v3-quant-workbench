@@ -12,6 +12,7 @@ from .parser import (
     UnaryExpression,
 )
 from .translator import (
+    REGISTERED_TDX_DATA_SEMANTIC_PROFILES,
     TdxCompatibilityProfileVersion,
     TdxDataFieldMapping,
     TdxDataSemanticProfileVersion,
@@ -21,6 +22,7 @@ from .translator import (
     TdxTranslationResult,
     TdxTranslator,
     TranslatedTdxOutput,
+    registered_tdx_data_semantic_profile,
 )
 
 __all__ = [
@@ -30,6 +32,7 @@ __all__ = [
     "IdentifierExpression",
     "NumberExpression",
     "ParsedTdxProgram",
+    "REGISTERED_TDX_DATA_SEMANTIC_PROFILES",
     "TdxCompatibilityProfileVersion",
     "TdxDataFieldMapping",
     "TdxDataSemanticProfileVersion",
@@ -41,5 +44,6 @@ __all__ = [
     "TdxTranslationResult",
     "TdxTranslator",
     "TranslatedTdxOutput",
+    "registered_tdx_data_semantic_profile",
     "UnaryExpression",
 ]

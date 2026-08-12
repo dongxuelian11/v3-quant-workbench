@@ -8,6 +8,8 @@ TDX support is a source adapter only:
 
 There is no TDX evaluator, generic Formula VM, truthiness conversion, or second factor authority. TA-Lib remains a registered non-authoritative compute backend for canonical `SMA@1.0.0`.
 
+Both profiles are executable authority boundaries. Compatibility profiles recompute exact ID/content, require deterministic full mapping coverage, bind the exact signal-compatible OperatorRegistry, and must equal the V3 default registered profile. Data profiles recompute exact ID/content, require exact alias coverage/order/unit evidence, and must be in the V3-owned registered profile set. A caller-created content-addressed profile is not automatically executable.
+
 ## Grammar and compatibility
 
 The V0 parser supports multi-statement scripts, `:=`, `:`, `;`, arithmetic, comparisons, `AND/OR/NOT`, parentheses, canonical numeric literals, unary minus, ASCII/Chinese identifiers, function calls, named outputs, and drawing metadata.
@@ -20,6 +22,8 @@ Supported exact mappings:
 | `CROSS(A,B)` | `CROSS@1.0.0` | `BOOLEAN_SERIES` | one prior observation |
 
 `CROSS@1.0.0` is true only when previous `A <= B` and current `A > B`. First observation or missing prior/current data is `None`, never `0` or `False` by fallback.
+
+The translator executes the canonical operator/version declared by the registered mapping; MA/CROSS are not separately hard-coded to a possibly different operator identity.
 
 `EMA`, `REF`, `HHV`, `LLV`, `SUM`, `STD`, `COUNT`, `EVERY`, `EXIST`, `IF`, `MAX`, `MIN`, and `ABS` are `UNSUPPORTED_CANONICAL_OPERATOR`. TDX `SMA(X,N,M)` is `SEMANTICS_UNRESOLVED`; it is not inferred from the existing simple moving average. Unsupported calls fail with `UNSUPPORTED_TDX_OPERATOR`.
 

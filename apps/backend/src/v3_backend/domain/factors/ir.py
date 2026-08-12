@@ -255,6 +255,15 @@ class NumericLiteralNode:
         canonical = _canonical_decimal_text(self.canonical_decimal)
         if canonical != self.canonical_decimal:
             raise FactorIrError("numeric literal must use canonical decimal text")
+        if self.value_type is not ValueType.FLOAT_SERIES:
+            raise FactorIrError("numeric literal value_type must be FLOAT_SERIES")
+        if (
+            self.broadcast_semantics
+            is not LiteralBroadcastSemantics.CONSTANT_OVER_EVALUATION_DOMAIN
+        ):
+            raise FactorIrError(
+                "numeric literal broadcast_semantics must be CONSTANT_OVER_EVALUATION_DOMAIN"
+            )
 
     @classmethod
     def create(cls, value: object) -> NumericLiteralNode:
@@ -342,7 +351,9 @@ def validate_factor_node(node: FactorNode, registry: OperatorRegistry) -> Factor
             missing_semantics=(),
         )
     if not isinstance(node, OperatorNode):
-        raise FactorIrError("closed Factor IR accepts FeatureNode or OperatorNode only")
+        raise FactorIrError(
+            "closed Factor IR accepts FeatureNode, NumericLiteralNode, or OperatorNode only"
+        )
     spec = registry.resolve(node.operator_name, node.operator_semantic_version)
     if not spec.pit_safe:
         raise UnsafeFactorExpression(f"operator {spec.key} is not PIT-safe")

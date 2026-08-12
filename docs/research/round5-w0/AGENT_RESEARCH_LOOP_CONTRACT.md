@@ -5,9 +5,10 @@
 The W0 loop is an immutable coordination contract, not a new execution, financial Truth, Admission, review, reward, or publication authority.
 
 - `AgentResearchProposal`, `ResearchActionDraft`, and `NextActionProposal` are always `NON_CANONICAL / DRAFT`; actions remain `NOT_RUN` until an existing V3 Control Plane authorization receipt exists.
-- `ExecutionReceiptRef` can only reference receipts issued by `V3_CONTROL_PLANE` and binds existing Task / Run / Attempt identifiers. It does not mint them.
+- A directly constructed `ExecutionReceiptRef` is explicitly `UNRESOLVED_REF`; even the string `V3_CONTROL_PLANE` is not proof and cannot complete an iteration.
+- `ResearchExecutionEvidenceResolver` is a W0-owned thin resolver. It accepts actual current-main `Task`, `Run`, and `TaskAttempt` objects, requires their exact bindings and terminal-success states, and derives an action-bound `RESOLVED_OWNER_REF`. It does not replace or modify the Control Plane owner.
 - `ResearchLoopIterationRecord` stores exact proposal, action, receipt, canonical output, ReviewerReport, RewardVector, budget-consumption, and next-action refs. It does not recompute any of them.
-- `COMPLETE` requires one unique execution receipt per requested action plus exact ReviewerReport and RewardVector refs. `NOT_RUN`, `BLOCKED`, and incomplete history cannot be inferred as complete.
+- `COMPLETE` requires a `ResolvedResearchCompletionEvidence` bundle built from exact action-bound executions plus actual `ExperimentRun`, successful `ExperimentAttempt`, `ReviewerEvidence`, `ResearchReviewReport`, and `RewardVector`. The report must resolve all four owner objects, and the reward must bind the same run/attempt/reviewer evidence. Raw review/reward strings are ignored as completion authority.
 - Existing Agent Workspace permissions remain unchanged: L0 read and L1 draft are available; L2 execute and L3 publish remain denied to agents.
 
 ## Closed action vocabulary

@@ -152,6 +152,15 @@ class FactorPackItem:
     pit_notes: str
     compatibility_status: FactorPackItemStatus
 
+    def __post_init__(self) -> None:
+        _text(self.source_item_name, "source_item_name")
+        _text(self.source_item_digest, "source_item_digest")
+        _unique(self.operator_requirements, "operator_requirements")
+        _unique(self.data_requirements, "data_requirements")
+        _text(self.pit_notes, "pit_notes")
+        if not isinstance(self.compatibility_status, FactorPackItemStatus):
+            raise FactorAssetError("INVALID_FACTOR_PACK_MANIFEST", "item status must be canonical")
+
     def to_wire(self) -> dict[str, object]:
         return {
             "source_item_name": self.source_item_name,
@@ -212,6 +221,22 @@ class FactorPackManifestVersion:
             items,
         )
 
+    def assert_canonical(self) -> None:
+        ordered_names = tuple(value.source_item_name for value in self.items)
+        if len(ordered_names) != len(set(ordered_names)):
+            raise FactorAssetError("INVALID_FACTOR_PACK_MANIFEST", "source item names must be unique")
+        payload = {
+            "pack_name": self.pack_name,
+            "source_project_or_publication": self.source_project_or_publication,
+            "exact_source_revision": self.exact_source_revision,
+            "license_identifier": self.license_identifier,
+            "license_evidence_ref": self.license_evidence_ref,
+            "import_mode": self.import_mode,
+            "items": [value.to_wire() for value in self.items],
+        }
+        if self.factor_pack_manifest_version_id != "fpm_sha256_" + canonical_sha256(payload):
+            raise FactorAssetError("INVALID_FACTOR_PACK_MANIFEST", "manifest ID/content mismatch")
+
 
 class FactorImportStatus(StrEnum):
     ADMITTED = "ADMITTED"
@@ -226,6 +251,7 @@ class FactorImportReceipt:
     source_revision: str
     license_provenance_ref: str
     translator_version: str
+    compatibility_profile_id: str
     operator_registry_version: str
     data_semantic_profile_id: str
     resulting_factor_definition_version_id: str | None
@@ -241,15 +267,18 @@ class FactorImportReceipt:
         source_revision: str,
         license_provenance_ref: str,
         translator_version: str,
+        compatibility_profile_id: str,
         operator_registry_version: str,
         data_semantic_profile_id: str,
         definition: FactorDefinitionVersion | None,
         warnings: tuple[str, ...] = (),
         status: FactorImportStatus,
     ) -> FactorImportReceipt:
-        blocked = bool(warnings) or not source_revision or not license_provenance_ref
-        if status is FactorImportStatus.ADMITTED and (blocked or definition is None):
-            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "warnings or missing evidence/definition")
+        if status is FactorImportStatus.ADMITTED:
+            raise FactorAssetError(
+                "FACTOR_IMPORT_NOT_ADMITTED",
+                "ADMITTED receipts require a typed user-authored or external-pack factory",
+            )
         if status is FactorImportStatus.IMPORT_NOT_ADMITTED and definition is not None:
             raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "blocked import cannot produce a definition")
         payload = {
@@ -258,6 +287,7 @@ class FactorImportReceipt:
             "source_revision": source_revision,
             "license_provenance_ref": license_provenance_ref,
             "translator_version": _text(translator_version, "translator_version"),
+            "compatibility_profile_id": _text(compatibility_profile_id, "compatibility_profile_id"),
             "operator_registry_version": _text(operator_registry_version, "operator_registry_version"),
             "data_semantic_profile_id": _text(data_semantic_profile_id, "data_semantic_profile_id"),
             "resulting_factor_definition_version_id": None if definition is None else definition.factor_definition_version_id,
@@ -271,12 +301,112 @@ class FactorImportReceipt:
             source_revision,
             license_provenance_ref,
             payload["translator_version"],
+            payload["compatibility_profile_id"],
             payload["operator_registry_version"],
             payload["data_semantic_profile_id"],
             payload["resulting_factor_definition_version_id"],
             tuple(payload["warnings"]),
             status,
         )
+
+    @classmethod
+    def create_from_user_formula(
+        cls,
+        *,
+        translation: object,
+        compatibility_profile: object,
+        data_profile: object,
+        definition: FactorDefinitionVersion,
+    ) -> FactorImportReceipt:
+        from v3_backend.adapters.tdx_formula.translator import (
+            REGISTERED_TDX_DATA_SEMANTIC_PROFILES,
+            TdxCompatibilityProfileVersion,
+            TdxDataSemanticProfileVersion,
+            TdxTranslationResult,
+        )
+
+        if not isinstance(translation, TdxTranslationResult):
+            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "typed TDX translation required")
+        if not isinstance(compatibility_profile, TdxCompatibilityProfileVersion) or not isinstance(data_profile, TdxDataSemanticProfileVersion):
+            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "typed profiles required")
+        compatibility_profile.assert_canonical()
+        data_profile.assert_canonical()
+        if REGISTERED_TDX_DATA_SEMANTIC_PROFILES.get(data_profile.data_semantic_profile_id) != data_profile:
+            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "data profile is not registered")
+        if translation.document.compatibility_profile_id != compatibility_profile.compatibility_profile_id:
+            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "compatibility profile mismatch")
+        if translation.static_analysis.data_semantic_profile_id != data_profile.data_semantic_profile_id:
+            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "data profile mismatch")
+        if compatibility_profile.operator_registry_version != definition.operator_registry_version:
+            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "operator registry mismatch")
+        if definition not in tuple(value.definition for value in translation.outputs):
+            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "definition is not an exact translation output")
+        return cls._create_admitted(
+            source_item_digest=translation.document.source_sha256,
+            pack_manifest_version_id=None,
+            source_revision="user-source-sha256:" + translation.document.source_sha256,
+            license_provenance_ref="USER_AUTHORED_NO_THIRD_PARTY_LICENSE",
+            translator_version=translation.translator_version,
+            compatibility_profile_id=compatibility_profile.compatibility_profile_id,
+            operator_registry_version=definition.operator_registry_version,
+            data_semantic_profile_id=data_profile.data_semantic_profile_id,
+            definition=definition,
+        )
+
+    @classmethod
+    def create_from_pack_item(
+        cls,
+        *,
+        manifest: FactorPackManifestVersion,
+        item: FactorPackItem,
+        translation: object,
+        compatibility_profile: object,
+        data_profile: object,
+        definition: FactorDefinitionVersion,
+    ) -> FactorImportReceipt:
+        manifest.assert_canonical()
+        if item not in manifest.items:
+            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "item is not in the exact manifest")
+        if item.compatibility_status is not FactorPackItemStatus.SUPPORTED:
+            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", item.compatibility_status.value)
+        user_bound = cls.create_from_user_formula(
+            translation=translation,
+            compatibility_profile=compatibility_profile,
+            data_profile=data_profile,
+            definition=definition,
+        )
+        if user_bound.source_item_digest != item.source_item_digest:
+            raise FactorAssetError("FACTOR_IMPORT_NOT_ADMITTED", "source digest mismatch")
+        return cls._create_admitted(
+            source_item_digest=item.source_item_digest,
+            pack_manifest_version_id=manifest.factor_pack_manifest_version_id,
+            source_revision=manifest.exact_source_revision,
+            license_provenance_ref=manifest.license_evidence_ref,
+            translator_version=user_bound.translator_version,
+            compatibility_profile_id=user_bound.compatibility_profile_id,
+            operator_registry_version=user_bound.operator_registry_version,
+            data_semantic_profile_id=user_bound.data_semantic_profile_id,
+            definition=definition,
+        )
+
+    @classmethod
+    def _create_admitted(cls, **values: object) -> FactorImportReceipt:
+        definition = values["definition"]
+        assert isinstance(definition, FactorDefinitionVersion)
+        payload = {
+            "source_item_digest": _text(str(values["source_item_digest"]), "source_item_digest"),
+            "pack_manifest_version_id": values["pack_manifest_version_id"],
+            "source_revision": _text(str(values["source_revision"]), "source_revision"),
+            "license_provenance_ref": _text(str(values["license_provenance_ref"]), "license_provenance_ref"),
+            "translator_version": _text(str(values["translator_version"]), "translator_version"),
+            "compatibility_profile_id": _text(str(values["compatibility_profile_id"]), "compatibility_profile_id"),
+            "operator_registry_version": _text(str(values["operator_registry_version"]), "operator_registry_version"),
+            "data_semantic_profile_id": _text(str(values["data_semantic_profile_id"]), "data_semantic_profile_id"),
+            "resulting_factor_definition_version_id": definition.factor_definition_version_id,
+            "warnings": [],
+            "status": FactorImportStatus.ADMITTED.value,
+        }
+        return cls("fir_sha256_" + canonical_sha256(payload), payload["source_item_digest"], payload["pack_manifest_version_id"], payload["source_revision"], payload["license_provenance_ref"], payload["translator_version"], payload["compatibility_profile_id"], payload["operator_registry_version"], payload["data_semantic_profile_id"], payload["resulting_factor_definition_version_id"], (), FactorImportStatus.ADMITTED)
 
 
 class FactorAssetLifecycle(StrEnum):
@@ -327,6 +457,11 @@ class FactorAssetVersion:
         formula_document: FormulaDocumentVersion | None = None,
         pack_manifest: FactorPackManifestVersion | None = None,
     ) -> FactorAssetVersion:
+        if lifecycle not in {FactorAssetLifecycle.DRAFT, FactorAssetLifecycle.CANDIDATE}:
+            raise FactorAssetError(
+                "LIFECYCLE_TRANSITION_NOT_AUTHORIZED",
+                "generic create admits only DRAFT/CANDIDATE",
+            )
         if output_binding.factor_definition_version_id != definition.factor_definition_version_id:
             raise FactorAssetError("FACTOR_DEFINITION_BINDING_MISMATCH", asset_key)
         if output_binding.factor_definition_hash != definition.factor_definition_version_id:

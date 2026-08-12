@@ -14,6 +14,9 @@ from .model import (
     ResearchLoopBudgetVersion,
     ResearchLoopContractError,
     ResearchLoopIterationRecord,
+    ResearchExecutionEvidenceResolver,
+    ResolvedExecutionEvidence,
+    ResolvedResearchCompletionEvidence,
 )
 
 __all__ = [
@@ -30,4 +33,7 @@ __all__ = [
     "ResearchLoopBudgetVersion",
     "ResearchLoopContractError",
     "ResearchLoopIterationRecord",
+    "ResearchExecutionEvidenceResolver",
+    "ResolvedExecutionEvidence",
+    "ResolvedResearchCompletionEvidence",
 ]

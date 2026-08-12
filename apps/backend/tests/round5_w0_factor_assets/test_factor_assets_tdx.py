@@ -12,6 +12,7 @@ from v3_backend.adapters.tdx_formula import (
     TdxFunctionStatus,
     TdxParser,
     TdxTranslator,
+    registered_tdx_data_semantic_profile,
 )
 from v3_backend.domain.agent_research_loop import (
     BudgetLimit,
@@ -40,6 +41,7 @@ from v3_backend.domain.factor_assets import (
 from v3_backend.domain.factors import (
     BackendBinding,
     DeterministicReferenceEvaluator,
+    FactorDefinitionVersion,
     FeatureNode,
     MissingSemantics,
     OperatorRegistry,
@@ -75,37 +77,7 @@ class FakeTalibProvider:
 
 
 def data_profile(*, volume_in_hands: bool = False) -> TdxDataSemanticProfileVersion:
-    mappings = tuple(
-        TdxDataFieldMapping(
-            (name.upper(),),
-            name,
-            f"eod.{name}/1.0.0",
-            "CNY_PER_SHARE",
-            "CNY_PER_SHARE",
-            "1",
-            (f"dataset-profile:{name}:cny-per-share",),
-        )
-        for name in ("open", "high", "low", "close")
-    )
-    volume = TdxDataFieldMapping(
-        ("VOL",),
-        "volume_hands" if volume_in_hands else "volume",
-        "eod.volume-hands/1.0.0" if volume_in_hands else "eod.volume-shares/1.0.0",
-        "HAND" if volume_in_hands else "SHARES",
-        "HAND",
-        "1" if volume_in_hands else "0.01",
-        ("dataset-profile:volume-unit-observed",),
-    )
-    amount = TdxDataFieldMapping(
-        ("AMOUNT", "AMO"),
-        "amount",
-        "eod.amount-cny/1.0.0",
-        "CNY",
-        "CNY",
-        "1",
-        ("dataset-profile:amount-currency-cny",),
-    )
-    return TdxDataSemanticProfileVersion.create((*mappings, volume, amount))
+    return registered_tdx_data_semantic_profile(volume_in_hands=volume_in_hands)
 
 
 class TdxCompatibilityTests(unittest.TestCase):
@@ -135,6 +107,38 @@ class TdxCompatibilityTests(unittest.TestCase):
             self.translator.translate("X:EMA(CLOSE,5);", data_profile=self.profile, provenance_ref="user:test")
         with self.assertRaisesRegex(TdxFormulaError, "UNSUPPORTED_TDX_OPERATOR"):
             self.translator.translate("X:SMA(CLOSE,5,2);", data_profile=self.profile, provenance_ref="user:test")
+
+    def test_profiles_must_be_exact_canonical_and_registered(self) -> None:
+        profile = self.translator.compatibility
+        profile.assert_canonical()
+        forged_id = TdxCompatibilityProfileVersion(
+            "tdxcp_sha256_" + "0" * 64, profile.operator_registry_version, profile.mappings
+        )
+        with self.assertRaisesRegex(TdxFormulaError, "TDX_COMPATIBILITY_PROFILE_NOT_CANONICAL"):
+            TdxTranslator(self.registry, forged_id)
+        altered = TdxCompatibilityProfileVersion(
+            TdxCompatibilityProfileVersion.create_default(self.registry).compatibility_profile_id,
+            profile.operator_registry_version,
+            tuple(reversed(profile.mappings)),
+        )
+        with self.assertRaisesRegex(TdxFormulaError, "TDX_COMPATIBILITY_PROFILE_NOT_CANONICAL"):
+            TdxTranslator(self.registry, altered)
+
+        self.profile.assert_canonical()
+        forged_data = TdxDataSemanticProfileVersion("tdxds_sha256_" + "0" * 64, self.profile.mappings)
+        with self.assertRaisesRegex(TdxFormulaError, "TDX_DATA_SEMANTIC_PROFILE_NOT_CANONICAL"):
+            self.translator.translate(USER_FORMULA, data_profile=forged_data, provenance_ref="user:test")
+        incomplete = TdxDataSemanticProfileVersion(
+            self.profile.data_semantic_profile_id,
+            tuple(value for value in self.profile.mappings if "VOL" not in value.aliases),
+        )
+        with self.assertRaisesRegex(TdxFormulaError, "TDX_DATA_SEMANTIC_PROFILE_NOT_CANONICAL"):
+            self.translator.translate(USER_FORMULA, data_profile=incomplete, provenance_ref="user:test")
+        duplicate = TdxDataSemanticProfileVersion(
+            self.profile.data_semantic_profile_id, self.profile.mappings + (self.profile.resolve("VOL"),)
+        )
+        with self.assertRaisesRegex(TdxFormulaError, "TDX_DATA_SEMANTIC_PROFILE_NOT_CANONICAL"):
+            self.translator.translate(USER_FORMULA, data_profile=duplicate, provenance_ref="user:test")
 
     def test_data_profile_requires_complete_evidence_and_exact_tdx_units(self) -> None:
         self.assertEqual(self.profile.resolve("VOL").canonical_unit, "SHARES")
@@ -189,27 +193,13 @@ class TdxCompatibilityTests(unittest.TestCase):
             shares.output("MJ").definition.factor_definition_version_id,
             hands.output("MJ").definition.factor_definition_version_id,
         )
-        first_receipt = FactorImportReceipt.create(
-            source_item_digest=shares.document.source_sha256,
-            pack_manifest_version_id=None,
-            source_revision="user-source-sha256:" + shares.document.source_sha256,
-            license_provenance_ref="user-authored",
-            translator_version=self.translator.translator_version,
-            operator_registry_version=self.registry.registry_version,
-            data_semantic_profile_id=self.profile.data_semantic_profile_id,
-            definition=shares.output("MJ").definition,
-            status=FactorImportStatus.ADMITTED,
+        first_receipt = FactorImportReceipt.create_from_user_formula(
+            translation=shares, compatibility_profile=self.translator.compatibility,
+            data_profile=self.profile, definition=shares.output("MJ").definition,
         )
-        second_receipt = FactorImportReceipt.create(
-            source_item_digest=hands.document.source_sha256,
-            pack_manifest_version_id=None,
-            source_revision="user-source-sha256:" + hands.document.source_sha256,
-            license_provenance_ref="user-authored",
-            translator_version=self.translator.translator_version,
-            operator_registry_version=self.registry.registry_version,
-            data_semantic_profile_id=hands_profile.data_semantic_profile_id,
-            definition=hands.output("MJ").definition,
-            status=FactorImportStatus.ADMITTED,
+        second_receipt = FactorImportReceipt.create_from_user_formula(
+            translation=hands, compatibility_profile=self.translator.compatibility,
+            data_profile=hands_profile, definition=hands.output("MJ").definition,
         )
         self.assertNotEqual(first_receipt.factor_import_receipt_id, second_receipt.factor_import_receipt_id)
 
@@ -233,6 +223,8 @@ class TdxCompatibilityTests(unittest.TestCase):
         )
         alternate = TdxCompatibilityProfileVersion.create_default(alternate_registry)
         self.assertNotEqual(alternate.compatibility_profile_id, self.translator.compatibility.compatibility_profile_id)
+        with self.assertRaisesRegex(TdxFormulaError, "TDX_COMPATIBILITY_PROFILE_NOT_REGISTERED"):
+            TdxTranslator(alternate_registry, alternate)
 
     def test_drawing_statements_and_style_metadata_are_separate_from_factor_math(self) -> None:
         result = self.translator.translate(
@@ -261,16 +253,11 @@ class FactorAssetCatalogTests(unittest.TestCase):
         )
 
     def _receipt(self, output_name: str) -> FactorImportReceipt:
-        return FactorImportReceipt.create(
-            source_item_digest=self.translation.document.source_sha256,
-            pack_manifest_version_id=None,
-            source_revision="user-source-sha256:" + self.translation.document.source_sha256,
-            license_provenance_ref="user-authored",
-            translator_version="v3-tdx-to-factor-ir/1.0.0",
-            operator_registry_version=self.registry.registry_version,
-            data_semantic_profile_id=self.profile.data_semantic_profile_id,
+        return FactorImportReceipt.create_from_user_formula(
+            translation=self.translation,
+            compatibility_profile=TdxTranslator(self.registry).compatibility,
+            data_profile=self.profile,
             definition=self.translation.output(output_name).definition,
-            status=FactorImportStatus.ADMITTED,
         )
 
     def _asset(self, output_name: str) -> FactorAssetVersion:
@@ -397,12 +384,81 @@ class FactorAssetCatalogTests(unittest.TestCase):
                 source_revision="revision",
                 license_provenance_ref="license",
                 translator_version="translator",
+                compatibility_profile_id=self.translation.document.compatibility_profile_id,
                 operator_registry_version=self.registry.registry_version,
                 data_semantic_profile_id=self.profile.data_semantic_profile_id,
                 definition=self.translation.output("GOLDEN").definition,
                 warnings=("unsupported",),
                 status=FactorImportStatus.ADMITTED,
             )
+        with self.assertRaisesRegex(FactorAssetError, "FACTOR_IMPORT_NOT_ADMITTED"):
+            FactorImportReceipt.create_from_user_formula(
+                translation=self.translation,
+                compatibility_profile=TdxTranslator(self.registry).compatibility,
+                data_profile=self.profile,
+                definition=FactorDefinitionVersion.create(
+                    "unrelated", FeatureNode("close", "eod.close/1.0.0"), self.registry
+                ),
+            )
+
+    def test_external_pack_receipt_binds_exact_manifest_item_and_status(self) -> None:
+        item = FactorPackItem(
+            "GOLDEN", self.translation.document.source_sha256,
+            self.translation.output("GOLDEN").definition.metadata.operator_keys,
+            self.translation.output("GOLDEN").definition.metadata.input_features,
+            "Bound to the exact registered data profile", FactorPackItemStatus.SUPPORTED,
+        )
+        manifest = FactorPackManifestVersion.create(
+            pack_name="licensed-smoke", source_project_or_publication="test-pack",
+            exact_source_revision="git:abc123", license_identifier="MIT",
+            license_evidence_ref="license:MIT", import_mode="THIN_ADAPTER", items=(item,),
+        )
+        receipt = FactorImportReceipt.create_from_pack_item(
+            manifest=manifest, item=item, translation=self.translation,
+            compatibility_profile=TdxTranslator(self.registry).compatibility,
+            data_profile=self.profile, definition=self.translation.output("GOLDEN").definition,
+        )
+        self.assertEqual(receipt.pack_manifest_version_id, manifest.factor_pack_manifest_version_id)
+        wrong_item = FactorPackItem("OTHER", item.source_item_digest, (), (), "exact", FactorPackItemStatus.SUPPORTED)
+        with self.assertRaisesRegex(FactorAssetError, "item is not in"):
+            FactorImportReceipt.create_from_pack_item(
+                manifest=manifest, item=wrong_item, translation=self.translation,
+                compatibility_profile=TdxTranslator(self.registry).compatibility,
+                data_profile=self.profile, definition=self.translation.output("GOLDEN").definition,
+            )
+        wrong_digest = FactorPackItem("GOLDEN", "sha256:not-the-source", (), (), "exact", FactorPackItemStatus.SUPPORTED)
+        wrong_digest_manifest = FactorPackManifestVersion.create(
+            pack_name="wrong-digest", source_project_or_publication="test", exact_source_revision="git:bad",
+            license_identifier="MIT", license_evidence_ref="license:MIT", import_mode="THIN_ADAPTER", items=(wrong_digest,),
+        )
+        with self.assertRaisesRegex(FactorAssetError, "source digest mismatch"):
+            FactorImportReceipt.create_from_pack_item(
+                manifest=wrong_digest_manifest, item=wrong_digest, translation=self.translation,
+                compatibility_profile=TdxTranslator(self.registry).compatibility,
+                data_profile=self.profile, definition=self.translation.output("GOLDEN").definition,
+            )
+        blocked = FactorPackItem("BLOCKED", item.source_item_digest, (), (), "license", FactorPackItemStatus.LICENSE_BLOCKED)
+        blocked_manifest = FactorPackManifestVersion.create(
+            pack_name="blocked", source_project_or_publication="test", exact_source_revision="git:def",
+            license_identifier="BLOCKED", license_evidence_ref="license:block", import_mode="REFERENCE_ONLY", items=(blocked,),
+        )
+        with self.assertRaisesRegex(FactorAssetError, "LICENSE_BLOCKED"):
+            FactorImportReceipt.create_from_pack_item(
+                manifest=blocked_manifest, item=blocked, translation=self.translation,
+                compatibility_profile=TdxTranslator(self.registry).compatibility,
+                data_profile=self.profile, definition=self.translation.output("GOLDEN").definition,
+            )
+
+    def test_generic_asset_factory_cannot_claim_owner_lifecycle_transitions(self) -> None:
+        output = self.translation.output("GOLDEN")
+        for lifecycle in (FactorAssetLifecycle.REVIEWED, FactorAssetLifecycle.PROMOTED, FactorAssetLifecycle.DEPRECATED):
+            with self.assertRaisesRegex(FactorAssetError, "LIFECYCLE_TRANSITION_NOT_AUTHORIZED"):
+                FactorAssetVersion.create(
+                    asset_key=f"blocked.{lifecycle.value.lower()}", definition=output.definition,
+                    source_family="TDX_USER_FORMULA", output_binding=output.binding,
+                    display_name="blocked", tags=(), categories=(), frequency="1d", lifecycle=lifecycle,
+                )
+        self.assertIs(self._asset("GOLDEN").lifecycle, FactorAssetLifecycle.CANDIDATE)
 
     def test_ai_and_mining_inputs_remain_drafts_until_canonical_translation(self) -> None:
         ai_tdx = FactorDraftProposal.create(

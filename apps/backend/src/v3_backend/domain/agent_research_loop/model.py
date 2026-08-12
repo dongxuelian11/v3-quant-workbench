@@ -1,8 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timezone
 from enum import StrEnum
 
+from v3_backend.domain.experiments import (
+    ExperimentAttempt,
+    ExperimentAttemptState,
+    ExperimentRun,
+    ReviewerEvidence,
+    RewardVector,
+)
+from v3_backend.domain.reviewer_integration import ResearchReviewReport
+from v3_backend.domain.tasks.entities import (
+    AttemptState,
+    Run,
+    RunState,
+    Task,
+    TaskAttempt,
+    TaskState,
+)
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
 
@@ -320,6 +337,8 @@ class ExecutionReceiptRef:
     run_id: str
     attempt_id: str
     issued_by: str
+    resolution_status: str = "UNRESOLVED_REF"
+    action_draft_id: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("authorization_receipt_id", "task_id", "run_id", "attempt_id"):
@@ -329,15 +348,199 @@ class ExecutionReceiptRef:
                 "UNREGISTERED_OR_UNAUTHORIZED_ACTION",
                 "execution receipts must be issued by the existing V3 Control Plane",
             )
+        if self.resolution_status != "UNRESOLVED_REF" or self.action_draft_id is not None:
+            raise ResearchLoopContractError(
+                "UNREGISTERED_OR_UNAUTHORIZED_ACTION",
+                "raw receipt refs are always UNRESOLVED_REF",
+            )
 
-    def to_wire(self) -> dict[str, str]:
+    def to_wire(self) -> dict[str, str | None]:
         return {
             "authorization_receipt_id": self.authorization_receipt_id,
             "task_id": self.task_id,
             "run_id": self.run_id,
             "attempt_id": self.attempt_id,
             "issued_by": self.issued_by,
+            "resolution_status": self.resolution_status,
+            "action_draft_id": self.action_draft_id,
         }
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ResolvedExecutionEvidence:
+    authorization_receipt_id: str
+    action_draft_id: str
+    task_id: str
+    run_id: str
+    attempt_id: str
+    resolution_status: str
+
+    @classmethod
+    def _from_owner_objects(
+        cls, action: ResearchActionDraft, task: Task, run: Run, attempt: TaskAttempt
+    ) -> ResolvedExecutionEvidence:
+        if task.state is not TaskState.SUCCEEDED or run.state is not RunState.TERMINAL or attempt.state is not AttemptState.SUCCEEDED:
+            raise ResearchLoopContractError("OWNER_EXECUTION_NOT_COMPLETE", action.action_draft_id)
+        if task.active_run_id != run.run_id or run.task_id != task.task_id:
+            raise ResearchLoopContractError("OWNER_EXECUTION_BINDING_MISMATCH", action.action_draft_id)
+        if attempt.task_id != task.task_id or attempt.run_id != run.run_id:
+            raise ResearchLoopContractError("OWNER_EXECUTION_BINDING_MISMATCH", action.action_draft_id)
+        payload = {
+            "action_draft_id": action.action_draft_id,
+            "task_id": task.task_id,
+            "run_id": run.run_id,
+            "attempt_id": attempt.attempt_id,
+            "attempt_ordinal": attempt.ordinal,
+            "issuer": "V3_CONTROL_PLANE_OWNER_RESOLVED",
+        }
+        value = object.__new__(cls)
+        object.__setattr__(value, "authorization_receipt_id", "rer_sha256_" + canonical_sha256(payload))
+        object.__setattr__(value, "action_draft_id", action.action_draft_id)
+        object.__setattr__(value, "task_id", task.task_id)
+        object.__setattr__(value, "run_id", run.run_id)
+        object.__setattr__(value, "attempt_id", attempt.attempt_id)
+        object.__setattr__(value, "resolution_status", "RESOLVED_OWNER_REF")
+        return value
+
+    def to_wire(self) -> dict[str, str]:
+        return {
+            "authorization_receipt_id": self.authorization_receipt_id,
+            "action_draft_id": self.action_draft_id,
+            "task_id": self.task_id,
+            "run_id": self.run_id,
+            "attempt_id": self.attempt_id,
+            "resolution_status": self.resolution_status,
+        }
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ResolvedResearchCompletionEvidence:
+    executions: tuple[ResolvedExecutionEvidence, ...]
+    review_report_ref: str
+    reward_vector_ref: str
+    canonical_output_refs: tuple[str, ...]
+
+
+class ResearchExecutionEvidenceResolver:
+    """W0-owned thin resolver; actual owner objects remain the authority."""
+
+    @staticmethod
+    def resolve_execution(
+        *, action: ResearchActionDraft, task: Task, run: Run, attempt: TaskAttempt
+    ) -> ResolvedExecutionEvidence:
+        return ResolvedExecutionEvidence._from_owner_objects(action, task, run, attempt)
+
+    @staticmethod
+    def resolve_completion(
+        *,
+        action_drafts: tuple[ResearchActionDraft, ...],
+        executions: tuple[ResolvedExecutionEvidence, ...],
+        experiment_run: ExperimentRun,
+        experiment_attempt: ExperimentAttempt,
+        reviewer_evidence: ReviewerEvidence,
+        review_report: ResearchReviewReport,
+        reward_vector: RewardVector,
+        canonical_output_refs: tuple[str, ...],
+    ) -> ResolvedResearchCompletionEvidence:
+        action_ids = tuple(sorted(value.action_draft_id for value in action_drafts))
+        execution_ids = tuple(sorted(value.action_draft_id for value in executions))
+        if action_ids != execution_ids or any(value.resolution_status != "RESOLVED_OWNER_REF" for value in executions):
+            raise ResearchLoopContractError("ACTION_BINDING_MISMATCH", "resolved executions")
+        if experiment_attempt.state is not ExperimentAttemptState.SUCCEEDED or experiment_attempt.experiment_run_id != experiment_run.experiment_run_id:
+            raise ResearchLoopContractError("OWNER_EXECUTION_BINDING_MISMATCH", "Experiment Run/Attempt")
+        run_basis = {
+            "experiment_version_id": experiment_run.experiment_version_id,
+            "dataset_version_id": experiment_run.dataset_version_id,
+            "factor_evaluation_id": experiment_run.factor_evaluation_id,
+            "code_version": experiment_run.code_version,
+            "environment_fingerprint": experiment_run.environment_fingerprint,
+            "input_artifact_ids": list(experiment_run.input_artifact_ids),
+            "run_provenance_artifact_id": experiment_run.run_provenance_artifact_id,
+            "truth_admission": experiment_run.truth_admission.to_wire(),
+        }
+        if experiment_run.experiment_run_id != "exprun_sha256_" + canonical_sha256(run_basis):
+            raise ResearchLoopContractError("OWNER_EXECUTION_BINDING_MISMATCH", "ExperimentRun identity")
+        attempt_basis = {
+            "experiment_run_id": experiment_attempt.experiment_run_id,
+            "ordinal": experiment_attempt.ordinal,
+            "state": experiment_attempt.state.value,
+            "started_at": experiment_attempt.started_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "ended_at": experiment_attempt.ended_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "evidence_artifact_ids": list(experiment_attempt.evidence_artifact_ids),
+            "result_artifact_id": experiment_attempt.result_artifact_id,
+            "error_code": experiment_attempt.error_code,
+        }
+        if experiment_attempt.experiment_attempt_id != "expatt_sha256_" + canonical_sha256(attempt_basis):
+            raise ResearchLoopContractError("OWNER_EXECUTION_BINDING_MISMATCH", "ExperimentAttempt identity")
+        reviewer_basis = {
+            "lookahead": reviewer_evidence.lookahead.value,
+            "leakage": reviewer_evidence.leakage.value,
+            "split": reviewer_evidence.split.value,
+            "sample_coverage": reviewer_evidence.sample_coverage.value,
+            "missingness": reviewer_evidence.missingness.value,
+            "turnover": reviewer_evidence.turnover.value,
+            "complexity": reviewer_evidence.complexity.value,
+            "multiple_testing_robustness": reviewer_evidence.multiple_testing_robustness.value,
+            "finding_ids": list(reviewer_evidence.finding_ids),
+            "provenance_artifact_id": reviewer_evidence.provenance_artifact_id,
+        }
+        if reviewer_evidence.reviewer_evidence_id != "rve_sha256_" + canonical_sha256(reviewer_basis):
+            raise ResearchLoopContractError("REVIEW_BINDING_MISMATCH", "ReviewerEvidence identity")
+        if reward_vector.experiment_run_id != experiment_run.experiment_run_id or reward_vector.experiment_attempt_id != experiment_attempt.experiment_attempt_id or reward_vector.reviewer_evidence_id != reviewer_evidence.reviewer_evidence_id:
+            raise ResearchLoopContractError("REWARD_BINDING_MISMATCH", reward_vector.reward_vector_id)
+        review_basis = {
+            "session_id": review_report.session_id,
+            "target_refs": [value.to_wire() for value in review_report.target_refs],
+            "rule_set_id": review_report.rule_set_id,
+            "rule_set_content_sha256": review_report.rule_set_content_sha256,
+            "deterministic_checks": [value.to_wire() for value in review_report.deterministic_checks],
+            "source_evidence_refs": [value.to_wire() for value in review_report.source_evidence_refs],
+            "truth_ceiling": review_report.truth_ceiling.to_wire(),
+        }
+        if review_report.review_report_id != "rrp_sha256_" + canonical_sha256(review_basis):
+            raise ResearchLoopContractError("REVIEW_BINDING_MISMATCH", "review report identity")
+        reward_basis = {
+            "experiment_run_id": reward_vector.experiment_run_id,
+            "experiment_attempt_id": reward_vector.experiment_attempt_id,
+            "coverage": reward_vector.coverage,
+            "ic": reward_vector.ic,
+            "rank_ic": reward_vector.rank_ic,
+            "lower_quantile_return": reward_vector.lower_quantile_return,
+            "upper_quantile_return": reward_vector.upper_quantile_return,
+            "quantile_spread": reward_vector.quantile_spread,
+            "turnover": reward_vector.turnover,
+            "complexity": reward_vector.complexity,
+            "reviewer_evidence_id": reward_vector.reviewer_evidence_id,
+            "provenance_artifact_id": reward_vector.provenance_artifact_id,
+            "truth_admission": reward_vector.truth_admission.to_wire(),
+        }
+        if reward_vector.reward_vector_id != "rwv_sha256_" + canonical_sha256(reward_basis):
+            raise ResearchLoopContractError("REWARD_BINDING_MISMATCH", "reward identity")
+        report_refs = tuple(review_report.target_refs) + tuple(review_report.source_evidence_refs) + tuple(
+            ref for check in review_report.deterministic_checks for ref in check.evidence_refs
+        )
+        observed = {(value.object_kind, value.object_id) for value in report_refs}
+        required = {
+            ("ExperimentRun", experiment_run.experiment_run_id),
+            ("ExperimentAttempt", experiment_attempt.experiment_attempt_id),
+            ("ReviewerEvidence", reviewer_evidence.reviewer_evidence_id),
+            ("RewardVector", reward_vector.reward_vector_id),
+        }
+        if not required.issubset(observed) or any(
+            not value.id_hash_matches
+            for value in report_refs
+            if (value.object_kind, value.object_id) in required
+        ):
+            raise ResearchLoopContractError("REVIEW_BINDING_MISMATCH", review_report.review_report_id)
+        outputs = _refs(canonical_output_refs, "canonical_output_refs")
+        if reward_vector.reward_vector_id not in outputs:
+            raise ResearchLoopContractError("REWARD_BINDING_MISMATCH", "reward must be a canonical output")
+        value = object.__new__(ResolvedResearchCompletionEvidence)
+        object.__setattr__(value, "executions", tuple(sorted(executions, key=lambda item: item.action_draft_id)))
+        object.__setattr__(value, "review_report_ref", review_report.review_report_id)
+        object.__setattr__(value, "reward_vector_ref", reward_vector.reward_vector_id)
+        object.__setattr__(value, "canonical_output_refs", outputs)
+        return value
 
 
 class IterationStatus(StrEnum):
@@ -376,7 +579,7 @@ class ResearchLoopIterationRecord:
     iteration_index: int
     proposal_id: str
     action_draft_ids: tuple[str, ...]
-    execution_receipts: tuple[ExecutionReceiptRef, ...]
+    execution_receipts: tuple[ExecutionReceiptRef | ResolvedExecutionEvidence, ...]
     canonical_output_refs: tuple[str, ...]
     review_report_ref: str | None
     reward_vector_ref: str | None
@@ -392,7 +595,7 @@ class ResearchLoopIterationRecord:
         iteration_index: int,
         proposal: AgentResearchProposal,
         action_drafts: tuple[ResearchActionDraft, ...],
-        execution_receipts: tuple[ExecutionReceiptRef, ...],
+        execution_receipts: tuple[ExecutionReceiptRef | ResolvedExecutionEvidence, ...],
         canonical_output_refs: tuple[str, ...],
         review_report_ref: str | None,
         reward_vector_ref: str | None,
@@ -400,6 +603,7 @@ class ResearchLoopIterationRecord:
         budget_consumption: BudgetConsumption,
         next_action_proposals: tuple[NextActionProposal, ...],
         status: IterationStatus,
+        completion_evidence: ResolvedResearchCompletionEvidence | None = None,
     ) -> ResearchLoopIterationRecord:
         if not isinstance(iteration_index, int) or isinstance(iteration_index, bool) or iteration_index < 0:
             raise ResearchLoopContractError("INVALID_ITERATION_INDEX", str(iteration_index))
@@ -413,11 +617,17 @@ class ResearchLoopIterationRecord:
                 "UNREGISTERED_OR_UNAUTHORIZED_ACTION", "execution receipts must be unique"
             )
         if status is IterationStatus.COMPLETE:
-            if len(execution_receipts) != len(action_ids) or review_report_ref is None or reward_vector_ref is None:
+            if completion_evidence is None:
                 raise ResearchLoopContractError(
                     "INCOMPLETE_ITERATION_CANNOT_COMPLETE",
-                    "COMPLETE requires every execution receipt plus exact ReviewerReport and RewardVector refs",
+                    "COMPLETE requires owner-resolved execution/review/reward evidence",
                 )
+            execution_receipts = completion_evidence.executions
+            canonical_output_refs = completion_evidence.canonical_output_refs
+            review_report_ref = completion_evidence.review_report_ref
+            reward_vector_ref = completion_evidence.reward_vector_ref
+            if tuple(sorted(value.action_draft_id for value in execution_receipts)) != action_ids:
+                raise ResearchLoopContractError("ACTION_BINDING_MISMATCH", "completion evidence")
         if status in {IterationStatus.REVIEWED, IterationStatus.COMPLETE} and review_report_ref is None:
             raise ResearchLoopContractError("REVIEW_BINDING_REQUIRED", status.value)
         payload = {

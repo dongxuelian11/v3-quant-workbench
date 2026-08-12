@@ -13,7 +13,6 @@ from .ir import (
     NumericLiteralNode,
     OperatorNode,
     OperatorRegistry,
-    UnknownOperator,
     ValueType,
 )
 
@@ -85,7 +84,7 @@ class EvaluationResult:
 
 
 class DeterministicReferenceEvaluator:
-    evaluator_version = "v3-factor-reference-evaluator/1.1.0"
+    evaluator_version = "v3-factor-reference-evaluator/1.1.1"
 
     def __init__(
         self,
@@ -93,11 +92,18 @@ class DeterministicReferenceEvaluator:
         backends: tuple[OperatorBackend, ...] = (),
     ) -> None:
         self._registry = registry
-        try:
-            registry.resolve("CROSS", "1.0.0")
-        except UnknownOperator:
-            # Existing numeric artifacts retain their original evaluator identity.
+        from .ir import default_operator_registry, signal_compatible_operator_registry
+
+        legacy = default_operator_registry()
+        signal = signal_compatible_operator_registry()
+        if registry.to_wire() == legacy.to_wire():
             self.evaluator_version = "v3-factor-reference-evaluator/1.0.0"
+        elif registry.to_wire() == signal.to_wire():
+            self.evaluator_version = "v3-factor-reference-evaluator/1.1.1"
+        else:
+            raise FactorEvaluationError(
+                "OPERATOR_EXECUTION_SEMANTICS_MISMATCH: registry is not an exact V3 native implementation registry"
+            )
         mapping = {backend.backend_binding: backend for backend in backends}
         if len(mapping) != len(backends):
             raise FactorEvaluationError("only one backend per binding is allowed")
@@ -188,7 +194,16 @@ class DeterministicReferenceEvaluator:
         if observed_types != spec.input_types:
             raise FactorEvaluationError("runtime input types changed from canonical IR")
         if spec.backend_binding is BackendBinding.NATIVE_REFERENCE:
-            return self._execute_native(spec.name, inputs, parameters), spec.output_type
+            result = self._execute_native(spec.name, inputs, parameters)
+            if len(result) != len(inputs[0]):
+                raise FactorEvaluationError("native operator changed series length")
+            if spec.output_type is ValueType.FLOAT_SERIES:
+                validated: FactorSeries = _validate_float_series(result, spec.key)  # type: ignore[arg-type]
+            elif spec.output_type is ValueType.BOOLEAN_SERIES:
+                validated = _validate_boolean_series(result, spec.key)  # type: ignore[arg-type]
+            else:  # pragma: no cover - ValueType is deliberately closed.
+                raise FactorEvaluationError("unsupported native output type")
+            return validated, spec.output_type
         try:
             backend = self._backends[spec.backend_binding]
         except KeyError as error:

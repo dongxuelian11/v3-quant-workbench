@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
+from types import MappingProxyType
+from typing import Mapping
 
 from v3_backend.domain.factor_assets import (
     FormulaDocumentVersion,
@@ -17,6 +19,7 @@ from v3_backend.domain.factors import (
     OperatorNode,
     OperatorRegistry,
     ValueType,
+    signal_compatible_operator_registry,
 )
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
@@ -49,6 +52,15 @@ class TdxFunctionCompatibility:
     warmup_semantics: str
     output_type: ValueType | None
     status: TdxFunctionStatus
+
+    def __post_init__(self) -> None:
+        if not self.tdx_function or self.tdx_function != self.tdx_function.upper():
+            raise TdxFormulaError("UNSUPPORTED_TDX_OPERATOR", "function names must be uppercase")
+        if self.status is TdxFunctionStatus.SUPPORTED:
+            if not self.canonical_operator or not self.canonical_operator_version or self.output_type is None:
+                raise TdxFormulaError("UNSUPPORTED_TDX_OPERATOR", self.tdx_function)
+        elif any((self.canonical_operator, self.canonical_operator_version, self.output_type)):
+            raise TdxFormulaError("UNSUPPORTED_TDX_OPERATOR", "unsupported mappings cannot claim an operator")
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -86,6 +98,15 @@ class TdxCompatibilityProfileVersion:
                 mappings.append(TdxFunctionCompatibility(name, None, None, "NOT_ADMITTED", "LOOKBACK_UNRESOLVED", None, status))
         payload = {"operator_registry_version": registry.registry_version, "mappings": [value.to_wire() for value in mappings]}
         return cls("tdxcp_sha256_" + canonical_sha256(payload), registry.registry_version, tuple(mappings))
+
+    def assert_canonical(self) -> None:
+        required = ("MA", "EMA", "SMA", "REF", "HHV", "LLV", "SUM", "STD", "CROSS", "COUNT", "EVERY", "EXIST", "IF", "MAX", "MIN", "ABS")
+        names = tuple(value.tdx_function for value in self.mappings)
+        if names != required or len(names) != len(set(names)):
+            raise TdxFormulaError("TDX_COMPATIBILITY_PROFILE_NOT_CANONICAL", "mapping coverage/order mismatch")
+        payload = {"operator_registry_version": self.operator_registry_version, "mappings": [value.to_wire() for value in self.mappings]}
+        if self.compatibility_profile_id != "tdxcp_sha256_" + canonical_sha256(payload):
+            raise TdxFormulaError("TDX_COMPATIBILITY_PROFILE_NOT_CANONICAL", "profile ID/content mismatch")
 
     def resolve(self, name: str) -> TdxFunctionCompatibility:
         for mapping in self.mappings:
@@ -173,6 +194,16 @@ class TdxDataSemanticProfileVersion:
         payload = [value.to_wire() for value in ordered]
         return cls("tdxds_sha256_" + canonical_sha256(payload), ordered)
 
+    def assert_canonical(self) -> None:
+        aliases = [alias.upper() for value in self.mappings for alias in value.aliases]
+        required = {"OPEN", "HIGH", "LOW", "CLOSE", "VOL", "AMOUNT", "AMO"}
+        ordered = tuple(sorted(self.mappings, key=lambda value: (value.canonical_field, value.aliases)))
+        if self.mappings != ordered or len(aliases) != len(set(aliases)) or set(aliases) != required:
+            raise TdxFormulaError("TDX_DATA_SEMANTIC_PROFILE_NOT_CANONICAL", "coverage/order/alias mismatch")
+        expected = "tdxds_sha256_" + canonical_sha256([value.to_wire() for value in ordered])
+        if self.data_semantic_profile_id != expected:
+            raise TdxFormulaError("TDX_DATA_SEMANTIC_PROFILE_NOT_CANONICAL", "profile ID/content mismatch")
+
     def resolve(self, alias: str) -> TdxDataFieldMapping:
         normalized = alias.upper()
         for mapping in self.mappings:
@@ -206,6 +237,7 @@ class TdxTranslationResult:
     outputs: tuple[TranslatedTdxOutput, ...]
     static_analysis: TdxStaticAnalysis
     drawing_metadata: tuple[tuple[str, tuple[str, ...]], ...]
+    translator_version: str
 
     def output(self, name: str) -> TranslatedTdxOutput:
         for value in self.outputs:
@@ -214,17 +246,62 @@ class TdxTranslationResult:
         raise KeyError(name)
 
 
+def _registered_data_profile(*, volume_in_hands: bool) -> TdxDataSemanticProfileVersion:
+    prices = tuple(
+        TdxDataFieldMapping(
+            (name.upper(),), name, f"eod.{name}/1.0.0", "CNY_PER_SHARE", "CNY_PER_SHARE", "1",
+            (f"dataset-profile:{name}:cny-per-share",),
+        )
+        for name in ("open", "high", "low", "close")
+    )
+    volume = TdxDataFieldMapping(
+        ("VOL",),
+        "volume_hands" if volume_in_hands else "volume",
+        "eod.volume-hands/1.0.0" if volume_in_hands else "eod.volume-shares/1.0.0",
+        "HAND" if volume_in_hands else "SHARES", "HAND", "1" if volume_in_hands else "0.01",
+        ("dataset-profile:volume-unit-observed",),
+    )
+    amount = TdxDataFieldMapping(
+        ("AMOUNT", "AMO"), "amount", "eod.amount-cny/1.0.0", "CNY", "CNY", "1",
+        ("dataset-profile:amount-currency-cny",),
+    )
+    return TdxDataSemanticProfileVersion.create((*prices, volume, amount))
+
+
+REGISTERED_TDX_DATA_SEMANTIC_PROFILES: Mapping[str, TdxDataSemanticProfileVersion] = MappingProxyType(
+    {value.data_semantic_profile_id: value for value in (_registered_data_profile(volume_in_hands=False), _registered_data_profile(volume_in_hands=True))}
+)
+
+
+def registered_tdx_data_semantic_profile(*, volume_in_hands: bool = False) -> TdxDataSemanticProfileVersion:
+    expected = _registered_data_profile(volume_in_hands=volume_in_hands)
+    return REGISTERED_TDX_DATA_SEMANTIC_PROFILES[expected.data_semantic_profile_id]
+
+
 class TdxTranslator:
     translator_version = "v3-tdx-to-factor-ir/1.0.0"
 
     def __init__(self, registry: OperatorRegistry, compatibility: TdxCompatibilityProfileVersion | None = None) -> None:
         self.registry = registry
-        self.compatibility = compatibility or TdxCompatibilityProfileVersion.create_default(registry)
+        if registry.to_wire() != signal_compatible_operator_registry().to_wire():
+            raise TdxFormulaError(
+                "TDX_COMPATIBILITY_PROFILE_NOT_REGISTERED",
+                "TDX execution requires the exact V3 signal-compatible registry",
+            )
+        registered = TdxCompatibilityProfileVersion.create_default(registry)
+        self.compatibility = compatibility or registered
+        self.compatibility.assert_canonical()
+        if self.compatibility != registered:
+            raise TdxFormulaError("TDX_COMPATIBILITY_PROFILE_NOT_REGISTERED", self.compatibility.compatibility_profile_id)
         if self.compatibility.operator_registry_version != registry.registry_version:
             raise TdxFormulaError("UNSUPPORTED_TDX_OPERATOR", "compatibility/registry version mismatch")
         self.parser = TdxParser()
 
     def translate(self, source: str, *, data_profile: TdxDataSemanticProfileVersion, provenance_ref: str) -> TdxTranslationResult:
+        data_profile.assert_canonical()
+        registered_data = REGISTERED_TDX_DATA_SEMANTIC_PROFILES.get(data_profile.data_semantic_profile_id)
+        if registered_data is None or registered_data != data_profile:
+            raise TdxFormulaError("TDX_DATA_SEMANTIC_PROFILE_NOT_REGISTERED", data_profile.data_semantic_profile_id)
         program = self.parser.parse(source)
         document = FormulaDocumentVersion.create(
             language="TDX",
@@ -271,7 +348,7 @@ class TdxTranslator:
             (),
             data_profile.data_semantic_profile_id,
         )
-        return TdxTranslationResult(document, program, tuple(outputs), analysis, tuple(drawing))
+        return TdxTranslationResult(document, program, tuple(outputs), analysis, tuple(drawing), self.translator_version)
 
     def _translate_expression(self, expression: TdxExpression, environment: dict[str, FactorNode], data_profile: TdxDataSemanticProfileVersion) -> FactorNode:
         if isinstance(expression, NumberExpression):
@@ -313,7 +390,7 @@ class TdxTranslator:
                 if len(expression.arguments) != 2:
                     raise TdxFormulaError("TDX_PARSE_ERROR", "CROSS requires two arguments")
                 values = tuple(self._translate_expression(value, environment, data_profile) for value in expression.arguments)
-                return OperatorNode("CROSS", "1.0.0", values, {})
+                return OperatorNode(compatibility.canonical_operator, compatibility.canonical_operator_version, values, {})  # type: ignore[arg-type]
             if expression.function_name == "MA":
                 if len(expression.arguments) != 2 or not isinstance(expression.arguments[1], NumberExpression):
                     raise TdxFormulaError("LOOKBACK_UNRESOLVED", "MA period must be a numeric literal")
@@ -321,6 +398,6 @@ class TdxTranslator:
                 if period_decimal != period_decimal.to_integral_value():
                     raise TdxFormulaError("LOOKBACK_UNRESOLVED", "MA period must be an integer")
                 source = self._translate_expression(expression.arguments[0], environment, data_profile)
-                return OperatorNode("SMA", "1.0.0", (source,), {"timeperiod": int(period_decimal)})
+                return OperatorNode(compatibility.canonical_operator, compatibility.canonical_operator_version, (source,), {"timeperiod": int(period_decimal)})  # type: ignore[arg-type]
             raise TdxFormulaError("UNSUPPORTED_TDX_OPERATOR", expression.function_name)
         raise TdxFormulaError("TDX_PARSE_ERROR", "unknown AST expression")
