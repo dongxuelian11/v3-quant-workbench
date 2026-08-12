@@ -1,0 +1,119 @@
+{
+  "task_id": "V3-ROUND5-R-PORTFOLIO-RISK-AGENT-01",
+  "goal": "Build a production-shaped Portfolio/Risk Agent (L0/L1 only) over the frozen W0 base; scenario/constraint drafts, exact result comparison, Reviewer/Evidence explanation; never mint canonical weights/risk outputs; preserve A-share semantics, State Ledger and sibling isolation; no auto merge.",
+  "frozen_base": "f2cd80ee377d213a1bc1e78fb9812d2192b10cf9",
+  "origin_main_cached": "f2cd80ee377d213a1bc1e78fb9812d2192b10cf9",
+  "network_state": "RESOLVED: fresh git ls-remote on 2026-08-13 reached GitHub; origin/main = f2cd80e (frozen base, unchanged); no existing origin R branch",
+  "branch": "codex/round5-r-portfolio-risk-agent-01",
+  "head_at_start": "f2cd80ee377d213a1bc1e78fb9812d2192b10cf9",
+  "no_existing_r_branch_or_pr": true,
+  "fresh_fetch_before_push": "DONE 2026-08-13 (git ls-remote origin: main=f2cd80e; no R branch on origin)",
+  "write_set": [
+    "apps/backend/src/v3_backend/agents/portfolio_risk_agent/__init__.py",
+    "apps/backend/src/v3_backend/agents/portfolio_risk_agent/contracts.py",
+    "apps/backend/src/v3_backend/agents/portfolio_risk_agent/service.py",
+    "apps/backend/src/v3_backend/agents/portfolio_risk_agent/tools.py",
+    "apps/backend/src/v3_backend/agents/portfolio_risk_agent/application.py",
+    "apps/backend/src/v3_backend/agents/portfolio_risk_agent/worker.py",
+    "apps/backend/tests/round5_r_portfolio_risk_agent/__init__.py",
+    "apps/backend/tests/round5_r_portfolio_risk_agent/test_portfolio_risk_agent.py",
+    "docs/research/round5-r/REUSE_ADOPTION_MATRIX.md",
+    "docs/research/round5-r/PORTFOLIO_RISK_AGENT_CONTRACT.md",
+    ".codex/context/V3-ROUND5-R-PORTFOLIO-RISK-AGENT-01_STATE.json (force-added, matches P sibling pattern)"
+  ],
+  "shared_integration_paths": [],
+  "isolation_correction": {
+    "rule": "Only the frozen base f2cd80ee377d213a1bc1e78fb9812d2192b10cf9, W0 contracts, and implementations already merged into main are allowed as reference. Unmerged P/Q/S/T sibling branches and worktree residue must not be read, referenced, or borrowed.",
+    "violation_admission": "During the early study phase of this R session, unmerged sibling material was read: Q worktree residue (agents/model_agent/, tests/round5_q_model_agent/, docs/research/round5-q/) and P worktree residue plus the unmerged P branch commit (codex/round5-p-factor-agent-01, git show of its package.json/stat/ledger). This is recorded as an isolation-boundary violation in study phase; corrected per user directive from 2026-08-13 onward.",
+    "no_content_copied": "The R write-set contains no file content taken from P/Q/S/T; the R module architecture is traceable to merged frozen-base patterns only (see pattern_provenance).",
+    "pattern_provenance": "agents/research_evidence_integration/{contracts,tools,worker}.py (merged Track G: exact-object L0 read tools with allowed-call trace, fail-closed binding, PydanticAgentWorker + PYDANTIC_AI_VERIFIED_VERSION) and agents/generative_research_view/models.py (merged Track M: StrictAgentModel closed wire shapes); framework: agents/contracts.py, agents/permissions.py, agents/pydantic_worker.py.",
+    "import_audit": "Every v3_backend import in the R write-set resolves to a module present in the f2cd80e tree (verified via git cat-file against the frozen base, 2026-08-13). The only import not in base is v3_backend.agents.portfolio_risk_agent itself (R's own package). Test dependency track_f_strategy_runtime.helpers is IN_BASE.",
+    "foreign_untracked_worktree_residue": [
+      "apps/backend/src/v3_backend/adapters/factor_packs/",
+      "apps/backend/src/v3_backend/agents/factor_agent/",
+      "apps/backend/src/v3_backend/agents/model_agent/",
+      "apps/backend/src/v3_backend/domain/factor_library/",
+      "apps/backend/tests/round5_p_factor_agent/",
+      "apps/backend/tests/round5_q_model_agent/",
+      "docs/research/round5-p/",
+      "docs/research/round5-q/"
+    ],
+    "residue_handling": "FOREIGN_UNTRACKED_WORKTREE_RESIDUE: not opened, not modified, not staged; excluded from every R staging operation by exact-path allowlist only.",
+    "matrix_source_fix": "docs/research/round5-r/REUSE_ADOPTION_MATRIX.md Sources section now cites frozen-base documents only; the unmerged round5-q citation was removed and the Qlib row now cites the merged Track E report.",
+    "staging_rule": "All git index operations use GIT_INDEX_FILE=/tmp/v3-r-index consistently from branch creation to final commit. git add -A / git add . are forbidden; only the exact R allowlist paths are staged one directory/file at a time."
+  },
+  "reuse_decisions": {
+    "H_portfolio": "DIRECT_REUSE DeterministicPortfolioConstruction; optimizer_candidate always None",
+    "I_risk": "DIRECT_REUSE apply_risk + RiskPolicySetVersion; task RiskModelVersion maps to exact RiskPolicySetVersion + backend/code/runtime triple (no RiskModelVersion class exists in frozen base)",
+    "J_backtest": "DIRECT_REUSE DeterministicAshareBacktestEngine + BacktestRunSpec (T+1, buy lot, limit up/down, suspended blocks)",
+    "result_analytics": "DIRECT_REUSE BacktestResultAnalytics projection",
+    "reviewer": "DIRECT_REUSE review_research_scope + V0 rule set",
+    "riskfolio_lib_7.3.0": "REJECT (second portfolio/risk representation authority)",
+    "pypfopt_1.6.0": "REJECT (second optimizer authority; V0 admits none)",
+    "cvxpy_1.9.2": "REJECT (second optimization authority; no V3 seam)",
+    "qlib_portfolio": "REFERENCE only",
+    "pydantic_ai_slim_2.27.0": "THIN_ADAPTER (verified version)"
+  },
+  "read_tools": [
+    "get_portfolio_intent",
+    "get_target_weight_evidence",
+    "get_risk_policy_set",
+    "get_risk_adjusted_evidence",
+    "get_cost_policy",
+    "get_backtest_result",
+    "get_result_analytics",
+    "get_reviewer_report",
+    "get_scenario_bundle",
+    "compare_scenarios"
+  ],
+  "action_drafts": ["PORTFOLIO_CONSTRUCT", "RISK_APPLY", "BACKTEST_RUN", "RESULT_COMPARE", "REVIEW_RUN"],
+  "scenario_semantics": "Drafts bind only existing canonical identities (construction spec, risk policy set, cost policy, rule/timing profiles, exact vectors); no free-form numeric knobs; unsupported knobs (sector bounds, turnover budget, optimizer/objective, shorting, leverage, fractional) rejected or absent; comparison only for exact context key; missing analytics remain NOT_RUN/NOT_AVAILABLE",
+  "a_share_gates": "no shorting/leverage/fractional fields; T+1 and limit semantics inherited from J engine and never waived by Agent text",
+  "user_execution_boundary": "apply_confirmed_portfolio_construct / apply_confirmed_risk_apply / apply_confirmed_backtest_run require exact draft hash + agent_issued=false; Agent has no L2 tool",
+  "permissions": "L0 READ allowed, L1 DRAFT allowed, L2 EXECUTE denied, L3 PUBLISH denied",
+  "production_research_loop_complete": "NOT_AVAILABLE / NOT_RUN",
+  "completed": [
+    "Section 0 branch from frozen base (NETWORK_DEGRADED_BASE_ACCEPTED)",
+    "Section 5 REUSE_ADOPTION_MATRIX.md",
+    "R contracts/service/tools/application/worker implementation",
+    "Section 14: 26 tests (20 required categories + worker/seam extras) all passing under CPython 3.14.5",
+    "Contract doc PORTFOLIO_RISK_AGENT_CONTRACT.md",
+    "Section 15 regression under CPython 3.14.5 (uv venv): backend foundation 23 suites OK; R suite OK; typecheck OK; lint OK; node unit tests OK; build OK (temp copy; linux rollup/esbuild bindings placed additively in local node_modules); test:runtime 15/15 OK (V3_TEST_PYTHON); smoke:frontend OK; secret-scan OK; repo-audit OK; sbom:check OK",
+    "Commit on codex/round5-r-portfolio-risk-agent-01",
+    "Isolation-boundary correction: import audit (100% frozen base), pattern provenance to merged Track G/M, residue recorded as FOREIGN_UNTRACKED_WORKTREE_RESIDUE, matrix sources fixed to base-only",
+    "Allowlist gate verified before final amend (see commit_gate)"
+  ],
+  "not_run": [
+    "smoke:electron / smoke:visual-evidence: NOT_REQUIRED_BY_R (no frontend/desktop startup change) and no GUI display in the execution sandbox; canonical CI covers it"
+  ],
+  "pending": [
+    "push to origin (BLOCKED_AUTH: sandbox has no GitHub credentials; user must run: git push -u origin codex/round5-r-portfolio-risk-agent-01)",
+    "PR creation and CI",
+    "final candidate report"
+  ],
+  "blocked": [
+    "PUSH: GitHub HTTPS credentials unavailable in the execution sandbox ('could not read Username'); network itself is fine (ls-remote succeeded)"
+  ],
+  "tests": "PASS (26/26 R suite; 23/23 backend foundation suites; 15/15 ws-e runtime; typecheck/lint/unit/build/smoke-frontend/secret-scan/repo-audit/sbom-check)",
+  "commit_push_pr_ci": "COMMIT_DONE (single commit on R branch, ledger included); PUSH_BLOCKED_AUTH; PR/CI PENDING",
+  "environment_notes": [
+    "Executed in an isolated Linux sandbox; repository mounted read-mostly (file deletion blocked, git real index has a stale .git/index.lock from the sandbox; all git index operations used GIT_INDEX_FILE=/tmp/v3-r-index)",
+    "Leftover untracked P/Q working-tree files from the previous branch could not be unlinked by the mount; they are NOT part of the R commit",
+    "User should delete D:\\V3OpenSource\\.git\\index.lock on Windows and run git reset to resync the real index"
+  ],
+  "commit_gate": {
+    "allowlist": [
+      "apps/backend/src/v3_backend/agents/portfolio_risk_agent/",
+      "apps/backend/tests/round5_r_portfolio_risk_agent/",
+      "docs/research/round5-r/",
+      ".codex/context/V3-ROUND5-R-PORTFOLIO-RISK-AGENT-01_STATE.json"
+    ],
+    "staging_method": "exact allowlist paths only via git add <path> with GIT_INDEX_FILE=/tmp/v3-r-index; git add -A / git add . never used",
+    "cached_check_before_commit": "git diff --cached --name-only returned exactly .codex/context/V3-ROUND5-R-PORTFOLIO-RISK-AGENT-01_STATE.json and docs/research/round5-r/REUSE_ADOPTION_MATRIX.md (the amend delta); P/Q/S/T count = 0",
+    "head_check_after_commit": "git show HEAD --name-only returns exactly the 11 R write-set files; zero paths matching factor_agent|model_agent|round5-p|round5-q|factor_packs|factor_library|alpha_mining|desktop|round5-s|round5-t (count 0); paths outside the allowlist = 0 bytes",
+    "residue_state": "all 8 FOREIGN_UNTRACKED_WORKTREE_RESIDUE paths remain untracked and unstaged after the final amend",
+    "status": "PASSED",
+    "final_commit": "single commit on codex/round5-r-portfolio-risk-agent-01 (ledger content is self-referential; hash = branch HEAD at read time)"
+  },
+  "next_action": "user pushes the R branch from Windows (git push -u origin codex/round5-r-portfolio-risk-agent-01) and opens the PR against origin/main; CI runs; DO NOT merge"
+}
