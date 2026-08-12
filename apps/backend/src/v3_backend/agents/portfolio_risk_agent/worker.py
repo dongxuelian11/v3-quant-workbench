@@ -19,15 +19,15 @@ from .contracts import (
     PortfolioRiskScenarioContext,
 )
 from .service import (
-    _require_trusted_bundle,
+    _compare_resolved_scenarios,
     build_portfolio_risk_proposal,
-    compare_scenarios,
     draft_backtest_run,
     draft_portfolio_construct,
     draft_risk_apply,
+    resolve_scenario_evidence,
 )
 from .tools import PortfolioRiskReadTools
-from .trusted import ResolvedScenarioEvidenceBundle
+from .trusted import ScenarioResolutionRequest
 
 
 _INSTRUCTION_VERSION = "round5-r-portfolio-risk-agent/1.1"
@@ -226,30 +226,37 @@ class PortfolioRiskAgentWorker:
         self,
         *,
         research_goal: str,
-        left: ResolvedScenarioEvidenceBundle,
-        right: ResolvedScenarioEvidenceBundle,
+        left: ScenarioResolutionRequest,
+        right: ScenarioResolutionRequest,
         objective_metric: str | None = None,
         objective_direction: str | None = None,
     ) -> PortfolioRiskNarrative:
         """Evidence-grounded compare proposal.
 
-        The system resolves both bundles, computes the deterministic
-        `compare_scenarios`, and the model MUST consume the exact
-        compare_scenarios tool result. No evidence tool call => fail closed.
-        Only resolver-produced trusted evidence may enter this path.
+        The worker accepts canonical resolution requests only: both scenarios
+        are resolved through the canonical resolver at this trusted boundary,
+        the deterministic comparison is computed system-side, and the model
+        MUST consume the exact compare_scenarios tool result.  Caller-supplied
+        resolved bundles are not accepted; no evidence tool call => fail
+        closed.
         """
 
         require_permission(self._permission, PermissionLevel.L1_DRAFT)
-        left = _require_trusted_bundle(left, role="compare proposal")
-        right = _require_trusted_bundle(right, role="compare proposal")
-        left_id = left.deterministic_sha256
-        right_id = right.deterministic_sha256
+        if type(left) is not ScenarioResolutionRequest or type(right) is not ScenarioResolutionRequest:
+            raise TypeError(
+                "compare proposal requires exact ScenarioResolutionRequest inputs "
+                "(canonical owner objects); caller-supplied resolved evidence is not authority"
+            )
+        left_resolved = resolve_scenario_evidence(**left.to_kwargs())
+        right_resolved = resolve_scenario_evidence(**right.to_kwargs())
+        left_id = left_resolved.deterministic_sha256
+        right_id = right_resolved.deterministic_sha256
         for tool, object_id in (("get_scenario_bundle", left_id), ("get_scenario_bundle", right_id)):
             if not self._read_tools.has(tool, object_id):
                 raise AgentOutputRejected("compare proposal requires exact scenario bundle evidence")
-        comparison = compare_scenarios(
-            left,
-            right,
+        comparison = _compare_resolved_scenarios(
+            left_resolved,
+            right_resolved,
             objective_metric=objective_metric,
             objective_direction=objective_direction,
         )

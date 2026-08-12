@@ -43,7 +43,7 @@ from .contracts import (
     TargetWeightEvidenceView,
     UserConfirmation,
 )
-from .trusted import ResolvedScenarioEvidenceBundle
+from .trusted import ResolvedScenarioEvidenceBundle, ScenarioResolutionRequest
 from .service import (
     PortfolioRiskAgentBindingError,
     build_portfolio_risk_proposal,
@@ -103,6 +103,8 @@ __all__ = [
     "ScenarioComparison",
     "ScenarioComparisonInvariant",
     "ScenarioEvidenceBundle",
+    "ScenarioEvidenceExplanation",
+    "ScenarioResolutionRequest",
     "ScenarioEvidenceExplanation",
     "TargetWeightEvidenceRow",
     "TargetWeightEvidenceView",

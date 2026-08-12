@@ -70,22 +70,36 @@ explicitly exact-bound to the scenario `RiskPolicySetVersion` id + content hash.
 ### Resolver trust boundary (Finding R-C final closure)
 
 `ScenarioEvidenceBundle` is an **explicitly untrusted projection DTO** for rendering and
-serialization only. Trusted R consumers accept only `ResolvedScenarioEvidenceBundle`, a
-frozen resolver-owned representation produced exclusively by `resolve_scenario_evidence`.
-Its constructor requires the module-private resolver origin, so none of the following is a
-trust path: constructing the public DTO, setting `binding_gaps=()`, setting any boolean,
-copying ids or content hashes, reproducing a deterministic content hash, or deserializing
-JSON into the public DTO. There is no caller-settable trust flag.
+serialization only. Trust derives from canonical resolution performed **at the trusted
+consumer boundary**, never from the pedigree of a caller-supplied Python object.
 
-Trusted consumers: `compare_scenarios`, `explain_scenario`, the `PortfolioRiskReadTools`
-scenario inventory (`bundles`/`get_scenario_bundle`), and the compare worker path accept
-**only** exact `ResolvedScenarioEvidenceBundle` instances and fail closed with `TypeError`
-otherwise. The trusted wrapper's deterministic identity covers both the payload and the
-resolver-derived comparison invariant.
+The bounded public input of every trusted entry point is `ScenarioResolutionRequest`,
+which carries only canonical owner objects (PortfolioIntent / PortfolioIntentSource /
+binding, exact construction-spec reference, RiskPolicySetVersion, CostPolicyVersion,
+TargetWeightVector + decision report, BacktestRunResult + BacktestRunSpec,
+BacktestResultAnalytics, ResearchReviewReport). The trusted entry point itself invokes
+`resolve_scenario_evidence` and re-establishes the exact canonical chain before any
+result is produced:
+
+- `compare_scenarios(left=request, right=request, ...)` resolves both requests inside
+  the boundary;
+- `explain_scenario(request=...)` resolves inside the boundary;
+- `PortfolioRiskReadTools.from_canonical(scenario_requests=...)` builds the scenario
+  inventory exclusively through canonical resolution (no parameter accepts
+  caller-supplied resolved bundles; duplicate scenario identities fail closed);
+- the compare worker accepts `ScenarioResolutionRequest` pairs and resolves them
+  system-side before the deterministic comparison is exposed to the model.
+
+`ResolvedScenarioEvidenceBundle` remains only as an internal/intermediate value:
+possession of the exact type, deterministic-hash equality, empty `binding_gaps`, or any
+explicit import of module internals grant nothing, because **no trusted entry point
+accepts caller-supplied resolved bundles**. There is no authority token, no private
+origin object, no sentinel, and no caller-settable trust flag anywhere in the package.
 
 ## Scenario comparison semantics (Finding R-D)
 
-`compare_scenarios` accepts only resolver-produced trusted evidence and separates
+`compare_scenarios` accepts canonical `ScenarioResolutionRequest` inputs, resolves them
+at the trusted boundary, and separates
 **comparison invariant** from **scenario treatment**. The invariant is the resolver-derived
 `ScenarioComparisonInvariant`, whose `invariant_id` is the deterministic content hash of
 every non-treatment execution/evaluation dimension, recomputed and verified on
@@ -117,8 +131,9 @@ INSUFFICIENT_SAMPLE` with no zero fill.
 Construct proposals require the exact `PortfolioIntent` evidence call. Risk proposals require
 `PortfolioIntent` plus exact `TargetWeightVector` and `RiskPolicySetVersion` evidence exposed.
 Backtest proposals require the exact `RiskAdjustedWeightVector` and `CostPolicy` evidence
-exposed. Compare proposals are system-computed: the worker resolves both bundles, computes
-the deterministic `compare_scenarios`, and the model MUST consume the exact
+exposed. Compare proposals are system-computed: the worker accepts canonical
+`ScenarioResolutionRequest` pairs, resolves them system-side at the trusted boundary,
+computes the deterministic comparison, and the model MUST consume the exact
 `compare_scenarios` tool result — no evidence tool call fails closed. Narrative output cannot
 carry invented metric/exposure values.
 
@@ -136,15 +151,17 @@ triple (`RISK_V0_BACKEND = "v3-native-decimal"`).
 
 ## Test coverage
 
-`apps/backend/tests/round5_r_portfolio_risk_agent/test_portfolio_risk_agent.py` (91 tests)
+`apps/backend/tests/round5_r_portfolio_risk_agent/test_portfolio_risk_agent.py` (96 tests)
 covers the original 20 R categories plus the correction matrix: R-A confirmation authority
 (5), R-B exact construct/risk/backtest binding (17), R-C evidence resolver and binding (7),
 R-D evidence-grounded comparison and treatment semantics (7), worker evidence gates, all
-existing A-share / no-second-authority regressions, and the final closure matrix: R-C trust
-boundary negatives (10: manual DTO, empty gaps, reproduced hashes, read-tools admission,
-compare-worker admission, unrelated/wrong-identity reviewer reports, broken cost-policy and
-decision-report relations, full valid chain) and R-D invariant negatives/positives (17:
-initial cash, holdings, instruments, session range, market-state inputs, data/calendar/
-corporate-action references, A-share rule profile, execution timing, runtime identity,
-engine version, analytics policy, benchmark context -> `INCOMPARABLE_CONTEXT`; construction
-spec / risk policy set / cost policy -> `COMPARABLE` with disclosed treatment differences).
+existing A-share / no-second-authority regressions, and the final closure matrices:
+R-C authority (RC-FINAL-01..10: legacy origin tokens removed and import confers nothing;
+manual/exact-type/hash-equal/gap-free wrappers rejected by compare, explain, read tools and
+the compare worker; canonical success path through all trusted boundaries; canonical
+failure stays fail closed with EVIDENCE_BINDING_UNAVAILABLE) and R-D invariant
+negatives/positives (17: initial cash, holdings, instruments, session range, market-state
+inputs, data/calendar/corporate-action references, A-share rule profile, execution timing,
+runtime identity, engine version, analytics policy, benchmark context ->
+`INCOMPARABLE_CONTEXT`; construction spec / risk policy set / cost policy -> `COMPARABLE`
+with disclosed treatment differences).

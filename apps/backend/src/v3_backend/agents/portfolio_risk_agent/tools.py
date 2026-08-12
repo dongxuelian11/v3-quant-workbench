@@ -16,8 +16,8 @@ from .contracts import (
     ScenarioComparison,
     TargetWeightEvidenceView,
 )
-from .service import compare_scenarios
-from .trusted import ResolvedScenarioEvidenceBundle
+from .service import _compare_resolved_scenarios, resolve_scenario_evidence
+from .trusted import ResolvedScenarioEvidenceBundle, ScenarioResolutionRequest
 
 
 class PortfolioRiskAgentToolError(ValueError):
@@ -25,7 +25,12 @@ class PortfolioRiskAgentToolError(ValueError):
 
 
 class PortfolioRiskReadTools:
-    """R-local exact-object L0 tools; no execution, minting, or publication surface."""
+    """R-local exact-object L0 tools; no execution, minting, or publication surface.
+
+    The scenario inventory is built exclusively through canonical resolution
+    (`from_canonical`): caller-supplied resolved bundles cannot enter, and no
+    authority token or trust flag exists.
+    """
 
     __slots__ = (
         "_intents",
@@ -52,15 +57,7 @@ class PortfolioRiskReadTools:
         results: tuple[BacktestResultEvidenceView, ...] = (),
         analytics: tuple[ResultAnalyticsEvidenceView, ...] = (),
         reviews: tuple[ReviewerEvidenceView, ...] = (),
-        bundles: tuple[ResolvedScenarioEvidenceBundle, ...] = (),
     ) -> None:
-        for bundle in bundles:
-            if type(bundle) is not ResolvedScenarioEvidenceBundle:
-                raise TypeError(
-                    "trusted scenario inventory accepts only resolver-produced "
-                    "ResolvedScenarioEvidenceBundle evidence; plain/manual "
-                    "ScenarioEvidenceBundle values cannot enter"
-                )
         self._intents = MappingProxyType({value.portfolio_intent_id: value for value in intents})
         self._targets = MappingProxyType({value.target_weight_vector_id: value for value in targets})
         self._policy_sets = MappingProxyType({value.risk_policy_set_version_id: value for value in policy_sets})
@@ -69,7 +66,7 @@ class PortfolioRiskReadTools:
         self._results = MappingProxyType({value.result_id: value for value in results})
         self._analytics = MappingProxyType({value.analytics_id: value for value in analytics})
         self._reviews = MappingProxyType({value.review_report_id: value for value in reviews})
-        self._bundles = MappingProxyType({value.deterministic_sha256: value for value in bundles})
+        self._bundles: MappingProxyType[str, ResolvedScenarioEvidenceBundle] = MappingProxyType({})
         sizes = (
             (len(self._intents), len(intents)),
             (len(self._targets), len(targets)),
@@ -79,12 +76,56 @@ class PortfolioRiskReadTools:
             (len(self._results), len(results)),
             (len(self._analytics), len(analytics)),
             (len(self._reviews), len(reviews)),
-            (len(self._bundles), len(bundles)),
         )
         if any(stored != given for stored, given in sizes):
             raise PortfolioRiskAgentToolError("duplicate exact object identities fail closed")
         self._allowed: frozenset[tuple[str, str]] = frozenset()
         self._called: list[tuple[str, str]] = []
+
+    @classmethod
+    def from_canonical(
+        cls,
+        *,
+        intents: tuple[PortfolioIntentEvidenceView, ...] = (),
+        targets: tuple[TargetWeightEvidenceView, ...] = (),
+        policy_sets: tuple[RiskPolicySetEvidenceView, ...] = (),
+        adjusted: tuple[RiskAdjustedEvidenceView, ...] = (),
+        cost_policies: tuple[CostPolicyEvidenceView, ...] = (),
+        results: tuple[BacktestResultEvidenceView, ...] = (),
+        analytics: tuple[ResultAnalyticsEvidenceView, ...] = (),
+        reviews: tuple[ReviewerEvidenceView, ...] = (),
+        scenario_requests: tuple[ScenarioResolutionRequest, ...] = (),
+    ) -> "PortfolioRiskReadTools":
+        """Build the read inventory; scenario bundles via canonical resolution only.
+
+        Each `ScenarioResolutionRequest` is resolved through the canonical
+        resolver at this trusted boundary.  There is no parameter that
+        accepts caller-supplied resolved bundles.
+        """
+
+        tools = cls(
+            intents=intents,
+            targets=targets,
+            policy_sets=policy_sets,
+            adjusted=adjusted,
+            cost_policies=cost_policies,
+            results=results,
+            analytics=analytics,
+            reviews=reviews,
+        )
+        for request in scenario_requests:
+            if type(request) is not ScenarioResolutionRequest:
+                raise TypeError(
+                    "scenario inventory accepts only exact ScenarioResolutionRequest inputs "
+                    "(canonical owner objects); caller-supplied resolved evidence is not authority"
+                )
+        resolved = tuple(
+            resolve_scenario_evidence(**request.to_kwargs()) for request in scenario_requests
+        )
+        if len({value.deterministic_sha256 for value in resolved}) != len(resolved):
+            raise PortfolioRiskAgentToolError("duplicate exact scenario identities fail closed")
+        tools._bundles = MappingProxyType({value.deterministic_sha256: value for value in resolved})
+        return tools
 
     @property
     def visible_tool_names(self) -> tuple[str, ...]:
@@ -179,7 +220,7 @@ class PortfolioRiskReadTools:
             right = self._bundles[right_id]
         except KeyError as exc:
             raise PortfolioRiskAgentToolError("scenario bundle evidence is unavailable") from exc
-        return compare_scenarios(
+        return _compare_resolved_scenarios(
             left,
             right,
             objective_metric=metric or None,

@@ -24,6 +24,7 @@ from v3_backend.agents.portfolio_risk_agent import (
     ResolvedScenarioEvidenceBundle,
     ScenarioComparisonInvariant,
     ScenarioEvidenceBundle,
+    ScenarioResolutionRequest,
     USER_EXECUTION_AUTHORITY_NOT_AVAILABLE,
     UserConfirmation,
     UserExecutionAuthorityNotAvailable,
@@ -411,12 +412,45 @@ class PortfolioRiskAgentFixture(unittest.TestCase):
             reviewer_reports=reviewer_reports,
         )
 
-    def _alternate_chain_bundle(
+    def request(
+        self,
+        *,
+        analytics=None,
+        reviewer_reports=(),
+        cost_policy: CostPolicyVersion | None = None,
+        policy_set: RiskPolicySetVersion | None = None,
+        target: TargetWeightVector | None = None,
+        risk_adjusted: RiskAdjustedWeightVector | None = None,
+        decision_report=None,
+        backtest_result=None,
+        backtest_spec: BacktestRunSpec | None = None,
+        with_backtest_spec: bool = True,
+        construction_spec: UnresolvedExactReference | None = None,
+        base_currency: str = "CNY",
+    ) -> ScenarioResolutionRequest:
+        return ScenarioResolutionRequest(
+            intent=self.intent,
+            source=self.source,
+            binding=self.fixture.binding,
+            construction_spec=construction_spec or self.construction_spec.to_reference(),
+            risk_policy_set=policy_set or self.policy_set,
+            cost_policy=cost_policy or self.cost_policy,
+            base_currency=base_currency,
+            target=target or self.cn_target,
+            risk_adjusted=risk_adjusted or self.cn_adjusted,
+            decision_report=decision_report if decision_report is not None else self.cn_risk.decision_report,
+            backtest_result=backtest_result or self.backtest_result,
+            backtest_spec=backtest_spec if backtest_spec is not None else (self.backtest_spec if with_backtest_spec else None),
+            analytics=analytics,
+            reviewer_reports=tuple(reviewer_reports),
+        )
+
+    def _alternate_chain_request(
         self,
         *,
         universe_id: str = "universe-2",
         universe_instruments: tuple[str, ...] | None = None,
-    ) -> ResolvedScenarioEvidenceBundle:
+    ) -> ScenarioResolutionRequest:
         """Full canonical chain over an alternate universe (same definition)."""
 
         if universe_instruments is None:
@@ -496,7 +530,7 @@ class PortfolioRiskAgentFixture(unittest.TestCase):
         other_adjusted = other_risk.adjusted_weights
         other_spec = self._build_backtest_spec(other_adjusted, self.cost_policy, source=other_source)
         other_result = DeterministicAshareBacktestEngine().run(other_spec)
-        return resolve_scenario_evidence(
+        return ScenarioResolutionRequest(
             intent=other_intent,
             source=other_source,
             binding=other_binding,
@@ -511,6 +545,17 @@ class PortfolioRiskAgentFixture(unittest.TestCase):
             backtest_spec=other_spec,
             analytics=self.analytics_for(other_result),
         )
+
+    def _alternate_chain_bundle(
+        self,
+        *,
+        universe_id: str = "universe-2",
+        universe_instruments: tuple[str, ...] | None = None,
+    ) -> ResolvedScenarioEvidenceBundle:
+        return self._alternate_chain_request(
+            universe_id=universe_id,
+            universe_instruments=universe_instruments,
+        ).resolve()
 
     def confirmation(self, draft, action: str) -> UserConfirmation:
         return UserConfirmation(
@@ -768,7 +813,7 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
             )
         spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
         result2 = DeterministicAshareBacktestEngine().run(spec2)
-        bundle2 = resolve_scenario_evidence(
+        request2 = ScenarioResolutionRequest(
             intent=self.intent,
             source=self.source,
             binding=self.fixture.binding,
@@ -783,7 +828,7 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
             backtest_spec=spec2,
             analytics=self.analytics_for(result2),
         )
-        explanation = explain_scenario(bundle=bundle2)
+        explanation = explain_scenario(request=request2)
         self.assertTrue(any("OTHER_COST" in statement for statement in explanation.cost_statements))
         self.assertIn(other_cost.policy_id, explanation.cited_evidence_refs)
 
@@ -826,12 +871,22 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
             left.comparison_invariant.invariant_id,
             other_bundle.comparison_invariant.invariant_id,
         )
-        comparison = compare_scenarios(left, other_bundle, objective_metric="total_return", objective_direction="MAXIMIZE")
+        comparison = compare_scenarios(
+            left=self.request(analytics=self.analytics()),
+            right=self._alternate_chain_request(universe_id="universe-2"),
+            objective_metric="total_return",
+            objective_direction="MAXIMIZE",
+        )
         self.assertEqual(comparison.status, ComparisonStatus.INCOMPARABLE_CONTEXT)
         self.assertIn("universe_version_id", comparison.context_mismatches)
         self.assertIsNone(comparison.ranking)
         self.assertEqual(comparison.metric_deltas, ())
-        same = compare_scenarios(left, self.bundle(analytics=self.analytics()), objective_metric="total_return", objective_direction="MAXIMIZE")
+        same = compare_scenarios(
+            left=self.request(analytics=self.analytics()),
+            right=self.request(analytics=self.analytics()),
+            objective_metric="total_return",
+            objective_direction="MAXIMIZE",
+        )
         self.assertEqual(same.status, ComparisonStatus.COMPARABLE)
         self.assertTrue(all(delta.status == "AVAILABLE" for delta in same.metric_deltas if delta.name == "total_return"))
         self.assertEqual(same.ranking, "TIE")
@@ -852,8 +907,8 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
         self.assertNotEqual(base_view.commission_rate, other_view.commission_rate)
         spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
         result2 = DeterministicAshareBacktestEngine().run(spec2)
-        left = self.bundle(analytics=self.analytics())
-        right = resolve_scenario_evidence(
+        left = self.request(analytics=self.analytics())
+        right = ScenarioResolutionRequest(
             intent=self.intent,
             source=self.source,
             binding=self.fixture.binding,
@@ -868,7 +923,7 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
             backtest_spec=spec2,
             analytics=self.analytics_for(result2),
         )
-        comparison = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        comparison = compare_scenarios(left=left, right=right, objective_metric="total_return", objective_direction="MAXIMIZE")
         self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
         self.assertEqual(comparison.scenario_differences, ("cost_policy_id",))
         self.assertTrue(any(delta.name == "total_return" and delta.status == "AVAILABLE" for delta in comparison.metric_deltas))
@@ -887,15 +942,15 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
         )
         self.assertEqual(draft.draft_kind, PortfolioRiskDraftKind.REVIEW_RUN)
         reviewer_view = read_reviewer_report(report)
-        explanation = explain_scenario(bundle=self.bundle(analytics=self.analytics(), reviewer_reports=(report,)))
+        explanation = explain_scenario(request=self.request(analytics=self.analytics(), reviewer_reports=(report,)))
         self.assertEqual(explanation.status, "EVIDENCE_BOUND")
         self.assertIn(view.review_report_id, explanation.cited_evidence_refs)
 
     def test_15_missing_analytics_not_run_not_available(self):
-        explanation = explain_scenario(bundle=self.bundle())
+        explanation = explain_scenario(request=self.request())
         self.assertEqual(explanation.status, "EVIDENCE_MISSING")
         self.assertIn("analytics", explanation.missing_evidence)
-        comparison = compare_scenarios(self.bundle(), self.bundle())
+        comparison = compare_scenarios(left=self.request(), right=self.request())
         self.assertEqual(comparison.status, ComparisonStatus.INCOMPARABLE_CONTEXT)
         self.assertIn("analytics", comparison.context_mismatches)
         analytics = self.analytics()
@@ -980,7 +1035,7 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
         self.assertIn("SUSPENDED", codes)
         with self.assertRaises(PortfolioRiskApplicationError):
             verify_backtest_binding(draft=draft, confirmation=confirmation, spec=suspended_spec)
-        explanation = explain_scenario(bundle=self.bundle(analytics=self.analytics()))
+        explanation = explain_scenario(request=self.request(analytics=self.analytics()))
         for statement in explanation.analytics_statements + explanation.weight_change_statements:
             self.assertNotIn("short", statement.lower())
             self.assertNotIn("leverage", statement.lower())
@@ -1445,14 +1500,14 @@ class PortfolioRiskCorrectionEvidenceResolverTests(PortfolioRiskAgentFixture):
     def test_corr_27_missing_owner_link_marks_binding_unavailable(self):
         bundle = self.bundle(analytics=self.analytics(), with_backtest_spec=False)
         self.assertIn("backtest_to_risk_adjusted", bundle.binding_gaps)
-        explanation = explain_scenario(bundle=bundle)
+        explanation = explain_scenario(request=self.request(analytics=self.analytics(), with_backtest_spec=False))
         self.assertEqual(explanation.status, "EVIDENCE_BINDING_UNAVAILABLE")
 
     def test_corr_28_exact_canonical_chain_passes(self):
         report = review_research_scope(self.review_scope())
         bundle = self.bundle(analytics=self.analytics(), reviewer_reports=(report,))
         self.assertEqual(bundle.binding_gaps, ())
-        explanation = explain_scenario(bundle=bundle)
+        explanation = explain_scenario(request=self.request(analytics=self.analytics(), reviewer_reports=(report,)))
         self.assertEqual(explanation.status, "EVIDENCE_BOUND")
         view = bundle.backtest
         self.assertEqual(view.run_spec_id, self.backtest_spec.run_spec_id)
@@ -1502,8 +1557,8 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
             read_tools=read_tools or self.read_tools(),
         )
 
-    def read_tools(self, bundles=()):
-        return PortfolioRiskReadTools(
+    def read_tools(self, scenario_requests=()):
+        return PortfolioRiskReadTools.from_canonical(
             intents=(read_portfolio_intent(intent=self.intent, source=self.source, binding=self.fixture.binding, base_currency="CNY"),),
             targets=(read_target_weight_evidence(self.target),),
             policy_sets=(read_risk_policy_set(self.policy_set),),
@@ -1512,7 +1567,7 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
                 read_risk_adjusted_evidence(self.cn_adjusted, self.cn_risk.decision_report),
             ),
             cost_policies=(read_cost_policy(self.cost_policy),),
-            bundles=tuple(bundles),
+            scenario_requests=tuple(scenario_requests),
         )
 
     def test_worker_construct_proposal_requires_exact_evidence(self):
@@ -1571,8 +1626,8 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
         )
         spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
         result2 = DeterministicAshareBacktestEngine().run(spec2)
-        left = self.bundle(analytics=self.analytics())
-        right = resolve_scenario_evidence(
+        left = self.request(analytics=self.analytics())
+        right = ScenarioResolutionRequest(
             intent=self.intent,
             source=self.source,
             binding=self.fixture.binding,
@@ -1587,7 +1642,7 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
             backtest_spec=spec2,
             analytics=self.analytics_for(result2),
         )
-        tools = self.read_tools(bundles=(left, right))
+        tools = self.read_tools(scenario_requests=(left, right))
         narrative = self.worker(proposal_model, read_tools=tools).run_compare_proposal(
             research_goal="compare",
             left=left,
@@ -1607,7 +1662,7 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
     def test_compare_worker_requires_bundle_evidence(self):
         from v3_backend.agents.pydantic_worker import AgentOutputRejected
 
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         other_cost = CostPolicyVersion.create(
             policy_name="OTHER_COST",
             effective_from=date(2023, 8, 28),
@@ -1619,7 +1674,7 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
         )
         spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
         result2 = DeterministicAshareBacktestEngine().run(spec2)
-        right = resolve_scenario_evidence(
+        right = ScenarioResolutionRequest(
             intent=self.intent,
             source=self.source,
             binding=self.fixture.binding,
@@ -1708,7 +1763,7 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
         report = review_research_scope(self.review_scope())
         reviewer_view = read_reviewer_report(report)
         explanation = explain_scenario(
-            bundle=self.bundle(analytics=analytics, reviewer_reports=(report,)),
+            request=self.request(analytics=analytics, reviewer_reports=(report,)),
             next_action_proposals=("PROPOSAL: raise max single-name clip",),
         )
         self.assertEqual(explanation.status, "EVIDENCE_BOUND")
@@ -1720,8 +1775,8 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
         self.assertFalse(explanation.invented_causality)
         self.assertFalse(explanation.invented_optimization)
         comparison = compare_scenarios(
-            self.bundle(analytics=analytics),
-            self.bundle(analytics=analytics),
+            left=self.request(analytics=analytics),
+            right=self.request(analytics=analytics),
             objective_metric="total_return",
             objective_direction="MAXIMIZE",
         )
@@ -1732,7 +1787,7 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
 class PortfolioRiskCorrectionCompareTests(PortfolioRiskAgentFixture):
     """Finding R-D: evidence-grounded scenario comparison semantics."""
 
-    def _risk_variant_bundle(self):
+    def _risk_variant_request(self):
         variant_set = RiskPolicySetVersion.create(
             (
                 RiskPolicyDefinition.pass_through(
@@ -1749,7 +1804,7 @@ class PortfolioRiskCorrectionCompareTests(PortfolioRiskAgentFixture):
         variant_adjusted = variant_risk.adjusted_weights
         variant_spec = self._build_backtest_spec(variant_adjusted, self.cost_policy)
         variant_result = DeterministicAshareBacktestEngine().run(variant_spec)
-        return resolve_scenario_evidence(
+        return ScenarioResolutionRequest(
             intent=self.intent,
             source=self.source,
             binding=self.fixture.binding,
@@ -1766,19 +1821,21 @@ class PortfolioRiskCorrectionCompareTests(PortfolioRiskAgentFixture):
         )
 
     def test_corr_31_different_universe_or_cutoff_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
         other_bundle = self._alternate_chain_bundle(universe_id="universe-2")
         self.assertIsInstance(other_bundle, ResolvedScenarioEvidenceBundle)
-        comparison = compare_scenarios(left, other_bundle)
+        comparison = compare_scenarios(
+            left=self.request(analytics=self.analytics()),
+            right=self._alternate_chain_request(universe_id="universe-2"),
+        )
         self.assertEqual(comparison.status, ComparisonStatus.INCOMPARABLE_CONTEXT)
         self.assertIn("universe_version_id", comparison.context_mismatches)
         self.assertEqual(comparison.scenario_differences, ())
         self.assertIsNone(comparison.ranking)
 
     def test_corr_32_different_risk_policy_is_comparable_treatment_difference(self):
-        left = self.bundle(analytics=self.analytics())
-        right = self._risk_variant_bundle()
-        comparison = compare_scenarios(left, right)
+        left = self.request(analytics=self.analytics())
+        right = self._risk_variant_request()
+        comparison = compare_scenarios(left=left, right=right)
         self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
         self.assertEqual(comparison.scenario_differences, ("risk_policy_set_version_id",))
 
@@ -1794,8 +1851,8 @@ class PortfolioRiskCorrectionCompareTests(PortfolioRiskAgentFixture):
         )
         spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
         result2 = DeterministicAshareBacktestEngine().run(spec2)
-        left = self.bundle(analytics=self.analytics())
-        right = resolve_scenario_evidence(
+        left = self.request(analytics=self.analytics())
+        right = ScenarioResolutionRequest(
             intent=self.intent,
             source=self.source,
             binding=self.fixture.binding,
@@ -1810,25 +1867,25 @@ class PortfolioRiskCorrectionCompareTests(PortfolioRiskAgentFixture):
             backtest_spec=spec2,
             analytics=self.analytics_for(result2),
         )
-        comparison = compare_scenarios(left, right)
+        comparison = compare_scenarios(left=left, right=right)
         self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
         self.assertEqual(comparison.scenario_differences, ("cost_policy_id",))
 
     def test_corr_34_treatment_differences_returned_explicitly(self):
-        left = self.bundle(analytics=self.analytics())
-        right = self._risk_variant_bundle()
-        comparison = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        left = self.request(analytics=self.analytics())
+        right = self._risk_variant_request()
+        comparison = compare_scenarios(left=left, right=right, objective_metric="total_return", objective_direction="MAXIMIZE")
         self.assertEqual(comparison.scenario_differences, ("risk_policy_set_version_id",))
         self.assertNotIn("portfolio_intent_id", comparison.scenario_differences)
         self.assertNotIn("universe_version_id", comparison.scenario_differences)
 
     def test_corr_35_ranking_only_with_available_objective_and_exact_invariant(self):
-        left = self.bundle(analytics=self.analytics())
-        right = self.bundle(analytics=self.analytics())
-        ranked = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        left = self.request(analytics=self.analytics())
+        right = self.request(analytics=self.analytics())
+        ranked = compare_scenarios(left=left, right=right, objective_metric="total_return", objective_direction="MAXIMIZE")
         self.assertEqual(ranked.status, ComparisonStatus.COMPARABLE)
         self.assertEqual(ranked.ranking, "TIE")
-        unranked = compare_scenarios(left, right, objective_metric="sharpe", objective_direction="MAXIMIZE")
+        unranked = compare_scenarios(left=left, right=right, objective_metric="sharpe", objective_direction="MAXIMIZE")
         sharpe_delta = next(delta for delta in unranked.metric_deltas if delta.name == "sharpe")
         if sharpe_delta.status != "AVAILABLE":
             self.assertIsNone(unranked.ranking)
@@ -1837,9 +1894,14 @@ class PortfolioRiskCorrectionCompareTests(PortfolioRiskAgentFixture):
 
 
 class PortfolioRiskFinalClosureRCTests(PortfolioRiskAgentFixture):
-    """R-C final closure: resolver trust boundary is not bypassable."""
+    """R-C final closure: authority derives from canonical resolution at the trusted boundary.
 
-    def _manual_bundle(self) -> ScenarioEvidenceBundle:
+    No private token, underscore object, sentinel or caller-settable flag
+    participates in authority.  Trusted entry points accept canonical
+    ScenarioResolutionRequest inputs and resolve inside the trusted boundary.
+    """
+
+    def _manual_dto(self) -> ScenarioEvidenceBundle:
         intent_view = read_portfolio_intent(
             intent=self.intent,
             source=self.source,
@@ -1855,77 +1917,182 @@ class PortfolioRiskFinalClosureRCTests(PortfolioRiskAgentFixture):
             cost_policy=read_cost_policy(self.cost_policy),
         )
 
-    def test_final_rc_01_manual_dto_cannot_become_trusted(self):
-        trusted = self.bundle(analytics=self.analytics())
-        manual = self._manual_bundle()
-        self.assertIsInstance(manual, ScenarioEvidenceBundle)
-        self.assertNotIsInstance(manual, ResolvedScenarioEvidenceBundle)
-        with self.assertRaises(TypeError):
-            ResolvedScenarioEvidenceBundle(manual, None, object())
-        with self.assertRaises(TypeError):
-            ResolvedScenarioEvidenceBundle(manual, None, None)
-        with self.assertRaises(TypeError):
-            compare_scenarios(trusted, manual)
-        with self.assertRaises(TypeError):
-            compare_scenarios(manual, trusted)
-        with self.assertRaises(TypeError):
-            explain_scenario(bundle=manual)
+    def _manual_wrapper(self) -> ResolvedScenarioEvidenceBundle:
+        return ResolvedScenarioEvidenceBundle(self._manual_dto(), None)
 
-    def test_final_rc_02_empty_binding_gaps_cannot_confer_trust(self):
-        manual = self._manual_bundle()
-        self.assertEqual(manual.binding_gaps, ())
-        with self.assertRaises(TypeError):
-            explain_scenario(bundle=manual)
-        with self.assertRaises(TypeError):
-            compare_scenarios(manual, manual)
+    def test_rc_final_01_legacy_origin_removed_and_import_confers_nothing(self):
+        import v3_backend.agents.portfolio_risk_agent.trusted as trusted_module
 
-    def test_final_rc_03_matching_deterministic_sha_cannot_confer_trust(self):
-        trusted = self.bundle(analytics=self.analytics())
-        copied = trusted.payload.model_copy()
-        self.assertEqual(copied.deterministic_sha256, trusted.payload.deterministic_sha256)
-        deserialized = None
-        try:
-            deserialized = ScenarioEvidenceBundle.model_validate_json(
-                json.dumps(trusted.payload.model_dump(mode="json"))
-            )
-        except ValidationError:
-            deserialized = None
-        for fabricated in (copied, deserialized):
-            if fabricated is None:
-                continue
-            with self.assertRaises(TypeError):
-                compare_scenarios(trusted, fabricated)
-            with self.assertRaises(TypeError):
-                explain_scenario(bundle=fabricated)
-
-    def test_final_rc_04_manual_bundle_cannot_enter_read_tools(self):
-        manual = self._manual_bundle()
+        for name in ("_RESOLVER_ORIGIN", "_ResolverOrigin", "_ResolverToken"):
+            self.assertFalse(hasattr(trusted_module, name), f"legacy authority token {name} must not exist")
+        wrapper = self._manual_wrapper()
         with self.assertRaises(TypeError):
-            PortfolioRiskReadTools(bundles=(manual,))
-        trusted = self.bundle(analytics=self.analytics())
-        tools = PortfolioRiskReadTools(bundles=(trusted,))
-        self.assertTrue(tools.has("get_scenario_bundle", trusted.deterministic_sha256))
-        self.assertFalse(tools.has("get_scenario_bundle", manual.deterministic_sha256))
-        tools.begin((("get_scenario_bundle", trusted.deterministic_sha256),))
-        fetched = tools.get_scenario_bundle(trusted.deterministic_sha256)
-        self.assertIsInstance(fetched, ResolvedScenarioEvidenceBundle)
-        self.assertEqual(fetched.deterministic_sha256, trusted.deterministic_sha256)
-
-    def test_final_rc_05_manual_bundle_cannot_enter_compare_worker(self):
-        trusted = self.bundle(analytics=self.analytics())
-        manual = self._manual_bundle()
+            compare_scenarios(left=wrapper, right=wrapper)
+        with self.assertRaises(TypeError):
+            explain_scenario(request=wrapper)
+        with self.assertRaises(TypeError):
+            PortfolioRiskReadTools.from_canonical(scenario_requests=(wrapper,))
         worker = PortfolioRiskAgentWorker(
             model=FunctionModel(proposal_model),
             permission=PermissionLevel.L1_DRAFT,
             model_name="deterministic-test-model",
             provider_name="test-provider",
             prompt_version="round5-r/1",
-            read_tools=PortfolioRiskReadTools(bundles=(trusted,)),
+            read_tools=PortfolioRiskReadTools(),
         )
         with self.assertRaises(TypeError):
-            worker.run_compare_proposal(research_goal="unsafe", left=trusted, right=manual)
+            worker.run_compare_proposal(research_goal="unsafe", left=wrapper, right=wrapper)
+
+    def test_rc_final_02_manual_wrapper_cannot_enter_compare(self):
+        wrapper = self._manual_wrapper()
         with self.assertRaises(TypeError):
-            worker.run_compare_proposal(research_goal="unsafe", left=manual, right=trusted)
+            compare_scenarios(left=wrapper, right=self.request(analytics=self.analytics()))
+        with self.assertRaises(TypeError):
+            compare_scenarios(left=self.request(analytics=self.analytics()), right=wrapper)
+
+    def test_rc_final_03_manual_wrapper_cannot_enter_explain(self):
+        with self.assertRaises(TypeError):
+            explain_scenario(request=self._manual_wrapper())
+
+    def test_rc_final_04_manual_wrapper_cannot_enter_read_tools(self):
+        wrapper = self._manual_wrapper()
+        with self.assertRaises(TypeError):
+            PortfolioRiskReadTools.from_canonical(scenario_requests=(wrapper,))
+        with self.assertRaises(TypeError):
+            PortfolioRiskReadTools(bundles=(wrapper,))
+        tools = PortfolioRiskReadTools()
+        self.assertFalse(tools.has("get_scenario_bundle", wrapper.deterministic_sha256))
+
+    def test_rc_final_05_manual_wrapper_cannot_enter_compare_worker(self):
+        wrapper = self._manual_wrapper()
+        request = self.request(analytics=self.analytics())
+        worker = PortfolioRiskAgentWorker(
+            model=FunctionModel(proposal_model),
+            permission=PermissionLevel.L1_DRAFT,
+            model_name="deterministic-test-model",
+            provider_name="test-provider",
+            prompt_version="round5-r/1",
+            read_tools=PortfolioRiskReadTools.from_canonical(scenario_requests=(request,)),
+        )
+        with self.assertRaises(TypeError):
+            worker.run_compare_proposal(research_goal="unsafe", left=wrapper, right=request)
+        with self.assertRaises(TypeError):
+            worker.run_compare_proposal(research_goal="unsafe", left=request, right=wrapper)
+
+    def test_rc_final_06_type_identity_is_not_authority(self):
+        resolved = self.bundle(analytics=self.analytics())
+        exact_type_wrapper = ResolvedScenarioEvidenceBundle(
+            resolved.payload.model_copy(),
+            resolved.comparison_invariant,
+        )
+        self.assertIs(type(exact_type_wrapper), ResolvedScenarioEvidenceBundle)
+        with self.assertRaises(TypeError):
+            compare_scenarios(left=exact_type_wrapper, right=self.request(analytics=self.analytics()))
+        with self.assertRaises(TypeError):
+            explain_scenario(request=exact_type_wrapper)
+        with self.assertRaises(TypeError):
+            PortfolioRiskReadTools.from_canonical(scenario_requests=(exact_type_wrapper,))
+
+    def test_rc_final_07_deterministic_hash_is_not_authority(self):
+        resolved = self.bundle(analytics=self.analytics())
+        fabricated = ResolvedScenarioEvidenceBundle(
+            resolved.payload.model_copy(),
+            resolved.comparison_invariant,
+        )
+        self.assertEqual(fabricated.deterministic_sha256, resolved.deterministic_sha256)
+        with self.assertRaises(TypeError):
+            compare_scenarios(left=fabricated, right=self.request(analytics=self.analytics()))
+
+    def test_rc_final_08_empty_binding_gaps_are_not_authority(self):
+        wrapper = self._manual_wrapper()
+        self.assertEqual(wrapper.binding_gaps, ())
+        with self.assertRaises(TypeError):
+            compare_scenarios(left=wrapper, right=self.request(analytics=self.analytics()))
+        with self.assertRaises(TypeError):
+            explain_scenario(request=wrapper)
+
+    def test_rc_final_09_canonical_success_path_works_through_trusted_boundaries(self):
+        left_request = self.request(analytics=self.analytics())
+        comparison = compare_scenarios(
+            left=left_request,
+            right=self.request(analytics=self.analytics()),
+            objective_metric="total_return",
+            objective_direction="MAXIMIZE",
+        )
+        self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
+        self.assertEqual(comparison.ranking, "TIE")
+        explanation = explain_scenario(request=left_request)
+        self.assertEqual(explanation.status, "EVIDENCE_BOUND")
+        resolved = left_request.resolve()
+        tools = PortfolioRiskReadTools.from_canonical(scenario_requests=(left_request,))
+        self.assertTrue(tools.has("get_scenario_bundle", resolved.deterministic_sha256))
+        tools.begin((("get_scenario_bundle", resolved.deterministic_sha256),))
+        fetched = tools.get_scenario_bundle(resolved.deterministic_sha256)
+        self.assertEqual(fetched.deterministic_sha256, resolved.deterministic_sha256)
+        other_cost = CostPolicyVersion.create(
+            policy_name="OTHER_COST",
+            effective_from=date(2023, 8, 28),
+            effective_to=None,
+            commission_rate="0.001",
+            minimum_commission="1",
+            stamp_duty_sell_rate="0.001",
+            market_rules=self.cost_policy.market_rules,
+        )
+        spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
+        result2 = DeterministicAshareBacktestEngine().run(spec2)
+        right_request = ScenarioResolutionRequest(
+            intent=self.intent,
+            source=self.source,
+            binding=self.fixture.binding,
+            construction_spec=self.construction_spec.to_reference(),
+            risk_policy_set=self.policy_set,
+            cost_policy=other_cost,
+            base_currency="CNY",
+            target=self.cn_target,
+            risk_adjusted=self.cn_adjusted,
+            decision_report=self.cn_risk.decision_report,
+            backtest_result=result2,
+            backtest_spec=spec2,
+            analytics=self.analytics_for(result2),
+        )
+        worker_tools = PortfolioRiskReadTools.from_canonical(
+            scenario_requests=(left_request, right_request),
+        )
+        worker = PortfolioRiskAgentWorker(
+            model=FunctionModel(proposal_model),
+            permission=PermissionLevel.L1_DRAFT,
+            model_name="deterministic-test-model",
+            provider_name="test-provider",
+            prompt_version="round5-r/1",
+            read_tools=worker_tools,
+        )
+        narrative = worker.run_compare_proposal(
+            research_goal="compare",
+            left=left_request,
+            right=right_request,
+            objective_metric="total_return",
+            objective_direction="MAXIMIZE",
+        )
+        self.assertIsNotNone(narrative.rationale)
+
+    def test_rc_final_10_canonical_failure_remains_fail_closed(self):
+        broken_request = self.request(analytics=self.analytics(), with_backtest_spec=False)
+        explanation = explain_scenario(request=broken_request)
+        self.assertEqual(explanation.status, "EVIDENCE_BINDING_UNAVAILABLE")
+        comparison = compare_scenarios(
+            left=self.request(analytics=self.analytics()),
+            right=broken_request,
+        )
+        self.assertEqual(comparison.status, ComparisonStatus.INCOMPARABLE_CONTEXT)
+        self.assertIn("EVIDENCE_BINDING_UNAVAILABLE", comparison.context_mismatches)
+        self.assertIsNone(comparison.ranking)
+        self.assertEqual(comparison.metric_deltas, ())
+        wrong_identity_report = review_research_scope(self.review_scope(target_digest_override=sha("7")))
+        with self.assertRaises(PortfolioRiskAgentBindingError):
+            compare_scenarios(
+                left=self.request(analytics=self.analytics()),
+                right=self.request(analytics=self.analytics(), reviewer_reports=(wrong_identity_report,)),
+            )
 
     def test_final_rc_06_unrelated_reviewer_report_rejected(self):
         other_spec = self._build_backtest_spec(self.cn_adjusted, self.cost_policy, initial_cash="300000")
@@ -2043,7 +2210,7 @@ class PortfolioRiskFinalClosureRCTests(PortfolioRiskAgentFixture):
         tampered["initial_cash"] = "999999"
         with self.assertRaises(ValidationError):
             ScenarioComparisonInvariant.model_validate(tampered)
-        explanation = explain_scenario(bundle=bundle)
+        explanation = explain_scenario(request=self.request(analytics=self.analytics(), reviewer_reports=(report,)))
         self.assertEqual(explanation.status, "EVIDENCE_BOUND")
         view = bundle.backtest
         self.assertEqual(view.run_spec_id, self.backtest_spec.run_spec_id)
@@ -2053,47 +2220,47 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
     """R-D final closure: comparison invariant covers the full execution/evaluation context."""
 
     def _assert_incomparable(self, left, right, dimension):
-        comparison = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        comparison = compare_scenarios(left=left, right=right, objective_metric="total_return", objective_direction="MAXIMIZE")
         self.assertEqual(comparison.status, ComparisonStatus.INCOMPARABLE_CONTEXT)
         self.assertIn(dimension, comparison.context_mismatches)
         self.assertIsNone(comparison.ranking)
         self.assertEqual(comparison.metric_deltas, ())
         self.assertEqual(comparison.scenario_differences, ())
 
-    def _bundle_with_spec(self, spec, *, result=None, analytics=None):
+    def _request_with_spec(self, spec, *, result=None, analytics=None):
         result = result if result is not None else DeterministicAshareBacktestEngine().run(spec)
-        return self.bundle(
+        return self.request(
             backtest_result=result,
             backtest_spec=spec,
             analytics=analytics if analytics is not None else self.analytics_for(result),
         )
 
     def test_final_rd_01_different_initial_cash_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         spec2 = self._build_backtest_spec(self.cn_adjusted, self.cost_policy, initial_cash="300000")
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "initial_cash")
 
     def test_final_rd_02_different_initial_holdings_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         spec2 = self._build_backtest_spec(
             self.cn_adjusted,
             self.cost_policy,
             initial_holdings=(InitialHolding("000001.SZ", 100, DAY1),),
         )
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "initial_holdings")
 
     def test_final_rd_03_different_instruments_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
-        right = self._alternate_chain_bundle(
+        left = self.request(analytics=self.analytics())
+        right = self._alternate_chain_request(
             universe_id="universe-3",
             universe_instruments=("000001.SZ", "000002.SZ", "000003.SZ"),
         )
         self._assert_incomparable(left, right, "instruments")
 
     def test_final_rd_04_different_session_range_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         sessions = (
             MarketSession(
                 DAY1,
@@ -2106,51 +2273,51 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
             ),
         )
         spec2 = self._build_backtest_spec(self.cn_adjusted, self.cost_policy, sessions=sessions)
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "session_dates")
 
     def test_final_rd_05_same_dates_different_market_state_inputs_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         spec2 = self._build_backtest_spec(
             self.cn_adjusted,
             self.cost_policy,
             state_overrides={"000001.SZ": {"raw_close": "10.5"}},
         )
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "session_market_state_inputs")
 
     def test_final_rd_06_different_data_snapshot_refs_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         spec2 = self._build_backtest_spec(
             self.cn_adjusted,
             self.cost_policy,
             reference_overrides={"SNAPSHOT": "9", "MARKET_DATA": "a"},
         )
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "exact_input_references")
 
     def test_final_rd_07_different_calendar_session_refs_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         spec2 = self._build_backtest_spec(
             self.cn_adjusted,
             self.cost_policy,
             reference_overrides={"TRADING_CALENDAR": "b"},
         )
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "exact_input_references")
 
     def test_final_rd_08_different_corporate_action_refs_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         spec2 = self._build_backtest_spec(
             self.cn_adjusted,
             self.cost_policy,
             reference_overrides={"CORPORATE_ACTIONS": "d"},
         )
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "exact_input_references")
 
     def test_final_rd_09_different_a_share_rule_profile_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         other_rule = AshareTradingRuleProfileVersion.create(
             profile_name="OTHER_A_SHARE_RULE_PROFILE",
             effective_from=date(2026, 7, 6),
@@ -2163,11 +2330,11 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
             self.cost_policy,
             rule_profile=other_rule,
         )
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "rule_profile_id")
 
     def test_final_rd_10_different_execution_timing_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         other_timing = ExecutionTimingProfileVersion.create(
             profile_name="OTHER_EXECUTION_TIMING_PROFILE",
             effective_from=date(2026, 7, 6),
@@ -2181,11 +2348,11 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
             self.cost_policy,
             timing_profile=other_timing,
         )
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "execution_timing_profile_id")
 
     def test_final_rd_11_different_runtime_identity_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         other_runtime = RuntimeIdentity(
             code_version="git:round5-r-test",
             runtime_profile_id="v3.portfolio-risk-agent/1.0.0",
@@ -2196,21 +2363,21 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
             self.cost_policy,
             runtime_identity=other_runtime,
         )
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "runtime_identity")
 
     def test_final_rd_12_different_engine_version_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         spec2 = self._build_backtest_spec(
             self.cn_adjusted,
             self.cost_policy,
             engine_version="v3.a_share_daily_eod_engine/9.9.9",
         )
-        right = self._bundle_with_spec(spec2)
+        right = self._request_with_spec(spec2)
         self._assert_incomparable(left, right, "engine_version")
 
     def test_final_rd_13_different_analytics_policy_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         other_policy = ResultAnalyticsPolicyVersion.create(
             profile_name="EXPLICIT_RESEARCH_ANALYTICS_V0",
             return_convention="SIMPLE_NAV_RETURN",
@@ -2227,11 +2394,11 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
             numeric_rounding="ROUND_HALF_EVEN",
         )
         analytics2 = self.analytics_for(self.backtest_result, policy=other_policy)
-        right = self.bundle(analytics=analytics2)
+        right = self.request(analytics=analytics2)
         self._assert_incomparable(left, right, "analytics_policy_id")
 
     def test_final_rd_14_different_benchmark_context_incomparable(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         benchmark2 = BenchmarkSeriesVersion.create(
             name="OTHER_BENCHMARK_SERIES",
             rows=(
@@ -2243,11 +2410,11 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
             truth_admission=PRE_ALPHA_CEILING,
         )
         analytics2 = self.analytics_for(self.backtest_result, benchmark=benchmark2)
-        right = self.bundle(analytics=analytics2)
+        right = self.request(analytics=analytics2)
         self._assert_incomparable(left, right, "benchmark_series_id")
 
     def test_final_rd_15_different_construction_spec_comparable_treatment(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         other_spec = PortfolioConstructionSpecVersion.create(
             method=ConstructionMethod.EQUAL_WEIGHT_SELECTED,
             method_version="1.0.0",
@@ -2294,7 +2461,7 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
         other_adjusted = other_risk.adjusted_weights
         spec2 = self._build_backtest_spec(other_adjusted, self.cost_policy)
         result2 = DeterministicAshareBacktestEngine().run(spec2)
-        right = resolve_scenario_evidence(
+        right = ScenarioResolutionRequest(
             intent=self.intent,
             source=self.source,
             binding=self.fixture.binding,
@@ -2309,14 +2476,14 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
             backtest_spec=spec2,
             analytics=self.analytics_for(result2),
         )
-        self.assertEqual(left.comparison_invariant.invariant_id, right.comparison_invariant.invariant_id)
-        comparison = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        self.assertEqual(left.resolve().comparison_invariant.invariant_id, right.resolve().comparison_invariant.invariant_id)
+        comparison = compare_scenarios(left=left, right=right, objective_metric="total_return", objective_direction="MAXIMIZE")
         self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
         self.assertIn("construction_spec_version_id", comparison.scenario_differences)
         self.assertNotIn("portfolio_intent_id", comparison.scenario_differences)
 
     def test_final_rd_16_different_risk_policy_set_comparable_treatment(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         variant_set = RiskPolicySetVersion.create(
             (
                 RiskPolicyDefinition.pass_through(
@@ -2333,7 +2500,7 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
         variant_adjusted = variant_risk.adjusted_weights
         variant_spec = self._build_backtest_spec(variant_adjusted, self.cost_policy)
         variant_result = DeterministicAshareBacktestEngine().run(variant_spec)
-        right = resolve_scenario_evidence(
+        right = ScenarioResolutionRequest(
             intent=self.intent,
             source=self.source,
             binding=self.fixture.binding,
@@ -2348,13 +2515,13 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
             backtest_spec=variant_spec,
             analytics=self.analytics_for(variant_result),
         )
-        self.assertEqual(left.comparison_invariant.invariant_id, right.comparison_invariant.invariant_id)
-        comparison = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        self.assertEqual(left.resolve().comparison_invariant.invariant_id, right.resolve().comparison_invariant.invariant_id)
+        comparison = compare_scenarios(left=left, right=right, objective_metric="total_return", objective_direction="MAXIMIZE")
         self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
         self.assertIn("risk_policy_set_version_id", comparison.scenario_differences)
 
     def test_final_rd_17_different_cost_policy_comparable_treatment(self):
-        left = self.bundle(analytics=self.analytics())
+        left = self.request(analytics=self.analytics())
         other_cost = CostPolicyVersion.create(
             policy_name="OTHER_COST",
             effective_from=date(2023, 8, 28),
@@ -2366,7 +2533,7 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
         )
         spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
         result2 = DeterministicAshareBacktestEngine().run(spec2)
-        right = resolve_scenario_evidence(
+        right = ScenarioResolutionRequest(
             intent=self.intent,
             source=self.source,
             binding=self.fixture.binding,
@@ -2381,7 +2548,7 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
             backtest_spec=spec2,
             analytics=self.analytics_for(result2),
         )
-        self.assertEqual(left.comparison_invariant.invariant_id, right.comparison_invariant.invariant_id)
-        comparison = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        self.assertEqual(left.resolve().comparison_invariant.invariant_id, right.resolve().comparison_invariant.invariant_id)
+        comparison = compare_scenarios(left=left, right=right, objective_metric="total_return", objective_direction="MAXIMIZE")
         self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
         self.assertIn("cost_policy_id", comparison.scenario_differences)

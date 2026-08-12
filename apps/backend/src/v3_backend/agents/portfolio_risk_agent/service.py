@@ -65,20 +65,10 @@ from .contracts import (
     comparison_invariant_content,
     comparison_invariant_identity,
 )
-from .trusted import _RESOLVER_ORIGIN, ResolvedScenarioEvidenceBundle
+from .trusted import ResolvedScenarioEvidenceBundle, ScenarioResolutionRequest
 
 
 _VALUATION_MODE = "RAW_EOD_CLOSE_FAIL_CLOSED"
-
-
-def _require_trusted_bundle(bundle: object, *, role: str) -> ResolvedScenarioEvidenceBundle:
-    if type(bundle) is not ResolvedScenarioEvidenceBundle:
-        raise TypeError(
-            f"{role} requires resolver-produced trusted evidence "
-            "(an exact ResolvedScenarioEvidenceBundle); plain/manual "
-            "ScenarioEvidenceBundle values are not a trust path"
-        )
-    return bundle
 
 
 class PortfolioRiskAgentBindingError(ValueError):
@@ -561,12 +551,13 @@ def resolve_scenario_evidence(
     """System-owned scenario evidence resolver over canonical owner objects.
 
     Only actual canonical owner objects are accepted; arbitrary prebuilt
-    evidence projections are never proof.  The result is the resolver-owned
-    trusted representation (ResolvedScenarioEvidenceBundle): manual DTO
-    construction, copied hashes, `binding_gaps == ()` or JSON
-    deserialization cannot obtain trusted status.  Links that the current
-    owners cannot prove are listed in `binding_gaps` and never become
-    EVIDENCE_BOUND; such bundles also carry no comparison invariant.
+    evidence projections are never proof.  The returned
+    `ResolvedScenarioEvidenceBundle` is an intermediate value: trusted entry
+    points perform this resolution at the trusted consumer boundary and never
+    accept caller-supplied resolved bundles as proof of provenance.  Links
+    that the current owners cannot prove are listed in `binding_gaps` and
+    never become EVIDENCE_BOUND; such bundles also carry no comparison
+    invariant.
     """
 
     if not isinstance(intent, PortfolioIntent):
@@ -688,7 +679,7 @@ def resolve_scenario_evidence(
             analytics=analytics,
         )
 
-    return ResolvedScenarioEvidenceBundle(payload, comparison_invariant, _RESOLVER_ORIGIN)
+    return ResolvedScenarioEvidenceBundle(payload, comparison_invariant)
 
 
 def draft_portfolio_construct(
@@ -886,23 +877,25 @@ def _invariant_mismatch_names(
     return mismatches
 
 
-def compare_scenarios(
+def _compare_resolved_scenarios(
     left: ResolvedScenarioEvidenceBundle,
     right: ResolvedScenarioEvidenceBundle,
     *,
     objective_metric: str | None = None,
     objective_direction: str | None = None,
 ) -> ScenarioComparison:
-    """Trusted scenario comparison over resolver-derived comparison invariants.
+    """Internal deterministic comparison over resolver-produced resolved values.
 
-    Order of authority: trusted resolved evidence -> exact comparison
-    invariant -> invariant equality -> disclosed treatment differences ->
-    metrics/ranking.  Metrics never override invariant mismatch, and
-    evidence-binding gaps always fail closed.
+    Internal helper; trusted entry points resolve canonical requests through
+    `resolve_scenario_evidence` and pass the results here.  Order of
+    authority: resolved evidence -> exact comparison invariant -> invariant
+    equality -> disclosed treatment differences -> metrics/ranking.  Metrics
+    never override invariant mismatch, and evidence-binding gaps always fail
+    closed.
     """
 
-    left = _require_trusted_bundle(left, role="scenario comparison")
-    right = _require_trusted_bundle(right, role="scenario comparison")
+    if type(left) is not ResolvedScenarioEvidenceBundle or type(right) is not ResolvedScenarioEvidenceBundle:
+        raise TypeError("comparison requires internally resolved scenario evidence")
     left_payload = left.payload
     right_payload = right.payload
 
@@ -989,12 +982,41 @@ def compare_scenarios(
     )
 
 
-def explain_scenario(
+def compare_scenarios(
+    *,
+    left: ScenarioResolutionRequest,
+    right: ScenarioResolutionRequest,
+    objective_metric: str | None = None,
+    objective_direction: str | None = None,
+) -> ScenarioComparison:
+    """Trusted scenario comparison over canonical resolution requests.
+
+    Canonical resolution happens at this trusted consumer boundary: both
+    requests are resolved through `resolve_scenario_evidence` before any
+    comparison.  Caller-supplied resolved bundles are not accepted and there
+    is no provenance shortcut (no token, no flag, no hash check).
+    """
+
+    if type(left) is not ScenarioResolutionRequest or type(right) is not ScenarioResolutionRequest:
+        raise TypeError(
+            "scenario comparison requires exact ScenarioResolutionRequest inputs "
+            "(canonical owner objects); caller-supplied resolved evidence is not authority"
+        )
+    return _compare_resolved_scenarios(
+        resolve_scenario_evidence(**left.to_kwargs()),
+        resolve_scenario_evidence(**right.to_kwargs()),
+        objective_metric=objective_metric,
+        objective_direction=objective_direction,
+    )
+
+
+def _explain_resolved_scenario(
     *,
     bundle: ResolvedScenarioEvidenceBundle,
     next_action_proposals: tuple[str, ...] = (),
 ) -> ScenarioEvidenceExplanation:
-    bundle = _require_trusted_bundle(bundle, role="scenario explanation")
+    if type(bundle) is not ResolvedScenarioEvidenceBundle:
+        raise TypeError("explanation requires internally resolved scenario evidence")
     payload = bundle.payload
     missing: list[str] = []
     for name, value in (
@@ -1085,4 +1107,27 @@ def explain_scenario(
         missing_evidence=tuple(missing),
         next_action_proposals=tuple(next_action_proposals),
         cited_evidence_refs=tuple(cited),
+    )
+
+
+def explain_scenario(
+    *,
+    request: ScenarioResolutionRequest,
+    next_action_proposals: tuple[str, ...] = (),
+) -> ScenarioEvidenceExplanation:
+    """Trusted scenario explanation over a canonical resolution request.
+
+    Canonical resolution happens at this trusted consumer boundary before
+    any explanation is produced.  Caller-supplied resolved bundles are not
+    accepted; there is no provenance shortcut.
+    """
+
+    if type(request) is not ScenarioResolutionRequest:
+        raise TypeError(
+            "scenario explanation requires an exact ScenarioResolutionRequest input "
+            "(canonical owner objects); caller-supplied resolved evidence is not authority"
+        )
+    return _explain_resolved_scenario(
+        bundle=resolve_scenario_evidence(**request.to_kwargs()),
+        next_action_proposals=next_action_proposals,
     )
