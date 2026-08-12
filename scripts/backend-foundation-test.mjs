@@ -53,7 +53,9 @@ const suites = [
   "round3_integration_closure",
   "track_l_result_analytics",
   "track_m_generative_research_ui",
-  "reviewer_integration"
+  "reviewer_integration",
+  "round5_w0_agent_research_loop",
+  "round5_w0_factor_assets"
 ];
 
 for (const suite of suites) {

@@ -8,12 +8,17 @@ from v3_backend.domain.factors import (
     DeterministicReferenceEvaluator,
     FactorDefinitionVersion,
     FactorEvaluationError,
+    FactorIrError,
+    FactorTypeError,
     FeatureNode,
     MissingSemantics,
     OperatorNode,
+    NumericLiteralNode,
     UnknownOperator,
     UnsafeFactorExpression,
+    ValueType,
     default_operator_registry,
+    signal_compatible_operator_registry,
 )
 
 
@@ -42,7 +47,7 @@ class FakeTalibProvider:
 
 class FactorIrTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.registry = default_operator_registry()
+        self.registry = signal_compatible_operator_registry()
         self.close = FeatureNode("close", "eod.close/1.0.0")
 
     def test_closed_ast_rejects_unknown_operator(self) -> None:
@@ -72,10 +77,53 @@ class FactorIrTests(unittest.TestCase):
         self.assertEqual(definition.metadata.complexity, 6)
         self.assertEqual(definition.metadata.input_features, ("close", "volume"))
 
+    def test_numeric_literal_is_canonical_and_constant_only_root_fails_closed(self) -> None:
+        self.assertEqual(NumericLiteralNode.create("1.000").canonical_decimal, "1")
+        self.assertEqual(NumericLiteralNode.create(1), NumericLiteralNode.create(1.0))
+        with self.assertRaises(FactorIrError):
+            NumericLiteralNode.create(True)
+        with self.assertRaises(FactorIrError):
+            NumericLiteralNode.create(float("inf"))
+        with self.assertRaisesRegex(FactorIrError, "evaluation domain"):
+            FactorDefinitionVersion.create(
+                "constant", NumericLiteralNode.create(1), self.registry
+            )
+
+    def test_signal_types_are_closed_and_propagate_to_metadata(self) -> None:
+        threshold = OperatorNode(
+            "GT", "1.0.0", (self.close, NumericLiteralNode.create(10)), {}
+        )
+        definition = FactorDefinitionVersion.create("above_ten", threshold, self.registry)
+        self.assertIs(definition.metadata.output_type, ValueType.BOOLEAN_SERIES)
+        with self.assertRaises(FactorTypeError):
+            FactorDefinitionVersion.create(
+                "invalid_and",
+                OperatorNode("AND", "1.0.0", (self.close, threshold), {}),
+                self.registry,
+            )
+        with self.assertRaises(FactorTypeError):
+            FactorDefinitionVersion.create(
+                "invalid_add",
+                OperatorNode("ADD", "1.0.0", (threshold, threshold), {}),
+                self.registry,
+            )
+
+    def test_cross_has_one_observation_lookback_and_no_future_dependency(self) -> None:
+        cross = OperatorNode(
+            "CROSS",
+            "1.0.0",
+            (self.close, FeatureNode("open", "eod.open/1.0.0")),
+            {},
+        )
+        definition = FactorDefinitionVersion.create("cross", cross, self.registry)
+        self.assertEqual(definition.metadata.lookback, 1)
+        self.assertEqual(definition.metadata.lag, 0)
+        self.assertIs(definition.metadata.output_type, ValueType.BOOLEAN_SERIES)
+
 
 class ReferenceEvaluatorTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.registry = default_operator_registry()
+        self.registry = signal_compatible_operator_registry()
 
     def test_deterministic_native_evaluation_and_missing_semantics(self) -> None:
         left = FeatureNode("left", "field/1.0.0")
@@ -91,6 +139,82 @@ class ReferenceEvaluatorTests(unittest.TestCase):
         second = evaluator.evaluate(definition, features)
         self.assertEqual(first, second)
         self.assertEqual(first.values, (2.0, None, None, 2.0))
+        self.assertIs(first.output_type, ValueType.FLOAT_SERIES)
+        self.assertEqual(first.evaluator_version, "v3-factor-reference-evaluator/1.1.0")
+
+    def test_legacy_numeric_registry_and_evaluator_identity_remain_exact(self) -> None:
+        legacy_registry = default_operator_registry()
+        self.assertNotEqual(legacy_registry.registry_version, self.registry.registry_version)
+        definition = FactorDefinitionVersion.create(
+            "legacy_close", FeatureNode("close", "field/1.0.0"), legacy_registry
+        )
+        legacy = DeterministicReferenceEvaluator(legacy_registry)
+        self.assertEqual(
+            legacy.evaluate(definition, {"close": [1, 2]}).evaluator_version,
+            "v3-factor-reference-evaluator/1.0.0",
+        )
+        with self.assertRaisesRegex(FactorEvaluationError, "registry version mismatch"):
+            DeterministicReferenceEvaluator(self.registry).evaluate(
+                definition, {"close": [1, 2]}
+            )
+
+    def test_literal_comparison_boolean_and_cross_execute_without_numeric_coercion(self) -> None:
+        left = FeatureNode("left", "field/1.0.0")
+        right = FeatureNode("right", "field/1.0.0")
+        cross = OperatorNode("CROSS", "1.0.0", (left, right), {})
+        above_zero = OperatorNode(
+            "GT", "1.0.0", (left, NumericLiteralNode.create("0.0")), {}
+        )
+        root = OperatorNode("AND", "1.0.0", (cross, above_zero), {})
+        definition = FactorDefinitionVersion.create("signal", root, self.registry)
+        result = DeterministicReferenceEvaluator(self.registry).evaluate(
+            definition,
+            {
+                "left": [0, 1, 3, None, 5],
+                "right": [1, 1, 2, 2, 4],
+            },
+        )
+        self.assertIs(result.output_type, ValueType.BOOLEAN_SERIES)
+        self.assertEqual(result.values, (None, False, True, None, None))
+        self.assertTrue(all(value is None or isinstance(value, bool) for value in result.values))
+
+    def test_cross_parity_and_missing_semantics_are_explicit(self) -> None:
+        definition = FactorDefinitionVersion.create(
+            "cross",
+            OperatorNode(
+                "CROSS",
+                "1.0.0",
+                (
+                    FeatureNode("left", "field/1.0.0"),
+                    FeatureNode("right", "field/1.0.0"),
+                ),
+                {},
+            ),
+            self.registry,
+        )
+        result = DeterministicReferenceEvaluator(self.registry).evaluate(
+            definition,
+            {
+                "left": [0, 2, 3, 4, None, 6],
+                "right": [1, 1, 2, 3, 4, 5],
+            },
+        )
+        # formula-go@511fd6e and MyTT@7cd36ae agree on prev <= / current >.
+        # V3 intentionally keeps first/missing history as None instead of their 0/False fallback.
+        self.assertEqual(result.values, (None, True, False, False, None, None))
+
+    def test_boolean_feature_validation_rejects_numeric_truthiness(self) -> None:
+        flag = FeatureNode("flag", "signal/1.0.0", ValueType.BOOLEAN_SERIES)
+        definition = FactorDefinitionVersion.create(
+            "not_flag", OperatorNode("NOT", "1.0.0", (flag,), {}), self.registry
+        )
+        evaluator = DeterministicReferenceEvaluator(self.registry)
+        self.assertEqual(
+            evaluator.evaluate(definition, {"flag": [True, False, None]}).values,
+            (False, True, None),
+        )
+        with self.assertRaises(FactorEvaluationError):
+            evaluator.evaluate(definition, {"flag": [1, 0]})
 
     def test_non_finite_input_is_not_silently_coerced(self) -> None:
         feature = FeatureNode("close", "field/1.0.0")

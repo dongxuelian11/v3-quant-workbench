@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Mapping, Protocol, TypeAlias
@@ -26,6 +27,11 @@ class FactorTypeError(FactorIrError):
 
 class ValueType(StrEnum):
     FLOAT_SERIES = "FLOAT_SERIES"
+    BOOLEAN_SERIES = "BOOLEAN_SERIES"
+
+
+class LiteralBroadcastSemantics(StrEnum):
+    CONSTANT_OVER_EVALUATION_DOMAIN = "CONSTANT_OVER_EVALUATION_DOMAIN"
 
 
 class AvailabilitySemantics(StrEnum):
@@ -220,6 +226,53 @@ class FeatureNode:
         }
 
 
+def _canonical_decimal_text(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
+        raise FactorIrError("numeric literal must be a finite decimal-compatible value")
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, ValueError) as error:
+        raise FactorIrError("numeric literal is invalid") from error
+    if not decimal_value.is_finite():
+        raise FactorIrError("numeric literal must be finite")
+    if decimal_value == 0:
+        return "0"
+    normalized = format(decimal_value.normalize(), "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class NumericLiteralNode:
+    canonical_decimal: str
+    value_type: ValueType = ValueType.FLOAT_SERIES
+    broadcast_semantics: LiteralBroadcastSemantics = (
+        LiteralBroadcastSemantics.CONSTANT_OVER_EVALUATION_DOMAIN
+    )
+
+    def __post_init__(self) -> None:
+        canonical = _canonical_decimal_text(self.canonical_decimal)
+        if canonical != self.canonical_decimal:
+            raise FactorIrError("numeric literal must use canonical decimal text")
+
+    @classmethod
+    def create(cls, value: object) -> NumericLiteralNode:
+        return cls(_canonical_decimal_text(value))
+
+    @property
+    def decimal_value(self) -> Decimal:
+        return Decimal(self.canonical_decimal)
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "node_type": "NUMERIC_LITERAL",
+            "canonical_decimal": self.canonical_decimal,
+            "value_type": self.value_type.value,
+            "broadcast_semantics": self.broadcast_semantics.value,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class OperatorNode:
     operator_name: str
@@ -242,7 +295,7 @@ class OperatorNode:
         }
 
 
-FactorNode: TypeAlias = FeatureNode | OperatorNode
+FactorNode: TypeAlias = FeatureNode | NumericLiteralNode | OperatorNode
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +330,16 @@ def validate_factor_node(node: FactorNode, registry: OperatorRegistry) -> Factor
             input_features=(node.feature_name,),
             operator_keys=(),
             missing_semantics=(node.missing_semantics,),
+        )
+    if isinstance(node, NumericLiteralNode):
+        return FactorMetadata(
+            output_type=ValueType.FLOAT_SERIES,
+            lookback=0,
+            lag=0,
+            complexity=1,
+            input_features=(),
+            operator_keys=(),
+            missing_semantics=(),
         )
     if not isinstance(node, OperatorNode):
         raise FactorIrError("closed Factor IR accepts FeatureNode or OperatorNode only")
@@ -335,6 +398,10 @@ class FactorDefinitionVersion:
         if not logical_name or logical_name != logical_name.strip():
             raise FactorIrError("logical_name must be non-empty without edge whitespace")
         metadata = validate_factor_node(root, registry)
+        if not metadata.input_features:
+            raise FactorIrError(
+                "FactorDefinition evaluation domain must be determined by at least one input feature"
+            )
         semantics = {
             "logical_name": logical_name,
             "operator_registry_version": registry.registry_version,
@@ -368,8 +435,9 @@ class ExternalExpressionTranslator(Protocol):
     def translate(self, payload: str) -> FactorNode: ...
 
 
-def default_operator_registry() -> OperatorRegistry:
+def _signal_compatible_operator_specs() -> tuple[OperatorSpec, ...]:
     series = ValueType.FLOAT_SERIES
+    boolean = ValueType.BOOLEAN_SERIES
     specs = (
         OperatorSpec(
             "ADD",
@@ -454,6 +522,65 @@ def default_operator_registry() -> OperatorRegistry:
             lookback_parameter="timeperiod",
             complexity_weight=2,
         ),
+        *(
+            OperatorSpec(
+                name,
+                "1.0.0",
+                2,
+                (series, series),
+                boolean,
+                0,
+                0,
+                MissingSemantics.PROPAGATE,
+                True,
+                True,
+                BackendBinding.NATIVE_REFERENCE,
+            )
+            for name in ("GT", "GTE", "LT", "LTE", "EQ", "NE")
+        ),
+        *(
+            OperatorSpec(
+                name,
+                "1.0.0",
+                2,
+                (boolean, boolean),
+                boolean,
+                0,
+                0,
+                MissingSemantics.PROPAGATE,
+                True,
+                True,
+                BackendBinding.NATIVE_REFERENCE,
+            )
+            for name in ("AND", "OR")
+        ),
+        OperatorSpec(
+            "NOT",
+            "1.0.0",
+            1,
+            (boolean,),
+            boolean,
+            0,
+            0,
+            MissingSemantics.PROPAGATE,
+            True,
+            True,
+            BackendBinding.NATIVE_REFERENCE,
+        ),
+        OperatorSpec(
+            "CROSS",
+            "1.0.0",
+            2,
+            (series, series),
+            boolean,
+            1,
+            0,
+            MissingSemantics.PROPAGATE,
+            True,
+            True,
+            BackendBinding.NATIVE_REFERENCE,
+            complexity_weight=2,
+        ),
         OperatorSpec(
             "LEAD",
             "1.0.0",
@@ -468,7 +595,26 @@ def default_operator_registry() -> OperatorRegistry:
             BackendBinding.NATIVE_REFERENCE,
         ),
     )
-    return OperatorRegistry(specs)
+    return specs
+
+
+def default_operator_registry() -> OperatorRegistry:
+    """Stable legacy numeric registry used by already-addressed V3 artifacts."""
+
+    legacy_names = {"ADD", "SUBTRACT", "MULTIPLY", "DIVIDE", "LAG", "SMA", "LEAD"}
+    return OperatorRegistry(
+        tuple(
+            spec
+            for spec in _signal_compatible_operator_specs()
+            if spec.name in legacy_names
+        )
+    )
+
+
+def signal_compatible_operator_registry() -> OperatorRegistry:
+    """Canonical V1 registry extension for numeric and boolean signal factors."""
+
+    return OperatorRegistry(_signal_compatible_operator_specs())
 
 
 __all__ = [
@@ -481,7 +627,9 @@ __all__ = [
     "FactorNode",
     "FactorTypeError",
     "FeatureNode",
+    "LiteralBroadcastSemantics",
     "MissingSemantics",
+    "NumericLiteralNode",
     "OperatorNode",
     "OperatorRegistry",
     "OperatorSpec",
@@ -491,5 +639,6 @@ __all__ = [
     "UnsafeFactorExpression",
     "ValueType",
     "default_operator_registry",
+    "signal_compatible_operator_registry",
     "validate_factor_node",
 ]
