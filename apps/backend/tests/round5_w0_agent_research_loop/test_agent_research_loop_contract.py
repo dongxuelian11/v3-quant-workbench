@@ -5,6 +5,11 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 import hashlib
 
+from v3_backend.adapters.agent_research_loop import ResearchExecutionEvidenceResolver
+from v3_backend.control_plane.checkpoint_manager import CheckpointManager, InMemoryCheckpointPort
+from v3_backend.control_plane.event_log import CollectingPublisher, DurableEventLog
+from v3_backend.control_plane.persistence import InMemoryTaskPersistence
+from v3_backend.control_plane.task_supervisor import TaskSupervisor
 from v3_backend.domain.agent_research_loop import (
     AgentResearchProposal,
     BudgetConsumption,
@@ -17,7 +22,7 @@ from v3_backend.domain.agent_research_loop import (
     ResearchLoopBudgetVersion,
     ResearchLoopContractError,
     ResearchLoopIterationRecord,
-    ResearchExecutionEvidenceResolver,
+    ResearchSemanticEvidenceValidator,
 )
 from v3_backend.contracts.common.truth_admission import PRE_ALPHA_CEILING
 from v3_backend.domain.experiments import (
@@ -33,10 +38,24 @@ from v3_backend.domain.reviewer_integration.engine import review_research_scope
 from v3_backend.domain.tasks.entities import (
     AttemptState, Run, RunIdentity, RunState, Task, TaskAttempt, TaskState,
 )
+from v3_backend.domain.tasks.state_machine import TaskTransitionContext
 
 
 def artifact(seed: str) -> str:
     return "art_sha256_" + hashlib.sha256(seed.encode()).hexdigest()
+
+
+class TEST_ONLY_PERSISTED_CONTROL_PLANE_FIXTURE_IDENTITIES:
+    prefixes = {
+        "Task": "tsk_", "Run": "run_", "TaskAttempt": "att_", "TaskEvent": "tev_",
+    }
+
+    def __init__(self) -> None:
+        self.value = 0
+
+    def new(self, object_type: str) -> str:
+        self.value += 1
+        return self.prefixes[object_type] + str(self.value).zfill(26)
 
 
 class AgentResearchLoopContractTests(unittest.TestCase):
@@ -131,58 +150,42 @@ class AgentResearchLoopContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ResearchLoopContractError, "RESEARCH_BUDGET_EXCEEDED"):
             BudgetConsumption(3, 1, 0, 0, 0, 10).assert_admitted(self.budget)
 
-    def test_iteration_binds_exact_existing_receipts_outputs_reviewer_and_reward(self) -> None:
-        task, run, attempt = self._task_owner_objects()
-        receipt = ResearchExecutionEvidenceResolver.resolve_execution(
-            action=self.action, task=task, run=run, attempt=attempt
+    def test_persisted_lifecycle_is_observed_but_exact_action_binding_is_unavailable(self) -> None:
+        persistence, supervisor, task, run, attempt = self._persisted_terminal_lifecycle()
+        observation = ResearchExecutionEvidenceResolver(persistence).resolve_execution(
+            action=self.action,
+            task_id=task.task_id,
+            run_id=run.run_id,
+            attempt_id=attempt.attempt_id,
         )
+        self.assertEqual(
+            observation.resolution_status,
+            "PERSISTED_TASK_OBSERVED_BUT_ACTION_BINDING_UNRESOLVED",
+        )
+        self.assertEqual(observation.normalized_input_hash, "a" * 64)
         experiment_run, experiment_attempt, reviewer, reward = self._experiment_owner_objects()
         report = self._review_report(experiment_run, experiment_attempt, reviewer, reward)
-        completion = ResearchExecutionEvidenceResolver.resolve_completion(
-            action_drafts=(self.action,), executions=(receipt,),
+        semantic_evidence = ResearchSemanticEvidenceValidator.validate(
             experiment_run=experiment_run, experiment_attempt=experiment_attempt,
             reviewer_evidence=reviewer, review_report=report, reward_vector=reward,
             canonical_output_refs=(reward.reward_vector_id,),
         )
-        consumption = BudgetConsumption(1, 1, 0, 1, 0, 15)
-        next_action = NextActionProposal.create((self.action.action_draft_id,), "Await owner review.")
-        record = ResearchLoopIterationRecord.create(
-            iteration_index=0,
-            proposal=self.proposal,
-            action_drafts=(self.action,),
-            execution_receipts=(receipt,),
-            canonical_output_refs=(),
-            review_report_ref=None,
-            reward_vector_ref=None,
-            budget=self.budget,
-            budget_consumption=consumption,
-            next_action_proposals=(next_action,),
-            status=IterationStatus.COMPLETE,
-            completion_evidence=completion,
-        )
-        clone = ResearchLoopIterationRecord.create(
-            iteration_index=0,
-            proposal=self.proposal,
-            action_drafts=(self.action,),
-            execution_receipts=(receipt,),
-            canonical_output_refs=(),
-            review_report_ref=None,
-            reward_vector_ref=None,
-            budget=self.budget,
-            budget_consumption=consumption,
-            next_action_proposals=(next_action,),
-            status=IterationStatus.COMPLETE,
-            completion_evidence=completion,
-        )
-        self.assertEqual(record, clone)
-        self.assertEqual(record.iteration_index, 0)
-        self.assertEqual(record.canonical_output_refs, (reward.reward_vector_id,))
-        self.assertEqual(next_action.authority_status, "NON_CANONICAL")
-        self.assertEqual(next_action.lifecycle_state, "DRAFT")
+        self.assertEqual(semantic_evidence.reward_vector_ref, reward.reward_vector_id)
+        with self.assertRaisesRegex(
+            ResearchLoopContractError, "RESEARCH_ACTION_EXECUTION_BINDING_NOT_AVAILABLE"
+        ):
+            ResearchLoopIterationRecord.create(
+                iteration_index=0, proposal=self.proposal, action_drafts=(self.action,),
+                execution_receipts=(observation,), canonical_output_refs=(),
+                review_report_ref=None, reward_vector_ref=None, budget=self.budget,
+                budget_consumption=BudgetConsumption(1, 1, 0, 1, 0, 15),
+                next_action_proposals=(), status=IterationStatus.COMPLETE,
+                completion_evidence=semantic_evidence,
+            )
 
-    def test_raw_strings_and_unrelated_owner_receipts_cannot_complete(self) -> None:
+    def test_raw_strings_and_manually_constructed_entities_cannot_complete(self) -> None:
         raw = ExecutionReceiptRef("receipt:forged", "task:x", "run:x", "attempt:x", "V3_CONTROL_PLANE")
-        with self.assertRaisesRegex(ResearchLoopContractError, "INCOMPLETE_ITERATION_CANNOT_COMPLETE"):
+        with self.assertRaisesRegex(ResearchLoopContractError, "RESEARCH_ACTION_EXECUTION_BINDING_NOT_AVAILABLE"):
             ResearchLoopIterationRecord.create(
                 iteration_index=0, proposal=self.proposal, action_drafts=(self.action,),
                 execution_receipts=(raw,), canonical_output_refs=("output:x",),
@@ -191,28 +194,99 @@ class AgentResearchLoopContractTests(unittest.TestCase):
                 next_action_proposals=(), status=IterationStatus.COMPLETE,
             )
         task, run, attempt = self._task_owner_objects()
-        other = ResearchActionDraft.create(
-            action_type=ResearchActionType.EVIDENCE_QUERY, exact_input_refs=("evidence:x",),
-            requested_capability="evidence.read", expected_output_kind="Evidence",
-            resource_profile_ref="resource-profile:test", budget_version_id=self.budget.budget_version_id,
-        )
-        unrelated = ResearchExecutionEvidenceResolver.resolve_execution(action=other, task=task, run=run, attempt=attempt)
+        resolver = ResearchExecutionEvidenceResolver(InMemoryTaskPersistence())
+        with self.assertRaises(TypeError):
+            resolver.resolve_execution(  # type: ignore[call-arg]
+                action=self.action, task=task, run=run, attempt=attempt
+            )
+        with self.assertRaisesRegex(ResearchLoopContractError, "CONTROL_PLANE_PERSISTENCE_TASK_NOT_FOUND"):
+            resolver.resolve_execution(
+                action=self.action, task_id=task.task_id, run_id=run.run_id, attempt_id=attempt.attempt_id
+            )
         experiment_run, experiment_attempt, reviewer, reward = self._experiment_owner_objects()
         report = self._review_report(experiment_run, experiment_attempt, reviewer, reward)
-        with self.assertRaisesRegex(ResearchLoopContractError, "ACTION_BINDING_MISMATCH"):
-            ResearchExecutionEvidenceResolver.resolve_completion(
-                action_drafts=(self.action,), executions=(unrelated,), experiment_run=experiment_run,
-                experiment_attempt=experiment_attempt, reviewer_evidence=reviewer,
-                review_report=report, reward_vector=reward,
-                canonical_output_refs=(reward.reward_vector_id,),
-            )
         forged_reward = replace(reward, reward_vector_id="rwv_sha256_" + "0" * 64)
         with self.assertRaisesRegex(ResearchLoopContractError, "REWARD_BINDING_MISMATCH"):
-            ResearchExecutionEvidenceResolver.resolve_completion(
-                action_drafts=(self.action,), executions=(ResearchExecutionEvidenceResolver.resolve_execution(action=self.action, task=task, run=run, attempt=attempt),),
+            ResearchSemanticEvidenceValidator.validate(
                 experiment_run=experiment_run, experiment_attempt=experiment_attempt,
                 reviewer_evidence=reviewer, review_report=report, reward_vector=forged_reward,
                 canonical_output_refs=(forged_reward.reward_vector_id,),
+            )
+
+    def test_persistence_missing_aggregates_fail_closed(self) -> None:
+        task, run, attempt = self._task_owner_objects()
+        cases = (
+            ("task", "CONTROL_PLANE_PERSISTENCE_TASK_NOT_FOUND"),
+            ("run", "CONTROL_PLANE_PERSISTENCE_RUN_NOT_FOUND"),
+            ("attempt", "CONTROL_PLANE_PERSISTENCE_ATTEMPT_NOT_FOUND"),
+        )
+        for present, code in cases:
+            with self.subTest(present=present):
+                persistence = InMemoryTaskPersistence()
+                with persistence.begin() as unit:
+                    if present != "task": unit.add_task(task)
+                    if present == "attempt": unit.add_run(run)
+                    unit.commit()
+                with self.assertRaisesRegex(ResearchLoopContractError, code):
+                    ResearchExecutionEvidenceResolver(persistence).resolve_execution(
+                        action=self.action, task_id=task.task_id,
+                        run_id=run.run_id, attempt_id=attempt.attempt_id,
+                    )
+
+    def test_persisted_relation_state_and_capability_mismatches_fail_closed(self) -> None:
+        task, run, attempt = self._task_owner_objects()
+        variants = (
+            (replace(task, active_run_id="run_" + "8" * 26), run, attempt, "OWNER_EXECUTION_BINDING_MISMATCH"),
+            (task, replace(run, state=RunState.ACTIVE), attempt, "OWNER_RUN_NOT_TERMINAL"),
+            (replace(task, state=TaskState.RUNNING), run, attempt, "OWNER_TASK_NOT_SUCCEEDED"),
+            (task, run, replace(attempt, state=AttemptState.FAILED), "OWNER_ATTEMPT_NOT_SUCCEEDED"),
+            (replace(task, operation_id="factor.other"), run, attempt, "RESEARCH_ACTION_CAPABILITY_MISMATCH"),
+        )
+        for stored_task, stored_run, stored_attempt, code in variants:
+            with self.subTest(code=code):
+                persistence = InMemoryTaskPersistence()
+                with persistence.begin() as unit:
+                    unit.add_task(stored_task); unit.add_run(stored_run); unit.add_attempt(stored_attempt); unit.commit()
+                with self.assertRaisesRegex(ResearchLoopContractError, code):
+                    ResearchExecutionEvidenceResolver(persistence).resolve_execution(
+                        action=self.action, task_id=task.task_id,
+                        run_id=run.run_id, attempt_id=attempt.attempt_id,
+                    )
+
+    def test_correct_shaped_ids_do_not_replace_persisted_identity(self) -> None:
+        task, run, attempt = self._task_owner_objects()
+        persistence = InMemoryTaskPersistence()
+        persistence.tasks[task.task_id] = replace(task, task_id="tsk_" + "9" * 26)
+        persistence.runs[run.run_id] = run
+        persistence.attempts[attempt.attempt_id] = attempt
+        with self.assertRaisesRegex(ResearchLoopContractError, "CONTROL_PLANE_PERSISTENCE_IDENTITY_MISMATCH"):
+            ResearchExecutionEvidenceResolver(persistence).resolve_execution(
+                action=self.action, task_id=task.task_id,
+                run_id=run.run_id, attempt_id=attempt.attempt_id,
+            )
+
+    def test_manually_seeded_terminal_store_still_cannot_resolve_action_binding(self) -> None:
+        task, run, attempt = self._task_owner_objects()
+        persistence = InMemoryTaskPersistence()
+        with persistence.begin() as unit:
+            unit.add_task(task); unit.add_run(run); unit.add_attempt(attempt); unit.commit()
+        observation = ResearchExecutionEvidenceResolver(persistence).resolve_execution(
+            action=self.action, task_id=task.task_id,
+            run_id=run.run_id, attempt_id=attempt.attempt_id,
+        )
+        self.assertEqual(
+            observation.resolution_status,
+            "PERSISTED_TASK_OBSERVED_BUT_ACTION_BINDING_UNRESOLVED",
+        )
+        with self.assertRaisesRegex(
+            ResearchLoopContractError, "RESEARCH_ACTION_EXECUTION_BINDING_NOT_AVAILABLE"
+        ):
+            ResearchLoopIterationRecord.create(
+                iteration_index=0, proposal=self.proposal, action_drafts=(self.action,),
+                execution_receipts=(observation,), canonical_output_refs=(),
+                review_report_ref="review:string", reward_vector_ref="reward:string",
+                budget=self.budget, budget_consumption=BudgetConsumption(1, 1, 0, 0, 0, 1),
+                next_action_proposals=(), status=IterationStatus.COMPLETE,
             )
 
     def _task_owner_objects(self):
@@ -222,6 +296,29 @@ class AgentResearchLoopContractTests(unittest.TestCase):
         run = Run(run_id, task_id, identity, RunState.TERMINAL)
         attempt = TaskAttempt(attempt_id, task_id, run_id, 1, AttemptState.SUCCEEDED)
         return task, run, attempt
+
+    def _persisted_terminal_lifecycle(self):
+        persistence = InMemoryTaskPersistence()
+        supervisor = TaskSupervisor(
+            DurableEventLog(persistence, CollectingPublisher()),
+            TEST_ONLY_PERSISTED_CONTROL_PLANE_FIXTURE_IDENTITIES(),
+            CheckpointManager(InMemoryCheckpointPort()),
+        )
+        identity = RunIdentity("pcr_" + "4" * 26, "a" * 64, "code", "env", "contract")
+        task, run, attempt = supervisor.accept(
+            "prj_" + "3" * 26, self.action.requested_capability, identity
+        )
+        supervisor.assign_lease(attempt.attempt_id, "lea_" + "5" * 26)
+        supervisor.transition_attempt(attempt.attempt_id, "WORKER_DISPATCHED")
+        supervisor.transition_attempt(attempt.attempt_id, "WORKER_ACKNOWLEDGED")
+        supervisor.mark_task_started_for_attempt(attempt.attempt_id)
+        supervisor.transition_attempt(attempt.attempt_id, "ATTEMPT_SUCCEEDED")
+        supervisor.transition_task(
+            task.task_id, "ALL_REQUIRED_ARTIFACTS_PUBLISHED",
+            TaskTransitionContext(successful_attempt=True, publication_committed=True),
+        )
+        supervisor.finalize_run(task.task_id)
+        return persistence, supervisor, task, run, attempt
 
     def _experiment_owner_objects(self):
         run_basis = {
@@ -268,7 +365,7 @@ class AgentResearchLoopContractTests(unittest.TestCase):
         return review_research_scope(ResearchReviewScope.create(session_id=session, target_refs=refs, evidence_records=()))
 
     def test_incomplete_or_blocked_history_cannot_masquerade_as_complete(self) -> None:
-        with self.assertRaisesRegex(ResearchLoopContractError, "INCOMPLETE_ITERATION_CANNOT_COMPLETE"):
+        with self.assertRaisesRegex(ResearchLoopContractError, "RESEARCH_ACTION_EXECUTION_BINDING_NOT_AVAILABLE"):
             ResearchLoopIterationRecord.create(
                 iteration_index=0,
                 proposal=self.proposal,
@@ -296,6 +393,17 @@ class AgentResearchLoopContractTests(unittest.TestCase):
             status=IterationStatus.BLOCKED,
         )
         self.assertIs(blocked.status, IterationStatus.BLOCKED)
+        for status in (IterationStatus.PROPOSED, IterationStatus.PARTIALLY_EXECUTED):
+            with self.subTest(status=status):
+                record = ResearchLoopIterationRecord.create(
+                    iteration_index=0, proposal=self.proposal,
+                    action_drafts=(self.action,), execution_receipts=(),
+                    canonical_output_refs=(), review_report_ref=None,
+                    reward_vector_ref=None, budget=self.budget,
+                    budget_consumption=BudgetConsumption(1, 0, 0, 0, 0, 1),
+                    next_action_proposals=(), status=status,
+                )
+                self.assertIs(record.status, status)
 
 
 if __name__ == "__main__":

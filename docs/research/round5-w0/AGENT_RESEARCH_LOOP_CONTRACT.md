@@ -6,9 +6,11 @@ The W0 loop is an immutable coordination contract, not a new execution, financia
 
 - `AgentResearchProposal`, `ResearchActionDraft`, and `NextActionProposal` are always `NON_CANONICAL / DRAFT`; actions remain `NOT_RUN` until an existing V3 Control Plane authorization receipt exists.
 - A directly constructed `ExecutionReceiptRef` is explicitly `UNRESOLVED_REF`; even the string `V3_CONTROL_PLANE` is not proof and cannot complete an iteration.
-- `ResearchExecutionEvidenceResolver` is a W0-owned thin resolver. It accepts actual current-main `Task`, `Run`, and `TaskAttempt` objects, requires their exact bindings and terminal-success states, and derives an action-bound `RESOLVED_OWNER_REF`. It does not replace or modify the Control Plane owner.
+- The production `ResearchExecutionEvidenceResolver` is a W0-owned thin adapter over `TaskPersistencePort`. Callers provide only IDs; the adapter re-reads `Task`, `Run`, and `TaskAttempt` inside one persistence unit-of-work and rejects missing, mismatched, or non-successful owner state. Directly constructed domain objects are not an authority input.
+- Current Control Plane persistence records `operation_id` and `RunIdentity.normalized_input_hash`, but it does not own an exact `ResearchActionDraft.action_draft_id` or a canonical accepted-input envelope that can be recomputed from the draft. Matching `requested_capability == operation_id` is necessary but insufficient. A successful persisted lifecycle therefore yields only `PERSISTED_TASK_OBSERVED_BUT_ACTION_BINDING_UNRESOLVED`, never `RESOLVED_OWNER_REF`.
 - `ResearchLoopIterationRecord` stores exact proposal, action, receipt, canonical output, ReviewerReport, RewardVector, budget-consumption, and next-action refs. It does not recompute any of them.
-- `COMPLETE` requires a `ResolvedResearchCompletionEvidence` bundle built from exact action-bound executions plus actual `ExperimentRun`, successful `ExperimentAttempt`, `ReviewerEvidence`, `ResearchReviewReport`, and `RewardVector`. The report must resolve all four owner objects, and the reward must bind the same run/attempt/reviewer evidence. Raw review/reward strings are ignored as completion authority.
+- `ResearchSemanticEvidenceValidator` retains content-identity and exact cross-binding checks for actual `ExperimentRun`, successful `ExperimentAttempt`, `ReviewerEvidence`, `ResearchReviewReport`, and `RewardVector`. This is content-addressed semantic evidence, not persisted Control Plane execution evidence.
+- Because the exact action-to-persisted-accepted-input binding is absent, production `COMPLETE` is `NOT_AVAILABLE / NOT_RUN` in W0 and fails closed with `RESEARCH_ACTION_EXECUTION_BINDING_NOT_AVAILABLE`. Raw review/reward strings, content-addressed evidence, terminal fields, valid IDs, matching capability, or a test fixture cannot upgrade it. `PROPOSED`, `PARTIALLY_EXECUTED`, `REVIEWED`, and `BLOCKED` remain truthful history states.
 - Existing Agent Workspace permissions remain unchanged: L0 read and L1 draft are available; L2 execute and L3 publish remain denied to agents.
 
 ## Closed action vocabulary
@@ -23,4 +25,4 @@ IDs are derived only from canonical contract content. Wall-clock observation tim
 
 ## W0 status
 
-The contract and deterministic test fixtures are implemented. Autonomous loops, product permission changes, live execution orchestration, promotion, publication, and waiver are `NOT_RUN` and belong to later Round 5 tracks.
+The persistence lifecycle test fixture is explicitly `TEST_ONLY_PERSISTED_CONTROL_PLANE_FIXTURE` and uses `InMemoryTaskPersistence -> TaskSupervisor.accept -> persisted transitions -> finalize_run -> resolver re-read`. It proves the owner read path, not action admission. Autonomous loops, production execution completion, product permission changes, promotion, publication, and waiver are `NOT_RUN` and belong to later authorized L2 integration work.
