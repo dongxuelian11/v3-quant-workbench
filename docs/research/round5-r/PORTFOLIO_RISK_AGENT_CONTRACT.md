@@ -1,7 +1,7 @@
 # Round 5 R Portfolio/Risk Agent Contract
 
-Task: `V3-ROUND5-R-PORTFOLIO-RISK-AGENT-01`
-Branch: `codex/round5-r-portfolio-risk-agent-01`
+Task: `V3-ROUND5-R-PORTFOLIO-RISK-AGENT-01` (+ same-branch authority/evidence closure)
+Branch: `codex/round5-r-portfolio-risk-agent-01` / PR #26
 Base: `f2cd80ee377d213a1bc1e78fb9812d2192b10cf9`
 
 ## Authority boundary
@@ -14,77 +14,97 @@ The Portfolio/Risk Agent is L0/L1 only. Its callable inventory is:
 - L1 drafts: `PORTFOLIO_CONSTRUCT`, `RISK_APPLY`, `BACKTEST_RUN`, `RESULT_COMPARE`, `REVIEW_RUN`.
 
 There is no Agent-callable confirm, execute, review, promote, canonical-ID, Truth, Admission, or
-publication tool. The user-confirm application seam (`apply_confirmed_portfolio_construct`,
-`apply_confirmed_risk_apply`, `apply_confirmed_backtest_run`) is a separate application boundary:
-it requires an exact `draft_sha256`, `agent_issued=False`, a timezone-aware `confirmed_at`, and it
-re-verifies every canonical binding before calling the deterministic owner. The action drafts
-remain `NON_CANONICAL / DRAFT`, with `agent_execution_allowed=False` and
-`user_confirmation_required=True` as closed literals.
+publication tool. L2 EXECUTE and L3 PUBLISH remain denied. Production ResearchLoop `COMPLETE`
+remains `NOT_AVAILABLE / NOT_RUN`.
 
-## Naming note
+## User-execution authority disposition (Finding R-A)
 
-The frozen W0 base has no `RiskModelVersion` class. The canonical risk-model identity is the exact
-`RiskPolicySetVersion` plus the exact `(backend, code_version, runtime_profile_id)` triple its
-policies share (`RISK_V0_BACKEND = "v3-native-decimal"`). Every R risk draft binds that triple, and
-`build_scenario_context` fails closed when a policy set does not bind the exact
-`source_target.runtime_identity`. Unknown/stale/mismatched policy sets, backends, code versions, or
-runtime profiles are rejected before any draft is produced.
+Current main has **no canonical user-action / approval / application-command authority**
+(audited at `f2cd80e`: the only "confirmation" concepts are the artifact-GC plan receipt and
+display text; the weight seam marks all caller-asserted references
+`UNRESOLVED_CALLER_ASSERTED`). A caller-shaped `UserConfirmation` is not authority and
+`agent_issued=False` is not human authority.
 
-## Scenario semantics
+Therefore **production R execution is `NOT_AVAILABLE / NOT_RUN`**: the three
+`apply_confirmed_*` seams fail closed with the typed
+`USER_EXECUTION_AUTHORITY_NOT_AVAILABLE` error before any owner invocation. R does not mint a
+second approval authority and does not open Agent L2. The execution-input binding model below
+(`verify_*`) is the ready binding layer for a future canonical user-action authority and is
+exercised directly by tests.
 
-Scenario drafts bind only **existing canonical object identities**: the construction spec version
-reference, the risk policy set version, the cost policy version, the A-share rule/timing profiles,
-the exact `TargetWeightVector` / `RiskAdjustedWeightVector`, the engine version, and initial cash.
-R has no free-form numeric knobs. Parameters the current deterministic runtime cannot enforce are
-rejected as unsupported rather than shadow-computed: sector/industry exposure bounds, turnover
-budgets, optimizer/objective selection, shorting, leverage, and fractional lots do not exist in the
-R wire shape (`extra="forbid"` closes it). If the current portfolio engine has no requested
-optimizer/objective, R reports unsupported; it never calculates weights inside PydanticAI tools or
-prompt text.
+## Execution-input exact binding model (Finding R-B)
+
+- Portfolio construct: `verify_portfolio_construct_binding` exact-binds the confirmed draft
+  to `base_currency`, `as_of`, `decision_time`, `rebalance_time`, `valid_until`,
+  construction-spec id + content hash, `PortfolioIntent`, definition and binding ids, and the
+  construction spec's embedded `RuntimeIdentity`.
+- Risk apply: `verify_risk_apply_binding` exact-binds source target id + content hash,
+  `RiskPolicySetVersion` id + content hash, the backend/code/runtime triple, and the exact
+  `RuntimeIdentity` fields. **Route A**: `state_inputs` must be empty at the R seam; policies
+  requiring external risk state stay unsupported at the seam, and PIT/state validation remains
+  delegated to the canonical Risk runtime.
+- Backtest run: the draft binds an **exact content-addressed `BacktestRunSpec` identity**
+  (`run_spec_id` + `content_sha256`), which covers every execution-changing input (sessions,
+  instruments, exact references, schedule). `verify_backtest_binding` additionally checks
+  `initial_cash`, engine version, cost/rule/timing profiles, schedule membership of the exact
+  `RiskAdjustedWeightVector`, the scheduled effective time, and the scheduled vector content
+  hash. No weak partial hash is invented.
+
+## Scenario evidence resolver (Finding R-C)
+
+`resolve_scenario_evidence` is the system-owned production builder: it accepts only actual
+canonical owner objects (`PortfolioIntent`/`PortfolioIntentSource`/binding, construction-spec
+reference, `RiskPolicySetVersion`, `CostPolicyVersion`, `TargetWeightVector`,
+`RiskAdjustedWeightVector` + decision report, `BacktestRunResult` + `BacktestRunSpec`,
+`BacktestResultAnalytics`, `ResearchReviewReport`) and validates every chain link before
+projecting a `ScenarioEvidenceBundle`. Arbitrary prebuilt projections are never proof.
+Links the current owners cannot prove are recorded in `binding_gaps` and the bundle never
+becomes `EVIDENCE_BOUND`; explanations then report `EVIDENCE_BINDING_UNAVAILABLE`.
+
+Reviewer binding: the bundle accepts a report only when its exact `target_refs` (projected
+verbatim) include the scenario's exact `BacktestRunResult` id + content hash; unrelated
+reports fail closed. Backtest binding: the projected result view carries the spec id/hash,
+the scheduled risk-adjusted vector ids, and the exact bound vector id.
+
+## Scenario comparison semantics (Finding R-D)
+
+`compare_scenarios` separates **invariant research context**
+(`portfolio_intent_id`, `universe_version_id`, `knowledge_cutoff`, `base_currency`,
+`analytics_policy_id`, `benchmark_series_id`) from **scenario treatment** (construction spec,
+risk policy set, cost policy). Invariant mismatch => `INCOMPARABLE_CONTEXT` with the exact
+mismatched fields and no ranking. Treatment differences under an exact invariant context =>
+`COMPARABLE` with the differences disclosed in `scenario_differences` — deliberate
+risk/cost-treatment changes are visible, not hidden, and no context-free "best" claim is
+produced. Ranking is allowed only with an explicit objective metric + direction whose delta
+is `AVAILABLE` on both sides; missing metrics remain `NOT_RUN / NOT_AVAILABLE /
+INSUFFICIENT_SAMPLE` with no zero fill.
+
+## PydanticAI worker evidence requirements
+
+Construct proposals require the exact `PortfolioIntent` evidence call. Risk proposals require
+`PortfolioIntent` plus exact `TargetWeightVector` and `RiskPolicySetVersion` evidence exposed.
+Backtest proposals require the exact `RiskAdjustedWeightVector` and `CostPolicy` evidence
+exposed. Compare proposals are system-computed: the worker resolves both bundles, computes
+the deterministic `compare_scenarios`, and the model MUST consume the exact
+`compare_scenarios` tool result — no evidence tool call fails closed. Narrative output cannot
+carry invented metric/exposure values.
 
 ## A-share gates (inherited, never waived)
 
-- T+1 sellable accounting, buy-lot rounding, limit-up/down buy/sell blocks, suspended/ST blocks and
-  explicit commission/stamp-duty/transfer-fee costs come from the J engine and the exact
-  `CostPolicyVersion`; R re-runs the J engine and reports its diagnostics verbatim.
-- Target/risk-adjusted evidence always projects `LONG_ONLY_UNLEVERED`; no draft field can enable
-  shorting or leverage, and the explanation never emits exposure/covariance/causality claims.
+T+1 sellable accounting, buy-lot rounding, limit-up/down blocks, suspended/ST blocks and
+explicit costs stay in the J engine; target/risk-adjusted evidence always projects
+`LONG_ONLY_UNLEVERED`; no draft field can enable shorting or leverage.
 
-## Comparison semantics
+## Naming note
 
-`compare_scenarios` compares exact `ScenarioEvidenceBundle` objects. The comparison context key is
-`(portfolio_intent_id, universe_version_id, knowledge_cutoff, base_currency,
-construction_spec_version_id, risk_policy_set_version_id, cost_policy_id)`. Any mismatch returns
-`INCOMPARABLE_CONTEXT` with the exact differing field names, no metric deltas, and no ranking.
-Deltas are produced only for metrics that are `AVAILABLE` on both sides; missing metrics remain
-`NOT_RUN` / `NOT_AVAILABLE` / `INSUFFICIENT_SAMPLE` with no zero fill. A ranking requires an exact
-objective metric and direction, and only from `AVAILABLE` deltas.
-
-## Explainability
-
-`explain_scenario` emits only statements derived from the exact cited objects: risk stage
-statuses/reasons, weight/cash changes between target and risk-adjusted rows, cost-policy facts,
-analytics metric statuses and values, and Reviewer findings. Missing chain links
-(target/risk-adjusted/backtest/analytics) yield `EVIDENCE_MISSING` with the exact absent links.
-The `invented_*` literals (`exposure`, `covariance`, `analytics`, `causality`, `optimization`) are
-closed to `False`.
-
-## Production state
-
-Production ResearchLoop `COMPLETE` remains `NOT_AVAILABLE / NOT_RUN`. No Track T UI, desktop shell,
-shared route, or canonical owner file is changed by R. No second optimizer or risk authority is
-introduced; `DeterministicPortfolioConstruction` and `apply_risk` continue to reject any external
-solver candidate.
+The frozen W0 base has no `RiskModelVersion` class; the canonical risk-model identity is the
+exact `RiskPolicySetVersion` plus the exact `(backend, code_version, runtime_profile_id)`
+triple (`RISK_V0_BACKEND = "v3-native-decimal"`).
 
 ## Test coverage
 
-`apps/backend/tests/round5_r_portfolio_risk_agent/test_portfolio_risk_agent.py` (26 tests) covers
-the 20 required categories: proposal NON_CANONICAL/DRAFT; exact PortfolioIntent required; exact
-risk policy set required; stale/wrong risk model rejected; unsupported constraint rejected;
-leverage/short not silently enabled; deterministic scenario identity; no TargetWeightVector
-minting; no RiskAdjustedWeightVector minting; no CostPolicy change by prose; backtest draft exact
-inputs; exact comparison context; different CostPolicy visible; Reviewer/evidence exact-bound;
-missing analytics NOT_RUN/NOT_AVAILABLE; user command not exposed as Agent L2; L2/L3 denied; no
-second optimizer/risk authority; A-share constraints preserved; ResearchLoop COMPLETE remains
-NOT_AVAILABLE/NOT_RUN — plus worker adapter, read-tool fail-closed, comparison/explanation, and
-end-to-end user-confirmation seam tests.
+`apps/backend/tests/round5_r_portfolio_risk_agent/test_portfolio_risk_agent.py` (64 tests)
+covers the original 20 R categories plus the correction matrix: R-A confirmation authority
+(5), R-B exact construct/risk/backtest binding (17), R-C evidence resolver and binding (7),
+R-D evidence-grounded comparison and treatment semantics (7), worker evidence gates, and all
+existing A-share / no-second-authority regressions.

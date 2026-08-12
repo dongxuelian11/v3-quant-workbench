@@ -125,9 +125,13 @@ class RiskApplyDraftPayload(StrictAgentModel):
     source_target_weight_vector_id: ExactId
     source_target_weight_vector_content_sha256: Sha256Exact
     requested_risk_policy_set_version_id: ExactId
+    requested_risk_policy_set_content_sha256: Sha256Exact
     risk_backend: ExactId
     risk_code_version: ExactId
     risk_runtime_profile_id: ExactId
+    runtime_code_version: ExactId
+    runtime_profile_id: ExactId
+    runtime_environment_fingerprint: ExactId
     expected_output_kind: Literal["RISK_ADJUSTED_WEIGHT_VECTOR"] = "RISK_ADJUSTED_WEIGHT_VECTOR"
     evidence_refs: tuple[ExactId, ...] = Field(min_length=1)
     user_confirmation_required: Literal[True] = True
@@ -146,6 +150,8 @@ class RiskApplyDraftPayload(StrictAgentModel):
             raise ValueError("risk apply draft must bind the exact source target content hash")
         if self.requested_risk_policy_set_version_id != self.context.risk_policy_set_version_id:
             raise ValueError("risk apply draft must bind the exact RiskPolicySetVersion")
+        if self.requested_risk_policy_set_content_sha256 != self.context.risk_policy_set_content_sha256:
+            raise ValueError("risk apply draft must bind the exact RiskPolicySetVersion content hash")
         if (self.risk_backend, self.risk_code_version, self.risk_runtime_profile_id) != (
             self.context.risk_backend,
             self.context.risk_code_version,
@@ -166,6 +172,8 @@ class BacktestRunDraftPayload(StrictAgentModel):
     requested_rule_profile_id: ExactId
     requested_execution_timing_profile_id: ExactId
     engine_version: ExactId
+    backtest_run_spec_id: ExactId
+    backtest_run_spec_content_sha256: Sha256Exact
     expected_output_kind: Literal["BACKTEST_RUN_RESULT"] = "BACKTEST_RUN_RESULT"
     evidence_refs: tuple[ExactId, ...] = Field(min_length=1)
     user_confirmation_required: Literal[True] = True
@@ -419,6 +427,7 @@ class BacktestResultEvidenceView(StrictAgentModel):
     result_id: ExactId
     content_sha256: Sha256Exact
     run_spec_id: ExactId
+    run_spec_content_sha256: Sha256Exact | None = None
     engine_version: ExactId | None = None
     initial_cash: str
     session_count: int = Field(ge=1)
@@ -429,9 +438,11 @@ class BacktestResultEvidenceView(StrictAgentModel):
     final_nav: str
     final_holdings_count: int = Field(ge=0)
     nav_points: tuple[tuple[str, str], ...] = Field(min_length=1)
+    scheduled_risk_adjusted_vector_ids: tuple[ExactId, ...] = ()
+    bound_risk_adjusted_weight_vector_id: ExactId | None = None
     truth_admission: ExactId
 
-    @field_validator("diagnostic_summary", "nav_points", mode="before")
+    @field_validator("diagnostic_summary", "nav_points", "scheduled_risk_adjusted_vector_ids", mode="before")
     @classmethod
     def arrays_to_tuples(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
@@ -472,27 +483,35 @@ class ResultAnalyticsEvidenceView(StrictAgentModel):
         return tuple(value) if isinstance(value, list) else value
 
 
+class ReviewerTargetEvidence(StrictAgentModel):
+    object_kind: ExactId
+    object_id: ExactId
+    content_sha256: Sha256Exact
+
+
 class ReviewerEvidenceView(StrictAgentModel):
     review_report_id: ExactId
     rule_set_id: ExactId
     rule_set_content_sha256: Sha256Exact
     session_id: ExactId
-    target_ref_count: int = Field(ge=1)
+    target_refs: tuple[ReviewerTargetEvidence, ...] = Field(min_length=1)
     overall_status: ExactId
     checked_rules: int = Field(ge=0)
     findings: tuple[tuple[ExactId, ExactId, str], ...] = ()
     truth_ceiling: ExactId
 
-    @field_validator("findings", mode="before")
+    @field_validator("target_refs", "findings", mode="before")
     @classmethod
     def arrays_to_tuples(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
 
 
 class ScenarioEvidenceBundle(StrictAgentModel):
-    """Exact canonical evidence chain for one scenario, assembled by the caller.
+    """Exact canonical evidence chain for one scenario, resolved by the system.
 
     Chain invariant: intent -> target -> risk-adjusted -> backtest -> analytics.
+    `binding_gaps` lists links the current canonical owners could not prove;
+    a bundle with gaps is never EVIDENCE_BOUND.
     """
 
     intent: PortfolioIntentEvidenceView
@@ -505,8 +524,9 @@ class ScenarioEvidenceBundle(StrictAgentModel):
     backtest: BacktestResultEvidenceView | None = None
     analytics: ResultAnalyticsEvidenceView | None = None
     reviewer_reports: tuple[ReviewerEvidenceView, ...] = ()
+    binding_gaps: tuple[ExactId, ...] = ()
 
-    @field_validator("reviewer_reports", mode="before")
+    @field_validator("reviewer_reports", "binding_gaps", mode="before")
     @classmethod
     def arrays_to_tuples(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
@@ -522,12 +542,23 @@ class ScenarioEvidenceBundle(StrictAgentModel):
         return self
 
     @property
-    def comparison_context_key(self) -> tuple[tuple[str, str], ...]:
+    def invariant_context_key(self) -> tuple[tuple[str, str], ...]:
+        analytics_policy = self.analytics.analytics_policy_id if self.analytics is not None else ""
+        benchmark = self.analytics.benchmark_series_id if self.analytics is not None else ""
+        if self.analytics is None and benchmark == "":
+            benchmark = ""
         return (
             ("portfolio_intent_id", self.intent.portfolio_intent_id),
             ("universe_version_id", self.intent.universe_version_id),
             ("knowledge_cutoff", self.intent.knowledge_cutoff.isoformat()),
             ("base_currency", self.intent.base_currency),
+            ("analytics_policy_id", analytics_policy),
+            ("benchmark_series_id", benchmark),
+        )
+
+    @property
+    def treatment_context_key(self) -> tuple[tuple[str, str], ...]:
+        return (
             ("construction_spec_version_id", self.construction_spec_version_id),
             ("risk_policy_set_version_id", self.risk_policy_set.risk_policy_set_version_id),
             ("cost_policy_id", self.cost_policy.policy_id),
@@ -561,27 +592,29 @@ class ScenarioComparison(StrictAgentModel):
     left_analytics_id: ExactId
     right_analytics_id: ExactId
     context_mismatches: tuple[ExactId, ...] = ()
+    scenario_differences: tuple[ExactId, ...] = ()
     metric_deltas: tuple[MetricDelta, ...] = ()
     objective_metric: ExactMetricName | None = None
     objective_direction: ExactObjectiveDirection | None = None
     ranking: Literal["LEFT", "RIGHT", "TIE"] | None = None
 
-    @field_validator("context_mismatches", "metric_deltas", mode="before")
+    @field_validator("context_mismatches", "scenario_differences", "metric_deltas", mode="before")
     @classmethod
     def arrays_to_tuples(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
     def prohibit_incomparable_ranking(self) -> "ScenarioComparison":
-        if self.status is ComparisonStatus.INCOMPARABLE_CONTEXT and (self.metric_deltas or self.ranking):
-            raise ValueError("incomparable contexts cannot carry deltas or a ranking")
+        if self.status is ComparisonStatus.INCOMPARABLE_CONTEXT:
+            if self.metric_deltas or self.ranking or self.scenario_differences:
+                raise ValueError("incomparable contexts cannot carry deltas, differences or a ranking")
         if self.ranking is not None and (self.objective_metric is None or self.objective_direction is None):
             raise ValueError("ranking requires an exact objective metric and direction")
         return self
 
 
 class ScenarioEvidenceExplanation(StrictAgentModel):
-    status: Literal["EVIDENCE_BOUND", "EVIDENCE_MISSING"]
+    status: Literal["EVIDENCE_BOUND", "EVIDENCE_MISSING", "EVIDENCE_BINDING_UNAVAILABLE"]
     summary: str
     constraint_statements: tuple[str, ...] = ()
     weight_change_statements: tuple[str, ...] = ()

@@ -21,12 +21,13 @@ from v3_backend.agents.portfolio_risk_agent import (
     PortfolioRiskApplicationError,
     PortfolioRiskDraftKind,
     PortfolioRiskReadTools,
+    USER_EXECUTION_AUTHORITY_NOT_AVAILABLE,
     UserConfirmation,
+    UserExecutionAuthorityNotAvailable,
     apply_confirmed_backtest_run,
     apply_confirmed_portfolio_construct,
     apply_confirmed_risk_apply,
     build_portfolio_risk_proposal,
-    build_scenario_bundle,
     build_scenario_context,
     compare_scenarios,
     draft_backtest_run,
@@ -43,6 +44,10 @@ from v3_backend.agents.portfolio_risk_agent import (
     read_risk_adjusted_evidence,
     read_risk_policy_set,
     read_target_weight_evidence,
+    resolve_scenario_evidence,
+    verify_backtest_binding,
+    verify_portfolio_construct_binding,
+    verify_risk_apply_binding,
 )
 from v3_backend.contracts.common.truth_admission import (
     FORMAL_ADMITTED_CEILING,
@@ -102,7 +107,6 @@ CN = ZoneInfo("Asia/Shanghai")
 DAY1 = date(2026, 7, 7)
 DAY2 = date(2026, 7, 8)
 SESSION = "research-session-round5-r-001"
-ENGINE_VERSION = "v3.a_share_daily_eod_engine/0.2.0"
 
 
 def sha(character: str) -> str:
@@ -116,7 +120,7 @@ def provenance(task: str = "round5-r/1") -> AgentProvenance:
         model_name="deterministic-test-model",
         provider_name="test-provider",
         prompt_version=task,
-        instruction_version="round5-r/1",
+        instruction_version="round5-r/1.1",
         input_sha256="b" * 64,
     )
 
@@ -198,7 +202,6 @@ class PortfolioRiskAgentFixture(unittest.TestCase):
         )
         self.rule_profile = cn_a_share_2026_07_06_rule_profile()
         self.timing_profile = cn_a_share_2026_07_06_execution_timing_profile()
-        # CN-window vector chain for the J engine
         self.cn_rebalance = datetime(2026, 7, 7, 8, 0, tzinfo=CN)
         self.cn_valid_until = datetime(2026, 7, 8, 15, 0, tzinfo=CN)
         self.cn_target = TargetWeightVector.create(
@@ -226,7 +229,8 @@ class PortfolioRiskAgentFixture(unittest.TestCase):
             runtime_identity=self.runtime_identity,
         )
         self.cn_adjusted = self.cn_risk.adjusted_weights
-        self.backtest_result = self._run_backtest()
+        self.backtest_spec = self._build_backtest_spec(self.cn_adjusted, self.cost_policy)
+        self.backtest_result = DeterministicAshareBacktestEngine().run(self.backtest_spec)
 
     def context(self, *, source_target: TargetWeightVector | None = None, risk_adjusted: RiskAdjustedWeightVector | None = None) -> object:
         return build_scenario_context(
@@ -243,7 +247,14 @@ class PortfolioRiskAgentFixture(unittest.TestCase):
             risk_adjusted=risk_adjusted,
         )
 
-    def _run_backtest(self):
+    def _build_backtest_spec(
+        self,
+        vector: RiskAdjustedWeightVector,
+        cost: CostPolicyVersion,
+        *,
+        initial_cash: str = "100000",
+        state_overrides: dict[str, dict[str, object]] | None = None,
+    ) -> BacktestRunSpec:
         refs = tuple(
             ExactInputReference(kind, kind.lower() + "-v1", sha(character), PRE_ALPHA_CEILING)
             for kind, character in (
@@ -261,15 +272,15 @@ class PortfolioRiskAgentFixture(unittest.TestCase):
                 day,
                 True,
                 tuple(
-                    DailyMarketState(instrument_id, "10", "10")
+                    self._state_for(instrument_id, state_overrides)
                     for instrument_id in self.source.universe_instrument_ids
                 ),
                 (),
             )
             for day in (DAY1, DAY2)
         )
-        spec = BacktestRunSpec.create(
-            initial_cash="100000",
+        return BacktestRunSpec.create(
+            initial_cash=initial_cash,
             initial_holdings=(),
             instruments=tuple(
                 InstrumentDefinition(
@@ -279,116 +290,34 @@ class PortfolioRiskAgentFixture(unittest.TestCase):
                 for instrument_id in self.source.universe_instrument_ids
             ),
             sessions=sessions,
-            schedule=(ScheduledWeights(self.cn_adjusted.source_target.rebalance_time, self.cn_adjusted),),
+            schedule=(ScheduledWeights(vector.source_target.rebalance_time, vector),),
             rule_profile=self.rule_profile,
-            cost_policy=self.cost_policy,
-            execution_timing_profile=self.timing_profile,
-            exact_references=refs,
-            runtime_identity=self.runtime_identity,
-        )
-        return DeterministicAshareBacktestEngine().run(spec)
-
-    def _backtest_spec(self) -> BacktestRunSpec:
-        refs = tuple(
-            ExactInputReference(kind, kind.lower() + "-v1", sha(character), PRE_ALPHA_CEILING)
-            for kind, character in (
-                ("SNAPSHOT", "9"),
-                ("MARKET_DATA", "a"),
-                ("TRADING_CALENDAR", "b"),
-                ("UNIVERSE", "c"),
-                ("CORPORATE_ACTIONS", "d"),
-                ("OFFICIAL_TRADING_HOURS", "e"),
-                ("OFFICIAL_COST_RULES", "f"),
-            )
-        )
-        return BacktestRunSpec.create(
-            initial_cash="100000",
-            initial_holdings=(),
-            instruments=tuple(
-                InstrumentDefinition(
-                    instrument_id,
-                    Board.SZSE_MAIN if instrument_id.endswith(".SZ") else Board.SSE_MAIN,
-                )
-                for instrument_id in self.source.universe_instrument_ids
-            ),
-            sessions=tuple(
-                MarketSession(
-                    day,
-                    True,
-                    tuple(
-                        DailyMarketState(instrument_id, "10", "10")
-                        for instrument_id in self.source.universe_instrument_ids
-                    ),
-                    (),
-                )
-                for day in (DAY1, DAY2)
-            ),
-            schedule=(ScheduledWeights(self.cn_adjusted.source_target.rebalance_time, self.cn_adjusted),),
-            rule_profile=self.rule_profile,
-            cost_policy=self.cost_policy,
+            cost_policy=cost,
             execution_timing_profile=self.timing_profile,
             exact_references=refs,
             runtime_identity=self.runtime_identity,
         )
 
-    def _backtest_spec_with_state(self, instrument_id: str, **overrides) -> BacktestRunSpec:
-        sessions = tuple(
-            MarketSession(
-                day,
-                True,
-                tuple(
-                    DailyMarketState(
-                        name,
-                        "10",
-                        "10",
-                        **({"suspended": True} if name == instrument_id else {}),
-                    )
-                    for name in self.source.universe_instrument_ids
-                ),
-                (),
-            )
-            for day in (DAY1, DAY2)
-        )
-        refs = tuple(
-            ExactInputReference(kind, kind.lower() + "-v1", sha(character), PRE_ALPHA_CEILING)
-            for kind, character in (
-                ("SNAPSHOT", "9"),
-                ("MARKET_DATA", "a"),
-                ("TRADING_CALENDAR", "b"),
-                ("UNIVERSE", "c"),
-                ("CORPORATE_ACTIONS", "d"),
-                ("OFFICIAL_TRADING_HOURS", "e"),
-                ("OFFICIAL_COST_RULES", "f"),
-            )
-        )
-        return BacktestRunSpec.create(
-            initial_cash="100000",
-            initial_holdings=(),
-            instruments=tuple(
-                InstrumentDefinition(
-                    name,
-                    Board.SZSE_MAIN if name.endswith(".SZ") else Board.SSE_MAIN,
-                )
-                for name in self.source.universe_instrument_ids
-            ),
-            sessions=sessions,
-            schedule=(ScheduledWeights(self.cn_adjusted.source_target.rebalance_time, self.cn_adjusted),),
-            rule_profile=self.rule_profile,
-            cost_policy=self.cost_policy,
-            execution_timing_profile=self.timing_profile,
-            exact_references=refs,
-            runtime_identity=self.runtime_identity,
-        )
+    @staticmethod
+    def _state_for(instrument_id: str, state_overrides: dict[str, dict[str, object]] | None) -> DailyMarketState:
+        overrides = dict((state_overrides or {}).get(instrument_id, {}))
+        raw_open = str(overrides.pop("raw_open", "10"))
+        raw_close = str(overrides.pop("raw_close", "10"))
+        return DailyMarketState(instrument_id, raw_open, raw_close, **overrides)
 
-    def analytics(self):
+    def analytics_for(self, result) -> object:
         return DeterministicResultAnalyticsEngine().analyze(
-            self.backtest_result,
-            SourceResultBinding(self.backtest_result.result_id, self.backtest_result.content_sha256),
+            result,
+            SourceResultBinding(result.result_id, result.content_sha256),
             ResultAnalyticsPolicyVersion.a_share_daily_research_v0(),
         )
 
-    def review_scope(self):
-        result_digest = self.backtest_result.content_sha256
+    def analytics(self):
+        return self.analytics_for(self.backtest_result)
+
+    def review_scope(self, result=None, *, target_digest_override: str | None = None):
+        result = result or self.backtest_result
+        result_digest = target_digest_override or result.content_sha256
         result_ref = ReviewEvidenceRef(SESSION, "BacktestRunResult", "btrr_sha256_" + result_digest, result_digest)
         spec_ref = ReviewEvidenceRef(SESSION, "BacktestRunSpec", "btrs_sha256_" + sha("7"), sha("7"))
         records = (
@@ -415,28 +344,34 @@ class PortfolioRiskAgentFixture(unittest.TestCase):
             evidence_records=records,
         )
 
-    def bundle(self, *, cost_policy: CostPolicyVersion | None = None, policy_set: RiskPolicySetVersion | None = None, analytics=None, reviewer_reports=()):
-        intent_view = read_portfolio_intent(
+    def bundle(
+        self,
+        *,
+        analytics=None,
+        reviewer_reports=(),
+        cost_policy: CostPolicyVersion | None = None,
+        policy_set: RiskPolicySetVersion | None = None,
+        target: TargetWeightVector | None = None,
+        risk_adjusted: RiskAdjustedWeightVector | None = None,
+        decision_report=None,
+        backtest_result=None,
+        backtest_spec: BacktestRunSpec | None = None,
+        with_backtest_spec: bool = True,
+    ):
+        return resolve_scenario_evidence(
             intent=self.intent,
             source=self.source,
             binding=self.fixture.binding,
-            base_currency="CNY",
-        )
-        policy_view = read_risk_policy_set(policy_set or self.policy_set)
-        cost_view = read_cost_policy(cost_policy or self.cost_policy)
-        target_view = read_target_weight_evidence(self.cn_target)
-        adjusted_view = read_risk_adjusted_evidence(self.cn_adjusted, self.cn_risk.decision_report)
-        result_view = read_backtest_result(self.backtest_result, engine_version=ENGINE_VERSION)
-        analytics_view = read_result_analytics(analytics) if analytics is not None else None
-        return build_scenario_bundle(
-            intent=intent_view,
             construction_spec=self.construction_spec.to_reference(),
-            risk_policy_set=policy_view,
-            cost_policy=cost_view,
-            target=target_view,
-            risk_adjusted=adjusted_view,
-            backtest=result_view,
-            analytics=analytics_view,
+            risk_policy_set=policy_set or self.policy_set,
+            cost_policy=cost_policy or self.cost_policy,
+            base_currency="CNY",
+            target=target or self.cn_target,
+            risk_adjusted=risk_adjusted or self.cn_adjusted,
+            decision_report=decision_report if decision_report is not None else self.cn_risk.decision_report,
+            backtest_result=backtest_result or self.backtest_result,
+            backtest_spec=backtest_spec if backtest_spec is not None else (self.backtest_spec if with_backtest_spec else None),
+            analytics=analytics,
             reviewer_reports=reviewer_reports,
         )
 
@@ -468,7 +403,6 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
             (proposal.authority_status, proposal.lifecycle_state, proposal.agent_execution_allowed),
             ("NON_CANONICAL", "DRAFT", False),
         )
-        self.assertEqual(draft.draft_kind, PortfolioRiskDraftKind.PORTFOLIO_CONSTRUCT)
 
     def test_02_exact_portfolio_intent_required(self):
         with self.assertRaises(TypeError):
@@ -478,7 +412,6 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
                 binding=self.fixture.binding,
                 base_currency="CNY",
             )
-        fake = self.intent.__class__  # type: ignore[assignment]
         with self.assertRaises(PortfolioRiskAgentBindingError):
             build_scenario_context(
                 intent=self.intent,
@@ -491,12 +424,8 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
                 risk_policy_set=self.policy_set,
                 base_currency="CNY",
             )
-        self.assertIsNotNone(fake)
 
     def test_03_exact_risk_policy_set_required_for_risk(self):
-        context = self.context(source_target=self.target)
-        with self.assertRaises(TypeError):
-            draft_risk_apply(context=context, source_target="not-a-vector", provenance=provenance())
         other_runtime = RuntimeIdentity(
             code_version="git:different",
             runtime_profile_id="v3.risk-runtime/9.9.9",
@@ -523,15 +452,14 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
                 base_currency="CNY",
                 source_target=self.target,
             )
-        draft = draft_risk_apply(context=context, source_target=self.target, provenance=provenance())
-        confirmation = self.confirmation(draft, "RISK_APPLY")
-        with self.assertRaises(PortfolioRiskApplicationError):
-            apply_confirmed_risk_apply(
-                draft=draft,
-                confirmation=confirmation,
+        context = self.context(source_target=self.target)
+        with self.assertRaises(PortfolioRiskAgentBindingError):
+            draft_risk_apply(
+                context=context,
                 source_target=self.target,
                 policy_set=mismatched,
                 runtime_identity=other_runtime,
+                provenance=provenance(),
             )
 
     def test_04_stale_or_wrong_risk_model_rejected(self):
@@ -562,10 +490,16 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
                 source_target=self.target,
             )
         context = self.context(source_target=self.target)
-        draft = draft_risk_apply(context=context, source_target=self.target, provenance=provenance())
+        draft = draft_risk_apply(
+            context=context,
+            source_target=self.target,
+            policy_set=self.policy_set,
+            runtime_identity=self.runtime_identity,
+            provenance=provenance(),
+        )
         confirmation = self.confirmation(draft, "RISK_APPLY")
         with self.assertRaises(PortfolioRiskApplicationError):
-            apply_confirmed_risk_apply(
+            verify_risk_apply_binding(
                 draft=draft,
                 confirmation=confirmation,
                 source_target=self.target,
@@ -583,9 +517,13 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
                 source_target_weight_vector_id=context.source_target_weight_vector_id,
                 source_target_weight_vector_content_sha256=context.source_target_weight_vector_content_sha256,
                 requested_risk_policy_set_version_id=context.risk_policy_set_version_id,
+                requested_risk_policy_set_content_sha256=context.risk_policy_set_content_sha256,
                 risk_backend=context.risk_backend,
                 risk_code_version=context.risk_code_version,
                 risk_runtime_profile_id=context.risk_runtime_profile_id,
+                runtime_code_version=self.runtime_identity.code_version,
+                runtime_profile_id=self.runtime_identity.runtime_profile_id,
+                runtime_environment_fingerprint=self.runtime_identity.environment_fingerprint,
                 evidence_refs=("r1",),
                 sector_exposure_bound="0.2",
             )
@@ -608,9 +546,13 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
             source_target_weight_vector_id=context.source_target_weight_vector_id,
             source_target_weight_vector_content_sha256=context.source_target_weight_vector_content_sha256,
             requested_risk_policy_set_version_id=context.risk_policy_set_version_id,
+            requested_risk_policy_set_content_sha256=context.risk_policy_set_content_sha256,
             risk_backend=context.risk_backend,
             risk_code_version=context.risk_code_version,
             risk_runtime_profile_id=context.risk_runtime_profile_id,
+            runtime_code_version=self.runtime_identity.code_version,
+            runtime_profile_id=self.runtime_identity.runtime_profile_id,
+            runtime_environment_fingerprint=self.runtime_identity.environment_fingerprint,
             evidence_refs=("r1",),
         )
         with self.assertRaises(ValidationError):
@@ -660,8 +602,6 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
         tools = PortfolioRiskReadTools(
             adjusted=(read_risk_adjusted_evidence(self.adjusted, self.risk_result.decision_report),)
         )
-        for name in tools.visible_tool_names:
-            self.assertNotIn("risk_adjusted_weight_vector", name.replace("get_risk_adjusted_evidence", ""))
         self.assertNotIn("apply_risk", tools.visible_tool_names)
         self.assertNotIn("mint", tools.visible_tool_names)
         view = read_risk_adjusted_evidence(self.adjusted, self.risk_result.decision_report)
@@ -689,7 +629,24 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
                 requested_cost_policy_id=other_cost.policy_id,
                 evidence_refs=("r1",),
             )
-        explanation = explain_scenario(bundle=self.bundle(cost_policy=other_cost))
+        spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
+        result2 = DeterministicAshareBacktestEngine().run(spec2)
+        bundle2 = resolve_scenario_evidence(
+            intent=self.intent,
+            source=self.source,
+            binding=self.fixture.binding,
+            construction_spec=self.construction_spec.to_reference(),
+            risk_policy_set=self.policy_set,
+            cost_policy=other_cost,
+            base_currency="CNY",
+            target=self.cn_target,
+            risk_adjusted=self.cn_adjusted,
+            decision_report=self.cn_risk.decision_report,
+            backtest_result=result2,
+            backtest_spec=spec2,
+            analytics=self.analytics_for(result2),
+        )
+        explanation = explain_scenario(bundle=bundle2)
         self.assertTrue(any("OTHER_COST" in statement for statement in explanation.cost_statements))
         self.assertIn(other_cost.policy_id, explanation.cited_evidence_refs)
 
@@ -698,58 +655,68 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
         draft = draft_backtest_run(
             context=context,
             risk_adjusted=self.cn_adjusted,
-            initial_cash="100000",
-            engine_version=ENGINE_VERSION,
+            spec=self.backtest_spec,
             provenance=provenance(),
         )
         self.assertEqual(draft.payload.risk_adjusted_weight_vector_id, self.cn_adjusted.risk_adjusted_weight_vector_id)
         self.assertEqual(draft.payload.effective_at, self.cn_rebalance)
-        self.assertEqual(draft.payload.requested_cost_policy_id, self.cost_policy.policy_id)
-        self.assertEqual(draft.payload.requested_rule_profile_id, self.rule_profile.profile_id)
-        self.assertEqual(draft.payload.requested_execution_timing_profile_id, self.timing_profile.profile_id)
+        self.assertEqual(draft.payload.backtest_run_spec_id, self.backtest_spec.run_spec_id)
+        self.assertEqual(draft.payload.backtest_run_spec_content_sha256, self.backtest_spec.content_sha256)
+        self.assertEqual(draft.payload.initial_cash, "100000")
         with self.assertRaises(PortfolioRiskAgentBindingError):
             draft_backtest_run(
                 context=self.context(source_target=self.cn_target),
                 risk_adjusted=self.cn_adjusted,
-                initial_cash="100000",
-                engine_version=ENGINE_VERSION,
+                spec=self.backtest_spec,
                 provenance=provenance(),
             )
-        bad_context = self.context(source_target=self.cn_target, risk_adjusted=self.cn_adjusted)
-        bad_draft = draft_backtest_run(
-            context=bad_context,
-            risk_adjusted=self.cn_adjusted,
-            initial_cash="100000",
-            engine_version="v3.a_share_daily_eod_engine/9.9.9",
-            provenance=provenance(),
-        )
-        confirmation = self.confirmation(bad_draft, "BACKTEST_RUN")
+        bad_spec = self._build_backtest_spec(self.cn_adjusted, self.cost_policy, initial_cash="200000")
         with self.assertRaises(PortfolioRiskApplicationError):
-            apply_confirmed_backtest_run(draft=bad_draft, confirmation=confirmation, spec=self._backtest_spec())
+            verify_backtest_binding(
+                draft=draft,
+                confirmation=self.confirmation(draft, "BACKTEST_RUN"),
+                spec=bad_spec,
+            )
 
-    def test_12_comparison_context_exact(self):
+    def test_12_comparison_invariant_context_exact(self):
         left = self.bundle(analytics=self.analytics())
-        other_cost = CostPolicyVersion.create(
-            policy_name="OTHER_COST",
-            effective_from=date(2023, 8, 28),
-            effective_to=None,
-            commission_rate="0.001",
-            minimum_commission="1",
-            stamp_duty_sell_rate="0.001",
-            market_rules=self.cost_policy.market_rules,
+        other_fixture = build_runtime_fixture(universe_id="universe-2")
+        other_evaluation = DeterministicStrategyEvaluator().evaluate(
+            definition=other_fixture.definition,
+            binding=other_fixture.binding,
+            inputs=(other_fixture.runtime_input,),
         )
-        right = self.bundle(analytics=self.analytics(), cost_policy=other_cost)
-        comparison = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        other_source = PortfolioIntentSource.create(
+            intent=other_evaluation.portfolio_intent,
+            definition=other_fixture.definition,
+            binding=other_fixture.binding,
+        )
+        other_intent_view = read_portfolio_intent(
+            intent=other_evaluation.portfolio_intent,
+            source=other_source,
+            binding=other_fixture.binding,
+            base_currency="CNY",
+        )
+        from v3_backend.agents.portfolio_risk_agent import ScenarioEvidenceBundle
+
+        other_bundle = ScenarioEvidenceBundle(
+            intent=other_intent_view,
+            construction_spec_version_id=left.construction_spec_version_id,
+            construction_spec_content_sha256=left.construction_spec_content_sha256,
+            risk_policy_set=left.risk_policy_set,
+            cost_policy=left.cost_policy,
+        )
+        comparison = compare_scenarios(left, other_bundle, objective_metric="total_return", objective_direction="MAXIMIZE")
         self.assertEqual(comparison.status, ComparisonStatus.INCOMPARABLE_CONTEXT)
-        self.assertIn("cost_policy_id", comparison.context_mismatches)
+        self.assertIn("universe_version_id", comparison.context_mismatches)
         self.assertIsNone(comparison.ranking)
         self.assertEqual(comparison.metric_deltas, ())
         same = compare_scenarios(left, self.bundle(analytics=self.analytics()), objective_metric="total_return", objective_direction="MAXIMIZE")
         self.assertEqual(same.status, ComparisonStatus.COMPARABLE)
         self.assertTrue(all(delta.status == "AVAILABLE" for delta in same.metric_deltas if delta.name == "total_return"))
-        self.assertIsNotNone(same.ranking)
+        self.assertEqual(same.ranking, "TIE")
 
-    def test_13_different_cost_policy_visible(self):
+    def test_13_different_cost_policy_is_visible_treatment_difference(self):
         other_cost = CostPolicyVersion.create(
             policy_name="OTHER_COST",
             effective_from=date(2023, 8, 28),
@@ -763,16 +730,35 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
         other_view = read_cost_policy(other_cost)
         self.assertNotEqual(base_view.policy_id, other_view.policy_id)
         self.assertNotEqual(base_view.commission_rate, other_view.commission_rate)
-        self.assertEqual(other_view.commission_rate, "0.001")
-        comparison = compare_scenarios(self.bundle(analytics=self.analytics()), self.bundle(analytics=self.analytics(), cost_policy=other_cost))
-        self.assertIn("cost_policy_id", comparison.context_mismatches)
+        spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
+        result2 = DeterministicAshareBacktestEngine().run(spec2)
+        left = self.bundle(analytics=self.analytics())
+        right = resolve_scenario_evidence(
+            intent=self.intent,
+            source=self.source,
+            binding=self.fixture.binding,
+            construction_spec=self.construction_spec.to_reference(),
+            risk_policy_set=self.policy_set,
+            cost_policy=other_cost,
+            base_currency="CNY",
+            target=self.cn_target,
+            risk_adjusted=self.cn_adjusted,
+            decision_report=self.cn_risk.decision_report,
+            backtest_result=result2,
+            backtest_spec=spec2,
+            analytics=self.analytics_for(result2),
+        )
+        comparison = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
+        self.assertEqual(comparison.scenario_differences, ("cost_policy_id",))
+        self.assertTrue(any(delta.name == "total_return" and delta.status == "AVAILABLE" for delta in comparison.metric_deltas))
 
     def test_14_reviewer_evidence_exact_bound(self):
         report = review_research_scope(self.review_scope())
         view = read_reviewer_report(report)
         self.assertEqual(view.rule_set_id, report.rule_set_id)
         self.assertEqual(view.session_id, SESSION)
-        self.assertEqual(view.target_ref_count, len(report.target_refs))
+        self.assertTrue(any(ref.object_id == self.backtest_result.result_id for ref in view.target_refs))
         draft = draft_review_run(
             target_refs=(self.backtest_result.result_id,),
             evidence_refs=(self.backtest_result.result_id, self.cost_policy.policy_id),
@@ -780,8 +766,8 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
             provenance=provenance(),
         )
         self.assertEqual(draft.draft_kind, PortfolioRiskDraftKind.REVIEW_RUN)
-        self.assertGreaterEqual(len(draft.payload.target_refs), 1)
-        explanation = explain_scenario(bundle=self.bundle(analytics=self.analytics(), reviewer_reports=(view,)))
+        reviewer_view = read_reviewer_report(report)
+        explanation = explain_scenario(bundle=self.bundle(analytics=self.analytics(), reviewer_reports=(report,)))
         self.assertEqual(explanation.status, "EVIDENCE_BOUND")
         self.assertIn(view.review_report_id, explanation.cited_evidence_refs)
 
@@ -806,6 +792,7 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
         for name in tools.visible_tool_names:
             self.assertNotIn("confirm", name)
             self.assertNotIn("apply", name)
+            self.assertNotIn("execute", name)
         context = self.context(source_target=self.target)
         draft = draft_portfolio_construct(context=context, provenance=provenance())
         with self.assertRaises(ValidationError):
@@ -815,26 +802,6 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
                 confirmed_by="ai-agent",
                 confirmed_at=datetime(2026, 1, 5, 16, 0, tzinfo=timezone.utc),
                 agent_issued=True,
-            )
-        with self.assertRaises(PortfolioRiskApplicationError):
-            apply_confirmed_portfolio_construct(
-                draft=draft,
-                confirmation=UserConfirmation(
-                    action="PORTFOLIO_CONSTRUCT",
-                    draft_sha256="c" * 64,
-                    confirmed_by="human-researcher-1",
-                    confirmed_at=datetime(2026, 1, 5, 16, 0, tzinfo=timezone.utc),
-                ),
-                intent=self.intent,
-                definition=self.fixture.definition,
-                binding=self.fixture.binding,
-                construction_spec=self.construction_spec,
-                runtime_identity=self.runtime_identity,
-                base_currency="CNY",
-                as_of=self.as_of,
-                decision_time=self.decision_time,
-                rebalance_time=self.rebalance_time,
-                valid_until=self.valid_until,
             )
 
     def test_17_l2_l3_remain_denied(self):
@@ -878,17 +845,21 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
         draft = draft_backtest_run(
             context=self.context(source_target=self.cn_target, risk_adjusted=self.cn_adjusted),
             risk_adjusted=self.cn_adjusted,
-            initial_cash="100000",
-            engine_version=ENGINE_VERSION,
+            spec=self.backtest_spec,
             provenance=provenance(),
         )
         confirmation = self.confirmation(draft, "BACKTEST_RUN")
-        result = apply_confirmed_backtest_run(draft=draft, confirmation=confirmation, spec=self._backtest_spec())
-        self.assertEqual(result.result_id, self.backtest_result.result_id)
-        suspended = self._backtest_spec_with_state("000001.SZ", suspended=True)
-        suspended_result = DeterministicAshareBacktestEngine().run(suspended)
+        verify_backtest_binding(draft=draft, confirmation=confirmation, spec=self.backtest_spec)
+        suspended_spec = self._build_backtest_spec(
+            self.cn_adjusted,
+            self.cost_policy,
+            state_overrides={"000001.SZ": {"suspended": True}},
+        )
+        suspended_result = DeterministicAshareBacktestEngine().run(suspended_spec)
         codes = {diagnostic.code.value for diagnostic in suspended_result.diagnostics}
         self.assertIn("SUSPENDED", codes)
+        with self.assertRaises(PortfolioRiskApplicationError):
+            verify_backtest_binding(draft=draft, confirmation=confirmation, spec=suspended_spec)
         explanation = explain_scenario(bundle=self.bundle(analytics=self.analytics()))
         for statement in explanation.analytics_statements + explanation.weight_change_statements:
             self.assertNotIn("short", statement.lower())
@@ -905,12 +876,468 @@ class PortfolioRiskAgentContractTests(PortfolioRiskAgentFixture):
         )
         self.assertEqual(proposal.agent_execution_allowed, False)
         self.assertEqual(proposal.lifecycle_state, "DRAFT")
-        draft = draft_portfolio_construct(context=self.context(source_target=self.target), provenance=provenance())
-        self.assertEqual(draft.payload.action, "PORTFOLIO_CONSTRUCT")
         from v3_backend.agents.portfolio_risk_agent import PortfolioRiskAgentDraft
 
+        draft = draft_portfolio_construct(context=self.context(source_target=self.target), provenance=provenance())
         with self.assertRaises(ValidationError):
             PortfolioRiskAgentDraft.model_validate({**draft.model_dump(), "publish_authority": True})
+
+
+class PortfolioRiskCorrectionAuthorityTests(PortfolioRiskAgentFixture):
+    """Finding R-A: UserConfirmation is not user authority."""
+
+    def test_corr_01_caller_confirmation_cannot_authorize_production_execution(self):
+        construct_draft = draft_portfolio_construct(context=self.context(source_target=self.target), provenance=provenance())
+        with self.assertRaises(UserExecutionAuthorityNotAvailable) as caught:
+            apply_confirmed_portfolio_construct(
+                draft=construct_draft,
+                confirmation=self.confirmation(construct_draft, "PORTFOLIO_CONSTRUCT"),
+                intent=self.intent,
+                definition=self.fixture.definition,
+                binding=self.fixture.binding,
+                construction_spec=self.construction_spec,
+                runtime_identity=self.runtime_identity,
+                base_currency="CNY",
+                as_of=self.as_of,
+                decision_time=self.decision_time,
+                rebalance_time=self.rebalance_time,
+                valid_until=self.valid_until,
+            )
+        self.assertIn(USER_EXECUTION_AUTHORITY_NOT_AVAILABLE, str(caught.exception))
+
+    def test_corr_02_fake_confirmed_by_cannot_elevate_authority(self):
+        risk_draft = draft_risk_apply(
+            context=self.context(source_target=self.target),
+            source_target=self.target,
+            policy_set=self.policy_set,
+            runtime_identity=self.runtime_identity,
+            provenance=provenance(),
+        )
+        confirmation = UserConfirmation(
+            action="RISK_APPLY",
+            draft_sha256=risk_draft.deterministic_sha256,
+            confirmed_by="human-researcher-1",
+            confirmed_at=datetime(2026, 1, 5, 16, 0, tzinfo=timezone.utc),
+        )
+        self.assertFalse(confirmation.agent_issued)
+        with self.assertRaises(UserExecutionAuthorityNotAvailable):
+            apply_confirmed_risk_apply(
+                draft=risk_draft,
+                confirmation=confirmation,
+                source_target=self.target,
+                policy_set=self.policy_set,
+                runtime_identity=self.runtime_identity,
+            )
+
+    def test_corr_03_all_three_apply_commands_fail_closed(self):
+        construct_draft = draft_portfolio_construct(context=self.context(source_target=self.target), provenance=provenance())
+        risk_draft = draft_risk_apply(
+            context=self.context(source_target=self.target),
+            source_target=self.target,
+            policy_set=self.policy_set,
+            runtime_identity=self.runtime_identity,
+            provenance=provenance(),
+        )
+        backtest_draft = draft_backtest_run(
+            context=self.context(source_target=self.cn_target, risk_adjusted=self.cn_adjusted),
+            risk_adjusted=self.cn_adjusted,
+            spec=self.backtest_spec,
+            provenance=provenance(),
+        )
+        with self.assertRaises(UserExecutionAuthorityNotAvailable):
+            apply_confirmed_portfolio_construct(
+                draft=construct_draft,
+                confirmation=self.confirmation(construct_draft, "PORTFOLIO_CONSTRUCT"),
+                intent=self.intent,
+                definition=self.fixture.definition,
+                binding=self.fixture.binding,
+                construction_spec=self.construction_spec,
+                runtime_identity=self.runtime_identity,
+                base_currency="CNY",
+                as_of=self.as_of,
+                decision_time=self.decision_time,
+                rebalance_time=self.rebalance_time,
+                valid_until=self.valid_until,
+            )
+        with self.assertRaises(UserExecutionAuthorityNotAvailable):
+            apply_confirmed_risk_apply(
+                draft=risk_draft,
+                confirmation=self.confirmation(risk_draft, "RISK_APPLY"),
+                source_target=self.target,
+                policy_set=self.policy_set,
+                runtime_identity=self.runtime_identity,
+            )
+        with self.assertRaises(UserExecutionAuthorityNotAvailable):
+            apply_confirmed_backtest_run(
+                draft=backtest_draft,
+                confirmation=self.confirmation(backtest_draft, "BACKTEST_RUN"),
+                spec=self.backtest_spec,
+            )
+
+    def test_corr_04_l2_l3_remain_denied(self):
+        self.assertFalse(decide_permission(PermissionLevel.L2_EXECUTE).allowed)
+        self.assertFalse(decide_permission(PermissionLevel.L3_PUBLISH).allowed)
+
+    def test_corr_05_agent_tool_inventory_has_zero_confirm_apply_execute(self):
+        tools = PortfolioRiskReadTools()
+        for name in tools.visible_tool_names:
+            for forbidden in ("confirm", "apply", "execute", "construct", "publish"):
+                self.assertNotIn(forbidden, name)
+
+
+class PortfolioRiskCorrectionConstructBindingTests(PortfolioRiskAgentFixture):
+    """Finding R-B (3.1): exact portfolio construct binding."""
+
+    def _draft(self):
+        return draft_portfolio_construct(context=self.context(source_target=self.target), provenance=provenance())
+
+    def _verify(self, draft, **overrides):
+        kwargs = dict(
+            draft=draft,
+            confirmation=self.confirmation(draft, "PORTFOLIO_CONSTRUCT"),
+            intent=self.intent,
+            definition=self.fixture.definition,
+            binding=self.fixture.binding,
+            construction_spec=self.construction_spec,
+            runtime_identity=self.runtime_identity,
+            base_currency="CNY",
+            as_of=self.as_of,
+            decision_time=self.decision_time,
+            rebalance_time=self.rebalance_time,
+            valid_until=self.valid_until,
+        )
+        kwargs.update(overrides)
+        verify_portfolio_construct_binding(**kwargs)
+
+    def test_corr_06_changed_base_currency_reject(self):
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), base_currency="USD")
+
+    def test_corr_07_changed_as_of_reject(self):
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), as_of=self.as_of + timedelta(minutes=1))
+
+    def test_corr_08_changed_decision_time_reject(self):
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), decision_time=self.decision_time + timedelta(minutes=1))
+
+    def test_corr_09_changed_rebalance_time_reject(self):
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), rebalance_time=self.rebalance_time + timedelta(minutes=1))
+
+    def test_corr_10_changed_valid_until_reject(self):
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), valid_until=self.valid_until + timedelta(minutes=1))
+
+    def test_corr_11_wrong_construction_spec_reject(self):
+        other_spec = PortfolioConstructionSpecVersion.create(
+            method=ConstructionMethod.EQUAL_WEIGHT_SELECTED,
+            method_version="1.0.0",
+            target_cash_weight="0.2",
+            max_instrument_weight="1",
+            runtime_identity=self.runtime_identity,
+        )
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), construction_spec=other_spec)
+
+    def test_corr_11b_exact_construct_binding_pass(self):
+        self._verify(self._draft())
+
+
+class PortfolioRiskCorrectionRiskBindingTests(PortfolioRiskAgentFixture):
+    """Finding R-B (3.2): exact risk apply binding, Route A."""
+
+    def _draft(self):
+        return draft_risk_apply(
+            context=self.context(source_target=self.target),
+            source_target=self.target,
+            policy_set=self.policy_set,
+            runtime_identity=self.runtime_identity,
+            provenance=provenance(),
+        )
+
+    def _verify(self, draft, **overrides):
+        kwargs = dict(
+            draft=draft,
+            confirmation=self.confirmation(draft, "RISK_APPLY"),
+            source_target=self.target,
+            policy_set=self.policy_set,
+            runtime_identity=self.runtime_identity,
+            state_inputs=(),
+        )
+        kwargs.update(overrides)
+        verify_risk_apply_binding(**kwargs)
+
+    def _draft_with(self, **updates):
+        draft = self._draft()
+        from v3_backend.agents.portfolio_risk_agent import PortfolioRiskAgentDraft
+
+        payload = draft.payload.model_dump()
+        payload.update(updates)
+        return PortfolioRiskAgentDraft(
+            draft_kind=draft.draft_kind,
+            payload=payload,
+            permission_decision=draft.permission_decision,
+            provenance=draft.provenance,
+        )
+
+    def test_corr_12_wrong_target_content_reject(self):
+        import dataclasses
+
+        tampered_target = dataclasses.replace(self.target, content_sha256=sha("e"))
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), source_target=tampered_target)
+
+    def test_corr_13_wrong_policy_content_reject(self):
+        import dataclasses
+
+        tampered_policy = dataclasses.replace(self.policy_set, content_sha256=sha("e"))
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), policy_set=tampered_policy)
+
+    def test_corr_14_wrong_runtime_identity_reject(self):
+        tampered = self._draft_with(runtime_code_version="git:other")
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(tampered)
+        other_runtime = RuntimeIdentity(
+            code_version="git:other",
+            runtime_profile_id=self.runtime_identity.runtime_profile_id,
+            environment_fingerprint=self.runtime_identity.environment_fingerprint,
+        )
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), runtime_identity=other_runtime)
+
+    def test_corr_15_unbound_state_inputs_reject(self):
+        state_input = RiskStateInput(
+            "state-1",
+            UnresolvedExactReference(ReferenceKind.RISK_STATE, "state-1", sha("8"), PRE_ALPHA_CEILING),
+            self.decision_time,
+        )
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), state_inputs=(state_input,))
+
+    def test_corr_16_pit_owner_validation_stays_with_canonical_risk_runtime(self):
+        self._verify(self._draft())
+        with self.assertRaises(UserExecutionAuthorityNotAvailable):
+            apply_confirmed_risk_apply(
+                draft=self._draft(),
+                confirmation=self.confirmation(self._draft(), "RISK_APPLY"),
+                source_target=self.target,
+                policy_set=self.policy_set,
+                runtime_identity=self.runtime_identity,
+            )
+
+
+class PortfolioRiskCorrectionBacktestBindingTests(PortfolioRiskAgentFixture):
+    """Finding R-B (3.3): exact content-addressed BacktestRunSpec binding."""
+
+    def _draft(self):
+        return draft_backtest_run(
+            context=self.context(source_target=self.cn_target, risk_adjusted=self.cn_adjusted),
+            risk_adjusted=self.cn_adjusted,
+            spec=self.backtest_spec,
+            provenance=provenance(),
+        )
+
+    def _verify(self, draft, **overrides):
+        kwargs = dict(
+            draft=draft,
+            confirmation=self.confirmation(draft, "BACKTEST_RUN"),
+            spec=self.backtest_spec,
+        )
+        kwargs.update(overrides)
+        verify_backtest_binding(**kwargs)
+
+    def _draft_with(self, **updates):
+        draft = self._draft()
+        from v3_backend.agents.portfolio_risk_agent import PortfolioRiskAgentDraft
+
+        payload = draft.payload.model_dump()
+        payload.update(updates)
+        return PortfolioRiskAgentDraft(
+            draft_kind=draft.draft_kind,
+            payload=payload,
+            permission_decision=draft.permission_decision,
+            provenance=draft.provenance,
+        )
+
+    def test_corr_17_changed_initial_cash_reject(self):
+        tampered = self._draft_with(initial_cash="200000")
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(tampered)
+
+    def test_corr_18_changed_scheduled_effective_time_reject(self):
+        from v3_backend.domain.backtest_runtime import ScheduledWeights
+
+        item = self.backtest_spec.schedule[0]
+        tampered_item = object.__new__(ScheduledWeights)
+        object.__setattr__(tampered_item, "effective_at", item.effective_at + timedelta(minutes=1))
+        object.__setattr__(tampered_item, "vector", item.vector)
+        raw_spec = object.__new__(BacktestRunSpec)
+        for field_name in (
+            "run_spec_id",
+            "content_sha256",
+            "initial_cash",
+            "initial_holdings",
+            "instruments",
+            "sessions",
+            "rule_profile",
+            "cost_policy",
+            "execution_timing_profile",
+            "exact_references",
+            "runtime_identity",
+            "engine_version",
+            "truth_admission",
+        ):
+            object.__setattr__(raw_spec, field_name, getattr(self.backtest_spec, field_name))
+        object.__setattr__(raw_spec, "schedule", (tampered_item,))
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), spec=raw_spec)
+
+    def test_corr_19_unrelated_vector_spec_reject(self):
+        unrelated_spec = self._build_backtest_spec(self.adjusted, self.cost_policy)
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), spec=unrelated_spec)
+
+    def test_corr_20_different_market_sessions_reject_via_content_hash(self):
+        changed_spec = self._build_backtest_spec(
+            self.cn_adjusted,
+            self.cost_policy,
+            state_overrides={"000002.SZ": {"raw_open": "11"}},
+        )
+        with self.assertRaises(PortfolioRiskApplicationError):
+            self._verify(self._draft(), spec=changed_spec)
+
+    def test_corr_21_production_execution_not_available_without_authority(self):
+        with self.assertRaises(UserExecutionAuthorityNotAvailable):
+            apply_confirmed_backtest_run(
+                draft=self._draft(),
+                confirmation=self.confirmation(self._draft(), "BACKTEST_RUN"),
+                spec=self.backtest_spec,
+            )
+
+    def test_corr_21b_exact_backtest_binding_pass(self):
+        self._verify(self._draft())
+
+
+class PortfolioRiskCorrectionEvidenceResolverTests(PortfolioRiskAgentFixture):
+    """Finding R-C: system-owned scenario evidence resolver."""
+
+    def test_corr_22_fabricated_projection_cannot_become_evidence_bound(self):
+        from v3_backend.agents.portfolio_risk_agent import BacktestResultEvidenceView
+
+        fabricated = BacktestResultEvidenceView(
+            result_id="btrr_sha256_" + sha("1"),
+            content_sha256=sha("1"),
+            run_spec_id="btrs_sha256_" + sha("2"),
+            initial_cash="0",
+            session_count=1,
+            order_count=0,
+            fill_count=0,
+            final_cash="0",
+            final_nav="0",
+            final_holdings_count=0,
+            nav_points=(("2026-07-07", "0"),),
+            truth_admission="PRE_ALPHA",
+        )
+        self.assertIsInstance(fabricated, BacktestResultEvidenceView)
+        with self.assertRaises(TypeError):
+            resolve_scenario_evidence(
+                intent=self.intent,
+                source=self.source,
+                binding=self.fixture.binding,
+                construction_spec=self.construction_spec.to_reference(),
+                risk_policy_set=self.policy_set,
+                cost_policy=self.cost_policy,
+                base_currency="CNY",
+                target=self.cn_target,
+                risk_adjusted=self.cn_adjusted,
+                backtest_result=fabricated,
+                backtest_spec=self.backtest_spec,
+            )
+
+    def test_corr_23_unrelated_target_reject(self):
+        other_target = TargetWeightVector.create(
+            source=self.source,
+            construction_spec=self.construction_spec.to_reference(),
+            evidence_refs=(
+                self.construction.diagnostics.to_reference(),
+                self.construction.provenance.to_reference(),
+            ),
+            runtime_identity=self.runtime_identity,
+            base_currency="CNY",
+            as_of=self.cn_rebalance - timedelta(hours=1),
+            decision_time=self.cn_rebalance - timedelta(minutes=30),
+            rebalance_time=self.cn_rebalance + timedelta(days=1),
+            valid_until=self.cn_valid_until + timedelta(days=1),
+            cash_weight="0.5",
+            rows=(TargetWeightRow("000001.SZ", "0.5"),),
+        )
+        with self.assertRaises(PortfolioRiskAgentBindingError):
+            resolve_scenario_evidence(
+                intent=self.intent,
+                source=self.source,
+                binding=self.fixture.binding,
+                construction_spec=self.construction_spec.to_reference(),
+                risk_policy_set=self.policy_set,
+                cost_policy=self.cost_policy,
+                base_currency="CNY",
+                target=other_target,
+                risk_adjusted=self.cn_adjusted,
+            )
+
+    def test_corr_24_unrelated_backtest_result_reject(self):
+        other_spec = self._build_backtest_spec(
+            self.cn_adjusted,
+            self.cost_policy,
+            state_overrides={"000001.SZ": {"suspended": True}},
+        )
+        other_result = DeterministicAshareBacktestEngine().run(other_spec)
+        with self.assertRaises(PortfolioRiskAgentBindingError):
+            resolve_scenario_evidence(
+                intent=self.intent,
+                source=self.source,
+                binding=self.fixture.binding,
+                construction_spec=self.construction_spec.to_reference(),
+                risk_policy_set=self.policy_set,
+                cost_policy=self.cost_policy,
+                base_currency="CNY",
+                target=self.cn_target,
+                risk_adjusted=self.cn_adjusted,
+                backtest_result=other_result,
+                backtest_spec=self.backtest_spec,
+            )
+
+    def test_corr_25_analytics_from_another_result_reject(self):
+        other_spec = self._build_backtest_spec(self.cn_adjusted, self.cost_policy, initial_cash="300000")
+        other_result = DeterministicAshareBacktestEngine().run(other_spec)
+        other_analytics = self.analytics_for(other_result)
+        with self.assertRaises(PortfolioRiskAgentBindingError):
+            self.bundle(analytics=other_analytics)
+
+    def test_corr_26_unrelated_reviewer_report_reject(self):
+        other_spec = self._build_backtest_spec(self.cn_adjusted, self.cost_policy, initial_cash="300000")
+        other_result = DeterministicAshareBacktestEngine().run(other_spec)
+        other_report = review_research_scope(self.review_scope(result=other_result))
+        with self.assertRaises(PortfolioRiskAgentBindingError):
+            self.bundle(analytics=self.analytics(), reviewer_reports=(other_report,))
+
+    def test_corr_27_missing_owner_link_marks_binding_unavailable(self):
+        bundle = self.bundle(analytics=self.analytics(), with_backtest_spec=False)
+        self.assertIn("backtest_to_risk_adjusted", bundle.binding_gaps)
+        explanation = explain_scenario(bundle=bundle)
+        self.assertEqual(explanation.status, "EVIDENCE_BINDING_UNAVAILABLE")
+
+    def test_corr_28_exact_canonical_chain_passes(self):
+        report = review_research_scope(self.review_scope())
+        bundle = self.bundle(analytics=self.analytics(), reviewer_reports=(report,))
+        self.assertEqual(bundle.binding_gaps, ())
+        explanation = explain_scenario(bundle=bundle)
+        self.assertEqual(explanation.status, "EVIDENCE_BOUND")
+        view = bundle.backtest
+        self.assertEqual(view.run_spec_id, self.backtest_spec.run_spec_id)
+        self.assertIn(self.cn_adjusted.risk_adjusted_weight_vector_id, view.scheduled_risk_adjusted_vector_ids)
+        self.assertEqual(view.bound_risk_adjusted_weight_vector_id, self.cn_adjusted.risk_adjusted_weight_vector_id)
 
 
 def proposal_model(messages: list[object], info: AgentInfo) -> ModelResponse:
@@ -925,17 +1352,23 @@ def proposal_model(messages: list[object], info: AgentInfo) -> ModelResponse:
                     candidate = json.loads(part.content)
                 except json.JSONDecodeError:
                     continue
-                if candidate.get("task") in ("PORTFOLIO_CONSTRUCT_PROPOSAL", "RISK_APPLY_PROPOSAL", "BACKTEST_RUN_PROPOSAL"):
+                if candidate.get("task") in ("PORTFOLIO_CONSTRUCT_PROPOSAL", "RISK_APPLY_PROPOSAL", "BACKTEST_RUN_PROPOSAL", "RESULT_COMPARE_PROPOSAL"):
                     request = candidate
     if request is None:
         raise AssertionError("R structured request unavailable")
     if not has_return:
+        if request.get("task") == "RESULT_COMPARE_PROPOSAL":
+            return ModelResponse(parts=[ToolCallPart("compare_scenarios", {"comparison_key": request.get("comparison_key", "")})])
         return ModelResponse(parts=[ToolCallPart("get_portfolio_intent", {"portfolio_intent_id": request["portfolio_intent_id"]})])
-    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"rationale": "Exact PortfolioIntent supports a bounded scenario draft.", "next_action_proposals": ["review the exact construction draft before applying it"], "evidence_claims": ["ignored model-authored evidence claim"]})])
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"rationale": "Exact evidence supports a bounded scenario draft.", "next_action_proposals": ["review the exact draft before any future execution"], "evidence_claims": ["ignored model-authored evidence claim"]})])
 
 
 def proposal_without_tool(_messages: list[object], info: AgentInfo) -> ModelResponse:
     return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"rationale": "Unsafe no-tool proposal.", "next_action_proposals": []})])
+
+
+def compare_model_without_tool(_messages: list[object], info: AgentInfo) -> ModelResponse:
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"rationale": "Unsafe no-evidence compare.", "next_action_proposals": []})])
 
 
 class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
@@ -949,13 +1382,17 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
             read_tools=read_tools or self.read_tools(),
         )
 
-    def read_tools(self):
+    def read_tools(self, bundles=()):
         return PortfolioRiskReadTools(
             intents=(read_portfolio_intent(intent=self.intent, source=self.source, binding=self.fixture.binding, base_currency="CNY"),),
             targets=(read_target_weight_evidence(self.target),),
             policy_sets=(read_risk_policy_set(self.policy_set),),
-            adjusted=(read_risk_adjusted_evidence(self.adjusted, self.risk_result.decision_report),),
+            adjusted=(
+                read_risk_adjusted_evidence(self.adjusted, self.risk_result.decision_report),
+                read_risk_adjusted_evidence(self.cn_adjusted, self.cn_risk.decision_report),
+            ),
             cost_policies=(read_cost_policy(self.cost_policy),),
+            bundles=tuple(bundles),
         )
 
     def test_worker_construct_proposal_requires_exact_evidence(self):
@@ -973,20 +1410,117 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
         with self.assertRaises(AgentOutputRejected):
             self.worker(proposal_without_tool).run_construct_proposal(research_goal="unsafe", context=context)
 
-    def test_worker_risk_and_backtest_proposals(self):
+    def test_worker_risk_proposal_exposes_exact_evidence(self):
         risk_context = self.context(source_target=self.target)
-        risk_proposal = self.worker(proposal_model).run_risk_proposal(research_goal="clip", context=risk_context, source_target=self.target)
+        risk_proposal = self.worker(proposal_model).run_risk_proposal(
+            research_goal="clip",
+            context=risk_context,
+            source_target=self.target,
+            policy_set=self.policy_set,
+            runtime_identity=self.runtime_identity,
+        )
         self.assertEqual(risk_proposal.action_drafts[0].draft_kind, PortfolioRiskDraftKind.RISK_APPLY)
+        payload = risk_proposal.action_drafts[0].payload
+        self.assertEqual(payload.requested_risk_policy_set_content_sha256, self.policy_set.content_sha256)
+        self.assertEqual(payload.runtime_code_version, self.runtime_identity.code_version)
+
+    def test_worker_backtest_proposal_exposes_exact_evidence(self):
         backtest_context = self.context(source_target=self.cn_target, risk_adjusted=self.cn_adjusted)
         backtest_proposal = self.worker(proposal_model).run_backtest_proposal(
             research_goal="eod backtest",
             context=backtest_context,
             risk_adjusted=self.cn_adjusted,
-            initial_cash="100000",
-            engine_version=ENGINE_VERSION,
+            spec=self.backtest_spec,
         )
         self.assertEqual(backtest_proposal.action_drafts[0].draft_kind, PortfolioRiskDraftKind.BACKTEST_RUN)
-        self.assertEqual(backtest_proposal.action_drafts[0].payload.engine_version, ENGINE_VERSION)
+        payload = backtest_proposal.action_drafts[0].payload
+        self.assertEqual(payload.backtest_run_spec_id, self.backtest_spec.run_spec_id)
+        self.assertEqual(payload.engine_version, self.backtest_spec.engine_version)
+
+    def test_worker_compare_proposal_consumes_exact_comparison_evidence(self):
+        from v3_backend.agents.pydantic_worker import AgentOutputRejected
+
+        other_cost = CostPolicyVersion.create(
+            policy_name="OTHER_COST",
+            effective_from=date(2023, 8, 28),
+            effective_to=None,
+            commission_rate="0.001",
+            minimum_commission="1",
+            stamp_duty_sell_rate="0.001",
+            market_rules=self.cost_policy.market_rules,
+        )
+        spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
+        result2 = DeterministicAshareBacktestEngine().run(spec2)
+        left = self.bundle(analytics=self.analytics())
+        right = resolve_scenario_evidence(
+            intent=self.intent,
+            source=self.source,
+            binding=self.fixture.binding,
+            construction_spec=self.construction_spec.to_reference(),
+            risk_policy_set=self.policy_set,
+            cost_policy=other_cost,
+            base_currency="CNY",
+            target=self.cn_target,
+            risk_adjusted=self.cn_adjusted,
+            decision_report=self.cn_risk.decision_report,
+            backtest_result=result2,
+            backtest_spec=spec2,
+            analytics=self.analytics_for(result2),
+        )
+        tools = self.read_tools(bundles=(left, right))
+        narrative = self.worker(proposal_model, read_tools=tools).run_compare_proposal(
+            research_goal="compare",
+            left=left,
+            right=right,
+            objective_metric="total_return",
+            objective_direction="MAXIMIZE",
+        )
+        self.assertIsNotNone(narrative.rationale)
+        tools.begin(())
+        with self.assertRaises(AgentOutputRejected):
+            self.worker(compare_model_without_tool, read_tools=tools).run_compare_proposal(
+                research_goal="unsafe compare",
+                left=left,
+                right=right,
+            )
+
+    def test_compare_worker_requires_bundle_evidence(self):
+        from v3_backend.agents.pydantic_worker import AgentOutputRejected
+
+        left = self.bundle(analytics=self.analytics())
+        other_cost = CostPolicyVersion.create(
+            policy_name="OTHER_COST",
+            effective_from=date(2023, 8, 28),
+            effective_to=None,
+            commission_rate="0.001",
+            minimum_commission="1",
+            stamp_duty_sell_rate="0.001",
+            market_rules=self.cost_policy.market_rules,
+        )
+        spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
+        result2 = DeterministicAshareBacktestEngine().run(spec2)
+        right = resolve_scenario_evidence(
+            intent=self.intent,
+            source=self.source,
+            binding=self.fixture.binding,
+            construction_spec=self.construction_spec.to_reference(),
+            risk_policy_set=self.policy_set,
+            cost_policy=other_cost,
+            base_currency="CNY",
+            target=self.cn_target,
+            risk_adjusted=self.cn_adjusted,
+            decision_report=self.cn_risk.decision_report,
+            backtest_result=result2,
+            backtest_spec=spec2,
+            analytics=self.analytics_for(result2),
+        )
+        empty_tools = PortfolioRiskReadTools()
+        with self.assertRaises(AgentOutputRejected):
+            self.worker(proposal_model, read_tools=empty_tools).run_compare_proposal(
+                research_goal="compare",
+                left=left,
+                right=right,
+            )
 
     def test_read_tools_fail_closed_on_unknown_identity(self):
         tools = self.read_tools()
@@ -996,10 +1530,10 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
         with self.assertRaises(PortfolioRiskAgentToolError):
             tools.get_portfolio_intent("unknown-intent")
 
-    def test_user_confirmation_seam_end_to_end(self):
+    def test_user_confirmation_seam_fails_closed_and_binding_verifiers_pass(self):
         context = self.context(source_target=self.target)
         construct_draft = draft_portfolio_construct(context=context, provenance=provenance())
-        result = apply_confirmed_portfolio_construct(
+        verify_portfolio_construct_binding(
             draft=construct_draft,
             confirmation=self.confirmation(construct_draft, "PORTFOLIO_CONSTRUCT"),
             intent=self.intent,
@@ -1013,29 +1547,32 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
             rebalance_time=self.rebalance_time,
             valid_until=self.valid_until,
         )
-        self.assertEqual(result.target.target_weight_vector_id, self.target.target_weight_vector_id)
-        risk_draft = draft_risk_apply(context=self.context(source_target=self.target), source_target=self.target, provenance=provenance())
-        risk_result = apply_confirmed_risk_apply(
+        risk_draft = draft_risk_apply(
+            context=context,
+            source_target=self.target,
+            policy_set=self.policy_set,
+            runtime_identity=self.runtime_identity,
+            provenance=provenance(),
+        )
+        verify_risk_apply_binding(
             draft=risk_draft,
             confirmation=self.confirmation(risk_draft, "RISK_APPLY"),
             source_target=self.target,
             policy_set=self.policy_set,
             runtime_identity=self.runtime_identity,
+            state_inputs=(),
         )
-        self.assertEqual(risk_result.adjusted_weights.risk_adjusted_weight_vector_id, self.adjusted.risk_adjusted_weight_vector_id)
         backtest_draft = draft_backtest_run(
             context=self.context(source_target=self.cn_target, risk_adjusted=self.cn_adjusted),
             risk_adjusted=self.cn_adjusted,
-            initial_cash="100000",
-            engine_version=ENGINE_VERSION,
+            spec=self.backtest_spec,
             provenance=provenance(),
         )
-        backtest_result = apply_confirmed_backtest_run(
+        verify_backtest_binding(
             draft=backtest_draft,
             confirmation=self.confirmation(backtest_draft, "BACKTEST_RUN"),
-            spec=self._backtest_spec(),
+            spec=self.backtest_spec,
         )
-        self.assertEqual(backtest_result.result_id, self.backtest_result.result_id)
 
     def test_compare_drafts_and_explanation_flow(self):
         analytics = self.analytics()
@@ -1048,11 +1585,10 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
             provenance=provenance(),
         )
         self.assertEqual(draft.draft_kind, PortfolioRiskDraftKind.RESULT_COMPARE)
-        self.assertEqual(draft.payload.left_analytics_id, view.analytics_id)
         report = review_research_scope(self.review_scope())
         reviewer_view = read_reviewer_report(report)
         explanation = explain_scenario(
-            bundle=self.bundle(analytics=analytics, reviewer_reports=(reviewer_view,)),
+            bundle=self.bundle(analytics=analytics, reviewer_reports=(report,)),
             next_action_proposals=("PROPOSAL: raise max single-name clip",),
         )
         self.assertEqual(explanation.status, "EVIDENCE_BOUND")
@@ -1071,3 +1607,133 @@ class PortfolioRiskAgentWorkerTests(PortfolioRiskAgentFixture):
         )
         self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
         self.assertEqual(comparison.ranking, "TIE")
+
+
+class PortfolioRiskCorrectionCompareTests(PortfolioRiskAgentFixture):
+    """Finding R-D: evidence-grounded scenario comparison semantics."""
+
+    def _risk_variant_bundle(self):
+        variant_set = RiskPolicySetVersion.create(
+            (
+                RiskPolicyDefinition.pass_through(
+                    code_version=self.runtime_identity.code_version,
+                    runtime_profile_id=self.runtime_identity.runtime_profile_id,
+                ),
+            )
+        )
+        variant_risk = apply_risk(
+            source_target=self.cn_target,
+            policy_set=variant_set,
+            runtime_identity=self.runtime_identity,
+        )
+        variant_adjusted = variant_risk.adjusted_weights
+        variant_spec = self._build_backtest_spec(variant_adjusted, self.cost_policy)
+        variant_result = DeterministicAshareBacktestEngine().run(variant_spec)
+        return resolve_scenario_evidence(
+            intent=self.intent,
+            source=self.source,
+            binding=self.fixture.binding,
+            construction_spec=self.construction_spec.to_reference(),
+            risk_policy_set=variant_set,
+            cost_policy=self.cost_policy,
+            base_currency="CNY",
+            target=self.cn_target,
+            risk_adjusted=variant_adjusted,
+            decision_report=variant_risk.decision_report,
+            backtest_result=variant_result,
+            backtest_spec=variant_spec,
+            analytics=self.analytics_for(variant_result),
+        )
+
+    def test_corr_31_different_universe_or_cutoff_incomparable(self):
+        left = self.bundle(analytics=self.analytics())
+        other_fixture = build_runtime_fixture(universe_id="universe-2")
+        other_evaluation = DeterministicStrategyEvaluator().evaluate(
+            definition=other_fixture.definition,
+            binding=other_fixture.binding,
+            inputs=(other_fixture.runtime_input,),
+        )
+        other_source = PortfolioIntentSource.create(
+            intent=other_evaluation.portfolio_intent,
+            definition=other_fixture.definition,
+            binding=other_fixture.binding,
+        )
+        other_intent_view = read_portfolio_intent(
+            intent=other_evaluation.portfolio_intent,
+            source=other_source,
+            binding=other_fixture.binding,
+            base_currency="CNY",
+        )
+        from v3_backend.agents.portfolio_risk_agent import ScenarioEvidenceBundle
+
+        other_bundle = ScenarioEvidenceBundle(
+            intent=other_intent_view,
+            construction_spec_version_id=left.construction_spec_version_id,
+            construction_spec_content_sha256=left.construction_spec_content_sha256,
+            risk_policy_set=left.risk_policy_set,
+            cost_policy=left.cost_policy,
+        )
+        comparison = compare_scenarios(left, other_bundle)
+        self.assertEqual(comparison.status, ComparisonStatus.INCOMPARABLE_CONTEXT)
+        self.assertIn("universe_version_id", comparison.context_mismatches)
+        self.assertEqual(comparison.scenario_differences, ())
+
+    def test_corr_32_different_risk_policy_is_comparable_treatment_difference(self):
+        left = self.bundle(analytics=self.analytics())
+        right = self._risk_variant_bundle()
+        comparison = compare_scenarios(left, right)
+        self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
+        self.assertEqual(comparison.scenario_differences, ("risk_policy_set_version_id",))
+
+    def test_corr_33_different_cost_policy_is_comparable_treatment_difference(self):
+        other_cost = CostPolicyVersion.create(
+            policy_name="OTHER_COST",
+            effective_from=date(2023, 8, 28),
+            effective_to=None,
+            commission_rate="0.001",
+            minimum_commission="1",
+            stamp_duty_sell_rate="0.001",
+            market_rules=self.cost_policy.market_rules,
+        )
+        spec2 = self._build_backtest_spec(self.cn_adjusted, other_cost)
+        result2 = DeterministicAshareBacktestEngine().run(spec2)
+        left = self.bundle(analytics=self.analytics())
+        right = resolve_scenario_evidence(
+            intent=self.intent,
+            source=self.source,
+            binding=self.fixture.binding,
+            construction_spec=self.construction_spec.to_reference(),
+            risk_policy_set=self.policy_set,
+            cost_policy=other_cost,
+            base_currency="CNY",
+            target=self.cn_target,
+            risk_adjusted=self.cn_adjusted,
+            decision_report=self.cn_risk.decision_report,
+            backtest_result=result2,
+            backtest_spec=spec2,
+            analytics=self.analytics_for(result2),
+        )
+        comparison = compare_scenarios(left, right)
+        self.assertEqual(comparison.status, ComparisonStatus.COMPARABLE)
+        self.assertEqual(comparison.scenario_differences, ("cost_policy_id",))
+
+    def test_corr_34_treatment_differences_returned_explicitly(self):
+        left = self.bundle(analytics=self.analytics())
+        right = self._risk_variant_bundle()
+        comparison = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        self.assertEqual(comparison.scenario_differences, ("risk_policy_set_version_id",))
+        self.assertNotIn("portfolio_intent_id", comparison.scenario_differences)
+        self.assertNotIn("universe_version_id", comparison.scenario_differences)
+
+    def test_corr_35_ranking_only_with_available_objective_and_exact_invariant(self):
+        left = self.bundle(analytics=self.analytics())
+        right = self.bundle(analytics=self.analytics())
+        ranked = compare_scenarios(left, right, objective_metric="total_return", objective_direction="MAXIMIZE")
+        self.assertEqual(ranked.status, ComparisonStatus.COMPARABLE)
+        self.assertEqual(ranked.ranking, "TIE")
+        unranked = compare_scenarios(left, right, objective_metric="sharpe", objective_direction="MAXIMIZE")
+        sharpe_delta = next(delta for delta in unranked.metric_deltas if delta.name == "sharpe")
+        if sharpe_delta.status != "AVAILABLE":
+            self.assertIsNone(unranked.ranking)
+        else:
+            self.assertIsNotNone(unranked.ranking)

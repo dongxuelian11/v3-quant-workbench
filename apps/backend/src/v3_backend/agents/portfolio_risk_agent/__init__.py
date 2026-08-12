@@ -1,8 +1,13 @@
 from .application import (
     PortfolioRiskApplicationError,
+    USER_EXECUTION_AUTHORITY_NOT_AVAILABLE,
+    UserExecutionAuthorityNotAvailable,
     apply_confirmed_backtest_run,
     apply_confirmed_portfolio_construct,
     apply_confirmed_risk_apply,
+    verify_backtest_binding,
+    verify_portfolio_construct_binding,
+    verify_risk_apply_binding,
 )
 from .contracts import (
     AnalyticsMetricEvidence,
@@ -24,6 +29,7 @@ from .contracts import (
     ResultCompareDraftPayload,
     ReviewRunDraftPayload,
     ReviewerEvidenceView,
+    ReviewerTargetEvidence,
     RiskAdjustedEvidenceView,
     RiskApplyDraftPayload,
     RiskPolicyEvidence,
@@ -39,7 +45,6 @@ from .contracts import (
 from .service import (
     PortfolioRiskAgentBindingError,
     build_portfolio_risk_proposal,
-    build_scenario_bundle,
     build_scenario_context,
     compare_scenarios,
     draft_backtest_run,
@@ -56,6 +61,7 @@ from .service import (
     read_risk_adjusted_evidence,
     read_risk_policy_set,
     read_target_weight_evidence,
+    resolve_scenario_evidence,
 )
 from .tools import PortfolioRiskAgentToolError, PortfolioRiskReadTools
 from .worker import PortfolioRiskAgentWorker
@@ -85,6 +91,7 @@ __all__ = [
     "ResultCompareDraftPayload",
     "ReviewRunDraftPayload",
     "ReviewerEvidenceView",
+    "ReviewerTargetEvidence",
     "RiskAdjustedEvidenceView",
     "RiskApplyDraftPayload",
     "RiskPolicyEvidence",
@@ -95,12 +102,13 @@ __all__ = [
     "ScenarioEvidenceExplanation",
     "TargetWeightEvidenceRow",
     "TargetWeightEvidenceView",
+    "USER_EXECUTION_AUTHORITY_NOT_AVAILABLE",
     "UserConfirmation",
+    "UserExecutionAuthorityNotAvailable",
     "apply_confirmed_backtest_run",
     "apply_confirmed_portfolio_construct",
     "apply_confirmed_risk_apply",
     "build_portfolio_risk_proposal",
-    "build_scenario_bundle",
     "build_scenario_context",
     "compare_scenarios",
     "draft_backtest_run",
@@ -117,4 +125,8 @@ __all__ = [
     "read_risk_adjusted_evidence",
     "read_risk_policy_set",
     "read_target_weight_evidence",
+    "resolve_scenario_evidence",
+    "verify_backtest_binding",
+    "verify_portfolio_construct_binding",
+    "verify_risk_apply_binding",
 ]

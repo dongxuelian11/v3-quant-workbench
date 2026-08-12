@@ -43,6 +43,11 @@ unknown/stale/mismatched policy set, backend, code version, or runtime profile.
 
 ## Frozen R design
 
+- User-execution authority audit (correction): current main has no canonical user-action /
+  approval authority (audited at `f2cd80e`); therefore production R execution through the
+  `apply_confirmed_*` seams is `NOT_AVAILABLE / NOT_RUN` (typed
+  `USER_EXECUTION_AUTHORITY_NOT_AVAILABLE`), and the exact-binding `verify_*` layer is the
+  ready seam for a future canonical authority. R mints no second approval authority.
 - L0 read tools are pure projections over exact caller-supplied canonical objects
   (`PortfolioIntentSource`, `TargetWeightVector`, `RiskPolicySetVersion`,
   `RiskAdjustedWeightVector`, `CostPolicyVersion`, `BacktestRunResult`,

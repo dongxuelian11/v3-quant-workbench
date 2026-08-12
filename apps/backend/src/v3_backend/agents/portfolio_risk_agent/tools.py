@@ -62,7 +62,7 @@ class PortfolioRiskReadTools:
         self._results = MappingProxyType({value.result_id: value for value in results})
         self._analytics = MappingProxyType({value.analytics_id: value for value in analytics})
         self._reviews = MappingProxyType({value.review_report_id: value for value in reviews})
-        self._bundles = MappingProxyType({value.intent.portfolio_intent_id: value for value in bundles})
+        self._bundles = MappingProxyType({value.deterministic_sha256: value for value in bundles})
         sizes = (
             (len(self._intents), len(intents)),
             (len(self._targets), len(targets)),
@@ -97,6 +97,25 @@ class PortfolioRiskReadTools:
     @property
     def called(self) -> tuple[tuple[str, str], ...]:
         return tuple(self._called)
+
+    def has(self, name: str, object_id: str) -> bool:
+        """Evidence-inventory check without permission side effects."""
+
+        stores = {
+            "get_portfolio_intent": self._intents,
+            "get_target_weight_evidence": self._targets,
+            "get_risk_policy_set": self._policy_sets,
+            "get_risk_adjusted_evidence": self._adjusted,
+            "get_cost_policy": self._cost_policies,
+            "get_backtest_result": self._results,
+            "get_result_analytics": self._analytics,
+            "get_reviewer_report": self._reviews,
+            "get_scenario_bundle": self._bundles,
+        }
+        store = stores.get(name)
+        if store is None:
+            return False
+        return object_id in store
 
     def begin(self, allowed: tuple[tuple[str, str], ...]) -> None:
         self._allowed = frozenset(allowed)
@@ -139,8 +158,8 @@ class PortfolioRiskReadTools:
     def get_reviewer_report(self, review_report_id: str) -> ReviewerEvidenceView:
         return self._fetch("get_reviewer_report", review_report_id, self._reviews)
 
-    def get_scenario_bundle(self, portfolio_intent_id: str) -> ScenarioEvidenceBundle:
-        return self._fetch("get_scenario_bundle", portfolio_intent_id, self._bundles)
+    def get_scenario_bundle(self, bundle_sha256: str) -> ScenarioEvidenceBundle:
+        return self._fetch("get_scenario_bundle", bundle_sha256, self._bundles)
 
     def compare_scenarios(self, comparison_key: str) -> ScenarioComparison:
         self._admit("compare_scenarios", comparison_key)

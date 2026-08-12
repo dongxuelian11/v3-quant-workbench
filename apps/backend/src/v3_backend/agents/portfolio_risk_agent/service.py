@@ -6,7 +6,11 @@ from decimal import Decimal
 
 from v3_backend.agents.contracts import AgentProvenance, PermissionLevel
 from v3_backend.agents.permissions import decide_permission
-from v3_backend.domain.backtest_runtime import BacktestRunResult, CostPolicyVersion
+from v3_backend.domain.backtest_runtime import (
+    BacktestRunResult,
+    BacktestRunSpec,
+    CostPolicyVersion,
+)
 from v3_backend.domain.portfolio_construction import (
     PortfolioConstructionSpecVersion,
 )
@@ -22,6 +26,7 @@ from v3_backend.domain.weights import (
     PortfolioIntentSource,
     ReferenceKind,
     RiskAdjustedWeightVector,
+    RuntimeIdentity,
     TargetWeightVector,
     UnresolvedExactReference,
 )
@@ -45,6 +50,7 @@ from .contracts import (
     ResultCompareDraftPayload,
     ReviewRunDraftPayload,
     ReviewerEvidenceView,
+    ReviewerTargetEvidence,
     RiskAdjustedEvidenceView,
     RiskApplyDraftPayload,
     RiskPolicyEvidence,
@@ -289,6 +295,7 @@ def read_risk_adjusted_evidence(
             raise TypeError("decision_report must be the canonical RiskDecisionReport object")
         decision_report.assert_canonical()
         _binding(decision_report.source_target_weight_vector_id == adjusted.risk_application.source_target_weight_vector_id, "risk decision report does not bind the exact source target")
+        _binding(decision_report.risk_policy_set_version_id == adjusted.risk_application.risk_policy_set.source_id, "risk decision report does not bind the exact RiskPolicySetVersion")
         stages = tuple(
             RiskStageSummary(
                 stage_order=stage.stage_index,
@@ -333,11 +340,19 @@ def read_cost_policy(cost: CostPolicyVersion) -> CostPolicyEvidenceView:
     )
 
 
-def read_backtest_result(result: BacktestRunResult, engine_version: str | None = None) -> BacktestResultEvidenceView:
+def read_backtest_result(
+    result: BacktestRunResult,
+    spec: BacktestRunSpec | None = None,
+    bound_risk_adjusted_weight_vector_id: str | None = None,
+) -> BacktestResultEvidenceView:
     if not isinstance(result, BacktestRunResult):
         raise TypeError("result must be the canonical BacktestRunResult object")
     if not result.nav:
         raise PortfolioRiskAgentBindingError("backtest result requires at least one NAV point")
+    if spec is not None:
+        if not isinstance(spec, BacktestRunSpec):
+            raise TypeError("spec must be the canonical BacktestRunSpec object")
+        _binding(spec.run_spec_id == result.run_spec_id, "backtest spec does not bind the exact BacktestRunResult")
     diagnostic_counts = Counter(diagnostic.code.value for diagnostic in result.diagnostics)
     truth, _ = _truth_wire(result.truth_admission)
     final = result.nav[-1]
@@ -346,11 +361,17 @@ def read_backtest_result(result: BacktestRunResult, engine_version: str | None =
         if entry.kind.value == "INITIAL_CASH":
             initial_cash = entry.amount
             break
+    scheduled_ids: tuple[str, ...] = ()
+    if spec is not None:
+        scheduled_ids = tuple(
+            item.vector.risk_adjusted_weight_vector_id for item in spec.schedule
+        )
     return BacktestResultEvidenceView(
         result_id=result.result_id,
         content_sha256=result.content_sha256,
         run_spec_id=result.run_spec_id,
-        engine_version=engine_version,
+        run_spec_content_sha256=spec.content_sha256 if spec is not None else None,
+        engine_version=spec.engine_version if spec is not None else None,
         initial_cash=initial_cash,
         session_count=len(result.nav),
         order_count=len(result.orders),
@@ -362,6 +383,8 @@ def read_backtest_result(result: BacktestRunResult, engine_version: str | None =
         final_nav=final.nav,
         final_holdings_count=len(result.holdings),
         nav_points=tuple((row.session_date.isoformat(), row.nav) for row in result.nav),
+        scheduled_risk_adjusted_vector_ids=scheduled_ids,
+        bound_risk_adjusted_weight_vector_id=bound_risk_adjusted_weight_vector_id,
         truth_admission=truth,
     )
 
@@ -416,7 +439,14 @@ def read_reviewer_report(report: ResearchReviewReport) -> ReviewerEvidenceView:
         rule_set_id=report.rule_set_id,
         rule_set_content_sha256=report.rule_set_content_sha256,
         session_id=report.session_id,
-        target_ref_count=len(report.target_refs),
+        target_refs=tuple(
+            ReviewerTargetEvidence(
+                object_kind=ref.object_kind,
+                object_id=ref.object_id,
+                content_sha256=ref.content_sha256,
+            )
+            for ref in report.target_refs
+        ),
         overall_status=report.overall_status.value,
         checked_rules=report.coverage.checked_rules,
         findings=tuple((finding.kind.value, finding.severity.value, finding.summary) for finding in report.findings),
@@ -424,38 +454,131 @@ def read_reviewer_report(report: ResearchReviewReport) -> ReviewerEvidenceView:
     )
 
 
-def build_scenario_bundle(
+def resolve_scenario_evidence(
     *,
-    intent: PortfolioIntentEvidenceView,
+    intent: PortfolioIntent,
+    source: PortfolioIntentSource,
+    binding: StrategyEvaluationBindingVersion,
     construction_spec: UnresolvedExactReference,
-    risk_policy_set: RiskPolicySetEvidenceView,
-    cost_policy: CostPolicyEvidenceView,
-    target: TargetWeightEvidenceView | None = None,
-    risk_adjusted: RiskAdjustedEvidenceView | None = None,
-    backtest: BacktestResultEvidenceView | None = None,
-    analytics: ResultAnalyticsEvidenceView | None = None,
-    reviewer_reports: tuple[ReviewerEvidenceView, ...] = (),
+    risk_policy_set: RiskPolicySetVersion,
+    cost_policy: CostPolicyVersion,
+    base_currency: str,
+    target: TargetWeightVector | None = None,
+    risk_adjusted: RiskAdjustedWeightVector | None = None,
+    decision_report: RiskDecisionReport | None = None,
+    backtest_result: BacktestRunResult | None = None,
+    backtest_spec: BacktestRunSpec | None = None,
+    analytics: BacktestResultAnalytics | None = None,
+    reviewer_reports: tuple[ResearchReviewReport, ...] = (),
 ) -> ScenarioEvidenceBundle:
+    """System-owned scenario evidence resolver over canonical owner objects.
+
+    Only actual canonical owner objects are accepted; arbitrary prebuilt
+    evidence projections are never proof. Links that the current owners cannot
+    prove are listed in `binding_gaps` and the bundle never becomes
+    EVIDENCE_BOUND.
+    """
+
+    if not isinstance(intent, PortfolioIntent):
+        raise TypeError("intent must be the canonical PortfolioIntent object")
+    if not isinstance(source, PortfolioIntentSource):
+        raise TypeError("source must be the canonical PortfolioIntentSource object")
+    if not isinstance(binding, StrategyEvaluationBindingVersion):
+        raise TypeError("binding must be the canonical StrategyEvaluationBindingVersion object")
+    _binding(source.portfolio_intent_id == intent.portfolio_intent_id, "source does not bind the exact PortfolioIntent")
     if not isinstance(construction_spec, UnresolvedExactReference):
         raise TypeError("construction_spec must be the exact UnresolvedExactReference")
     _binding(construction_spec.reference_kind is ReferenceKind.CONSTRUCTION_SPEC, "construction spec reference kind must be CONSTRUCTION_SPEC")
-    if target is not None and risk_adjusted is not None:
-        _binding(risk_adjusted.source_target_weight_vector_id == target.target_weight_vector_id, "bundle risk-adjusted evidence must bind the exact target vector")
-    if backtest is not None and risk_adjusted is not None:
-        _binding(backtest is not None and risk_adjusted.risk_adjusted_weight_vector_id is not None, "bundle backtest evidence requires an exact risk-adjusted vector")
-    if analytics is not None and backtest is not None:
-        _binding(analytics.source_result_id == backtest.result_id, "bundle analytics must bind the exact backtest result")
+    if not isinstance(risk_policy_set, RiskPolicySetVersion):
+        raise TypeError("risk_policy_set must be the canonical RiskPolicySetVersion object")
+    risk_policy_set.assert_canonical()
+    if not isinstance(cost_policy, CostPolicyVersion):
+        raise TypeError("cost_policy must be the canonical CostPolicyVersion object")
+    cost_policy.assert_canonical()
+
+    intent_view = read_portfolio_intent(intent=intent, source=source, binding=binding, base_currency=base_currency)
+    policy_view = read_risk_policy_set(risk_policy_set)
+    cost_view = read_cost_policy(cost_policy)
+    target_view: TargetWeightEvidenceView | None = None
+    adjusted_view: RiskAdjustedEvidenceView | None = None
+    result_view: BacktestResultEvidenceView | None = None
+    analytics_view: ResultAnalyticsEvidenceView | None = None
+    reviewer_views: tuple[ReviewerEvidenceView, ...] = ()
+    gaps: list[str] = []
+
+    if target is not None:
+        if not isinstance(target, TargetWeightVector):
+            raise TypeError("target must be the canonical TargetWeightVector object")
+        target.assert_canonical()
+        _binding(target.source.portfolio_intent_id == intent.portfolio_intent_id, "target does not bind the exact PortfolioIntent")
+        _binding(target.construction_spec.source_id == construction_spec.source_id, "target does not bind the exact construction spec")
+        _binding(target.construction_spec.content_sha256 == construction_spec.content_sha256, "target does not bind the exact construction spec content hash")
+        target_view = read_target_weight_evidence(target)
+
+    if risk_adjusted is not None:
+        if not isinstance(risk_adjusted, RiskAdjustedWeightVector):
+            raise TypeError("risk_adjusted must be the canonical RiskAdjustedWeightVector object")
+        risk_adjusted.assert_canonical()
+        _binding(target is not None, "risk-adjusted evidence requires the exact target vector")
+        _binding(risk_adjusted.source_target.target_weight_vector_id == target.target_weight_vector_id, "risk-adjusted does not bind the exact target vector")
+        _binding(risk_adjusted.source_target.content_sha256 == target.content_sha256, "risk-adjusted does not bind the exact target content hash")
+        _binding(risk_adjusted.risk_application.risk_policy_set.source_id == risk_policy_set.risk_policy_set_version_id, "risk-adjusted does not bind the exact RiskPolicySetVersion")
+        _binding(risk_adjusted.risk_application.risk_policy_set.content_sha256 == risk_policy_set.content_sha256, "risk-adjusted does not bind the exact policy set content hash")
+        adjusted_view = read_risk_adjusted_evidence(risk_adjusted, decision_report)
+
+    if backtest_result is not None:
+        if not isinstance(backtest_result, BacktestRunResult):
+            raise TypeError("backtest_result must be the canonical BacktestRunResult object")
+        _binding(risk_adjusted is not None, "backtest evidence requires the exact risk-adjusted vector")
+        if backtest_spec is None:
+            gaps.append("backtest_to_risk_adjusted")
+        else:
+            if not isinstance(backtest_spec, BacktestRunSpec):
+                raise TypeError("backtest_spec must be the canonical BacktestRunSpec object")
+            _binding(backtest_spec.run_spec_id == backtest_result.run_spec_id, "backtest spec does not bind the exact BacktestRunResult")
+            _binding(backtest_spec.cost_policy.policy_id == cost_policy.policy_id, "backtest spec CostPolicy does not bind the exact scenario CostPolicy")
+            _binding(backtest_spec.cost_policy.content_sha256 == cost_policy.content_sha256, "backtest spec CostPolicy content hash does not bind the exact scenario CostPolicy")
+            scheduled_ids = tuple(item.vector.risk_adjusted_weight_vector_id for item in backtest_spec.schedule)
+            _binding(risk_adjusted.risk_adjusted_weight_vector_id in scheduled_ids, "backtest spec schedule does not include the exact RiskAdjustedWeightVector")
+        result_view = read_backtest_result(
+            backtest_result,
+            spec=backtest_spec,
+            bound_risk_adjusted_weight_vector_id=risk_adjusted.risk_adjusted_weight_vector_id if backtest_spec is not None else None,
+        )
+
+    if analytics is not None:
+        if not isinstance(analytics, BacktestResultAnalytics):
+            raise TypeError("analytics must be the canonical BacktestResultAnalytics object")
+        _binding(backtest_result is not None, "analytics evidence requires the exact backtest result")
+        _binding(analytics.source_result_id == backtest_result.result_id, "analytics does not bind the exact BacktestRunResult")
+        _binding(analytics.source_result_content_sha256 == backtest_result.content_sha256, "analytics does not bind the exact result content hash")
+        analytics_view = read_result_analytics(analytics)
+
+    reviewer_views = ()
+    for report in reviewer_reports:
+        if not isinstance(report, ResearchReviewReport):
+            raise TypeError("reviewer_reports must contain canonical ResearchReviewReport objects")
+        view = read_reviewer_report(report)
+        if backtest_result is not None:
+            matches = any(
+                ref.object_id == backtest_result.result_id and ref.content_sha256 == backtest_result.content_sha256
+                for ref in view.target_refs
+            )
+            _binding(matches, "reviewer report does not target the exact scenario BacktestRunResult")
+        reviewer_views = (*reviewer_views, view)
+
     return ScenarioEvidenceBundle(
-        intent=intent,
+        intent=intent_view,
         construction_spec_version_id=construction_spec.source_id,
         construction_spec_content_sha256=construction_spec.content_sha256,
-        risk_policy_set=risk_policy_set,
-        cost_policy=cost_policy,
-        target=target,
-        risk_adjusted=risk_adjusted,
-        backtest=backtest,
-        analytics=analytics,
-        reviewer_reports=reviewer_reports,
+        risk_policy_set=policy_view,
+        cost_policy=cost_view,
+        target=target_view,
+        risk_adjusted=adjusted_view,
+        backtest=result_view,
+        analytics=analytics_view,
+        reviewer_reports=reviewer_views,
+        binding_gaps=tuple(gaps),
     )
 
 
@@ -477,21 +600,34 @@ def draft_risk_apply(
     *,
     context: PortfolioRiskScenarioContext,
     source_target: TargetWeightVector,
+    policy_set: RiskPolicySetVersion,
+    runtime_identity: RuntimeIdentity,
     provenance: AgentProvenance,
 ) -> PortfolioRiskAgentDraft:
     if not isinstance(source_target, TargetWeightVector):
         raise TypeError("source_target must be the canonical TargetWeightVector object")
     source_target.assert_canonical()
+    if not isinstance(policy_set, RiskPolicySetVersion):
+        raise TypeError("policy_set must be the canonical RiskPolicySetVersion object")
+    policy_set.assert_canonical()
+    if not isinstance(runtime_identity, RuntimeIdentity):
+        raise TypeError("runtime_identity must be the exact W0 RuntimeIdentity")
     _binding(context.source_target_weight_vector_id == source_target.target_weight_vector_id, "context does not bind the exact source TargetWeightVector")
+    _binding(context.risk_policy_set_version_id == policy_set.risk_policy_set_version_id, "context does not bind the exact RiskPolicySetVersion")
+    _binding(context.risk_policy_set_content_sha256 == policy_set.content_sha256, "context does not bind the exact policy set content hash")
     payload = RiskApplyDraftPayload(
         context=context,
         source_target_weight_vector_id=source_target.target_weight_vector_id,
         source_target_weight_vector_content_sha256=source_target.content_sha256,
-        requested_risk_policy_set_version_id=context.risk_policy_set_version_id,
+        requested_risk_policy_set_version_id=policy_set.risk_policy_set_version_id,
+        requested_risk_policy_set_content_sha256=policy_set.content_sha256,
         risk_backend=context.risk_backend,
         risk_code_version=context.risk_code_version,
         risk_runtime_profile_id=context.risk_runtime_profile_id,
-        evidence_refs=(source_target.target_weight_vector_id, context.risk_policy_set_version_id),
+        runtime_code_version=runtime_identity.code_version,
+        runtime_profile_id=runtime_identity.runtime_profile_id,
+        runtime_environment_fingerprint=runtime_identity.environment_fingerprint,
+        evidence_refs=(source_target.target_weight_vector_id, policy_set.risk_policy_set_version_id),
     )
     return _draft(kind=PortfolioRiskDraftKind.RISK_APPLY, payload=payload, provenance=provenance)
 
@@ -500,25 +636,33 @@ def draft_backtest_run(
     *,
     context: PortfolioRiskScenarioContext,
     risk_adjusted: RiskAdjustedWeightVector,
-    initial_cash: str,
-    engine_version: str,
+    spec: BacktestRunSpec,
     provenance: AgentProvenance,
 ) -> PortfolioRiskAgentDraft:
     if not isinstance(risk_adjusted, RiskAdjustedWeightVector):
         raise TypeError("risk_adjusted must be the canonical RiskAdjustedWeightVector object")
     risk_adjusted.assert_canonical()
+    if not isinstance(spec, BacktestRunSpec):
+        raise TypeError("spec must be the canonical BacktestRunSpec object")
     _binding(context.risk_adjusted_weight_vector_id == risk_adjusted.risk_adjusted_weight_vector_id, "context does not bind the exact RiskAdjustedWeightVector")
+    _binding(context.cost_policy_id == spec.cost_policy.policy_id, "context CostPolicy does not bind the exact BacktestRunSpec")
+    _binding(context.rule_profile_id == spec.rule_profile.profile_id, "context rule profile does not bind the exact BacktestRunSpec")
+    _binding(context.execution_timing_profile_id == spec.execution_timing_profile.profile_id, "context timing profile does not bind the exact BacktestRunSpec")
+    scheduled_ids = tuple(item.vector.risk_adjusted_weight_vector_id for item in spec.schedule)
+    _binding(risk_adjusted.risk_adjusted_weight_vector_id in scheduled_ids, "BacktestRunSpec schedule does not include the exact RiskAdjustedWeightVector")
     payload = BacktestRunDraftPayload(
         context=context,
         risk_adjusted_weight_vector_id=risk_adjusted.risk_adjusted_weight_vector_id,
         risk_adjusted_weight_vector_content_sha256=risk_adjusted.content_sha256,
         effective_at=risk_adjusted.source_target.rebalance_time,
-        initial_cash=initial_cash,
-        requested_cost_policy_id=context.cost_policy_id,
-        requested_rule_profile_id=context.rule_profile_id,
-        requested_execution_timing_profile_id=context.execution_timing_profile_id,
-        engine_version=engine_version,
-        evidence_refs=(risk_adjusted.risk_adjusted_weight_vector_id, context.cost_policy_id),
+        initial_cash=spec.initial_cash,
+        requested_cost_policy_id=spec.cost_policy.policy_id,
+        requested_rule_profile_id=spec.rule_profile.profile_id,
+        requested_execution_timing_profile_id=spec.execution_timing_profile.profile_id,
+        engine_version=spec.engine_version,
+        backtest_run_spec_id=spec.run_spec_id,
+        backtest_run_spec_content_sha256=spec.content_sha256,
+        evidence_refs=(risk_adjusted.risk_adjusted_weight_vector_id, spec.run_spec_id),
     )
     return _draft(kind=PortfolioRiskDraftKind.BACKTEST_RUN, payload=payload, provenance=provenance)
 
@@ -598,22 +742,18 @@ def compare_scenarios(
 ) -> ScenarioComparison:
     if not isinstance(left, ScenarioEvidenceBundle) or not isinstance(right, ScenarioEvidenceBundle):
         raise TypeError("comparison requires exact ScenarioEvidenceBundle objects")
-    left_key = dict(left.comparison_context_key)
-    right_key = dict(right.comparison_context_key)
-    mismatches: tuple[str, ...] = ()
-    if left_key != right_key:
-        mismatches = tuple(
-            sorted(
-                name
-                for name in left_key
-                if left_key[name] != right_key.get(name)
-            )
+    invariant_left = dict(left.invariant_context_key)
+    invariant_right = dict(right.invariant_context_key)
+    invariant_mismatches: tuple[str, ...] = ()
+    if invariant_left != invariant_right:
+        invariant_mismatches = tuple(
+            sorted(name for name in invariant_left if invariant_left[name] != invariant_right.get(name))
         )
         return ScenarioComparison(
             status=ComparisonStatus.INCOMPARABLE_CONTEXT,
             left_analytics_id=left.analytics.analytics_id if left.analytics is not None else "NOT_AVAILABLE",
             right_analytics_id=right.analytics.analytics_id if right.analytics is not None else "NOT_AVAILABLE",
-            context_mismatches=mismatches,
+            context_mismatches=invariant_mismatches,
         )
     if left.analytics is None or right.analytics is None:
         return ScenarioComparison(
@@ -622,6 +762,11 @@ def compare_scenarios(
             right_analytics_id=right.analytics.analytics_id if right.analytics is not None else "NOT_AVAILABLE",
             context_mismatches=("analytics",),
         )
+    treatment_left = dict(left.treatment_context_key)
+    treatment_right = dict(right.treatment_context_key)
+    scenario_differences = tuple(
+        sorted(name for name in treatment_left if treatment_left[name] != treatment_right.get(name))
+    )
     left_metrics = _metric_map(left.analytics)
     right_metrics = _metric_map(right.analytics)
     deltas: list[MetricDelta] = []
@@ -658,6 +803,7 @@ def compare_scenarios(
         status=ComparisonStatus.COMPARABLE,
         left_analytics_id=left.analytics.analytics_id,
         right_analytics_id=right.analytics.analytics_id,
+        scenario_differences=scenario_differences,
         metric_deltas=tuple(deltas),
         objective_metric=objective_metric,
         objective_direction=objective_direction,
@@ -692,6 +838,13 @@ def explain_scenario(
         cited.append(bundle.analytics.analytics_id)
     for report in bundle.reviewer_reports:
         cited.append(report.review_report_id)
+
+    if bundle.binding_gaps:
+        status = "EVIDENCE_BINDING_UNAVAILABLE"
+    elif missing:
+        status = "EVIDENCE_MISSING"
+    else:
+        status = "EVIDENCE_BOUND"
 
     constraint_statements: list[str] = []
     weight_change_statements: list[str] = []
@@ -735,11 +888,15 @@ def explain_scenario(
             reviewer_statements.append(f"{report.review_report_id}: {report.overall_status}, no findings")
 
     return ScenarioEvidenceExplanation(
-        status="EVIDENCE_BOUND" if not missing else "EVIDENCE_MISSING",
+        status=status,
         summary=(
             "explanation is bound to the exact cited scenario evidence"
-            if not missing
-            else "explanation is incomplete; referenced evidence links are missing"
+            if status == "EVIDENCE_BOUND"
+            else (
+                "explanation is incomplete; canonical owner links could not be proven"
+                if status == "EVIDENCE_BINDING_UNAVAILABLE"
+                else "explanation is incomplete; referenced evidence links are missing"
+            )
         ),
         constraint_statements=tuple(constraint_statements),
         weight_change_statements=tuple(weight_change_statements),
