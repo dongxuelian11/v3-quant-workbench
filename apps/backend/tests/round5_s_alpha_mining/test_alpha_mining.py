@@ -20,7 +20,9 @@ from v3_backend.domain.agent_research_loop import (
     ResearchLoopBudgetVersion,
 )
 from v3_backend.domain.alpha_mining import (
+    AlphaMiningCandidateDisposition,
     AlphaMiningCandidateProposal,
+    AlphaMiningCandidateRecord,
     AlphaMiningContractError,
     AlphaMiningEngine,
     AlphaMiningEvaluationContext,
@@ -370,6 +372,58 @@ class AlphaMiningTests(unittest.TestCase):
             AlphaMiningContractError, "ALPHA_MINING_JOB_IDENTITY_MISMATCH"
         ):
             engine.run(forged, resource_observation="test-governor")
+
+    def test_job_and_lineage_bounds_reject_coercible_or_invalid_values(self) -> None:
+        with self.assertRaisesRegex(
+            AlphaMiningContractError, "INVALID_ALPHA_MINING_BUDGET"
+        ):
+            self.job(max_expression_depth="4")
+        with self.assertRaisesRegex(
+            AlphaMiningContractError, "INVALID_ALPHA_MINING_BUDGET"
+        ):
+            self.job(
+                operation_profile=dataclasses.replace(
+                    self.operation_profile, cpu_slots=0
+                )
+            )
+        with self.assertRaisesRegex(
+            AlphaMiningContractError, "INVALID_REWARD_POLICY"
+        ):
+            AlphaMiningRewardPolicyVersion.create(
+                policy_version="invalid-bool",
+                component_rules=(
+                    RewardComponentRule.create(
+                        RewardComponentName.COMPLEXITY, "-0.01"
+                    ),
+                ),
+                block_on_blocking_finding="false",
+            )
+        with self.assertRaisesRegex(
+            AlphaMiningContractError, "INVALID_ALPHA_MINING_BUDGET"
+        ):
+            AlphaMiningStoppingRules(1, "false")
+        with self.assertRaisesRegex(
+            AlphaMiningContractError, "INVALID_CANDIDATE_RECORD"
+        ):
+            AlphaMiningCandidateRecord.create(
+                candidate_id="candidate",
+                source_lineage_ref="lineage",
+                generation_index=1,
+                candidate_ordinal=1,
+                disposition="EVALUATED",
+                reason_code="fixture",
+            )
+        with self.assertRaisesRegex(
+            AlphaMiningContractError, "INVALID_ALPHA_MINING_BUDGET"
+        ):
+            AlphaMiningCandidateRecord.create(
+                candidate_id="candidate",
+                source_lineage_ref="lineage",
+                generation_index=1.5,
+                candidate_ordinal=1,
+                disposition=AlphaMiningCandidateDisposition.REJECTED,
+                reason_code="fixture",
+            )
 
     def test_candidate_depth_node_and_count_bounds_are_enforced(self) -> None:
         deep = FeatureNode("close", "eod.close/1.0.0")

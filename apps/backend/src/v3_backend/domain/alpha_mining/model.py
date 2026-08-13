@@ -39,13 +39,13 @@ class AlphaMiningContractError(ValueError):
         super().__init__(f"{code}: {detail}")
 
 
-def _text(value: str, name: str) -> str:
+def _text(value: object, name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise AlphaMiningContractError("INVALID_ALPHA_MINING_CONTRACT", f"{name} is required")
     return value
 
 
-def _positive(value: int, name: str) -> int:
+def _positive(value: object, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise AlphaMiningContractError(
             "INVALID_ALPHA_MINING_BUDGET", f"{name} must be a positive integer"
@@ -53,10 +53,28 @@ def _positive(value: int, name: str) -> int:
     return value
 
 
-def _unique(values: tuple[str, ...], name: str) -> tuple[str, ...]:
-    if not values or any(not value or value != value.strip() for value in values):
+def _non_negative(value: object, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise AlphaMiningContractError(
-            "INVALID_ALPHA_MINING_CONTRACT", f"{name} must contain exact non-empty refs"
+            "INVALID_MINING_RUN", f"{name} must be a non-negative integer"
+        )
+    return value
+
+
+def _closed_bool(value: object, name: str, code: str) -> bool:
+    if not isinstance(value, bool):
+        raise AlphaMiningContractError(code, f"{name} must be boolean")
+    return value
+
+
+def _unique(values: object, name: str) -> tuple[str, ...]:
+    if not isinstance(values, tuple) or not values or any(
+        not isinstance(value, str) or not value or value != value.strip()
+        for value in values
+    ):
+        raise AlphaMiningContractError(
+            "INVALID_ALPHA_MINING_CONTRACT",
+            f"{name} must be an exact tuple of non-empty refs",
         )
     if len(values) != len(set(values)):
         raise AlphaMiningContractError(
@@ -246,16 +264,21 @@ class AlphaMiningRewardPolicyVersion:
             raise AlphaMiningContractError(
                 "INVALID_REWARD_POLICY", "deterministic complexity rule is required"
             )
+        closed_blocking = _closed_bool(
+            block_on_blocking_finding,
+            "block_on_blocking_finding",
+            "INVALID_REWARD_POLICY",
+        )
         payload = {
             "policy_version": _text(policy_version, "policy_version"),
             "component_rules": [value.to_wire() for value in ordered],
-            "block_on_blocking_finding": bool(block_on_blocking_finding),
+            "block_on_blocking_finding": closed_blocking,
         }
         return cls(
             "amrp_sha256_" + canonical_sha256(payload),
             policy_version,
             ordered,
-            bool(block_on_blocking_finding),
+            closed_blocking,
         )
 
     def to_wire(self) -> dict[str, object]:
@@ -330,6 +353,11 @@ class AlphaMiningStoppingRules:
 
     def __post_init__(self) -> None:
         _positive(self.target_evaluated_candidates, "target_evaluated_candidates")
+        _closed_bool(
+            self.stop_on_blocking_finding,
+            "stop_on_blocking_finding",
+            "INVALID_ALPHA_MINING_BUDGET",
+        )
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -350,6 +378,22 @@ def _operation_profile_wire(profile: OperationProfile) -> dict[str, object]:
         "gpu_device": profile.gpu_device,
         "resumable": profile.resumable,
     }
+
+
+def _validate_operation_profile(profile: OperationProfile) -> None:
+    _text(profile.operation_id, "operation_profile.operation_id")
+    _text(profile.resource_class, "operation_profile.resource_class")
+    for name in (
+        "cpu_slots",
+        "memory_hard_limit_bytes",
+        "scratch_budget_bytes",
+        "wall_clock_seconds",
+        "heartbeat_interval_seconds",
+    ):
+        _positive(getattr(profile, name), f"operation_profile.{name}")
+    if profile.gpu_device is not None:
+        _text(profile.gpu_device, "operation_profile.gpu_device")
+    _closed_bool(profile.resumable, "operation_profile.resumable", "INVALID_ALPHA_MINING_BUDGET")
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,14 +438,15 @@ class AlphaMiningJobSpec:
                 raise AlphaMiningContractError(
                     "INVALID_ALPHA_MINING_CONTRACT", f"typed {name} required"
                 )
-        universe_id = _text(str(values.get("universe_version_id", "")), "universe_version_id")
-        dataset_id = _text(str(values.get("dataset_version_id", "")), "dataset_version_id")
+        universe_id = _text(values.get("universe_version_id"), "universe_version_id")
+        dataset_id = _text(values.get("dataset_version_id"), "dataset_version_id")
         assert isinstance(evaluation_context, AlphaMiningEvaluationContext)
         assert isinstance(search_space, AlphaMiningSearchSpaceVersion)
         assert isinstance(reward_policy, AlphaMiningRewardPolicyVersion)
         assert isinstance(operation_profile, OperationProfile)
         assert isinstance(research_budget, ResearchLoopBudgetVersion)
         assert isinstance(stopping_rules, AlphaMiningStoppingRules)
+        _validate_operation_profile(operation_profile)
         reward_policy.assert_canonical()
         if evaluation_context.dataset_version_id != dataset_id:
             raise AlphaMiningContractError(
@@ -418,11 +463,11 @@ class AlphaMiningJobSpec:
                 "INVALID_ALPHA_MINING_BUDGET", "deterministic_seed must be an integer"
             )
         limits = {
-            "max_expression_depth": _positive(int(values.get("max_expression_depth", 0)), "max_expression_depth"),
-            "max_node_count": _positive(int(values.get("max_node_count", 0)), "max_node_count"),
-            "max_candidate_count": _positive(int(values.get("max_candidate_count", 0)), "max_candidate_count"),
-            "max_generation_count": _positive(int(values.get("max_generation_count", 0)), "max_generation_count"),
-            "max_evaluation_count": _positive(int(values.get("max_evaluation_count", 0)), "max_evaluation_count"),
+            "max_expression_depth": _positive(values.get("max_expression_depth"), "max_expression_depth"),
+            "max_node_count": _positive(values.get("max_node_count"), "max_node_count"),
+            "max_candidate_count": _positive(values.get("max_candidate_count"), "max_candidate_count"),
+            "max_generation_count": _positive(values.get("max_generation_count"), "max_generation_count"),
+            "max_evaluation_count": _positive(values.get("max_evaluation_count"), "max_evaluation_count"),
         }
         if limits["max_node_count"] < limits["max_expression_depth"]:
             raise AlphaMiningContractError(
@@ -482,15 +527,15 @@ class AlphaMiningJobSpec:
         payload = {
             "universe_version_id": universe_id,
             "dataset_version_id": dataset_id,
-            "input_data_refs": list(_unique(values.get("input_data_refs", ()), "input_data_refs")),  # type: ignore[arg-type]
+            "input_data_refs": list(_unique(values.get("input_data_refs"), "input_data_refs")),
             "data_semantic_profile_id": _text(
-                str(values.get("data_semantic_profile_id", "")), "data_semantic_profile_id"
+                values.get("data_semantic_profile_id"), "data_semantic_profile_id"
             ),
             "search_space": search_space.to_wire(),
             **limits,
             "deterministic_seed": values["deterministic_seed"],
             "search_mutation_policy_version": _text(
-                str(values.get("search_mutation_policy_version", "")),
+                values.get("search_mutation_policy_version"),
                 "search_mutation_policy_version",
             ),
             "evaluation_context": evaluation_context.to_wire(),
@@ -804,15 +849,18 @@ class AlphaMiningCandidateRecord:
 
     @classmethod
     def create(cls, **values: object) -> AlphaMiningCandidateRecord:
+        disposition = values.get("disposition")
+        if not isinstance(disposition, AlphaMiningCandidateDisposition):
+            raise AlphaMiningContractError("INVALID_CANDIDATE_RECORD", "closed disposition required")
         payload = {
-            "candidate_id": _text(str(values.get("candidate_id", "")), "candidate_id"),
+            "candidate_id": _text(values.get("candidate_id"), "candidate_id"),
             "source_lineage_ref": _text(
-                str(values.get("source_lineage_ref", "")), "source_lineage_ref"
+                values.get("source_lineage_ref"), "source_lineage_ref"
             ),
-            "generation_index": _positive(int(values.get("generation_index", 0)), "generation_index"),
-            "candidate_ordinal": _positive(int(values.get("candidate_ordinal", 0)), "candidate_ordinal"),
-            "disposition": values.get("disposition").value,  # type: ignore[union-attr]
-            "reason_code": _text(str(values.get("reason_code", "")), "reason_code"),
+            "generation_index": _positive(values.get("generation_index"), "generation_index"),
+            "candidate_ordinal": _positive(values.get("candidate_ordinal"), "candidate_ordinal"),
+            "disposition": disposition.value,
+            "reason_code": _text(values.get("reason_code"), "reason_code"),
             "factor_definition_version_id": values.get("factor_definition_version_id"),
             "duplicate_of_factor_definition_version_id": values.get(
                 "duplicate_of_factor_definition_version_id"
@@ -820,9 +868,6 @@ class AlphaMiningCandidateRecord:
             "factor_evaluation_id": values.get("factor_evaluation_id"),
             "alpha_mining_reward_id": values.get("alpha_mining_reward_id"),
         }
-        disposition = values.get("disposition")
-        if not isinstance(disposition, AlphaMiningCandidateDisposition):
-            raise AlphaMiningContractError("INVALID_CANDIDATE_RECORD", "closed disposition required")
         if disposition is AlphaMiningCandidateDisposition.EVALUATED and (
             payload["factor_definition_version_id"] is None
             or payload["factor_evaluation_id"] is None
@@ -879,7 +924,7 @@ class AlphaMiningRunRecord:
         ):
             raise AlphaMiningContractError("INVALID_MINING_RUN", "closed terminal state required")
         counts = {
-            name: int(values.get(name, -1))
+            name: _non_negative(values.get(name), name)
             for name in (
                 "generated_count",
                 "canonicalized_count",
@@ -888,14 +933,12 @@ class AlphaMiningRunRecord:
                 "rejected_count",
             )
         }
-        if any(value < 0 for value in counts.values()):
-            raise AlphaMiningContractError("INVALID_MINING_RUN", "counts must be non-negative")
         if counts["generated_count"] != len(records):
             raise AlphaMiningContractError("INVALID_MINING_RUN", "generated count mismatch")
         elapsed = _decimal_text(values.get("elapsed_seconds", "0"), "elapsed_seconds")  # type: ignore[arg-type]
         payload = {
             "alpha_mining_job_spec_id": _text(
-                str(values.get("alpha_mining_job_spec_id", "")), "alpha_mining_job_spec_id"
+                values.get("alpha_mining_job_spec_id"), "alpha_mining_job_spec_id"
             ),
             "status": status.value,
             "stop_reason": reason.value,
@@ -903,7 +946,7 @@ class AlphaMiningRunRecord:
             **counts,
             "elapsed_seconds": elapsed,
             "resource_observation": _text(
-                str(values.get("resource_observation", "")), "resource_observation"
+                values.get("resource_observation"), "resource_observation"
             ),
             "factor_asset_lifecycle_transition": "NOT_RUN",
         }
