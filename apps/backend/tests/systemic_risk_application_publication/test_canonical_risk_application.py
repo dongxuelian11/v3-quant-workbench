@@ -3,7 +3,10 @@ from __future__ import annotations
 import dataclasses
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -46,6 +49,29 @@ class CanonicalRiskApplicationTests(RiskRuntimeFixture):
         self.now = datetime(2026, 8, 13, 1, 2, 3, tzinfo=timezone.utc)
         self.target_value = self.target()
         self.policy_set = RiskPolicySetVersion.create((self.max_policy(),))
+
+    def test_sqlite_package_does_not_eagerly_import_risk_application(self) -> None:
+        source_root = Path(__file__).resolve().parents[2] / "src"
+        environment = os.environ.copy()
+        existing_path = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            str(source_root)
+            if not existing_path
+            else str(source_root) + os.pathsep + existing_path
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; import v3_backend.adapters.sqlite.repositories; "
+                "assert 'v3_backend.adapters.sqlite.risk_application' not in sys.modules",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def request(self, **changes: object) -> CanonicalRiskApplicationRequest:
         values = {
