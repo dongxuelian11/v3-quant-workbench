@@ -55,7 +55,8 @@ const suites = [
   "track_m_generative_research_ui",
   "reviewer_integration",
   "round5_w0_agent_research_loop",
-  "round5_w0_factor_assets"
+  "round5_w0_factor_assets",
+  "round5_s_alpha_mining"
 ];
 
 for (const suite of suites) {
