@@ -78,6 +78,8 @@ export interface DesktopBridge {
   resetWorkspace(): Promise<PersistedWorkspace>;
   executeCommand(command: DesktopCommandEnvelope): Promise<CommandReceipt>;
   runtimeInfo(): Promise<{ electron: string; platform: string; storePath: string; agentEvidenceMode: "LIVE_READ_ONLY" | "DEVELOPMENT_INTEGRATION_FIXTURE" }>;
+  windowState(): Promise<{ maximized: boolean }>;
+  windowControl(action: "minimize" | "toggle-maximize" | "close"): Promise<{ maximized: boolean }>;
 }
 
 export const DEFAULT_STRATEGY_CODE = `# V3 StrategyDraft · DEMO / NOT FORMAL FINANCIAL OUTPUT

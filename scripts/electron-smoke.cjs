@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, Menu } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -96,8 +96,20 @@ app.whenReady().then(async () => {
   const prefs = win.webContents.getLastWebPreferences();
   if (process.versions.electron !== "39.8.10") throw new Error(`Electron ${process.versions.electron}`);
   if (prefs.contextIsolation !== true || prefs.nodeIntegration !== false || prefs.sandbox !== true || prefs.webSecurity !== true) throw new Error(`Security preferences invalid ${JSON.stringify(prefs)}`);
+  if (Menu.getApplicationMenu() !== null) throw new Error("Native application menu was not suppressed");
+  const chrome = await evaluate(win, "(()=>({controls:Array.from(document.querySelectorAll('[data-window-control]')).map((item)=>item.getAttribute('data-window-control')),labels:Array.from(document.querySelectorAll('[data-window-control]')).map((item)=>item.getAttribute('aria-label')),drag:getComputedStyle(document.querySelector('.context-bar')).getPropertyValue('-webkit-app-region')}))()");
+  if (JSON.stringify(chrome.controls)!==JSON.stringify(['minimize','toggle-maximize','close']) || chrome.labels.some((label)=>!label)) throw new Error(`Custom window controls missing ${JSON.stringify(chrome)}`);
+  const maximizeRoundTrip = await evaluate(win, "(async()=>{const before=await window.v3Desktop.windowState();const first=await window.v3Desktop.windowControl('toggle-maximize');const second=await window.v3Desktop.windowControl('toggle-maximize');return {before,first,second}})()");
+  if (maximizeRoundTrip.first.maximized === maximizeRoundTrip.second.maximized) throw new Error(`Maximize/restore round trip failed ${JSON.stringify(maximizeRoundTrip)}`);
 
-  if (phase === "restart") {
+  if (phase === "production-boundary") {
+    await click(win, "[data-lab='research']", 500);
+    await click(win, "[data-action='factor-library-open']", 500);
+    await waitFor(win, "Boolean(document.querySelector('[data-testid=factor-library]'))", "production Factor Library boundary");
+    const productionBoundary = await evaluate(win, `(()=>({mode:document.querySelector('[data-testid=factor-workbench]')?.getAttribute('data-fixture-mode'),items:document.querySelectorAll('.factor-list [role=option]').length,body:document.querySelector('[data-testid=factor-library]')?.textContent??''}))()`);
+    if (productionBoundary.mode !== "LIVE_READ_ONLY" || productionBoundary.items !== 0 || !productionBoundary.body.includes("尚未接入") || !productionBoundary.body.includes("未注入任何演示因子")) throw new Error(`Production fixture boundary failed ${JSON.stringify(productionBoundary)}`);
+    fs.writeFileSync(path.resolve(screenshots, "production-boundary-result.json"), JSON.stringify({ productionBoundary, electron: process.versions.electron, prefs, consoleErrors }, null, 2));
+  } else if (phase === "restart") {
     const geometryPath = path.resolve(screenshots, "layout-geometry.json");
     const geometry = fs.existsSync(geometryPath) ? JSON.parse(fs.readFileSync(geometryPath, "utf8")) : [];
     win.setContentSize(1920, 1080);
@@ -193,6 +205,30 @@ app.whenReady().then(async () => {
     await click(win, "[data-lab='research']", 700);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=research-echart]'))", "Research ECharts");
     await shot(win, geometry, "01-research-default-chart-first.png", [1536, 864]);
+
+    await click(win, "[data-action='factor-library-open']", 900);
+    await waitFor(win, "Boolean(document.querySelector('[data-testid=factor-library]'))", "Research Factor Library");
+    interactionEvidence.factorLibrary = await evaluate(win, `(()=>({mode:document.querySelector('[data-testid=factor-workbench]')?.getAttribute('data-fixture-mode'),items:document.querySelectorAll('.factor-list [role=option]').length,selected:document.querySelector('.factor-detail')?.getAttribute('data-factor-key'),body:document.querySelector('[data-testid=factor-library]')?.textContent??'',ids:Array.from(document.querySelectorAll('.id-block code')).map((item)=>item.textContent)}))()`);
+    if (interactionEvidence.factorLibrary.mode!=='DEVELOPMENT_INTEGRATION_FIXTURE' || interactionEvidence.factorLibrary.items!==5 || interactionEvidence.factorLibrary.selected!=='user.round5.golden' || !interactionEvidence.factorLibrary.body.includes('未评估') || /IC Mean|ICIR\s*[:=]\s*[0-9]/.test(interactionEvidence.factorLibrary.body)) throw new Error(`Factor Library truth failed ${JSON.stringify(interactionEvidence.factorLibrary)}`);
+    await shot(win, geometry, "21-factor-library-1920x1080.png", [1920, 1080]);
+    await shot(win, geometry, "22-factor-library-1280x720.png", [1280, 720]);
+    await clickText(win, "定义", 300);
+    if (!await evaluate(win, "document.body.innerText.includes('fdv_sha256_91e750eaa4ef83a96dac412ed2a88c1b247d2357f69b455d2f350ec9804acee1')")) throw new Error("Exact GOLDEN definition ID missing");
+    await shot(win, geometry, "23-factor-detail-definition.png", [1536, 864]);
+    await clickText(win, "TDX 公式", 900);
+    await waitFor(win, "Boolean(document.querySelector('[data-testid=tdx-editor] .monaco-editor'))", "TDX Monaco editor");
+    const tdx = await evaluate(win, "(()=>({state:document.querySelector('[data-testid=tdx-editor]')?.getAttribute('data-parse-state'),body:document.querySelector('[data-testid=tdx-editor]')?.textContent??''}))()");
+    if (tdx.state!=='PASSED' || !tdx.body.includes('BOOLEAN_SERIES') || !tdx.body.includes('非 1/0') || !tdx.body.includes('canonical shares × 0.01')) throw new Error(`TDX typed fixture failed ${JSON.stringify(tdx)}`);
+    await shot(win, geometry, "24-tdx-editor-w0-fixture.png", [1536, 864]);
+    await clickText(win, "不支持函数状态", 500);
+    if (await evaluate(win, "document.querySelector('[data-testid=tdx-editor]')?.getAttribute('data-parse-state')") !== "UNSUPPORTED") throw new Error("TDX unsupported state missing");
+    await shot(win, geometry, "25-tdx-editor-unsupported.png", [1536, 864]);
+    await clickText(win, "AI 创建", 600);
+    const aiDraft = await evaluate(win, "(()=>({authority:document.querySelector('[data-testid=ai-factor-draft]')?.getAttribute('data-authority'),body:document.querySelector('[data-testid=ai-factor-draft]')?.textContent??'',disabled:Array.from(document.querySelectorAll('[data-testid=ai-factor-draft] button:disabled')).map((item)=>item.textContent)}))()");
+    if (aiDraft.authority!=='L1_DRAFT' || !aiDraft.body.includes('REQUIRES USER CONFIRMATION') || !aiDraft.body.includes('非 Canonical FactorDefinitionVersion') || !aiDraft.disabled.some((item)=>item.includes('L2')) || !aiDraft.disabled.some((item)=>item.includes('L3'))) throw new Error(`AI Draft authority failed ${JSON.stringify(aiDraft)}`);
+    await shot(win, geometry, "26-ai-draft-confirm-required.png", [1536, 864]);
+    await clickText(win, "研究画布", 500);
+    await waitFor(win, "Boolean(document.querySelector('[data-testid=research-echart]'))", "return to Research canvas");
 
     await click(win, "[data-research-event='evt-earnings']");
     await waitFor(win, "Boolean(document.querySelector('[data-testid=inspector]'))", "event Inspector");

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, type IpcMainInvokeEvent } from "electron";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -71,6 +71,19 @@ function registerIpc(): void {
     return applied.receipt;
   });
   ipcMain.handle("runtime:info", (event) => { trusted(event); return { electron: process.versions.electron, platform: process.platform, storePath, agentEvidenceMode: AGENT_EVIDENCE_MODE }; });
+  ipcMain.handle("window:state", (event) => {
+    trusted(event);
+    return { maximized: mainWindow?.isMaximized() ?? false };
+  });
+  ipcMain.handle("window:control", (event, action: "minimize" | "toggle-maximize" | "close") => {
+    trusted(event);
+    if (!mainWindow) return { maximized: false };
+    if (action === "minimize") mainWindow.minimize();
+    else if (action === "toggle-maximize") mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
+    else if (action === "close") mainWindow.close();
+    else throw new TypeError("Unsupported window control action");
+    return { maximized: mainWindow?.isMaximized() ?? false };
+  });
 }
 
 function startBackendRuntime(): void {
@@ -103,8 +116,10 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1536,
     height: 864,
-    minWidth: 800,
-    minHeight: 600,
+    minWidth: 1120,
+    minHeight: 680,
+    frame: false,
+    titleBarStyle: "hidden",
     backgroundColor: "#0B0D14",
     title: "V3 量化研究工作台 · FR-1 Visual Restoration Candidate",
     webPreferences: {
@@ -122,6 +137,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  Menu.setApplicationMenu(null);
   await loadState();
   registerIpc();
   createWindow();

@@ -25,7 +25,13 @@ const expected = [
   "17-research-1920x1080-wide.png",
   "18-command-palette.png",
   "19-research-1280x720-inspector-overlay.png",
-  "20-research-1920x1080-inspector-dock.png"
+  "20-research-1920x1080-inspector-dock.png",
+  "21-factor-library-1920x1080.png",
+  "22-factor-library-1280x720.png",
+  "23-factor-detail-definition.png",
+  "24-tdx-editor-w0-fixture.png",
+  "25-tdx-editor-unsupported.png",
+  "26-ai-draft-confirm-required.png"
 ];
 const files = new Set(await readdir(directory));
 const hashes = new Set();
@@ -40,11 +46,12 @@ if (hashes.size < expected.length - 1) throw new Error(`Unexpected screenshot du
 
 const capture = JSON.parse(await readFile(resolve(directory, "capture-result.json"), "utf8"));
 const restart = JSON.parse(await readFile(resolve(directory, "restart-result.json"), "utf8"));
+const productionBoundary = JSON.parse(await readFile(resolve(directory, "production-boundary-result.json"), "utf8"));
 const geometry = JSON.parse(await readFile(resolve(directory, "layout-geometry.json"), "utf8"));
 if (capture.electron !== "39.8.10" || restart.electron !== "39.8.10") throw new Error("Electron version evidence mismatch");
 if (capture.prefs.contextIsolation !== true || capture.prefs.nodeIntegration !== false || capture.prefs.sandbox !== true || capture.prefs.webSecurity !== true) throw new Error("Electron security preferences failed");
 if (capture.consoleErrors.length || restart.consoleErrors.length) throw new Error(`Renderer console errors: ${JSON.stringify([...capture.consoleErrors, ...restart.consoleErrors])}`);
-if (geometry.length !== 21) throw new Error(`Expected 21 geometry measurements, got ${geometry.length}`);
+if (geometry.length !== expected.length) throw new Error(`Expected ${expected.length} geometry measurements, got ${geometry.length}`);
 const byName = Object.fromEntries(geometry.map((item) => [item.screenshot, item]));
 for (const name of ["01-research-default-chart-first.png", "16-research-1280x720-compact-safe.png", "17-research-1920x1080-wide.png"]) {
   const item = byName[name];
@@ -52,6 +59,8 @@ for (const name of ["01-research-default-chart-first.png", "16-research-1280x720
 }
 if (byName["16-research-1280x720-compact-safe.png"].viewport_css_width !== 1280 || byName["16-research-1280x720-compact-safe.png"].viewport_css_height !== 720) throw new Error("1280x720 viewport evidence mismatch");
 if (byName["17-research-1920x1080-wide.png"].viewport_css_width !== 1920 || byName["17-research-1920x1080-wide.png"].viewport_css_height !== 1080) throw new Error("1920x1080 viewport evidence mismatch");
+if (byName["22-factor-library-1280x720.png"].viewport_css_width !== 1280 || byName["22-factor-library-1280x720.png"].viewport_css_height !== 720) throw new Error("Factor Library 1280x720 viewport evidence mismatch");
+if (byName["21-factor-library-1920x1080.png"].viewport_css_width !== 1920 || byName["21-factor-library-1920x1080.png"].viewport_css_height !== 1080) throw new Error("Factor Library 1920x1080 viewport evidence mismatch");
 if (byName["19-research-1280x720-inspector-overlay.png"].inspector_state !== "open" || byName["19-research-1280x720-inspector-overlay.png"].primary_canvas_dimensions.width < 720) throw new Error("1280 Inspector overlay geometry failed");
 if (byName["20-research-1920x1080-inspector-dock.png"].inspector_state !== "open" || byName["20-research-1920x1080-inspector-dock.png"].inspector_width < 280) throw new Error("1920 Inspector dock geometry failed");
 if (byName["01-research-default-chart-first.png"].simultaneously_visible_major_panels > 2) throw new Error("Research default has too many visible major panels");
@@ -72,6 +81,9 @@ for (const [kind, count] of Object.entries({ PortfolioIntent: 2, TargetWeightVec
 }
 if (round3.timelineStates.some((item) => item.state !== "PRE_ALPHA" || item.successClass) || round3.forbiddenActions.length) throw new Error("Round 3 truth or permission surface was promoted");
 if (!capture.interactionEvidence?.backtestResult?.actual || capture.interactionEvidence.backtestResult.renderer !== "backtest-result") throw new Error("Canonical BacktestRunResult renderer evidence missing");
+const factorLibrary = capture.interactionEvidence?.factorLibrary;
+if (factorLibrary?.mode !== "DEVELOPMENT_INTEGRATION_FIXTURE" || factorLibrary?.items !== 5 || factorLibrary?.selected !== "user.round5.golden" || !factorLibrary?.body?.includes("未评估")) throw new Error("Round 5 T Factor Library fixture evidence missing");
+if (productionBoundary?.productionBoundary?.mode !== "LIVE_READ_ONLY" || productionBoundary?.productionBoundary?.items !== 0 || !productionBoundary?.productionBoundary?.body?.includes("未注入任何演示因子")) throw new Error("Round 5 T production fixture boundary evidence missing");
 const resultAnalytics = capture.interactionEvidence?.resultAnalytics;
 if (!resultAnalytics?.analyticsId?.startsWith("bra_sha256_") || !resultAnalytics?.resultId?.startsWith("btrr_sha256_") || !resultAnalytics?.policyId?.startsWith("rap_sha256_") || !resultAnalytics?.benchmarkId?.startsWith("bmsv_sha256_") || !resultAnalytics.truth || !resultAnalytics.policy || !resultAnalytics.developmentBoundary || !resultAnalytics.chartBound || resultAnalytics.chartAnalyticsId !== resultAnalytics.analyticsId) throw new Error("Track L Result Analytics exact identity, truth, policy, explicit development boundary, benchmark, or chart evidence missing");
-console.log(`Visual frontend evidence PASS: ${expected.length} distinct real-Electron states, chart geometry gates, restart layout, and secure preferences asserted.`);
+console.log(`Visual frontend evidence PASS: ${expected.length} distinct real-Electron states, Factor/TDX/AI Draft viewports, production fixture boundary, chart geometry gates, restart layout, and secure preferences asserted.`);

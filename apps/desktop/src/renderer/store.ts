@@ -33,6 +33,7 @@ type Store = PersistedWorkspace & {
   inspectorTitle: string;
   inspectorEvidence: InspectorEvidence;
   runtime: string;
+  agentEvidenceMode: "LIVE_READ_ONLY" | "DEVELOPMENT_INTEGRATION_FIXTURE";
   hydrate(): Promise<void>;
   setLab(lab: LabId): void;
   select(title: string): void;
@@ -68,11 +69,11 @@ function laterSave(get: () => Store): void {
 }
 
 export const useWorkbench = create<Store>((set, get) => ({
-  ...structuredClone(DEFAULT_WORKSPACE), hydrated: false, inspectorTitle: DEFAULT_EVIDENCE.title, inspectorEvidence: DEFAULT_EVIDENCE, runtime: "Electron",
+  ...structuredClone(DEFAULT_WORKSPACE), hydrated: false, inspectorTitle: DEFAULT_EVIDENCE.title, inspectorEvidence: DEFAULT_EVIDENCE, runtime: "Electron", agentEvidenceMode: "LIVE_READ_ONLY",
   hydrate: async () => {
     const loaded = await window.v3Desktop.loadWorkspace();
     const info = await window.v3Desktop.runtimeInfo();
-    set({ ...loaded, hydrated: true, runtime: `Electron ${info.electron}`, inspectorEvidence: DEFAULT_EVIDENCE, inspectorTitle: DEFAULT_EVIDENCE.title });
+    set({ ...loaded, hydrated: true, runtime: `Electron ${info.electron}`, agentEvidenceMode: info.agentEvidenceMode, inspectorEvidence: DEFAULT_EVIDENCE, inspectorTitle: DEFAULT_EVIDENCE.title });
   },
   setLab: (activeLab) => {
     set({ activeLab, inspectorOpen: false, bottomOpen: false, inspectorTitle: `${activeLab[0].toUpperCase()}${activeLab.slice(1)} Context` });

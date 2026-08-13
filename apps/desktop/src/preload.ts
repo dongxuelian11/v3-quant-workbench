@@ -7,7 +7,9 @@ const bridge: DesktopBridge = Object.freeze({
   saveWorkspace: (state: PersistedWorkspace) => ipcRenderer.invoke("workspace:save", state) as Promise<PersistedWorkspace>,
   resetWorkspace: () => ipcRenderer.invoke("workspace:reset") as Promise<PersistedWorkspace>,
   executeCommand: (command: DesktopCommandEnvelope) => ipcRenderer.invoke("command:execute", command),
-  runtimeInfo: () => ipcRenderer.invoke("runtime:info")
+  runtimeInfo: () => ipcRenderer.invoke("runtime:info"),
+  windowState: () => ipcRenderer.invoke("window:state"),
+  windowControl: (action: "minimize" | "toggle-maximize" | "close") => ipcRenderer.invoke("window:control", action)
 });
 
 contextBridge.exposeInMainWorld("v3Desktop", bridge);

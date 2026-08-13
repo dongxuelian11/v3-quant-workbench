@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { DockviewReact, type DockviewApi, type DockviewReadyEvent } from "dockview-react";
 import { ResearchChartPanel, ResearchAnalyticsPanel, UniverseBuilderPanel } from "./ResearchPanels";
 import { StrategyDraftPanel, StrategyReviewPanel } from "./StrategyPanels";
@@ -7,6 +7,7 @@ import { BacktestPanel } from "./BacktestResultPanels";
 import { ResultPanel } from "./ResultAnalyticsPanel";
 import { useWorkbench } from "../store";
 import { Icon } from "./PresentationSystem";
+import { FactorWorkbench } from "./FactorWorkbench";
 
 const LAYOUT_CONTRACT = "precision-workbench-v3";
 
@@ -48,6 +49,8 @@ export function Workbench() {
   const toggleBottom = useWorkbench((state) => state.toggleBottom);
   const inspectorOpen = useWorkbench((state) => state.inspectorOpen);
   const bottomOpen = useWorkbench((state) => state.bottomOpen);
+  const agentEvidenceMode = useWorkbench((state) => state.agentEvidenceMode);
+  const [researchSurface, setResearchSurface] = useState<"canvas" | "factors">("canvas");
   const apiRef = useRef<DockviewApi | null>(null);
 
   const createDefault = useCallback((api: DockviewApi) => {
@@ -101,6 +104,7 @@ export function Workbench() {
     <div className="workbench-contextbar">
       <div className="workbench-question"><small>{activeLab.toUpperCase()}</small><span>{questions[activeLab]}</span></div>
       <div className="workbench-actions">
+        {activeLab === "research" && <div className="research-surface-switch" role="group" aria-label="研究实验室视图"><button className={researchSurface === "canvas" ? "active" : ""} onClick={() => setResearchSurface("canvas")}>研究画布</button><button data-action="factor-library-open" className={researchSurface === "factors" ? "active" : ""} onClick={() => setResearchSurface("factors")}>因子库</button></div>}
         {activeLab === "research" && <button data-action="dock-preset" onClick={createResearchPreset} title="应用研究多面板预设"><Icon name="research" size={14}/><span>研究布局</span></button>}
         <button data-action="inspector-toggle" onClick={toggleInspector} aria-pressed={inspectorOpen} title="切换上下文检查器"><Icon name="inspector" size={14}/><span>检查器</span></button>
         <button data-action="operations-open" onClick={toggleBottom} aria-pressed={bottomOpen} title="切换任务与日志"><Icon name="operations" size={14}/><span>任务</span></button>
@@ -114,6 +118,6 @@ export function Workbench() {
         </div></details>
       </div>
     </div>
-    <div className="dock-host"><DockviewReact key={activeLab} className="dockview-theme-abyss" components={components} onReady={onReady} /></div>
+    <div className="dock-host">{activeLab === "research" && researchSurface === "factors" ? <FactorWorkbench fixtureMode={agentEvidenceMode === "DEVELOPMENT_INTEGRATION_FIXTURE"}/> : <DockviewReact key={activeLab} className="dockview-theme-abyss" components={components} onReady={onReady} />}</div>
   </div>;
 }
