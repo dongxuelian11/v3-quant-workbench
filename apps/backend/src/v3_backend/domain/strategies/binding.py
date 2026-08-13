@@ -239,6 +239,49 @@ class GenericAdmittedArtifactReference:
 
 
 @dataclass(frozen=True, slots=True)
+class CanonicalOwnerArtifactReference:
+    """Untrusted intent naming an artifact that formal execution must re-resolve.
+
+    This value deliberately carries no truth/admission claim.  It becomes usable
+    only when an injected canonical owner repository resolves the exact immutable
+    publication and P1 verifies the published bytes.
+    """
+
+    artifact_type: str
+    owner_namespace: str
+    owner_id: str
+    owner_version: str
+    payload_role: str
+    artifact_id: str
+    content_sha256: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "artifact_type",
+            "owner_namespace",
+            "owner_id",
+            "owner_version",
+            "payload_role",
+        ):
+            _require_exact_text(getattr(self, name), name)
+        _require_sha256(self.content_sha256, "artifact content_sha256")
+        _require_artifact(self.artifact_id, "artifact_id", self.content_sha256)
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "artifact_type": self.artifact_type,
+            "owner_namespace": self.owner_namespace,
+            "owner_id": self.owner_id,
+            "owner_version": self.owner_version,
+            "payload_role": self.payload_role,
+            "artifact_id": self.artifact_id,
+            "content_sha256": self.content_sha256,
+            "resolution": "CANONICAL_OWNER_REQUIRED",
+            "ownership": "UNTRUSTED_REFERENCE_INTENT",
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class BoundInputReference:
     binding_key: str
     artifact_kind: str
@@ -282,6 +325,19 @@ class BoundInputReference:
             truth_admission=reference.truth_admission,
         )
 
+    @classmethod
+    def from_canonical_owner(
+        cls, binding_key: str, reference: CanonicalOwnerArtifactReference
+    ) -> BoundInputReference:
+        return cls(
+            binding_key=binding_key,
+            artifact_kind=reference.artifact_type,
+            source_id=reference.owner_id,
+            artifact_id=reference.artifact_id,
+            content_sha256=reference.content_sha256,
+            truth_admission=PRE_ALPHA_CEILING,
+        )
+
     def to_wire(self) -> dict[str, object]:
         return {
             "binding_key": self.binding_key,
@@ -310,6 +366,7 @@ class StrategyEvaluationBindingVersion:
     environment_fingerprint: str
     input_references: tuple[BoundInputReference, ...]
     generic_artifact_references: tuple[GenericAdmittedArtifactReference, ...]
+    canonical_owner_references: tuple[CanonicalOwnerArtifactReference, ...]
     truth_admission: TruthAdmissionState
 
     @classmethod
@@ -330,6 +387,7 @@ class StrategyEvaluationBindingVersion:
         environment_fingerprint: str,
         input_references: tuple[BoundInputReference, ...],
         generic_artifact_references: tuple[GenericAdmittedArtifactReference, ...] = (),
+        canonical_owner_references: tuple[CanonicalOwnerArtifactReference, ...] = (),
     ) -> StrategyEvaluationBindingVersion:
         _require_aware(knowledge_cutoff, "knowledge_cutoff")
         for name, value in (
@@ -389,6 +447,15 @@ class StrategyEvaluationBindingVersion:
         }
         if len(generic_by_source) != len(generic_artifact_references):
             raise StrategyBindingError("generic admitted artifact source IDs must be unique")
+        canonical_by_owner = {
+            value.owner_id: value for value in canonical_owner_references
+        }
+        if len(canonical_by_owner) != len(canonical_owner_references):
+            raise StrategyBindingError("canonical owner reference IDs must be unique")
+        if set(canonical_by_owner).intersection(generic_by_source):
+            raise StrategyBindingError(
+                "one Strategy source cannot be both canonical-owner intent and unresolved caller assertion"
+            )
         allowed_inputs: dict[
             tuple[str, str, str], tuple[str, TruthAdmissionState]
         ] = {}
@@ -404,6 +471,10 @@ class StrategyEvaluationBindingVersion:
             allowed_inputs[
                 (reference.artifact_type, reference.source_id, reference.artifact_id)
             ] = (reference.content_sha256, reference.truth_admission)
+        for reference in canonical_owner_references:
+            allowed_inputs[
+                (reference.artifact_type, reference.owner_id, reference.artifact_id)
+            ] = (reference.content_sha256, PRE_ALPHA_CEILING)
         for key, bound_input in inputs_by_key.items():
             if slot_specs[key]["artifact_kind"] != bound_input.artifact_kind:
                 raise StrategyBindingError(
@@ -422,7 +493,10 @@ class StrategyEvaluationBindingVersion:
                 ) from error
             if (
                 bound_input.content_sha256 != expected_sha
-                or bound_input.truth_admission != expected_truth
+                or (
+                    bound_input.source_id not in canonical_by_owner
+                    and bound_input.truth_admission != expected_truth
+                )
             ):
                 raise StrategyBindingError(
                     f"binding {key} content/truth does not match its canonical source"
@@ -482,6 +556,10 @@ class StrategyEvaluationBindingVersion:
             ],
             "truth_admission": truth_admission.to_wire(),
         }
+        if canonical_by_owner:
+            payload["canonical_owner_references"] = [
+                canonical_by_owner[key].to_wire() for key in sorted(canonical_by_owner)
+            ]
         return cls(
             strategy_evaluation_binding_version_id="sebv_sha256_"
             + canonical_sha256(payload),
@@ -501,11 +579,14 @@ class StrategyEvaluationBindingVersion:
             generic_artifact_references=tuple(
                 generic_by_source[key] for key in sorted(generic_by_source)
             ),
+            canonical_owner_references=tuple(
+                canonical_by_owner[key] for key in sorted(canonical_by_owner)
+            ),
             truth_admission=truth_admission,
         )
 
     def to_wire(self) -> dict[str, object]:
-        return {
+        wire = {
             "strategy_evaluation_binding_version_id": self.strategy_evaluation_binding_version_id,
             "strategy_definition_version_id": self.strategy_definition_version_id,
             "dataset_version_id": self.dataset_version_id,
@@ -525,10 +606,16 @@ class StrategyEvaluationBindingVersion:
             ],
             "truth_admission": self.truth_admission.to_wire(),
         }
+        if self.canonical_owner_references:
+            wire["canonical_owner_references"] = [
+                value.to_wire() for value in self.canonical_owner_references
+            ]
+        return wire
 
 
 __all__ = [
     "BoundInputReference",
+    "CanonicalOwnerArtifactReference",
     "EvaluationPeriod",
     "ExactCalendarReference",
     "ExactSnapshotReference",

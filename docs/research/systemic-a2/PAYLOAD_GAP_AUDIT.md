@@ -4,6 +4,36 @@ Task: `V3-SYSTEMIC-A2-STRATEGY-SIGNAL-PAYLOAD-CLOSURE-01`
 Authorized main / P1 base: `9dda07c254e1e3108d9ce3fec7624b4c7d0710f1`
 Audit scope: Strategy formal input payload through `SignalArtifact`, `SelectionArtifact`, and `PortfolioIntent` only.
 
+## PR #33 authority-final correction
+
+Task `V3-SYSTEMIC-A2-STRATEGY-SIGNAL-AUTHORITY-FINAL-CLOSURE-01` closes the two
+post-review findings without changing P0 or P1:
+
+- `A2-OWNER-01`: the former public `StrategyPayloadOwnerRecord` seam is removed.
+  Formal resolution now reads the shared SQLite Catalog under an active
+  `READ_ONLY` unit of work: immutable `prediction_signal_version` publication,
+  its exact PUBLISHED `model_version`/Dataset binding, the Dataset's exact
+  PUBLISHED Snapshot/Universe context and membership Artifact, and the exact
+  PUBLISHED score `artifact` descriptor. `CanonicalOwnerArtifactReference` is
+  request intent only and carries no truth/admission claim.
+  `GenericAdmittedArtifactReference` remains `UNRESOLVED_CALLER_ASSERTED` /
+  `PRE_ALPHA` / non-formal.
+- `A2-MINT-01`: `InputArtifactEvidence` is audit projection only; its
+  `is_p1_verified` property is not authority.  All `_create_formal()` methods are
+  removed.  Each formal service call reconstructs the owner resolver from the
+  live Catalog, re-runs P1 byte resolution, runs the preserved pure evaluator,
+  and materializes the exact Signal/Selection/PortfolioIntent chain within that
+  execution.  Direct formal dataclass construction is rejected.
+
+Formal input evidence records the canonical owner namespace, ID, version, and
+payload role only after the live Catalog owner lookup and P1 resolution have
+succeeded. Those owner fields are immutable audit provenance, not a second
+authority path and not a mint credential.
+
+The canonical owner source is the existing `prediction_signal_version` model
+publication plus the shared Artifact Catalog.  This is a narrow A2 adapter over
+the existing repository/publication seams, not a second registry or store.
+
 ## Authority and boundaries
 
 - P0 authority `1.0.1` and all four locked hashes match `docs/status/V3_PROJECT_AUTHORITY_MANIFEST.json`.

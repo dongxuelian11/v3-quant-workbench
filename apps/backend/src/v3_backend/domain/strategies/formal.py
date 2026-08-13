@@ -6,16 +6,35 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from types import MappingProxyType
 
+from v3_backend.contracts.common.truth_admission import (
+    FORMAL_ADMITTED_CEILING,
+    UpstreamRequirement,
+    propagate_downstream_ceiling,
+)
 from v3_backend.domain.payload_authority import (
     CanonicalPayloadResolver,
     PayloadResolutionRequest,
     PayloadResolutionResult,
 )
+from v3_backend.adapters.sqlite.repositories import SQLiteRepositoryRegistry
+from v3_backend.domain.payload_authority.ports import VerifiedArtifactByteReader
+from v3_backend.repositories.unit_of_work import TransactionMode
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
-from .artifacts import InputArtifactEvidence, PortfolioIntent, SelectionArtifact, SignalArtifact
-from .binding import BoundInputReference, StrategyEvaluationBindingVersion
+from .artifacts import (
+    InputArtifactEvidence,
+    PortfolioIntent,
+    SelectionArtifact,
+    SignalArtifact,
+    _strategy_output_truth,
+)
+from .binding import (
+    BoundInputReference,
+    ExternalReferenceResolution,
+    StrategyEvaluationBindingVersion,
+)
 from .evaluator import CrossSectionInputArtifact, DeterministicStrategyEvaluator, StrategyEvaluationResult
 from .ir import StrategyDefinitionVersion, normalize_decimal_string
 
@@ -271,17 +290,46 @@ class FormalStrategyEvaluationService:
     def __init__(
         self,
         *,
-        payload_resolver: CanonicalPayloadResolver,
+        repositories: SQLiteRepositoryRegistry,
+        byte_reader: VerifiedArtifactByteReader,
         evaluator: DeterministicStrategyEvaluator | None = None,
     ) -> None:
-        if not isinstance(payload_resolver, CanonicalPayloadResolver):
-            raise TypeError("payload_resolver must be CanonicalPayloadResolver")
-        self._payload_resolver = payload_resolver
+        if not isinstance(repositories, SQLiteRepositoryRegistry):
+            raise TypeError("repositories must be SQLiteRepositoryRegistry")
+        if not repositories.artifact.uow.active or repositories.artifact.uow.mode is not TransactionMode.READ_ONLY:
+            raise FormalStrategyEvaluationError(
+                "formal evaluation requires an active READ_ONLY canonical Catalog"
+            )
+        if not hasattr(byte_reader, "read_bytes"):
+            raise TypeError("byte_reader must implement VerifiedArtifactByteReader")
+        self._repositories = repositories
+        self._byte_reader = byte_reader
         self._evaluator = evaluator or DeterministicStrategyEvaluator()
 
     def evaluate(self, request: FormalStrategyEvaluationRequest) -> StrategyEvaluationResult:
         if not isinstance(request, FormalStrategyEvaluationRequest):
             raise TypeError("formal evaluation requires FormalStrategyEvaluationRequest")
+        if request.binding.generic_artifact_references:
+            if any(
+                value.resolution is ExternalReferenceResolution.UNRESOLVED_CALLER_ASSERTED
+                for value in request.binding.generic_artifact_references
+            ):
+                raise FormalStrategyEvaluationError(
+                    "UNRESOLVED_CALLER_ASSERTED inputs are NON_FORMAL and cannot enter formal evaluation"
+                )
+        if not request.binding.canonical_owner_references:
+            raise FormalStrategyEvaluationError(
+                "formal evaluation requires canonical owner reference intent"
+            )
+        from v3_backend.adapters.strategy_payload import StrategyPayloadBindingResolver
+
+        payload_resolver = CanonicalPayloadResolver(
+            binding_resolver=StrategyPayloadBindingResolver(
+                binding=request.binding,
+                repositories=self._repositories,
+            ),
+            byte_reader=self._byte_reader,
+        )
         references = {value.binding_key: value for value in request.binding.input_references}
         intents = {value.binding_key: value for value in request.inputs}
         if len(intents) != len(request.inputs) or set(intents) != set(references):
@@ -307,7 +355,7 @@ class FormalStrategyEvaluationService:
                 input_reference=reference,
                 decision_time=intent.decision_time,
             )
-            resolution = self._payload_resolver.resolve(
+            resolution = payload_resolver.resolve(
                 PayloadResolutionRequest(
                     owner_namespace=intent.owner_namespace,
                     owner_id=intent.owner_id,
@@ -331,6 +379,10 @@ class FormalStrategyEvaluationService:
                 InputArtifactEvidence.from_resolution(
                     binding_key=binding_key,
                     resolution=resolution,
+                    canonical_owner_namespace=intent.owner_namespace,
+                    canonical_owner_id=intent.owner_id,
+                    canonical_owner_version=intent.owner_version,
+                    payload_role=intent.payload_role,
                 )
             )
         pure = self._evaluator.evaluate(
@@ -339,26 +391,112 @@ class FormalStrategyEvaluationService:
             inputs=tuple(runtime_inputs),
         )
         ordered_evidence = tuple(evidence)
+        def materialize(cls, /, **values):
+            expected = {value.name for value in cls.__dataclass_fields__.values()}
+            if set(values) != expected:
+                raise FormalStrategyEvaluationError(
+                    "formal Strategy output materialization fields are incomplete"
+                )
+            artifact = object.__new__(cls)
+            for name, value in values.items():
+                object.__setattr__(artifact, name, value)
+            post_init = getattr(artifact, "__post_init__", None)
+            if post_init is not None:
+                post_init()
+            return artifact
+
+        # Formal objects are constructed only inside this live execution path.
+        # No artifact/evidence factory accepts caller-supplied proof.  Every call
+        # above has just re-established Catalog owner authority and P1 bytes.
         signal: SignalArtifact | None = None
         if pure.signal_artifact is not None:
-            signal = SignalArtifact._create_formal(
+            signal_truth = _strategy_output_truth(
                 definition=request.definition,
                 binding=request.binding,
+                input_artifacts=ordered_evidence,
+            )
+            signal_provenance = {
+                "strategy_definition_version_id": request.definition.strategy_definition_version_id,
+                "strategy_evaluation_binding_version_id": request.binding.strategy_evaluation_binding_version_id,
+                "input_artifacts": [value.to_wire() for value in ordered_evidence],
+                "compiler_version": request.definition.compiler_version,
+                "runtime_profile_id": request.definition.runtime_profile_id,
+                "universe_version_id": request.binding.universe.universe_version_id,
+                "membership_sha256": request.binding.universe.membership_sha256,
+                "formal_execution_contract_version": self.contract_version,
+            }
+            signal_provenance_sha256 = canonical_sha256(signal_provenance)
+            signal_payload = {
+                **signal_provenance,
+                "decision_time": _wire_time(pure.signal_artifact.decision_time),
+                "rows": [value.to_wire() for value in pure.signal_artifact.rows],
+                "missing_instrument_ids": list(pure.signal_artifact.missing_instrument_ids),
+                "truth_admission": signal_truth.to_wire(),
+                "provenance_sha256": signal_provenance_sha256,
+            }
+            signal = materialize(
+                SignalArtifact,
+                signal_artifact_id="sig_sha256_" + canonical_sha256(signal_payload),
+                strategy_definition_version_id=request.definition.strategy_definition_version_id,
+                strategy_evaluation_binding_version_id=request.binding.strategy_evaluation_binding_version_id,
                 input_artifacts=ordered_evidence,
                 decision_time=pure.signal_artifact.decision_time,
                 rows=pure.signal_artifact.rows,
                 missing_instrument_ids=pure.signal_artifact.missing_instrument_ids,
+                truth_admission=signal_truth,
+                compiler_version=request.definition.compiler_version,
+                runtime_profile_id=request.definition.runtime_profile_id,
+                provenance_sha256=signal_provenance_sha256,
                 formal_execution_contract_version=self.contract_version,
             )
         selection: SelectionArtifact | None = None
         if pure.selection_artifact is not None:
-            selection = SelectionArtifact._create_formal(
+            if signal is None:
+                raise FormalStrategyEvaluationError(
+                    "formal SelectionArtifact requires exact live SignalArtifact"
+                )
+            selection_truth = _strategy_output_truth(
                 definition=request.definition,
                 binding=request.binding,
+                input_artifacts=ordered_evidence,
+                extra_requirements=(
+                    UpstreamRequirement(signal.signal_artifact_id, signal.truth_admission),
+                ),
+            )
+            selection_provenance = {
+                "strategy_definition_version_id": request.definition.strategy_definition_version_id,
+                "strategy_evaluation_binding_version_id": request.binding.strategy_evaluation_binding_version_id,
+                "input_artifacts": [value.to_wire() for value in ordered_evidence],
+                "universe_version_id": request.binding.universe.universe_version_id,
+                "membership_artifact_id": request.binding.universe.membership_artifact_id,
+                "membership_sha256": request.binding.universe.membership_sha256,
+                "source_signal_artifact_id": signal.signal_artifact_id,
+                "source_signal_provenance_sha256": signal.provenance_sha256,
+                "formal_execution_contract_version": self.contract_version,
+            }
+            selection_provenance_sha256 = canonical_sha256(selection_provenance)
+            selection_payload = {
+                **selection_provenance,
+                "entries": [value.to_wire() for value in pure.selection_artifact.entries],
+                "excluded_instrument_ids": list(pure.selection_artifact.excluded_instrument_ids),
+                "truth_admission": selection_truth.to_wire(),
+                "provenance_sha256": selection_provenance_sha256,
+            }
+            selection = materialize(
+                SelectionArtifact,
+                selection_artifact_id="sel_sha256_" + canonical_sha256(selection_payload),
+                strategy_definition_version_id=request.definition.strategy_definition_version_id,
+                strategy_evaluation_binding_version_id=request.binding.strategy_evaluation_binding_version_id,
+                universe_version_id=request.binding.universe.universe_version_id,
+                membership_artifact_id=request.binding.universe.membership_artifact_id,
+                membership_sha256=request.binding.universe.membership_sha256,
+                input_artifacts=ordered_evidence,
                 entries=pure.selection_artifact.entries,
                 excluded_instrument_ids=pure.selection_artifact.excluded_instrument_ids,
-                input_artifacts=ordered_evidence,
-                signal_artifact=signal,
+                truth_admission=selection_truth,
+                provenance_sha256=selection_provenance_sha256,
+                source_signal_artifact_id=signal.signal_artifact_id,
+                source_signal_provenance_sha256=signal.provenance_sha256,
                 formal_execution_contract_version=self.contract_version,
             )
         intent: PortfolioIntent | None = None
@@ -367,16 +505,58 @@ class FormalStrategyEvaluationService:
                 raise FormalStrategyEvaluationError(
                     "formal PortfolioIntent requires formal SelectionArtifact"
                 )
-            intent = PortfolioIntent._create_formal(
-                definition=request.definition,
-                binding=request.binding,
-                selection_artifact=selection,
-                signal_artifact=signal,
+            if signal is None:
+                raise FormalStrategyEvaluationError(
+                    "formal PortfolioIntent requires exact live SignalArtifact"
+                )
+            intent_truth = propagate_downstream_ceiling(
+                FORMAL_ADMITTED_CEILING,
+                (
+                    UpstreamRequirement(request.definition.strategy_definition_version_id, request.definition.truth_admission),
+                    UpstreamRequirement(request.binding.strategy_evaluation_binding_version_id, request.binding.truth_admission),
+                    UpstreamRequirement(selection.selection_artifact_id, selection.truth_admission),
+                    UpstreamRequirement(signal.signal_artifact_id, signal.truth_admission),
+                ),
+            )
+            intent_provenance = {
+                "strategy_definition_version_id": request.definition.strategy_definition_version_id,
+                "strategy_evaluation_binding_version_id": request.binding.strategy_evaluation_binding_version_id,
+                "source_signal_artifact_id": signal.signal_artifact_id,
+                "source_selection_artifact_id": selection.selection_artifact_id,
+                "source_signal_provenance_sha256": signal.provenance_sha256,
+                "source_selection_provenance_sha256": selection.provenance_sha256,
+                "input_artifacts": [value.to_wire() for value in ordered_evidence],
+                "publisher_boundary": "PORTFOLIO_SERVICE_IS_SOLE_TARGET_WEIGHT_VECTOR_PUBLISHER",
+            }
+            intent_provenance_sha256 = canonical_sha256(intent_provenance)
+            intent_payload = {
+                **intent_provenance,
+                "exposure_mode": pure.portfolio_intent.exposure_mode,
+                "cash_policy": pure.portfolio_intent.cash_policy,
+                "rebalance_intent": pure.portfolio_intent.rebalance_intent,
+                "items": [value.to_wire() for value in pure.portfolio_intent.items],
+                "constraints": dict(pure.portfolio_intent.constraints),
+                "truth_admission": intent_truth.to_wire(),
+                "provenance_sha256": intent_provenance_sha256,
+            }
+            intent = materialize(
+                PortfolioIntent,
+                portfolio_intent_id="pint_sha256_" + canonical_sha256(intent_payload),
+                strategy_definition_version_id=request.definition.strategy_definition_version_id,
+                strategy_evaluation_binding_version_id=request.binding.strategy_evaluation_binding_version_id,
+                source_signal_artifact_id=signal.signal_artifact_id,
+                source_selection_artifact_id=selection.selection_artifact_id,
+                source_signal_provenance_sha256=signal.provenance_sha256,
+                source_selection_provenance_sha256=selection.provenance_sha256,
+                input_artifacts=ordered_evidence,
                 exposure_mode=pure.portfolio_intent.exposure_mode,
                 cash_policy=pure.portfolio_intent.cash_policy,
                 rebalance_intent=pure.portfolio_intent.rebalance_intent,
                 items=pure.portfolio_intent.items,
-                constraints=pure.portfolio_intent.constraints,
+                constraints=MappingProxyType(dict(pure.portfolio_intent.constraints)),
+                truth_admission=intent_truth,
+                provenance_sha256=intent_provenance_sha256,
+                formal_execution_contract_version=self.contract_version,
             )
         return StrategyEvaluationResult(signal, selection, intent)
 

@@ -11,6 +11,7 @@ from .artifacts import (
 )
 from .binding import (
     BoundInputReference,
+    CanonicalOwnerArtifactReference,
     EvaluationPeriod,
     ExactCalendarReference,
     ExactSnapshotReference,
@@ -69,6 +70,7 @@ __all__ = [
     "BindingInputRef",
     "BindingSlot",
     "BoundInputReference",
+    "CanonicalOwnerArtifactReference",
     "ComponentDescriptor",
     "ComponentRegistry",
     "ComponentRole",

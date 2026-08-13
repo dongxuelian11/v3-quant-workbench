@@ -1,130 +1,174 @@
-"""Strategy-owner adapter from exact input bindings to the shared P1 contract."""
+"""Resolve Strategy score bindings from canonical Catalog publications."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
+from v3_backend.adapters.sqlite.repositories import SQLiteRepositoryRegistry
 from v3_backend.domain.payload_authority import (
     CanonicalPayloadBinding,
     PayloadResolutionRequest,
 )
 from v3_backend.domain.strategies.binding import StrategyEvaluationBindingVersion
+from v3_backend.repositories.unit_of_work import TransactionMode
+
+
+STRATEGY_OWNER_BINDING_VERSION = "v3.strategy-catalog-owner-binding/1.0.0"
 
 
 class StrategyPayloadBindingError(ValueError):
     """The Strategy owner cannot establish the requested canonical binding."""
 
 
-@dataclass(frozen=True, slots=True)
-class StrategyPayloadOwnerRecord:
-    """Canonical owner metadata registered at the trusted Strategy adapter boundary."""
-
-    binding_key: str
-    owner_namespace: str
-    owner_id: str
-    owner_version: str
-    payload_role: str
-    artifact_id: str
-    expected_sha256: str
-    expected_byte_size: int
-    context_identity: str
-    binding_version: str
-    schema_fingerprint: str
-    semantic_fingerprint: str | None = None
-    provenance_reference_id: str | None = None
-
-    def request_key(self) -> tuple[str, str, str, str, str]:
-        return (
-            self.owner_namespace,
-            self.owner_id,
-            self.owner_version,
-            self.payload_role,
-            self.context_identity,
-        )
-
-
 class StrategyPayloadBindingResolver:
-    """Resolve only owner records that exactly back one Strategy binding input."""
+    """Resolve immutable owner/Artifact publication state from the shared Catalog."""
 
     def __init__(
         self,
         *,
         binding: StrategyEvaluationBindingVersion,
-        records: tuple[StrategyPayloadOwnerRecord, ...],
+        repositories: SQLiteRepositoryRegistry,
     ) -> None:
         if not isinstance(binding, StrategyEvaluationBindingVersion):
             raise TypeError("binding must be StrategyEvaluationBindingVersion")
-        references = {value.binding_key: value for value in binding.input_references}
-        by_request: dict[
-            tuple[str, str, str, str, str], StrategyPayloadOwnerRecord
-        ] = {}
-        observed_keys: set[str] = set()
-        for record in records:
-            if not isinstance(record, StrategyPayloadOwnerRecord):
-                raise TypeError("records must contain StrategyPayloadOwnerRecord values")
-            try:
-                reference = references[record.binding_key]
-            except KeyError as exc:
-                raise StrategyPayloadBindingError(
-                    f"owner record has unknown binding key: {record.binding_key}"
-                ) from exc
-            if record.binding_key in observed_keys:
-                raise StrategyPayloadBindingError("owner record binding keys must be unique")
-            if (
-                record.artifact_id != reference.artifact_id
-                or record.expected_sha256 != reference.content_sha256
-                or record.owner_id != reference.source_id
-            ):
-                raise StrategyPayloadBindingError(
-                    f"owner record {record.binding_key} does not back the exact Strategy input reference"
-                )
-            key = record.request_key()
-            if key in by_request:
-                raise StrategyPayloadBindingError(
-                    "owner records must have unique P1 request identities"
-                )
-            by_request[key] = record
-            observed_keys.add(record.binding_key)
-        if observed_keys != set(references):
+        if not isinstance(repositories, SQLiteRepositoryRegistry):
+            raise TypeError("repositories must be SQLiteRepositoryRegistry")
+        unit = repositories.artifact.uow
+        if not unit.active or unit.mode is not TransactionMode.READ_ONLY:
             raise StrategyPayloadBindingError(
-                "owner records must exactly cover Strategy binding inputs"
+                "Strategy owner resolution requires an active READ_ONLY canonical Catalog"
             )
-        self._records = by_request
+        self._binding = binding
+        self._repositories = repositories
 
     def resolve(
         self, request: PayloadResolutionRequest
     ) -> CanonicalPayloadBinding | None:
         if not isinstance(request, PayloadResolutionRequest):
             raise TypeError("Strategy payload resolution requires PayloadResolutionRequest")
-        record = self._records.get(
-            (
+        owner_matches = tuple(
+            value
+            for value in self._binding.canonical_owner_references
+            if (
+                value.owner_namespace,
+                value.owner_id,
+                value.owner_version,
+                value.payload_role,
+            )
+            == (
                 request.owner_namespace,
                 request.owner_id,
                 request.owner_version,
                 request.payload_role,
-                request.context_identity,
             )
         )
-        if record is None:
+        if len(owner_matches) != 1:
             return None
+        intent = owner_matches[0]
+        bound_matches = tuple(
+            value for value in self._binding.input_references
+            if value.source_id == intent.owner_id
+        )
+        if len(bound_matches) != 1:
+            raise StrategyPayloadBindingError(
+                "canonical owner must back exactly one Strategy input reference"
+            )
+        bound = bound_matches[0]
+        if (
+            bound.artifact_kind != intent.artifact_type
+            or bound.artifact_id != intent.artifact_id
+            or bound.content_sha256 != intent.content_sha256
+        ):
+            raise StrategyPayloadBindingError(
+                "canonical owner intent does not match the exact Strategy input reference"
+            )
+        if intent.owner_namespace != "PREDICTION_SIGNAL_VERSION":
+            return None
+        publication = self._repositories.model.table("prediction_signal_version").get(
+            intent.owner_id
+        )
+        if publication is None or publication["state"] != "PUBLISHED":
+            return None
+        model = self._repositories.model.table("model_version").get(
+            publication["model_version_id"]
+        )
+        if model is None or model["state"] != "PUBLISHED":
+            return None
+        dataset = self._repositories.dataset.table("dataset_version").get(
+            publication["dataset_version_id"]
+        )
+        if dataset is None or dataset["state"] != "PUBLISHED":
+            return None
+        snapshot = self._repositories.snapshot.table("data_snapshot").get(
+            dataset["snapshot_id"]
+        )
+        if snapshot is None or snapshot["state"] != "PUBLISHED":
+            return None
+        universe = self._repositories.universe.table("universe_version").get(
+            dataset["universe_version_id"]
+        )
+        if universe is None or universe["state"] != "PUBLISHED":
+            return None
+        membership_artifact = self._repositories.artifact.table("artifact").get(
+            universe["membership_artifact_id"]
+        )
+        if membership_artifact is None or membership_artifact["state"] != "PUBLISHED":
+            return None
+        if (
+            publication["prediction_signal_version_id"] != intent.owner_id
+            or publication["content_hash"] != intent.owner_version
+            or publication["dataset_version_id"] != self._binding.dataset_version_id
+            or model["model_version_id"] != publication["model_version_id"]
+            or model["dataset_version_id"] != self._binding.dataset_version_id
+            or dataset["dataset_version_id"] != self._binding.dataset_version_id
+            or dataset["snapshot_id"] != self._binding.snapshot.snapshot_id
+            or dataset["universe_version_id"]
+            != self._binding.universe.universe_version_id
+            or snapshot["snapshot_id"] != self._binding.snapshot.snapshot_id
+            or snapshot["content_hash"] != self._binding.snapshot.content_sha256
+            or universe["universe_version_id"]
+            != self._binding.universe.universe_version_id
+            or universe["snapshot_id"] != self._binding.snapshot.snapshot_id
+            or universe["membership_artifact_id"]
+            != self._binding.universe.membership_artifact_id
+            or membership_artifact["artifact_id"]
+            != self._binding.universe.membership_artifact_id
+            or membership_artifact["sha256"]
+            != self._binding.universe.membership_sha256
+            or publication["signal_artifact_id"] != intent.artifact_id
+            or publication["content_hash"] != intent.content_sha256
+        ):
+            raise StrategyPayloadBindingError(
+                "canonical PredictionSignalVersion publication does not match requested owner/version/context/artifact"
+            )
+        artifact = self._repositories.artifact.table("artifact").get(
+            publication["signal_artifact_id"]
+        )
+        if artifact is None or artifact["state"] != "PUBLISHED":
+            return None
+        if (
+            artifact["artifact_id"] != bound.artifact_id
+            or artifact["sha256"] != bound.content_sha256
+            or artifact["semantic_role"] != intent.payload_role
+        ):
+            raise StrategyPayloadBindingError(
+                "canonical owner publication Artifact metadata does not match Strategy binding"
+            )
         return CanonicalPayloadBinding(
-            owner_namespace=record.owner_namespace,
-            owner_id=record.owner_id,
-            owner_version=record.owner_version,
-            payload_role=record.payload_role,
-            artifact_id=record.artifact_id,
-            expected_sha256=record.expected_sha256,
-            expected_byte_size=record.expected_byte_size,
-            context_identity=record.context_identity,
-            binding_version=record.binding_version,
-            schema_fingerprint=record.schema_fingerprint,
-            semantic_fingerprint=record.semantic_fingerprint,
-            provenance_reference_id=record.provenance_reference_id,
+            owner_namespace=intent.owner_namespace,
+            owner_id=str(publication["prediction_signal_version_id"]),
+            owner_version=str(publication["content_hash"]),
+            payload_role=intent.payload_role,
+            artifact_id=str(artifact["artifact_id"]),
+            expected_sha256=str(artifact["sha256"]),
+            expected_byte_size=int(artifact["byte_size"]),
+            context_identity=request.context_identity,
+            binding_version=STRATEGY_OWNER_BINDING_VERSION,
+            schema_fingerprint=(None if artifact["schema_fingerprint"] is None else str(artifact["schema_fingerprint"])),
+            provenance_reference_id=str(publication["prediction_signal_version_id"]),
         )
 
 
 __all__ = (
+    "STRATEGY_OWNER_BINDING_VERSION",
     "StrategyPayloadBindingError",
     "StrategyPayloadBindingResolver",
-    "StrategyPayloadOwnerRecord",
 )

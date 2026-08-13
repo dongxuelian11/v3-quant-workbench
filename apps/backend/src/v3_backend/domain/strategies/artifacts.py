@@ -57,6 +57,23 @@ def _require_definition_binding(
         raise StrategyArtifactError(f"{artifact_name} definition/binding mismatch")
 
 
+def _materialize_legacy_artifact(cls, /, **values):
+    """Construct only a validated PRE_ALPHA artifact for the pure evaluator."""
+
+    if values.get("formal_execution_contract_version") is not None:
+        raise StrategyArtifactError("legacy materialization cannot mint formal artifacts")
+    expected = {value.name for value in cls.__dataclass_fields__.values()}
+    if set(values) != expected:
+        raise StrategyArtifactError("strategy artifact materialization fields are incomplete")
+    artifact = object.__new__(cls)
+    for name, value in values.items():
+        object.__setattr__(artifact, name, value)
+    post_init = getattr(artifact, "__post_init__", None)
+    if post_init is not None:
+        post_init()
+    return artifact
+
+
 class SignalDirection(StrEnum):
     POSITIVE = "POSITIVE"
     NEGATIVE = "NEGATIVE"
@@ -65,6 +82,7 @@ class SignalDirection(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class InputArtifactEvidence:
+    """Immutable audit projection; possession never grants formal mint authority."""
     binding_key: str
     artifact_id: str
     content_sha256: str
@@ -72,6 +90,10 @@ class InputArtifactEvidence:
     payload_request_identity: str | None = None
     payload_binding_identity: str | None = None
     payload_resolution_receipt_identity: str | None = None
+    canonical_owner_namespace: str | None = None
+    canonical_owner_id: str | None = None
+    canonical_owner_version: str | None = None
+    payload_role: str | None = None
     actual_byte_size: int | None = None
     context_identity: str | None = None
     schema_fingerprint: str | None = None
@@ -88,6 +110,10 @@ class InputArtifactEvidence:
                 self.payload_request_identity,
                 self.payload_binding_identity,
                 self.payload_resolution_receipt_identity,
+                self.canonical_owner_namespace,
+                self.canonical_owner_id,
+                self.canonical_owner_version,
+                self.payload_role,
                 self.actual_byte_size,
                 self.context_identity,
                 self.schema_fingerprint,
@@ -105,6 +131,10 @@ class InputArtifactEvidence:
             "payload_request_identity",
             "payload_binding_identity",
             "payload_resolution_receipt_identity",
+            "canonical_owner_namespace",
+            "canonical_owner_id",
+            "canonical_owner_version",
+            "payload_role",
             "context_identity",
             "resolver_contract_version",
         ):
@@ -131,6 +161,10 @@ class InputArtifactEvidence:
         *,
         binding_key: str,
         resolution: PayloadResolutionResult,
+        canonical_owner_namespace: str,
+        canonical_owner_id: str,
+        canonical_owner_version: str,
+        payload_role: str,
     ) -> InputArtifactEvidence:
         if not isinstance(resolution, PayloadResolutionResult):
             raise TypeError("formal input evidence requires PayloadResolutionResult")
@@ -144,6 +178,10 @@ class InputArtifactEvidence:
             payload_request_identity=payload.request_identity,
             payload_binding_identity=payload.binding_identity,
             payload_resolution_receipt_identity=receipt.receipt_identity,
+            canonical_owner_namespace=canonical_owner_namespace,
+            canonical_owner_id=canonical_owner_id,
+            canonical_owner_version=canonical_owner_version,
+            payload_role=payload_role,
             actual_byte_size=payload.actual_byte_size,
             context_identity=payload.context_identity,
             schema_fingerprint=payload.schema_fingerprint,
@@ -153,6 +191,7 @@ class InputArtifactEvidence:
 
     @property
     def is_p1_verified(self) -> bool:
+        """Representational status only; trusted execution must re-resolve through P1."""
         return self.payload_verification == "P1_VERIFIED"
 
     def to_wire(self) -> dict[str, object]:
@@ -168,6 +207,10 @@ class InputArtifactEvidence:
                     "payload_request_identity": self.payload_request_identity,
                     "payload_binding_identity": self.payload_binding_identity,
                     "payload_resolution_receipt_identity": self.payload_resolution_receipt_identity,
+                    "canonical_owner_namespace": self.canonical_owner_namespace,
+                    "canonical_owner_id": self.canonical_owner_id,
+                    "canonical_owner_version": self.canonical_owner_version,
+                    "payload_role": self.payload_role,
                     "actual_byte_size": self.actual_byte_size,
                     "context_identity": self.context_identity,
                     "schema_fingerprint": self.schema_fingerprint,
@@ -289,6 +332,13 @@ class SignalArtifact:
     provenance_sha256: str
     formal_execution_contract_version: str | None = None
 
+    def __new__(cls, *args, **kwargs):
+        if args or not kwargs or kwargs.get("formal_execution_contract_version") is not None:
+            raise StrategyArtifactError(
+                "formal SignalArtifact construction is closed; use FormalStrategyEvaluationService"
+            )
+        return object.__new__(cls)
+
     @classmethod
     def create(
         cls,
@@ -311,33 +361,6 @@ class SignalArtifact:
             decision_time=decision_time,
             rows=rows,
             missing_instrument_ids=missing_instrument_ids,
-            formal_execution_contract_version=None,
-        )
-
-    @classmethod
-    def _create_formal(
-        cls,
-        *,
-        definition: StrategyDefinitionVersion,
-        binding: StrategyEvaluationBindingVersion,
-        input_artifacts: tuple[InputArtifactEvidence, ...],
-        decision_time: datetime,
-        rows: tuple[SignalRow, ...],
-        missing_instrument_ids: tuple[str, ...],
-        formal_execution_contract_version: str,
-    ) -> SignalArtifact:
-        if not _all_inputs_p1_verified(input_artifacts):
-            raise StrategyArtifactError(
-                "formal SignalArtifact requires complete P1 resolution evidence"
-            )
-        return cls._create(
-            definition=definition,
-            binding=binding,
-            input_artifacts=input_artifacts,
-            decision_time=decision_time,
-            rows=rows,
-            missing_instrument_ids=missing_instrument_ids,
-            formal_execution_contract_version=formal_execution_contract_version,
         )
 
     @classmethod
@@ -350,7 +373,6 @@ class SignalArtifact:
         decision_time: datetime,
         rows: tuple[SignalRow, ...],
         missing_instrument_ids: tuple[str, ...],
-        formal_execution_contract_version: str | None,
     ) -> SignalArtifact:
         _require_aware(decision_time, "decision_time")
         _require_definition_binding(definition, binding, "SignalArtifact")
@@ -366,15 +388,9 @@ class SignalArtifact:
         universe = set(binding.universe.instrument_ids)
         if any(value.instrument_id not in universe for value in ordered_rows) or not set(missing).issubset(universe):
             raise StrategyArtifactError("SignalArtifact instrument is outside bound universe")
-        formal_inputs = _all_inputs_p1_verified(ordered_inputs)
-        if formal_inputs != (formal_execution_contract_version is not None):
+        if _all_inputs_p1_verified(ordered_inputs):
             raise StrategyArtifactError(
-                "formal SignalArtifact requires both complete P1 evidence and formal execution contract"
-            )
-        if formal_execution_contract_version is not None:
-            _require_text(
-                formal_execution_contract_version,
-                "formal_execution_contract_version",
+                "formal SignalArtifact can only be minted by FormalStrategyEvaluationService"
             )
         truth = _strategy_output_truth(
             definition=definition,
@@ -390,10 +406,6 @@ class SignalArtifact:
             "universe_version_id": binding.universe.universe_version_id,
             "membership_sha256": binding.universe.membership_sha256,
         }
-        if formal_execution_contract_version is not None:
-            provenance["formal_execution_contract_version"] = (
-                formal_execution_contract_version
-            )
         provenance_sha256 = canonical_sha256(provenance)
         payload = {
             **provenance,
@@ -403,7 +415,8 @@ class SignalArtifact:
             "truth_admission": truth.to_wire(),
             "provenance_sha256": provenance_sha256,
         }
-        return cls(
+        return _materialize_legacy_artifact(
+            cls,
             signal_artifact_id="sig_sha256_" + canonical_sha256(payload),
             strategy_definition_version_id=definition.strategy_definition_version_id,
             strategy_evaluation_binding_version_id=binding.strategy_evaluation_binding_version_id,
@@ -415,7 +428,7 @@ class SignalArtifact:
             compiler_version=definition.compiler_version,
             runtime_profile_id=definition.runtime_profile_id,
             provenance_sha256=provenance_sha256,
-            formal_execution_contract_version=formal_execution_contract_version,
+            formal_execution_contract_version=None,
         )
 
     def to_wire(self) -> dict[str, object]:
@@ -557,6 +570,13 @@ class SelectionArtifact:
     source_signal_provenance_sha256: str | None = None
     formal_execution_contract_version: str | None = None
 
+    def __new__(cls, *args, **kwargs):
+        if args or not kwargs or kwargs.get("formal_execution_contract_version") is not None:
+            raise StrategyArtifactError(
+                "formal SelectionArtifact construction is closed; use FormalStrategyEvaluationService"
+            )
+        return object.__new__(cls)
+
     @classmethod
     def create(
         cls,
@@ -577,34 +597,6 @@ class SelectionArtifact:
             entries=entries,
             excluded_instrument_ids=excluded_instrument_ids,
             input_artifacts=input_artifacts,
-            signal_artifact=None,
-            formal_execution_contract_version=None,
-        )
-
-    @classmethod
-    def _create_formal(
-        cls,
-        *,
-        definition: StrategyDefinitionVersion,
-        binding: StrategyEvaluationBindingVersion,
-        entries: tuple[SelectionEntry, ...],
-        excluded_instrument_ids: tuple[str, ...],
-        input_artifacts: tuple[InputArtifactEvidence, ...],
-        signal_artifact: SignalArtifact,
-        formal_execution_contract_version: str,
-    ) -> SelectionArtifact:
-        if not _all_inputs_p1_verified(input_artifacts):
-            raise StrategyArtifactError(
-                "formal SelectionArtifact requires complete P1 resolution evidence"
-            )
-        return cls._create(
-            definition=definition,
-            binding=binding,
-            entries=entries,
-            excluded_instrument_ids=excluded_instrument_ids,
-            input_artifacts=input_artifacts,
-            signal_artifact=signal_artifact,
-            formal_execution_contract_version=formal_execution_contract_version,
         )
 
     @classmethod
@@ -616,8 +608,6 @@ class SelectionArtifact:
         entries: tuple[SelectionEntry, ...],
         excluded_instrument_ids: tuple[str, ...],
         input_artifacts: tuple[InputArtifactEvidence, ...],
-        signal_artifact: SignalArtifact | None,
-        formal_execution_contract_version: str | None,
     ) -> SelectionArtifact:
         _require_definition_binding(definition, binding, "SelectionArtifact")
         ordered_inputs = _exact_input_evidence(
@@ -639,43 +629,14 @@ class SelectionArtifact:
             raise StrategyArtifactError(
                 "SelectionArtifact must cover the exact bound universe membership"
             )
-        formal_inputs = _all_inputs_p1_verified(ordered_inputs)
-        if formal_inputs != (formal_execution_contract_version is not None):
+        if _all_inputs_p1_verified(ordered_inputs):
             raise StrategyArtifactError(
-                "formal SelectionArtifact requires both complete P1 evidence and formal execution contract"
-            )
-        source_signal_artifact_id: str | None = None
-        source_signal_provenance_sha256: str | None = None
-        extra_requirements: tuple[UpstreamRequirement, ...] = ()
-        if formal_inputs:
-            if signal_artifact is None:
-                raise StrategyArtifactError(
-                    "formal SelectionArtifact requires exact SignalArtifact"
-                )
-            signal_inputs = _require_canonical_signal_source(
-                signal_artifact, definition, binding
-            )
-            if signal_inputs != ordered_inputs:
-                raise StrategyArtifactError(
-                    "formal SelectionArtifact SignalArtifact input evidence mismatch"
-                )
-            source_signal_artifact_id = signal_artifact.signal_artifact_id
-            source_signal_provenance_sha256 = signal_artifact.provenance_sha256
-            extra_requirements = (
-                UpstreamRequirement(
-                    signal_artifact.signal_artifact_id,
-                    signal_artifact.truth_admission,
-                ),
-            )
-        elif signal_artifact is not None:
-            raise StrategyArtifactError(
-                "legacy SelectionArtifact cannot claim a formal SignalArtifact linkage"
+                "formal SelectionArtifact can only be minted by FormalStrategyEvaluationService"
             )
         truth = _strategy_output_truth(
             definition=definition,
             binding=binding,
             input_artifacts=ordered_inputs,
-            extra_requirements=extra_requirements,
         )
         provenance = {
             "strategy_definition_version_id": definition.strategy_definition_version_id,
@@ -685,14 +646,6 @@ class SelectionArtifact:
             "membership_artifact_id": binding.universe.membership_artifact_id,
             "membership_sha256": binding.universe.membership_sha256,
         }
-        if formal_execution_contract_version is not None:
-            provenance.update(
-                {
-                    "source_signal_artifact_id": source_signal_artifact_id,
-                    "source_signal_provenance_sha256": source_signal_provenance_sha256,
-                    "formal_execution_contract_version": formal_execution_contract_version,
-                }
-            )
         provenance_sha256 = canonical_sha256(provenance)
         payload = {
             **provenance,
@@ -701,7 +654,8 @@ class SelectionArtifact:
             "truth_admission": truth.to_wire(),
             "provenance_sha256": provenance_sha256,
         }
-        return cls(
+        return _materialize_legacy_artifact(
+            cls,
             selection_artifact_id="sel_sha256_" + canonical_sha256(payload),
             strategy_definition_version_id=definition.strategy_definition_version_id,
             strategy_evaluation_binding_version_id=binding.strategy_evaluation_binding_version_id,
@@ -713,9 +667,9 @@ class SelectionArtifact:
             excluded_instrument_ids=excluded,
             truth_admission=truth,
             provenance_sha256=provenance_sha256,
-            source_signal_artifact_id=source_signal_artifact_id,
-            source_signal_provenance_sha256=source_signal_provenance_sha256,
-            formal_execution_contract_version=formal_execution_contract_version,
+            source_signal_artifact_id=None,
+            source_signal_provenance_sha256=None,
+            formal_execution_contract_version=None,
         )
 
     def to_wire(self) -> dict[str, object]:
@@ -861,6 +815,14 @@ class PortfolioIntent:
     constraints: Mapping[str, object]
     truth_admission: TruthAdmissionState
     provenance_sha256: str
+    formal_execution_contract_version: str | None = None
+
+    def __new__(cls, *args, **kwargs):
+        if args or not kwargs or kwargs.get("formal_execution_contract_version") is not None:
+            raise StrategyArtifactError(
+                "formal PortfolioIntent construction is closed; use FormalStrategyEvaluationService"
+            )
+        return object.__new__(cls)
 
     def __post_init__(self) -> None:
         if not self.portfolio_intent_id.startswith("pint_sha256_"):
@@ -911,36 +873,6 @@ class PortfolioIntent:
         )
 
     @classmethod
-    def _create_formal(
-        cls,
-        *,
-        definition: StrategyDefinitionVersion,
-        binding: StrategyEvaluationBindingVersion,
-        selection_artifact: SelectionArtifact,
-        signal_artifact: SignalArtifact | None,
-        exposure_mode: str,
-        cash_policy: str,
-        rebalance_intent: str,
-        items: tuple[PortfolioIntentItem, ...],
-        constraints: Mapping[str, object],
-    ) -> PortfolioIntent:
-        if selection_artifact.formal_execution_contract_version is None:
-            raise StrategyArtifactError(
-                "formal PortfolioIntent requires formal SelectionArtifact"
-            )
-        return cls._create(
-            definition=definition,
-            binding=binding,
-            selection_artifact=selection_artifact,
-            signal_artifact=signal_artifact,
-            exposure_mode=exposure_mode,
-            cash_policy=cash_policy,
-            rebalance_intent=rebalance_intent,
-            items=items,
-            constraints=constraints,
-        )
-
-    @classmethod
     def _create(
         cls,
         *,
@@ -954,6 +886,10 @@ class PortfolioIntent:
         items: tuple[PortfolioIntentItem, ...],
         constraints: Mapping[str, object],
     ) -> PortfolioIntent:
+        if selection_artifact.formal_execution_contract_version is not None:
+            raise StrategyArtifactError(
+                "formal PortfolioIntent can only be minted by FormalStrategyEvaluationService"
+            )
         _require_definition_binding(definition, binding, "PortfolioIntent")
         if (
             selection_artifact.strategy_definition_version_id
@@ -1111,7 +1047,8 @@ class PortfolioIntent:
             "truth_admission": truth.to_wire(),
             "provenance_sha256": provenance_sha256,
         }
-        return cls(
+        return _materialize_legacy_artifact(
+            cls,
             portfolio_intent_id="pint_sha256_" + canonical_sha256(payload),
             strategy_definition_version_id=definition.strategy_definition_version_id,
             strategy_evaluation_binding_version_id=binding.strategy_evaluation_binding_version_id,
@@ -1127,10 +1064,11 @@ class PortfolioIntent:
             constraints=MappingProxyType(normalized_constraints),
             truth_admission=truth,
             provenance_sha256=provenance_sha256,
+            formal_execution_contract_version=None,
         )
 
     def to_wire(self) -> dict[str, object]:
-        return {
+        wire = {
             "artifact_type": "PortfolioIntent",
             "portfolio_intent_id": self.portfolio_intent_id,
             "strategy_definition_version_id": self.strategy_definition_version_id,
@@ -1149,6 +1087,9 @@ class PortfolioIntent:
             "provenance_sha256": self.provenance_sha256,
             "publisher_boundary": "PORTFOLIO_SERVICE_IS_SOLE_TARGET_WEIGHT_VECTOR_PUBLISHER",
         }
+        if self.formal_execution_contract_version is not None:
+            wire["formal_execution_contract_version"] = self.formal_execution_contract_version
+        return wire
 
 
 __all__ = [
