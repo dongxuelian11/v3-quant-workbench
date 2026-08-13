@@ -1,21 +1,30 @@
-# V3 Quantitative Research Workbench
+# V3 Quantitative Research IDE / Workbench
 
-V3 is a personal/private-origin quantitative research workbench being rebuilt as a public source project. It is organized around five connected Labs: Research, Strategy, Model, Backtest, and Result.
+V3 is a local-first, A-share-first, AI-native, reproducible and auditable professional Quant Research IDE / Workbench. It is organized around an Agent-first flow and five professional Labs: Research, Strategy, Model, Backtest, and Result.
 
 > **Status: PRE-ALPHA / ACTIVE RECONSTRUCTION**
 >
-> The current frontend is an accepted development baseline, not a final UI. The Canonical Backend Foundation is present, but formal Data Truth, Research, Model, Portfolio/Risk, Backtest, and Result capabilities have not been rebuilt. Demo data is illustrative UI input, not formal financial output.
+> Multiple canonical domain modules and historically accepted owner/integration slices exist, but their presence does not by itself prove `PRODUCT_CONNECTED` or `PRODUCTION_AVAILABLE`. The systemic payload, integration, runtime, product, and capability-level re-audit is pending; it is not complete. Demo and development-fixture data is never formal financial output.
 
-The intended formal market scope is China A-share daily/end-of-day research. Live trading and paper trading are not included. This repository is not production-ready or trading-ready.
+The intended formal market scope is China A-share daily/end-of-day research. Live trading, broker connectivity, and paper trading are not included. This repository makes no feature-complete, production-ready, or trading-ready claim.
+
+Project doctrine and mandatory maturity language are defined by:
+
+- [`V3_PROJECT_CONSTITUTION.md`](V3_PROJECT_CONSTITUTION.md) — product identity and non-negotiable authority invariants.
+- [`docs/architecture/V3_CANONICAL_ARCHITECTURE.md`](docs/architecture/V3_CANONICAL_ARCHITECTURE.md) — target owner/resolver/runtime/product architecture, not a claim of full current wiring.
+- [`docs/status/V3_CAPABILITY_LEVELS.md`](docs/status/V3_CAPABILITY_LEVELS.md) — evidence-based capability vocabulary.
+- [`docs/status/V3_SYSTEMIC_REAUDIT_BASELINE.md`](docs/status/V3_SYSTEMIC_REAUDIT_BASELINE.md) — conservative unresolved finding register.
 
 ## What exists today
 
 - Electron 39 desktop shell with a React 19/Vite presentation system, Dockview workspaces, ECharts, React Flow, Monaco, and persisted local layout/state.
 - A typed Canonical Backend Foundation: contracts, Control Catalog/repositories, artifact plane, task/worker control plane, resource governor, and supervised local transport.
-- Foundation tests covering the 56-table Control Catalog, contract digest, artifact and task boundaries, runtime framing, and ownership invariants.
-- Clearly marked deterministic Demo providers that keep the five Labs explorable while formal domain backends remain unavailable.
+- Domain modules and bounded accepted slices across Data Truth, Factor/Dataset/Experiment, Model, Strategy/Signal, Portfolio/Risk, Backtest, Result Analytics, Reviewer, and L0/L1 Agent support. Exact maturity varies by owner and remains intentionally conservative pending systemic re-audit.
+- A supervised Electron `backendRuntime` bridge for a bounded read-only canonical evidence path, including explicit disconnected/no-evidence states and an explicitly named development-fixture mode.
+- Foundation and domain tests covering catalog/contracts, artifact/task boundaries, runtime framing, deterministic owner behavior, and selected integration paths.
+- Clearly marked Demo/development providers for non-formal workflows; they cannot mint formal financial truth or silently stand in for unavailable production handlers.
 
-The WS-E transport modules are not wired into the current frontend main/preload entrypoints. That integration remains future work.
+Not every domain module has a production runtime handler, desktop bridge, or product surface. Production Agent execution remains `NOT_AVAILABLE / NOT_RUN` until shared canonical user-action authority exists. See the authority documents above instead of inferring availability from file or PR presence.
 
 ## Prerequisites
 
@@ -37,8 +46,8 @@ For the full local Electron smoke route, run `npm run validate` from a desktop s
 - `apps/backend/src/v3_backend/` — Canonical Backend Foundation source.
 - `apps/backend/tests/` — Foundation conformance and integration tests.
 - `packages/contracts/` — current typed frontend boundary contracts.
-- `docs/architecture/` — implemented boundaries and future capability separation.
-- `docs/status/` — current truthful capability status.
+- `docs/architecture/` — canonical target ownership plus implemented/future boundary documentation.
+- `docs/status/` — mandatory capability vocabulary, authority manifest, systemic baseline, and status records.
 - `docs/runtime/` — Core Python authority and optional-environment policy.
 - `docs/oss/` and `sbom/` — publication readiness, license inventory, and SBOM.
 
