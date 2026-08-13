@@ -110,6 +110,23 @@ function requireOrderedTokens(label, text, tokens, failures) {
   }
 }
 
+function requireAuthorityVersion(relativePath, text, expectedVersion, failures) {
+  const declarations = [...text.matchAll(/^Authority version:\s*`([^`\r\n]+)`\s*$/gm)];
+  if (declarations.length !== 1) {
+    failures.push(
+      `${relativePath} authority version declaration count mismatch: observed ${declarations.length}, expected 1 with manifest version ${expectedVersion}`,
+    );
+    return;
+  }
+
+  const observedVersion = declarations[0][1];
+  if (observedVersion !== expectedVersion) {
+    failures.push(
+      `${relativePath} authority version mismatch: observed ${observedVersion}, expected manifest version ${expectedVersion}`,
+    );
+  }
+}
+
 async function validate() {
   const { root, manifest: manifestArgument } = parseArguments(process.argv.slice(2));
   const failures = [];
@@ -171,6 +188,14 @@ async function validate() {
       failures.push(`cannot read required authority file ${relativePath}: ${error.message}`);
       texts[relativePath] = "";
     }
+  }
+
+  for (const relativePath of [
+    "V3_PROJECT_CONSTITUTION.md",
+    "docs/architecture/V3_CANONICAL_ARCHITECTURE.md",
+    "docs/status/V3_CAPABILITY_LEVELS.md",
+  ]) {
+    requireAuthorityVersion(relativePath, texts[relativePath], manifest.authority_version, failures);
   }
 
   const agents = texts["AGENTS.md"];

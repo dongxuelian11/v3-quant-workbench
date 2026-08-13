@@ -1,6 +1,6 @@
 # V3 Canonical Architecture
 
-Authority version: `1.0.0`
+Authority version: `1.0.1`
 Status: target canonical architecture and owner map; not a claim that all integrations or product connections exist.
 
 ## 1. Mandatory cross-owner flow
