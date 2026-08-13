@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from enum import StrEnum
 from datetime import datetime
+import hashlib
 from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
-from v3_backend.agents.contracts import ProposalBoundary, StrictAgentModel
+from v3_backend.agents.contracts import ProposalBoundary, StrictAgentModel, deterministic_json
 
 
 ExactId = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=256)]
@@ -34,6 +35,8 @@ class ModelResearchContext(StrictAgentModel):
     train_range: tuple[int, int]
     validation_range: tuple[int, int]
     test_range: tuple[int, int]
+    purge_observations: int = Field(ge=0)
+    embargo_observations: int = Field(ge=0)
     snapshot_id: ExactId
     universe_version_id: ExactId
     knowledge_cutoff: ExactId
@@ -51,6 +54,100 @@ class ModelResearchContext(StrictAgentModel):
     def exact_feature_membership(self) -> "ModelResearchContext":
         if not (len(self.factor_evaluation_ids) == len(self.factor_definition_version_ids) == len(self.feature_materialization_ids)):
             raise ValueError("feature definitions and materializations must be exact-bound")
+        return self
+
+
+class ModelSampleExecutionInput(StrictAgentModel):
+    sample_id: ExactId
+    instrument_id: ExactId
+    observation_ordinal: int = Field(ge=0)
+    event_time: datetime
+    decision_time: datetime
+    features: tuple[float, ...] = Field(min_length=1)
+    label: float | None = None
+
+    @field_validator("features", mode="before")
+    @classmethod
+    def feature_arrays_to_tuples(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("event_time", "decision_time")
+    @classmethod
+    def aware_timestamps(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("execution sample timestamps must be timezone-aware")
+        return value
+
+
+class ModelTrainExecutionSpec(StrictAgentModel):
+    action: Literal["MODEL_TRAIN"] = "MODEL_TRAIN"
+    execution_spec_id: ExactId
+    content_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    context: ModelResearchContext
+    training_spec_version_id: ExactId
+    training_spec_content_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    feature_schema_fingerprint: ExactId
+    worker_runtime_fingerprint: ExactId
+    worker_runtime_content_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    samples: tuple[ModelSampleExecutionInput, ...] = Field(min_length=1)
+    code_version: ExactId
+    training_evidence_provenance_artifact_id: ExactId
+    model_provenance_artifact_id: ExactId
+    proposed_truth_state: ExactId
+    proposed_admission_state: ExactId
+
+    @field_validator("samples", mode="before")
+    @classmethod
+    def sample_arrays_to_tuples(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def verify_content_identity(self) -> "ModelTrainExecutionSpec":
+        payload = self.model_dump(mode="json", exclude={"execution_spec_id", "content_sha256"})
+        digest = hashlib.sha256(deterministic_json(payload).encode("utf-8")).hexdigest()
+        if self.content_sha256 != digest or self.execution_spec_id != "mtes_sha256_" + digest:
+            raise ValueError("MODEL_TRAIN execution spec identity/content mismatch")
+        return self
+
+
+class ModelPredictExecutionSpec(StrictAgentModel):
+    action: Literal["MODEL_PREDICT"] = "MODEL_PREDICT"
+    execution_spec_id: ExactId
+    content_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    model_version_id: ExactId
+    model_artifact_id: ExactId
+    model_artifact_content_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    model_training_request_id: ExactId
+    training_spec_version_id: ExactId
+    training_spec_content_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    prediction_context: ModelResearchContext
+    worker_runtime_fingerprint: ExactId
+    worker_runtime_content_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    samples: tuple[ModelSampleExecutionInput, ...] = Field(min_length=1)
+    prediction_timestamp: datetime
+    target_semantics: ExactId
+    provenance_artifact_id: ExactId
+    proposed_truth_state: ExactId
+    proposed_admission_state: ExactId
+
+    @field_validator("samples", mode="before")
+    @classmethod
+    def prediction_sample_arrays_to_tuples(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("prediction_timestamp")
+    @classmethod
+    def aware_prediction_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("prediction timestamp must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def verify_content_identity(self) -> "ModelPredictExecutionSpec":
+        payload = self.model_dump(mode="json", exclude={"execution_spec_id", "content_sha256"})
+        digest = hashlib.sha256(deterministic_json(payload).encode("utf-8")).hexdigest()
+        if self.content_sha256 != digest or self.execution_spec_id != "mpes_sha256_" + digest:
+            raise ValueError("MODEL_PREDICT execution spec identity/content mismatch")
         return self
 
 
@@ -99,10 +196,13 @@ class TrainDraftPayload(StrictAgentModel):
     seed: int = Field(ge=0)
     resource_profile: ExactId
     dependency_runtime_fingerprint: ExactId
+    execution_spec_id: ExactId
+    execution_spec_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     requested_metrics: tuple[ExactId, ...] = Field(min_length=1)
     expected_output_kind: Literal["MODEL_VERSION"] = "MODEL_VERSION"
     evidence_refs: tuple[ExactId, ...] = Field(min_length=1)
-    user_confirmation_required: Literal[True] = True
+    canonical_user_execution_authority: Literal["NOT_AVAILABLE"] = "NOT_AVAILABLE"
+    production_execution_state: Literal["NOT_RUN"] = "NOT_RUN"
     agent_execution_allowed: Literal[False] = False
 
     @field_validator("parameters", "requested_metrics", "evidence_refs", mode="before")
@@ -119,9 +219,12 @@ class PredictDraftPayload(StrictAgentModel):
     prediction_context: ModelResearchContext
     training_spec_version_id: ExactId
     target_semantics: ExactId
+    execution_spec_id: ExactId
+    execution_spec_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     expected_output_kind: Literal["PREDICTION_SET"] = "PREDICTION_SET"
     evidence_refs: tuple[ExactId, ...] = Field(min_length=1)
-    user_confirmation_required: Literal[True] = True
+    canonical_user_execution_authority: Literal["NOT_AVAILABLE"] = "NOT_AVAILABLE"
+    production_execution_state: Literal["NOT_RUN"] = "NOT_RUN"
     agent_execution_allowed: Literal[False] = False
 
     @field_validator("evidence_refs", mode="before")
@@ -204,8 +307,13 @@ class ModelEvidenceView(StrictAgentModel):
     train_range: tuple[int, int]
     validation_range: tuple[int, int]
     test_range: tuple[int, int]
+    purge_observations: int = Field(ge=0)
+    embargo_observations: int = Field(ge=0)
     universe_version_id: ExactId
     snapshot_id: ExactId
+    knowledge_cutoff: ExactId
+    dataset_artifact_id: ExactId
+    dataset_provenance_artifact_id: ExactId
     seed: int = Field(ge=0)
     parameters: tuple[tuple[ExactId, bool | int | float | str], ...]
     worker_runtime_fingerprint: ExactId
@@ -214,6 +322,8 @@ class ModelEvidenceView(StrictAgentModel):
     prediction_artifact_id: ExactId | None = None
     model_prediction_request_id: ExactId | None = None
     target_semantics: ExactId | None = None
+    evaluation_policy_id: ExactId
+    benchmark_id: ExactId | None = None
     experiment_refs: tuple[ExactId, ...] = ()
     reviewer_refs: tuple[ExactId, ...] = ()
     metrics: tuple[MetricEvidence, ...] = ()
@@ -222,6 +332,28 @@ class ModelEvidenceView(StrictAgentModel):
     @classmethod
     def arrays_to_tuples(cls, value: object) -> object:
         return tuple(tuple(item) if isinstance(item, list) else item for item in value) if isinstance(value, list) else value
+
+
+class ModelEvidenceResolutionRequest(StrictAgentModel):
+    model_version_id: ExactId
+    dataset_version_id: ExactId
+    training_spec_version_id: ExactId
+    model_artifact_id: ExactId
+    training_evidence_id: ExactId
+    prediction_artifact_id: ExactId | None = None
+    model_evaluation_evidence_id: ExactId | None = None
+    experiment_version_id: ExactId
+    experiment_run_id: ExactId
+    experiment_attempt_id: ExactId
+    result_artifact_id: ExactId
+    reviewer_report_ids: tuple[ExactId, ...] = Field(min_length=1)
+    evaluation_policy_id: ExactId
+    benchmark_id: ExactId | None = None
+
+    @field_validator("reviewer_report_ids", mode="before")
+    @classmethod
+    def reviewer_arrays_to_tuples(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
 
 
 class ComparisonStatus(StrEnum):
@@ -286,13 +418,14 @@ class EvidenceExplanation(StrictAgentModel):
     invented_causality: Literal[False] = False
 
 
-class UserConfirmation(StrictAgentModel):
-    confirmation_type: Literal["USER_CONFIRMATION"] = "USER_CONFIRMATION"
+class UserConfirmationClaim(StrictAgentModel):
+    confirmation_type: Literal["UNTRUSTED_USER_CONFIRMATION_CLAIM"] = "UNTRUSTED_USER_CONFIRMATION_CLAIM"
     action: Literal["MODEL_TRAIN", "MODEL_PREDICT"]
     draft_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     confirmed_by: ExactId
     confirmed_at: datetime
     agent_issued: Literal[False] = False
+    authority_status: Literal["UNTRUSTED_CALLER_ASSERTED"] = "UNTRUSTED_CALLER_ASSERTED"
 
     @field_validator("confirmed_at")
     @classmethod
@@ -300,3 +433,7 @@ class UserConfirmation(StrictAgentModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("user confirmation timestamp must be timezone-aware")
         return value
+
+
+# Compatibility name only: this object is explicitly not an execution authority.
+UserConfirmation = UserConfirmationClaim

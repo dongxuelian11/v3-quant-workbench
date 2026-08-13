@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime
 from math import isfinite
 
-from v3_backend.agents.contracts import AgentProvenance, PermissionLevel
+from v3_backend.agents.contracts import AgentProvenance, PermissionLevel, deterministic_json
 from v3_backend.agents.permissions import require_permission
+from v3_backend.contracts.common.truth_admission import TruthAdmissionState
 from v3_backend.domain.datasets import DatasetVersion, FeatureSetVersion, LabelSpec, SplitSpec
 from v3_backend.domain.factors import FactorEvaluation, FeatureMaterialization
-from v3_backend.domain.models import ModelEvaluationEvidence, ModelVersion, PredictionArtifact, TrainingSpecVersion
+from v3_backend.domain.models import (
+    ModelEvaluationEvidence, ModelSample, ModelVersion, PredictionArtifact,
+    SafeLinearModelArtifact, TrainingSpecVersion, WorkerRuntimeFingerprint,
+)
 from v3_backend.domain.reviewer_integration import ResearchReviewReport
 
 from .contracts import (
     CompareDraftPayload, ComparisonStatus, EvidenceExplanation, MetricDelta,
-    MetricEvidence, ModelAgentDraft, ModelComparison, ModelDraftKind, ModelResearchProposal,
-    ModelEvidenceView, ModelResearchContext, PredictDraftPayload,
-    ReviewDraftPayload, TrainDraftPayload,
+    MetricEvidence, ModelAgentDraft, ModelComparison, ModelDraftKind,
+    ModelEvidenceView, ModelPredictExecutionSpec, ModelResearchContext,
+    ModelResearchProposal, ModelSampleExecutionInput, ModelTrainExecutionSpec,
+    PredictDraftPayload, ReviewDraftPayload, TrainDraftPayload,
 )
 
 
@@ -68,6 +75,8 @@ def read_dataset_context(*, dataset: DatasetVersion, feature_set: FeatureSetVers
         train_range=(split.train_start, split.train_end),
         validation_range=(split.validation_start, split.validation_end),
         test_range=(split.test_start, split.test_end),
+        purge_observations=split.purge_observations,
+        embargo_observations=split.embargo_observations,
         snapshot_id=dataset.binding.snapshot_id,
         universe_version_id=dataset.binding.universe_version_id,
         knowledge_cutoff=dataset.binding.knowledge_cutoff.isoformat(),
@@ -83,13 +92,96 @@ def _draft(*, kind: ModelDraftKind, payload: object, provenance: AgentProvenance
     return ModelAgentDraft(draft_kind=kind, payload=payload, permission_decision=decision, provenance=provenance)
 
 
-def draft_model_train(*, context: ModelResearchContext, spec: TrainingSpecVersion, requested_metrics: tuple[str, ...], provenance: AgentProvenance) -> ModelAgentDraft:
+def _sample_input(value: ModelSample) -> ModelSampleExecutionInput:
+    return ModelSampleExecutionInput(
+        sample_id=value.sample_id, instrument_id=value.instrument_id,
+        observation_ordinal=value.observation_ordinal, event_time=value.event_time,
+        decision_time=value.decision_time, features=value.features, label=value.label,
+    )
+
+
+def _wire_state(value: TruthAdmissionState) -> tuple[str, str]:
+    wire = value.to_wire()
+    return str(wire["canonical_truth_state"]), str(wire["canonical_admission_state"])
+
+
+def _seal_execution_spec(model_type: type[ModelTrainExecutionSpec] | type[ModelPredictExecutionSpec], prefix: str, body: dict[str, object]):
+    candidate = model_type.model_construct(execution_spec_id=prefix + "0" * 64, content_sha256="0" * 64, **body)
+    payload = candidate.model_dump(mode="json", exclude={"execution_spec_id", "content_sha256"})
+    digest = hashlib.sha256(deterministic_json(payload).encode("utf-8")).hexdigest()
+    return model_type(execution_spec_id=prefix + digest, content_sha256=digest, **body)
+
+
+def build_model_train_execution_spec(
+    *, context: ModelResearchContext, training_spec: TrainingSpecVersion,
+    worker_runtime: WorkerRuntimeFingerprint, samples: tuple[ModelSample, ...],
+    code_version: str, training_evidence_provenance_artifact_id: str,
+    model_provenance_artifact_id: str, proposed_state: TruthAdmissionState,
+) -> ModelTrainExecutionSpec:
+    if training_spec.feature_set_version_id != context.feature_set_version_id or training_spec.factor_evaluation_ids != context.factor_evaluation_ids:
+        raise ModelAgentBindingError("training execution spec requires exact feature context")
+    if training_spec.label_spec_id != context.label_spec_id or training_spec.split_spec_id != context.split_spec_id:
+        raise ModelAgentBindingError("training execution spec requires exact label/split context")
+    if worker_runtime.fingerprint != training_spec.dependency_runtime_fingerprint:
+        raise ModelAgentBindingError("training execution spec worker runtime mismatch")
+    truth, admission = _wire_state(proposed_state)
+    body: dict[str, object] = {
+        "action": "MODEL_TRAIN", "context": context,
+        "training_spec_version_id": training_spec.training_spec_version_id,
+        "training_spec_content_sha256": hashlib.sha256(deterministic_json(training_spec.to_wire()).encode("utf-8")).hexdigest(),
+        "feature_schema_fingerprint": training_spec.feature_schema_fingerprint,
+        "worker_runtime_fingerprint": worker_runtime.fingerprint,
+        "worker_runtime_content_sha256": hashlib.sha256(deterministic_json(worker_runtime.to_wire()).encode("utf-8")).hexdigest(),
+        "samples": tuple(_sample_input(value) for value in samples),
+        "code_version": code_version,
+        "training_evidence_provenance_artifact_id": training_evidence_provenance_artifact_id,
+        "model_provenance_artifact_id": model_provenance_artifact_id,
+        "proposed_truth_state": truth, "proposed_admission_state": admission,
+    }
+    return _seal_execution_spec(ModelTrainExecutionSpec, "mtes_sha256_", body)
+
+
+def build_model_predict_execution_spec(
+    *, model: ModelVersion, model_artifact: SafeLinearModelArtifact,
+    training_spec: TrainingSpecVersion, prediction_context: ModelResearchContext,
+    worker_runtime: WorkerRuntimeFingerprint, samples: tuple[ModelSample, ...],
+    prediction_timestamp: datetime, target_semantics: str,
+    provenance_artifact_id: str, proposed_state: TruthAdmissionState,
+) -> ModelPredictExecutionSpec:
+    if model.model_artifact_id != model_artifact.artifact_id or model.training_spec_version_id != training_spec.training_spec_version_id:
+        raise ModelAgentBindingError("prediction execution spec requires exact ModelVersion artifacts")
+    if prediction_context.feature_set_version_id != training_spec.feature_set_version_id or prediction_context.label_spec_id != training_spec.label_spec_id:
+        raise ModelAgentBindingError("prediction execution spec Dataset context mismatch")
+    if worker_runtime.fingerprint != model.worker_runtime.fingerprint:
+        raise ModelAgentBindingError("prediction execution spec worker runtime mismatch")
+    truth, admission = _wire_state(proposed_state)
+    body: dict[str, object] = {
+        "action": "MODEL_PREDICT", "model_version_id": model.model_version_id,
+        "model_artifact_id": model_artifact.artifact_id,
+        "model_artifact_content_sha256": hashlib.sha256(model_artifact.to_bytes()).hexdigest(),
+        "model_training_request_id": model.model_training_request_id,
+        "training_spec_version_id": training_spec.training_spec_version_id,
+        "training_spec_content_sha256": hashlib.sha256(deterministic_json(training_spec.to_wire()).encode("utf-8")).hexdigest(),
+        "prediction_context": prediction_context,
+        "worker_runtime_fingerprint": worker_runtime.fingerprint,
+        "worker_runtime_content_sha256": hashlib.sha256(deterministic_json(worker_runtime.to_wire()).encode("utf-8")).hexdigest(),
+        "samples": tuple(_sample_input(value) for value in samples),
+        "prediction_timestamp": prediction_timestamp, "target_semantics": target_semantics,
+        "provenance_artifact_id": provenance_artifact_id,
+        "proposed_truth_state": truth, "proposed_admission_state": admission,
+    }
+    return _seal_execution_spec(ModelPredictExecutionSpec, "mpes_sha256_", body)
+
+
+def draft_model_train(*, context: ModelResearchContext, spec: TrainingSpecVersion, execution_spec: ModelTrainExecutionSpec, requested_metrics: tuple[str, ...], provenance: AgentProvenance) -> ModelAgentDraft:
     if spec.feature_set_version_id != context.feature_set_version_id or spec.factor_evaluation_ids != context.factor_evaluation_ids:
         raise ModelAgentBindingError("training spec feature context mismatch")
     if spec.label_spec_id != context.label_spec_id or spec.split_spec_id != context.split_spec_id:
         raise ModelAgentBindingError("training spec label/horizon/split mismatch")
     if not requested_metrics:
         raise ModelAgentBindingError("requested metrics cannot be empty")
+    if execution_spec.context != context or execution_spec.training_spec_version_id != spec.training_spec_version_id:
+        raise ModelAgentBindingError("training draft must bind exact execution spec")
     payload = TrainDraftPayload(
         context=context,
         training_spec_version_id=spec.training_spec_version_id,
@@ -98,13 +190,15 @@ def draft_model_train(*, context: ModelResearchContext, spec: TrainingSpecVersio
         seed=spec.seed,
         resource_profile=spec.environment_profile_id,
         dependency_runtime_fingerprint=spec.dependency_runtime_fingerprint,
+        execution_spec_id=execution_spec.execution_spec_id,
+        execution_spec_sha256=execution_spec.content_sha256,
         requested_metrics=tuple(sorted(requested_metrics)),
         evidence_refs=(context.dataset_artifact_id, context.provenance_artifact_id),
     )
     return _draft(kind=ModelDraftKind.MODEL_TRAIN, payload=payload, provenance=provenance)
 
 
-def draft_model_predict(*, model: ModelVersion, training_spec: TrainingSpecVersion, prediction_context: ModelResearchContext, target_semantics: str, provenance: AgentProvenance) -> ModelAgentDraft:
+def draft_model_predict(*, model: ModelVersion, training_spec: TrainingSpecVersion, prediction_context: ModelResearchContext, execution_spec: ModelPredictExecutionSpec, target_semantics: str, provenance: AgentProvenance) -> ModelAgentDraft:
     if model.training_spec_version_id != training_spec.training_spec_version_id:
         raise ModelAgentBindingError("exact ModelVersion TrainingSpecVersion required")
     if training_spec.feature_set_version_id != prediction_context.feature_set_version_id:
@@ -113,6 +207,8 @@ def draft_model_predict(*, model: ModelVersion, training_spec: TrainingSpecVersi
         raise ModelAgentBindingError("prediction Dataset feature identity mismatch")
     if training_spec.label_spec_id != prediction_context.label_spec_id:
         raise ModelAgentBindingError("prediction Dataset label/horizon mismatch")
+    if execution_spec.model_version_id != model.model_version_id or execution_spec.prediction_context != prediction_context or execution_spec.target_semantics != target_semantics:
+        raise ModelAgentBindingError("prediction draft must bind exact execution spec")
     payload = PredictDraftPayload(
         model_version_id=model.model_version_id,
         model_artifact_id=model.model_artifact_id,
@@ -120,6 +216,8 @@ def draft_model_predict(*, model: ModelVersion, training_spec: TrainingSpecVersi
         prediction_context=prediction_context,
         training_spec_version_id=training_spec.training_spec_version_id,
         target_semantics=target_semantics,
+        execution_spec_id=execution_spec.execution_spec_id,
+        execution_spec_sha256=execution_spec.content_sha256,
         evidence_refs=(model.provenance_artifact_id, prediction_context.provenance_artifact_id),
     )
     return _draft(kind=ModelDraftKind.MODEL_PREDICT, payload=payload, provenance=provenance)
@@ -140,7 +238,7 @@ def build_model_research_proposal(*, research_goal: str, context: ModelResearchC
     return ModelResearchProposal(research_goal=research_goal, agent_rationale=agent_rationale, exact_context=context, action_drafts=action_drafts, next_action_proposals=next_action_proposals)
 
 
-def read_model_evidence(*, model: ModelVersion, training_spec: TrainingSpecVersion, dataset_context: ModelResearchContext, evaluation: ModelEvaluationEvidence | None = None, prediction: PredictionArtifact | None = None, experiment_refs: tuple[str, ...] = (), reviewer_refs: tuple[str, ...] = ()) -> ModelEvidenceView:
+def read_model_evidence(*, model: ModelVersion, training_spec: TrainingSpecVersion, dataset_context: ModelResearchContext, evaluation: ModelEvaluationEvidence | None = None, prediction: PredictionArtifact | None = None, experiment_refs: tuple[str, ...] = (), reviewer_refs: tuple[str, ...] = (), evaluation_policy_id: str = "UNTRUSTED_VIEW_ONLY", benchmark_id: str | None = None) -> ModelEvidenceView:
     if model.training_spec_version_id != training_spec.training_spec_version_id or model.dataset_version_id != dataset_context.dataset_version_id:
         raise ModelAgentBindingError("model evidence requires exact training context")
     if training_spec.label_spec_id != dataset_context.label_spec_id or training_spec.split_spec_id != dataset_context.split_spec_id:
@@ -166,13 +264,19 @@ def read_model_evidence(*, model: ModelVersion, training_spec: TrainingSpecVersi
         label_spec_id=dataset_context.label_spec_id, horizon_observations=dataset_context.horizon_observations,
         split_spec_id=dataset_context.split_spec_id, train_range=dataset_context.train_range,
         validation_range=dataset_context.validation_range, test_range=dataset_context.test_range,
+        purge_observations=dataset_context.purge_observations,
+        embargo_observations=dataset_context.embargo_observations,
         universe_version_id=dataset_context.universe_version_id,
-        snapshot_id=dataset_context.snapshot_id, seed=training_spec.seed,
+        snapshot_id=dataset_context.snapshot_id, knowledge_cutoff=dataset_context.knowledge_cutoff,
+        dataset_artifact_id=dataset_context.dataset_artifact_id,
+        dataset_provenance_artifact_id=dataset_context.provenance_artifact_id,
+        seed=training_spec.seed,
         parameters=(("alpha", training_spec.alpha), ("fit_intercept", training_spec.fit_intercept), ("solver", training_spec.solver)),
         worker_runtime_fingerprint=model.worker_runtime.fingerprint, model_artifact_id=model.model_artifact_id,
         provenance_artifact_id=model.provenance_artifact_id, prediction_artifact_id=prediction_id,
         model_prediction_request_id=prediction.model_prediction_request_id if prediction else None,
         target_semantics=prediction.target_semantics if prediction else None,
+        evaluation_policy_id=evaluation_policy_id, benchmark_id=benchmark_id,
         experiment_refs=tuple(sorted(experiment_refs)), reviewer_refs=tuple(sorted(reviewer_refs)), metrics=metrics,
     )
 
@@ -182,7 +286,7 @@ def compare_model_evidence(left: ModelEvidenceView, right: ModelEvidenceView, *,
         raise ModelAgentBindingError("ranking requires explicit objective metric, split role and direction")
     if objective_direction not in {None, "MINIMIZE", "MAXIMIZE"}:
         raise ModelAgentBindingError("objective direction must be MINIMIZE or MAXIMIZE")
-    fields = ("dataset_version_id", "feature_set_version_id", "factor_evaluation_ids", "label_spec_id", "horizon_observations", "split_spec_id", "train_range", "validation_range", "test_range", "universe_version_id", "snapshot_id")
+    fields = ("dataset_version_id", "feature_set_version_id", "factor_evaluation_ids", "label_spec_id", "horizon_observations", "split_spec_id", "train_range", "validation_range", "test_range", "purge_observations", "embargo_observations", "universe_version_id", "snapshot_id", "knowledge_cutoff", "dataset_artifact_id", "dataset_provenance_artifact_id", "target_semantics", "evaluation_policy_id", "benchmark_id")
     mismatches = tuple(name for name in fields if getattr(left, name) != getattr(right, name))
     if mismatches:
         return ModelComparison(status=ComparisonStatus.INCOMPARABLE_CONTEXT, left_model_version_id=left.model_version_id, right_model_version_id=right.model_version_id, context_mismatches=mismatches, objective_metric=objective_metric, objective_split_role=objective_split_role, objective_direction=objective_direction)
@@ -225,12 +329,14 @@ def explain_comparison(*, left: ModelEvidenceView, right: ModelEvidenceView, com
     refs.update(ref for view in (left, right) for ref in (*view.experiment_refs, *view.reviewer_refs))
     missing = tuple(f"{d.name}/{d.split_role}={d.status}" for d in comparison.metric_deltas if d.status != "AVAILABLE")
     summary = "Contexts are incomparable; no ranking or metric explanation is permitted." if comparison.status is ComparisonStatus.INCOMPARABLE_CONTEXT else "Explanation is limited to exact bound specs, metrics and Reviewer evidence."
-    return EvidenceExplanation(status="EVIDENCE_MISSING" if missing else "EVIDENCE_BOUND", summary=summary, changed_specs=tuple(changed), metric_statements=metric_statements, reviewer_statements=reviewer_statements, missing_evidence=missing, next_action_proposals=("PROPOSAL: run an explicitly user-confirmed comparable experiment with exact evidence bindings.",), cited_evidence_refs=tuple(sorted(refs)))
+    return EvidenceExplanation(status="EVIDENCE_MISSING" if missing else "EVIDENCE_BOUND", summary=summary, changed_specs=tuple(changed), metric_statements=metric_statements, reviewer_statements=reviewer_statements, missing_evidence=missing, next_action_proposals=("PROPOSAL: prepare a comparable experiment draft with exact evidence bindings; production execution remains NOT_AVAILABLE/NOT_RUN.",), cited_evidence_refs=tuple(sorted(refs)))
 
 
 __all__ = [
     "ModelAgentBindingError",
+    "build_model_predict_execution_spec",
     "build_model_research_proposal",
+    "build_model_train_execution_spec",
     "compare_model_evidence",
     "draft_model_predict",
     "draft_model_train",

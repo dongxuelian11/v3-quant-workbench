@@ -11,7 +11,7 @@ from v3_backend.agents.permissions import require_permission
 from v3_backend.agents.pydantic_worker import AgentOutputRejected, PYDANTIC_AI_VERIFIED_VERSION
 from v3_backend.domain.models import TrainingSpecVersion
 
-from .contracts import ModelProposalNarrative, ModelResearchContext, ModelResearchProposal
+from .contracts import ModelProposalNarrative, ModelResearchContext, ModelResearchProposal, ModelTrainExecutionSpec
 from .service import build_model_research_proposal, draft_model_train
 from .tools import ModelAgentReadTools
 
@@ -48,13 +48,15 @@ class ModelAgentWorker:
     def visible_tool_names(self) -> tuple[str, ...]:
         return self._read_tools.visible_tool_names
 
-    def run_train_proposal(self, *, research_goal: str, context: ModelResearchContext, spec: TrainingSpecVersion, requested_metrics: tuple[str, ...]) -> ModelResearchProposal:
+    def run_train_proposal(self, *, research_goal: str, context: ModelResearchContext, spec: TrainingSpecVersion, execution_spec: ModelTrainExecutionSpec, requested_metrics: tuple[str, ...]) -> ModelResearchProposal:
         decision = require_permission(self._permission, PermissionLevel.L1_DRAFT)
         request = {
             "task": "MODEL_TRAIN_PROPOSAL",
             "research_goal": research_goal,
             "dataset_version_id": context.dataset_version_id,
             "training_spec_version_id": spec.training_spec_version_id,
+            "execution_spec_id": execution_spec.execution_spec_id,
+            "execution_spec_sha256": execution_spec.content_sha256,
             "requested_metrics": list(sorted(requested_metrics)),
             "required_tool_call": "get_model_dataset_context",
         }
@@ -83,7 +85,7 @@ class ModelAgentWorker:
             instruction_version=_INSTRUCTION_VERSION,
             input_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         )
-        draft = draft_model_train(context=context, spec=spec, requested_metrics=requested_metrics, provenance=provenance)
+        draft = draft_model_train(context=context, spec=spec, execution_spec=execution_spec, requested_metrics=requested_metrics, provenance=provenance)
         proposals = tuple(f"PROPOSAL: {value}" for value in narrative.next_action_proposals)
         return build_model_research_proposal(research_goal=research_goal, agent_rationale=narrative.rationale, context=context, action_drafts=(draft,), next_action_proposals=proposals)
 

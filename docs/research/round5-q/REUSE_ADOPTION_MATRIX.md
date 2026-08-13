@@ -30,6 +30,47 @@ uses repository pins plus official upstream/PyPI evidence.
 - Comparison is deterministic only for an exact context key. Any material
   mismatch returns `INCOMPARABLE_CONTEXT` and no ranking.
 - Missing metrics/evidence remain `NOT_RUN` or `NOT_AVAILABLE`; no zero fill.
+
+## PR #27 final bounded correction: Q-A / Q-B / Q-C
+
+### Q-A — execution authority
+
+- A Q-local `UserConfirmationClaim` is explicitly `UNTRUSTED_CALLER_ASSERTED`; matching
+  action, actor, time, or draft hash does not create authority.
+- Both public application seams first verify the exact immutable execution spec and then
+  fail closed with `USER_EXECUTION_AUTHORITY_NOT_AVAILABLE`. They import or call neither
+  `train_model` nor `predict_model`.
+- L1 drafts expose `canonical_user_execution_authority=NOT_AVAILABLE`,
+  `production_execution_state=NOT_RUN`, and `agent_execution_allowed=false`.
+
+### Q-B — exact execution-input binding
+
+- `ModelTrainExecutionSpec` and `ModelPredictExecutionSpec` are frozen, strict,
+  content-addressed requests. The L1 draft binds each by exact ID plus SHA-256.
+- The sealed content includes the full sample payload/order; Dataset, FeatureSet,
+  FactorEvaluation, LabelSpec, SplitSpec and range/purge/embargo refs; Universe,
+  Snapshot and knowledge cutoff; TrainingSpec content; Model/Artifact/request refs;
+  code version; worker/runtime descriptor; prediction timestamp/as-of and target;
+  provenance refs; and proposed Truth/Admission state.
+- Revalidation recomputes the content identity at the application boundary. A caller
+  cannot confirm one spec and substitute any execution-changing field afterward.
+
+### Q-C — canonical evidence resolution
+
+- `ModelEvidenceView` remains a rendering DTO and is never accepted by the trusted
+  inventory. `CanonicalModelEvidenceResolver` accepts exact resolution requests and
+  reconstructs the Dataset -> TrainingSpec -> request/run/evidence -> ModelVersion ->
+  Prediction/Evaluation -> Experiment Run/Attempt -> Reviewer report chain.
+- Model, Dataset, result Artifact, Reviewer and provenance gaps fail closed with
+  `EVIDENCE_BINDING_UNAVAILABLE`. A self-consistent DTO or deterministic hash is not
+  registration authority.
+- Trusted comparison resolves both sides internally. Dataset/features/label/horizon,
+  split ranges/purge/embargo, Universe, Snapshot/as-of/knowledge cutoff, Dataset
+  Artifacts/provenance, evaluation policy and benchmark must match exactly; otherwise
+  the result is `INCOMPARABLE_CONTEXT` with no delta, ranking, or best-model claim.
+- Missing metrics remain `NOT_RUN` / `NOT_AVAILABLE`, and the explanation contract
+  continues to prohibit invented SHAP, feature importance, IC, attribution,
+  robustness, or causality.
 - No Q tool calls `train_model`, `predict_model`, tuning, Task creation,
   canonical ID allocation, admission, publication, or ResearchLoop completion.
 
