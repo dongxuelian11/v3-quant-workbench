@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0.0",
+  "authority_version": "1.0.0",
+  "status": "P0_PROJECT_AUTHORITY",
+  "files": [
+    {
+      "path": "V3_PROJECT_CONSTITUTION.md",
+      "sha256": "a09b8d24ae87b9716e55b6c874ed2fb5652bd3fc4fe26a38c57ae5b43effae70"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "ce07862e758479189935b3fcd7a3072ee1c68cb3d8f5fe7eb9cc71cd87406dd5"
+    },
+    {
+      "path": "docs/architecture/V3_CANONICAL_ARCHITECTURE.md",
+      "sha256": "5353f52acf24c607be18c7dbfcf0e178e594ba62c98dbb037df762bb39eecab5"
+    },
+    {
+      "path": "docs/status/V3_CAPABILITY_LEVELS.md",
+      "sha256": "86ef7b4937e6906b93218c6ae5278656fb2de8f2eee005eb09ebb59ce3f70e20"
+    }
+  ]
+}
