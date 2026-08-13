@@ -12,6 +12,8 @@ from v3_backend.domain.artifacts.identity import (
     storage_key_for_artifact_id,
 )
 from v3_backend.domain.payload_authority import (
+    BINDING_CONTRACT_VERSION,
+    REQUEST_CONTRACT_VERSION,
     RESOLVER_CONTRACT_VERSION,
     CanonicalPayloadBinding,
     CanonicalPayloadResolver,
@@ -19,6 +21,7 @@ from v3_backend.domain.payload_authority import (
     PayloadArtifactUnavailable,
     PayloadBindingUnavailable,
     PayloadContentMismatch,
+    PayloadContractVersionUnsupported,
     PayloadContextMismatch,
     PayloadOwnerMismatch,
     PayloadReadBoundExceeded,
@@ -113,6 +116,19 @@ class CanonicalPayloadAuthorityTests(unittest.TestCase):
         }
         values.update(changes)
         return CanonicalPayloadBinding(**values)  # type: ignore[arg-type]
+
+    def request_with(self, **changes: object) -> PayloadResolutionRequest:
+        values = {
+            "owner_namespace": self.request.owner_namespace,
+            "owner_id": self.request.owner_id,
+            "owner_version": self.request.owner_version,
+            "payload_role": self.request.payload_role,
+            "context_identity": self.request.context_identity,
+            "max_bytes": self.request.max_bytes,
+            "contract_version": self.request.contract_version,
+        }
+        values.update(changes)
+        return PayloadResolutionRequest(**values)  # type: ignore[arg-type]
 
     def test_p1_01_deterministic_request_identity(self) -> None:
         same = PayloadResolutionRequest(**{
@@ -369,6 +385,138 @@ class CanonicalPayloadAuthorityTests(unittest.TestCase):
                 max_bytes=10,
                 values=(1, 2),  # type: ignore[call-arg]
             )
+
+    def test_p1_v01_current_request_contract_version_succeeds(self) -> None:
+        self.assertEqual(self.request.contract_version, REQUEST_CONTRACT_VERSION)
+        resolver, owner, reader = self.resolver()
+        result = resolver.resolve(self.request)
+        self.assertEqual(result.receipt.result_status, "VERIFIED")
+        self.assertEqual(owner.calls, 1)
+        self.assertEqual(len(reader.calls), 1)
+
+    def test_p1_v02_unknown_request_contract_version_is_typed_failure(self) -> None:
+        request = self.request_with(
+            contract_version="v3.payload-resolution-request/2.0.0"
+        )
+        resolver, _, _ = self.resolver()
+        with self.assertRaises(PayloadContractVersionUnsupported) as observed:
+            resolver.resolve(request)
+        self.assertEqual(
+            observed.exception.to_wire(),
+            {
+                "code": "PAYLOAD_CONTRACT_VERSION_UNSUPPORTED",
+                "message": str(observed.exception),
+                "contract_kind": "request",
+                "observed_version": "v3.payload-resolution-request/2.0.0",
+                "supported_version": REQUEST_CONTRACT_VERSION,
+            },
+        )
+
+    def test_p1_v03_unknown_request_version_never_calls_owner_resolver(self) -> None:
+        request = self.request_with(contract_version="future")
+        resolver, owner, reader = self.resolver()
+        with self.assertRaises(PayloadContractVersionUnsupported):
+            resolver.resolve(request)
+        self.assertEqual(owner.calls, 0)
+        self.assertEqual(reader.calls, [])
+
+    def test_p1_v04_current_binding_contract_version_succeeds(self) -> None:
+        self.assertEqual(self.binding.contract_version, BINDING_CONTRACT_VERSION)
+        resolver, owner, reader = self.resolver()
+        result = resolver.resolve(self.request)
+        self.assertEqual(result.verified_payload.payload, self.payload)
+        self.assertEqual(owner.calls, 1)
+        self.assertEqual(len(reader.calls), 1)
+
+    def test_p1_v05_unknown_binding_contract_version_is_typed_failure(self) -> None:
+        binding = self.binding_with(
+            contract_version="v3.canonical-payload-binding/2.0.0"
+        )
+        resolver, owner, _ = self.resolver(binding=binding)
+        with self.assertRaises(PayloadContractVersionUnsupported) as observed:
+            resolver.resolve(self.request)
+        self.assertEqual(owner.calls, 1)
+        self.assertEqual(observed.exception.contract_kind, "binding")
+        self.assertEqual(
+            observed.exception.observed_version,
+            "v3.canonical-payload-binding/2.0.0",
+        )
+        self.assertEqual(
+            observed.exception.supported_version,
+            BINDING_CONTRACT_VERSION,
+        )
+
+    def test_p1_v06_unknown_binding_version_never_reads_artifact_bytes(self) -> None:
+        binding = self.binding_with(contract_version="unknown")
+        resolver, owner, reader = self.resolver(binding=binding)
+        with self.assertRaises(PayloadContractVersionUnsupported):
+            resolver.resolve(self.request)
+        self.assertEqual(owner.calls, 1)
+        self.assertEqual(reader.calls, [])
+
+    def test_p1_v07_near_match_request_versions_reject_exactly(self) -> None:
+        near_matches = (
+            "v3.payload-resolution-request/1.0",
+            "v3.payload-resolution-request/1.0.0+future",
+            "V3.payload-resolution-request/1.0.0",
+            "1.0.0",
+            "v3.payload-resolution-request/999.0.0",
+        )
+        for version in near_matches:
+            with self.subTest(version=version):
+                resolver, owner, reader = self.resolver()
+                with self.assertRaises(PayloadContractVersionUnsupported):
+                    resolver.resolve(self.request_with(contract_version=version))
+                self.assertEqual(owner.calls, 0)
+                self.assertEqual(reader.calls, [])
+
+    def test_p1_v08_near_match_binding_versions_reject_exactly(self) -> None:
+        near_matches = (
+            "v3.canonical-payload-binding/1.0",
+            "v3.canonical-payload-binding/1.0.0+future",
+            "V3.canonical-payload-binding/1.0.0",
+            "1.0.0",
+            "v3.canonical-payload-binding/999.0.0",
+        )
+        for version in near_matches:
+            with self.subTest(version=version):
+                resolver, owner, reader = self.resolver(
+                    binding=self.binding_with(contract_version=version)
+                )
+                with self.assertRaises(PayloadContractVersionUnsupported):
+                    resolver.resolve(self.request)
+                self.assertEqual(owner.calls, 1)
+                self.assertEqual(reader.calls, [])
+
+    def test_p1_v09_owner_binding_version_is_independent(self) -> None:
+        binding = self.binding_with(binding_version="dataset-owner-binding/999")
+        self.assertEqual(binding.contract_version, BINDING_CONTRACT_VERSION)
+        resolver, _, reader = self.resolver(binding=binding)
+        result = resolver.resolve(self.request)
+        self.assertEqual(result.verified_payload.payload, self.payload)
+        self.assertEqual(len(reader.calls), 1)
+
+    def test_p1_v10_bad_versions_never_create_verified_outputs(self) -> None:
+        cases = (
+            (
+                self.request_with(contract_version="unknown-request"),
+                self.binding,
+            ),
+            (
+                self.request,
+                self.binding_with(contract_version="unknown-binding"),
+            ),
+        )
+        for request, binding in cases:
+            with self.subTest(
+                request_version=request.contract_version,
+                binding_version=binding.contract_version,
+            ):
+                resolver, _, _ = self.resolver(binding=binding)
+                result = None
+                with self.assertRaises(PayloadContractVersionUnsupported):
+                    result = resolver.resolve(request)
+                self.assertIsNone(result)
 
 
 if __name__ == "__main__":

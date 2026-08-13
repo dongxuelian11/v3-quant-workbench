@@ -15,6 +15,7 @@ from .exceptions import (
     PayloadArtifactUnavailable,
     PayloadBindingUnavailable,
     PayloadContentMismatch,
+    PayloadContractVersionUnsupported,
     PayloadContextMismatch,
     PayloadOwnerMismatch,
     PayloadReadBoundExceeded,
@@ -22,6 +23,8 @@ from .exceptions import (
     PayloadSizeMismatch,
 )
 from .model import (
+    BINDING_CONTRACT_VERSION,
+    REQUEST_CONTRACT_VERSION,
     RESOLVER_CONTRACT_VERSION,
     CanonicalPayloadBinding,
     PayloadResolutionReceipt,
@@ -53,12 +56,24 @@ class CanonicalPayloadResolver:
     def resolve(self, request: PayloadResolutionRequest) -> PayloadResolutionResult:
         if not isinstance(request, PayloadResolutionRequest):
             raise TypeError("formal resolution requires PayloadResolutionRequest")
+        if request.contract_version != REQUEST_CONTRACT_VERSION:
+            raise PayloadContractVersionUnsupported(
+                contract_kind="request",
+                observed_version=request.contract_version,
+                supported_version=REQUEST_CONTRACT_VERSION,
+            )
 
         binding = self._binding_resolver.resolve(request)
         if binding is None:
             raise PayloadBindingUnavailable("canonical owner returned no payload binding")
         if not isinstance(binding, CanonicalPayloadBinding):
             raise TypeError("binding resolver returned a non-canonical binding value")
+        if binding.contract_version != BINDING_CONTRACT_VERSION:
+            raise PayloadContractVersionUnsupported(
+                contract_kind="binding",
+                observed_version=binding.contract_version,
+                supported_version=BINDING_CONTRACT_VERSION,
+            )
 
         self._verify_request_binding(request, binding)
 

@@ -18,6 +18,33 @@ class PayloadBindingUnavailable(PayloadResolutionError):
     code = "PAYLOAD_BINDING_UNAVAILABLE"
 
 
+class PayloadContractVersionUnsupported(PayloadResolutionError):
+    code = "PAYLOAD_CONTRACT_VERSION_UNSUPPORTED"
+
+    def __init__(
+        self,
+        *,
+        contract_kind: str,
+        observed_version: str,
+        supported_version: str,
+    ) -> None:
+        self.contract_kind = contract_kind
+        self.observed_version = observed_version
+        self.supported_version = supported_version
+        super().__init__(
+            f"unsupported {contract_kind} contract version: "
+            f"observed {observed_version!r}, supported {supported_version!r}"
+        )
+
+    def to_wire(self) -> dict[str, str]:
+        return {
+            **super().to_wire(),
+            "contract_kind": self.contract_kind,
+            "observed_version": self.observed_version,
+            "supported_version": self.supported_version,
+        }
+
+
 class PayloadOwnerMismatch(PayloadResolutionError):
     code = "PAYLOAD_OWNER_MISMATCH"
 

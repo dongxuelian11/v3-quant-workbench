@@ -4,6 +4,13 @@ Status: Systemic P1 shared foundation, `MODULE_IMPLEMENTED` on this branch. The 
 
 Resolver contract: `v3.canonical-payload-resolver/1.0.0`.
 
+Supported request contract: `v3.payload-resolution-request/1.0.0`.
+
+Supported binding contract: `v3.canonical-payload-binding/1.0.0`.
+
+The resolver version remains `1.0.0`: strict version rejection closes a bug in the
+unmerged `1.0.0` candidate rather than adding a second resolver protocol.
+
 ## Problem and authority boundary
 
 A valid-looking ID or self-declared SHA-256 is not proof of the payload used by a computation. A caller can pair an authentic reference with different prices, scores, samples, or market state. If the formal engine accepts those independent values, the reference decorates an untrusted payload rather than authorizing it.
@@ -20,6 +27,23 @@ untrusted PayloadResolutionRequest
   -> deterministic PayloadResolutionReceipt
 ```
 
+Validation is deliberately ordered:
+
+```text
+exact request contract version
+  -> canonical owner binding resolver
+  -> exact binding contract version
+  -> owner / role / context / artifact binding checks
+  -> Artifact Store read
+  -> independent byte verification and receipt
+```
+
+Unknown, future, case-varied, prefix-only, or otherwise approximate versions fail
+with `PAYLOAD_CONTRACT_VERSION_UNSUPPORTED`. There is no fallback to latest,
+semantic-version coercion, or best-effort negotiation. An unsupported request is
+rejected before the owner resolver is called; an unsupported binding is rejected
+before Artifact Store bytes are read.
+
 Authority comes from executing this boundary against the canonical owner and actual stored bytes. It does not come from Python type identity, a private token, a `trusted=True` flag, a self-consistent hash field, or possession of a binding, verified-payload, or receipt object.
 
 ## Contracts
@@ -31,6 +55,11 @@ Authority comes from executing this boundary against the canonical owner and act
 ### Owner-derived binding
 
 `CanonicalPayloadBinding` carries the owner identity and version, role, existing `art_sha256_` artifact ID, expected SHA-256, expected byte size, schema and semantic fingerprints when known, exact context identity, provenance reference when known, and binding version. Its deterministic `cpb_sha256_...` identity uses the existing canonical JSON hash implementation.
+
+The binding `contract_version` identifies the shared P1 wire contract and must equal
+`v3.canonical-payload-binding/1.0.0`. The separate owner-defined `binding_version`
+continues to version that owner's binding statement and is not compared with the P1
+contract version.
 
 Constructing a binding is not authority. The formal service obtains it only by calling the injected `CanonicalPayloadBindingResolver` for the current request and then verifies exact owner, role, and context equality before any byte read.
 
@@ -55,6 +84,7 @@ P1 treats `context_identity` as an immutable, deterministic owner-defined refere
 | Code | Meaning |
 |---|---|
 | `PAYLOAD_BINDING_UNAVAILABLE` | The canonical owner returned no binding; no empty/default payload is produced. |
+| `PAYLOAD_CONTRACT_VERSION_UNSUPPORTED` | Request or binding contract version is not the exact supported version; the structured error records kind, observed version, and supported version. |
 | `PAYLOAD_OWNER_MISMATCH` | Owner namespace, ID, or version differs. |
 | `PAYLOAD_ROLE_MISMATCH` | The bound role differs from requested role. |
 | `PAYLOAD_CONTEXT_MISMATCH` | Exact owner-defined context identity differs. |
