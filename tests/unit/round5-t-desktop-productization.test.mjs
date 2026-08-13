@@ -91,7 +91,7 @@ test("TDX fixture is typed and the renderer does not claim a formula VM", async 
   const source = await read("apps/desktop/src/renderer/components/FactorWorkbench.tsx");
   for (const line of ["MJ:=AMOUNT/VOL/100;", "MA5:=MA(MJ,5);", "MA20:=MA(MJ,20);", "MA60:=MA(MJ,60);", "GOLDEN:CROSS(MA20,MA60) AND MA5>MA20;"]) assert.ok(source.includes(line));
   assert.match(source, /GOLDEN.*BOOLEAN_SERIES/s);
-  assert.match(source, /boolean \/ signal-compatible（非 1\/0）/);
+  assert.match(source, /布尔 \/ 信号兼容（非 1\/0）/);
   assert.match(source, /VOL.*canonical shares × 0\.01.*hands/s);
   assert.match(source, /UNSUPPORTED_CANONICAL_OPERATOR/);
   assert.match(source, /仅编辑；无 JS\/TS 公式 VM/);
@@ -101,8 +101,8 @@ test("TDX fixture is typed and the renderer does not claim a formula VM", async 
 test("AI factor creation remains L1 draft with L2 and L3 unavailable", async () => {
   const source = await read("apps/desktop/src/renderer/components/FactorWorkbench.tsx");
   assert.match(source, /data-authority="L1_DRAFT"/);
-  assert.match(source, /REQUIRES USER CONFIRMATION/);
-  assert.match(source, /非 Canonical FactorDefinitionVersion/);
+  assert.match(source, /需要用户确认/);
+  assert.match(source, /非规范 FactorDefinitionVersion/);
   assert.match(source, /L2 EXECUTE <b>拒绝/);
   assert.match(source, /L3 PUBLISH <b>拒绝/);
   assert.match(source, /执行（L2 不可用）/);
@@ -111,10 +111,38 @@ test("AI factor creation remains L1 draft with L2 and L3 unavailable", async () 
 
 test("Apple accessibility fallbacks and Chinese-first navigation are explicit", async () => {
   const [app, css] = await Promise.all([read("apps/desktop/src/renderer/App.tsx"), read("apps/desktop/src/renderer/styles.css")]);
-  assert.match(app, /Agent 工作区/);
+  assert.match(app, /智能体工作区/);
   for (const [id, label] of [["research", "研究"], ["strategy", "策略"], ["model", "模型"], ["backtest", "回测"], ["result", "结果"]]) assert.match(app, new RegExp(`id: "${id}", zh: "${label}"`));
   assert.match(app, /\{active\.zh\}实验室/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(css, /prefers-reduced-transparency:\s*reduce/);
   assert.match(css, /prefers-contrast:\s*more/);
+});
+
+test("A4 whole-product Chinese-first census removes known ordinary English chrome while preserving canonical tokens", async () => {
+  const [app, workbench, factor, strategy, model, backtest, result, css, census] = await Promise.all([
+    read("apps/desktop/src/renderer/App.tsx"),
+    read("apps/desktop/src/renderer/components/Workbench.tsx"),
+    read("apps/desktop/src/renderer/components/FactorWorkbench.tsx"),
+    read("apps/desktop/src/renderer/components/StrategyPanels.tsx"),
+    read("apps/desktop/src/renderer/components/ModelPanels.tsx"),
+    read("apps/desktop/src/renderer/components/BacktestResultPanels.tsx"),
+    read("apps/desktop/src/renderer/components/ResultAnalyticsPanel.tsx"),
+    read("apps/desktop/src/renderer/styles.css"),
+    read("docs/research/round5-t/CHINESE_FIRST_UI_CENSUS.md")
+  ]);
+
+  for (const oldLabel of ["Agent Workspace", "FACTOR WORKSPACE", "NATURAL LANGUAGE · L1", "REQUIRES USER CONFIRMATION"]) {
+    assert.doesNotMatch(`${app}\n${factor}`, new RegExp(oldLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  for (const oldLabel of ["MODEL LAB · PHASED WORKFLOW", "BACKTEST EXPERIMENT", "Deterministic Result Lab"]) {
+    assert.doesNotMatch(`${model}\n${backtest}\n${result}`, new RegExp(oldLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.doesNotMatch(strategy, />Visual<|>Code<|>Split<|>Diff</);
+  for (const lab of ["research", "strategy", "model", "backtest", "result"]) assert.match(workbench, new RegExp(`\\b${lab}: \\[|activeLab === "${lab}"`));
+  for (const token of ["FactorDefinitionVersion", "BOOLEAN_SERIES", "NOT_CONNECTED", "L1_DRAFT", "L2 EXECUTE", "L3 PUBLISH"]) assert.match(factor, new RegExp(token));
+  assert.doesNotMatch(factor, /new Function|eval\(|mathjs/);
+  assert.match(css, /Systemic A4 — Chinese-first, low-chrome whole-product hierarchy/);
+  assert.match(css, /\.id-block\s*\{[\s\S]*?border:\s*0;/);
+  assert.match(census, /Class A[\s\S]*Class B[\s\S]*Class C/);
 });

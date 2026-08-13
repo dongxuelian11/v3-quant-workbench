@@ -11,13 +11,13 @@ export const CLOSED_RESEARCH_RENDERER_KEYS = Object.freeze([
 ] as const satisfies readonly GenerativeResearchViewBlockType[]);
 
 export const CLOSED_RESEARCH_RENDERER_REGISTRY = Object.freeze({
-  Narrative: { availability: "AVAILABLE", label: "Narrative" },
-  MetricGroup: { availability: "AVAILABLE", label: "Metrics" },
-  DataTable: { availability: "AVAILABLE", label: "Data table" },
-  TimeSeriesChart: { availability: "AVAILABLE", label: "Time series" },
-  BarChart: { availability: "AVAILABLE", label: "Bar chart" },
-  EvidenceList: { availability: "AVAILABLE", label: "Evidence list" },
-  Callout: { availability: "AVAILABLE", label: "Callout" }
+  Narrative: { availability: "AVAILABLE", label: "叙述" },
+  MetricGroup: { availability: "AVAILABLE", label: "指标" },
+  DataTable: { availability: "AVAILABLE", label: "数据表" },
+  TimeSeriesChart: { availability: "AVAILABLE", label: "时间序列" },
+  BarChart: { availability: "AVAILABLE", label: "柱状图" },
+  EvidenceList: { availability: "AVAILABLE", label: "证据列表" },
+  Callout: { availability: "AVAILABLE", label: "提示" }
 } as const);
 
 export function getClosedResearchRenderer(renderer: string) {

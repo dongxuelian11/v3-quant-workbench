@@ -53,3 +53,14 @@
 .generative-bindings code { overflow: hidden; color: var(--v3-accent); font-size: 8px; text-overflow: ellipsis; }
 .generative-bindings section > span { overflow: hidden; color: var(--v3-fg-secondary); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 980px) { .generative-block-grid { grid-template-columns: minmax(0, 1fr); } .generative-block { grid-column: 1 !important; } .generative-research-head { align-items: flex-start; flex-direction: column; } .generative-boundary { justify-items: start; text-align: left; } .generative-evidence-list > section, .generative-bindings section { grid-template-columns: minmax(0, 1fr); } }
+
+/* A4 low-chrome: generated evidence remains bounded without stacking cards. */
+.generative-research-view { margin: 14px 16px; border: 0; background: transparent; }
+.generative-research-head { padding: 10px 0; background: transparent; }
+.generative-block { border: 0; border-bottom: 1px solid var(--v3-border-subtle); background: transparent; }
+.generative-block > header { padding-inline: 0; }
+.generative-metrics { gap: 0 14px; }
+.generative-metrics > div { padding: 10px 0; border: 0; border-bottom: 1px solid var(--v3-border-subtle); background: transparent; }
+.generative-evidence-list > section { padding-inline: 0; border: 0; border-bottom: 1px solid var(--v3-border-subtle); }
+.generative-callout { background: transparent; }
+.generative-research-view button { background: transparent; }

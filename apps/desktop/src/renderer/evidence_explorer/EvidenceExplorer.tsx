@@ -109,49 +109,49 @@ export function EvidenceExplorer({
 
   return <div className="evidence-explorer" data-testid="evidence-lineage-explorer" data-scope={scopeMode} data-discovery={graph.discoveryScope.completeness} data-discovery-source={graph.discoveryScope.source}>
     <header className="evidence-explorer-head">
-      <div><small>EVIDENCE &amp; LINEAGE EXPLORER</small><b>Exact relations · read-only view</b></div>
-      <div className="explorer-statuses"><span>{graph.discoveryScope.completeness}</span><em>{graph.nodes.length} nodes · {graph.edges.length} exact edges</em></div>
+      <div><small>证据与来源链检查器</small><b>精确关系 · 只读视图</b></div>
+      <div className="explorer-statuses"><span>{graph.discoveryScope.completeness}</span><em>{graph.nodes.length} 个节点 · {graph.edges.length} 条精确边</em></div>
       <code className="explorer-source-authority">{graph.discoveryScope.source}</code>
     </header>
 
-    <div className="evidence-index explorer-evidence-index" role="list" aria-label="Session evidence objects">
+    <div className="evidence-index explorer-evidence-index" role="list" aria-label="会话证据对象">
       {activeSessionNodes.map((node) => <button key={node.exactId} role="listitem" data-evidence-object-id={node.exactId} data-truth-state={node.canonicalTruthState} data-admission-state={node.canonicalAdmissionState} className={node.exactId === focusedNode?.exactId ? "active" : ""} onClick={() => focusNode(node)}><span>{node.nodeType}</span><code>{compactId(node.exactId)}</code><small>{node.canonicalTruthState} / {node.canonicalAdmissionState}</small></button>)}
     </div>
 
-    <div className="evidence-explorer-toolbar" aria-label="Evidence explorer controls">
-      <label className="explorer-search"><span>Search visible scope</span><input value={filter.search} onChange={(event) => setFilter((current) => ({ ...current, search: event.target.value }))} placeholder="Exact/prefix ID, artifact, type, label"/></label>
-      <div className="segmented" aria-label="Explorer view">
-        <button aria-pressed={viewMode === "GRAPH"} onClick={() => setViewMode("GRAPH")}>Graph</button>
-        <button aria-pressed={viewMode === "LIST"} onClick={() => setViewMode("LIST")}>List</button>
+    <div className="evidence-explorer-toolbar" aria-label="证据检查器控件">
+      <label className="explorer-search"><span>搜索当前可见范围</span><input value={filter.search} onChange={(event) => setFilter((current) => ({ ...current, search: event.target.value }))} placeholder="精确或前缀 ID、产物、类型、标签"/></label>
+      <div className="segmented" aria-label="检查器视图">
+        <button aria-pressed={viewMode === "GRAPH"} onClick={() => setViewMode("GRAPH")}>关系图</button>
+        <button aria-pressed={viewMode === "LIST"} onClick={() => setViewMode("LIST")}>列表</button>
       </div>
-      <div className="segmented scope-switch" aria-label="Discovery scope">
-        <button aria-pressed={scopeMode === "ACTIVE_SESSION"} onClick={() => setScopeMode("ACTIVE_SESSION")}>Active session</button>
-        <button aria-pressed={scopeMode === "VISIBLE_WORKSPACE"} onClick={() => setScopeMode("VISIBLE_WORKSPACE")}>Loaded workspace</button>
+      <div className="segmented scope-switch" aria-label="发现范围">
+        <button aria-pressed={scopeMode === "ACTIVE_SESSION"} onClick={() => setScopeMode("ACTIVE_SESSION")}>当前会话</button>
+        <button aria-pressed={scopeMode === "VISIBLE_WORKSPACE"} onClick={() => setScopeMode("VISIBLE_WORKSPACE")}>已载入工作区</button>
       </div>
     </div>
 
-    <div className="evidence-explorer-filters" aria-label="Evidence filters">
-      <FilterSelect label="Type" value={filter.nodeType} values={nodeTypes} onChange={(value) => setFilter((current) => ({ ...current, nodeType: value as EvidenceGraphFilter["nodeType"] }))}/>
-      <FilterSelect label="Truth" value={filter.truth} values={["ALL", "UNKNOWN", "NOT_FORMAL", "FORMAL"]} onChange={(value) => setFilter((current) => ({ ...current, truth: value as EvidenceGraphFilter["truth"] }))}/>
-      <FilterSelect label="Admission" value={filter.admission} values={["ALL", "UNKNOWN", "PRE_ALPHA", "FORMAL_ADMITTED"]} onChange={(value) => setFilter((current) => ({ ...current, admission: value as EvidenceGraphFilter["admission"] }))}/>
-      <FilterSelect label="Validation" value={filter.validation} values={["ALL", "NOT_RUN", "FAILED", "PASSED"]} onChange={(value) => setFilter((current) => ({ ...current, validation: value as EvidenceGraphFilter["validation"] }))}/>
-      <FilterSelect label="Finding" value={filter.finding} values={["ALL", "HAS_FINDING", "NO_FINDING"]} onChange={(value) => setFilter((current) => ({ ...current, finding: value as EvidenceGraphFilter["finding"] }))}/>
+    <div className="evidence-explorer-filters" aria-label="证据筛选器">
+      <FilterSelect label="类型" value={filter.nodeType} values={nodeTypes} onChange={(value) => setFilter((current) => ({ ...current, nodeType: value as EvidenceGraphFilter["nodeType"] }))}/>
+      <FilterSelect label="真值" value={filter.truth} values={["ALL", "UNKNOWN", "NOT_FORMAL", "FORMAL"]} onChange={(value) => setFilter((current) => ({ ...current, truth: value as EvidenceGraphFilter["truth"] }))}/>
+      <FilterSelect label="准入" value={filter.admission} values={["ALL", "UNKNOWN", "PRE_ALPHA", "FORMAL_ADMITTED"]} onChange={(value) => setFilter((current) => ({ ...current, admission: value as EvidenceGraphFilter["admission"] }))}/>
+      <FilterSelect label="验证" value={filter.validation} values={["ALL", "NOT_RUN", "FAILED", "PASSED"]} onChange={(value) => setFilter((current) => ({ ...current, validation: value as EvidenceGraphFilter["validation"] }))}/>
+      <FilterSelect label="发现" value={filter.finding} values={["ALL", "HAS_FINDING", "NO_FINDING"]} onChange={(value) => setFilter((current) => ({ ...current, finding: value as EvidenceGraphFilter["finding"] }))}/>
     </div>
 
     <div className="lineage-focus-bar">
-      <div className="segmented" aria-label="Lineage expansion direction">
-        {(["UPSTREAM", "BOTH", "DOWNSTREAM"] as const).map((value) => <button key={value} aria-pressed={direction === value} onClick={() => setDirection(value)}>{value === "BOTH" ? "Both" : value === "UPSTREAM" ? "Upstream" : "Downstream"}</button>)}
+      <div className="segmented" aria-label="来源链展开方向">
+        {(["UPSTREAM", "BOTH", "DOWNSTREAM"] as const).map((value) => <button key={value} aria-pressed={direction === value} onClick={() => setDirection(value)}>{value === "BOTH" ? "上下游" : value === "UPSTREAM" ? "上游" : "下游"}</button>)}
       </div>
-      <label>Hops <select value={maxHops} onChange={(event) => setMaxHops(Number(event.target.value))}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select></label>
-      <span>{bounded.truncated ? "BOUNDED VIEW · MORE KNOWN NODES HIDDEN" : bounded.relationAvailability}</span>
+      <label>跳数 <select value={maxHops} onChange={(event) => setMaxHops(Number(event.target.value))}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select></label>
+      <span>{bounded.truncated ? "有界视图 · 还有已知节点未显示" : bounded.relationAvailability}</span>
     </div>
 
-    <nav className="lineage-breadcrumb" aria-label="Exact lineage breadcrumb">
+    <nav className="lineage-breadcrumb" aria-label="精确来源链面包屑">
       {breadcrumb.length > 0 ? breadcrumb.map((exactId, index) => <React.Fragment key={exactId}>{index > 0 && <i aria-hidden="true">›</i>}<button title={exactId} onClick={() => setFocusExactId(exactId)}>{compactId(exactId)}</button></React.Fragment>) : <span>NO_KNOWN_RELATION</span>}
     </nav>
 
-    {graph.nodes.length === 0 ? <div className="evidence-explorer-empty" data-testid="session-evidence-empty"><b>{connectionState === "READY" ? "No canonical evidence available" : "Backend evidence unavailable"}</b><p>No fixture or global fallback has been substituted. Discovery remains {graph.discoveryScope.completeness}.</p></div> : <div className="evidence-explorer-body">
-      <section className="lineage-surface" aria-label={`${viewMode === "GRAPH" ? "Graph" : "List"} of exact evidence relations`}>
+    {graph.nodes.length === 0 ? <div className="evidence-explorer-empty" data-testid="session-evidence-empty"><b>{connectionState === "READY" ? "没有可用 canonical 证据" : "后端证据不可用"}</b><p>未替换为 fixture 或全局回退；发现范围保持 {graph.discoveryScope.completeness}。</p></div> : <div className="evidence-explorer-body">
+      <section className="lineage-surface" aria-label={`精确证据关系${viewMode === "GRAPH" ? "图" : "列表"}`}>
         {viewMode === "GRAPH"
           ? <EvidenceGraphCanvas view={bounded} focusExactId={focusedNode?.exactId ?? null} onFocus={focusNode}/>
           : <EvidenceNodeList view={bounded} focusExactId={focusedNode?.exactId ?? null} onFocus={focusNode}/>}
@@ -169,7 +169,7 @@ const EvidenceGraphCanvas = memo(function EvidenceGraphCanvas({ view, focusExact
     className: node.exactId === focusExactId ? "lineage-node focused" : "lineage-node",
     selectable: true,
     draggable: true,
-    ariaLabel: `${node.nodeType}: ${node.displayLabel}; ${node.exactId}`
+    ariaLabel: `${node.nodeType}：${node.displayLabel}；${node.exactId}`
   })), [focusExactId, view.nodes]);
   const graphEdges = useMemo<Edge[]>(() => view.edges.map((edge) => ({
     id: edge.edgeId,
@@ -179,7 +179,7 @@ const EvidenceGraphCanvas = memo(function EvidenceGraphCanvas({ view, focusExact
     type: "smoothstep",
     selectable: true,
     focusable: true,
-    ariaLabel: `${edge.relationType}: ${edge.sourceExactId} to ${edge.targetExactId}`
+    ariaLabel: `${edge.relationType}：${edge.sourceExactId} 到 ${edge.targetExactId}`
   })), [view.edges]);
   const byId = useMemo(() => new Map(view.nodes.map((node) => [node.exactId, node])), [view.nodes]);
   return <div className="lineage-flow" data-testid="evidence-graph" data-node-count={view.nodes.length} data-edge-count={view.edges.length}>
@@ -224,22 +224,22 @@ function EvidenceNodeList({ view, focusExactId, onFocus }: { view: EvidenceGraph
 }
 
 function EvidenceNodeInspector({ node, graph, onFocusId, onOpenLab }: { node: EvidenceNodeView | null; graph: EvidenceGraphView; onFocusId: (exactId: string) => void; onOpenLab: (lab: LabId) => void }) {
-  if (!node) return <aside className="lineage-detail"><p>NO_KNOWN_RELATION</p></aside>;
+  if (!node) return <aside className="lineage-detail"><p>没有已知关系 · NO_KNOWN_RELATION</p></aside>;
   const relations = exactRelationsForNode(graph, node.exactId);
-  return <aside className="lineage-detail" aria-label="Exact evidence detail inspector" data-testid="lineage-detail-inspector">
+  return <aside className="lineage-detail" aria-label="精确证据详情检查器" data-testid="lineage-detail-inspector">
     <header><small>{node.nodeType.toUpperCase()}</small><b>{node.displayLabel}</b><span>{relations.availability}</span></header>
-    <section className="lineage-exact-identity exact-object-id"><label>EXACT ID</label><code>{node.exactId}</code><CopyExactButton label="Copy ID" value={node.exactId}/><label>CONTENT SHA-256</label><code>{node.contentSha256}</code><CopyExactButton label="Copy hash" value={node.contentSha256}/></section>
+    <section className="lineage-exact-identity exact-object-id"><label>精确 ID</label><code>{node.exactId}</code><CopyExactButton label="复制 ID" value={node.exactId}/><label>内容 SHA-256</label><code>{node.contentSha256}</code><CopyExactButton label="复制 hash" value={node.contentSha256}/></section>
     {node.nodeType === "Artifact" ? <>
-      <section className="lineage-authority-section artifact-owned-status"><h3>Artifact-owned status</h3><div className="truth-admission-grid"><StateCell label="ARTIFACT TRUTH" value={node.canonicalTruthState}/><StateCell label="ARTIFACT ADMISSION" value={node.canonicalAdmissionState}/><StateCell label="ARTIFACT VALIDATION" value={node.validationState}/><StateCell label="INTEGRITY" value={node.integrityStatus}/></div></section>
-      <section className="lineage-authority-section source-evidence-authority"><h3>Source Evidence authority</h3>{node.sourceEvidenceAuthorities.length === 0 ? <p>UNKNOWN / UNLINKED</p> : node.sourceEvidenceAuthorities.map((source) => <div key={source.sourceObjectId} className="source-evidence-status"><small>SOURCE OBJECT</small><code>{source.sourceObjectId}</code><StateCell label="SOURCE TRUTH" value={source.canonicalTruthState}/><StateCell label="SOURCE ADMISSION" value={source.canonicalAdmissionState}/><StateCell label="SOURCE VALIDATION" value={source.validationState}/></div>)}</section>
-    </> : <div className="lineage-state-grid"><div className="truth-admission-grid"><StateCell label="TRUTH" value={node.canonicalTruthState}/><StateCell label="ADMISSION" value={node.canonicalAdmissionState}/><StateCell label="VALIDATION" value={node.validationState}/></div><StateCell label="INTEGRITY" value={node.integrityStatus}/></div>}
-    <RelationList title="Derived from" edges={relations.derivedFrom} endpoint="source" onFocusId={onFocusId}/>
-    <RelationList title="Used by" edges={relations.usedBy} endpoint="target" onFocusId={onFocusId}/>
-    <ReferenceList title="Provenance refs" values={node.provenanceRefs}/>
-    <ReferenceList title="Artifact refs" values={node.artifactRefs}/>
-    <ReferenceList title="Explicit session links" values={node.sessionLinks}/>
-    <button className="open-in-lab" onClick={() => onOpenLab(node.openInLab)}>Open in {labLabel(node.openInLab)} Lab</button>
-    <section className="future-slots"><h3>Round 3 main-contract connections</h3>{ROUND3_MAIN_CONTRACT_SLOTS.map((slot) => <div key={slot.object}><b>{slot.object}</b><span>{slot.status}</span><small>{slot.owner}</small></div>)}</section>
+      <section className="lineage-authority-section artifact-owned-status"><h3>产物自有状态</h3><div className="truth-admission-grid"><StateCell label="产物真值" value={node.canonicalTruthState}/><StateCell label="产物准入" value={node.canonicalAdmissionState}/><StateCell label="产物验证" value={node.validationState}/><StateCell label="完整性" value={node.integrityStatus}/></div></section>
+      <section className="lineage-authority-section source-evidence-authority"><h3>来源证据权威</h3>{node.sourceEvidenceAuthorities.length === 0 ? <p>未知 / 未链接 · UNKNOWN / UNLINKED</p> : node.sourceEvidenceAuthorities.map((source) => <div key={source.sourceObjectId} className="source-evidence-status"><small>来源对象</small><code>{source.sourceObjectId}</code><StateCell label="来源真值" value={source.canonicalTruthState}/><StateCell label="来源准入" value={source.canonicalAdmissionState}/><StateCell label="来源验证" value={source.validationState}/></div>)}</section>
+    </> : <div className="lineage-state-grid"><div className="truth-admission-grid"><StateCell label="真值" value={node.canonicalTruthState}/><StateCell label="准入" value={node.canonicalAdmissionState}/><StateCell label="验证" value={node.validationState}/></div><StateCell label="完整性" value={node.integrityStatus}/></div>}
+    <RelationList title="派生自" edges={relations.derivedFrom} endpoint="source" onFocusId={onFocusId}/>
+    <RelationList title="被使用于" edges={relations.usedBy} endpoint="target" onFocusId={onFocusId}/>
+    <ReferenceList title="来源引用" values={node.provenanceRefs}/>
+    <ReferenceList title="产物引用" values={node.artifactRefs}/>
+    <ReferenceList title="显式会话链接" values={node.sessionLinks}/>
+    <button className="open-in-lab" onClick={() => onOpenLab(node.openInLab)}>在{labLabel(node.openInLab)}实验室中打开</button>
+    <section className="future-slots"><h3>Round 3 主合同连接</h3>{ROUND3_MAIN_CONTRACT_SLOTS.map((slot) => <div key={slot.object}><b>{slot.object}</b><span>{slot.status}</span><small>{slot.owner}</small></div>)}</section>
   </aside>;
 }
 
@@ -251,11 +251,11 @@ function RelationList({ title, edges, endpoint, onFocusId }: { title: string; ed
 }
 
 function ReferenceList({ title, values }: { title: string; values: readonly string[] }) {
-  return <section className="lineage-reference-list"><h3>{title}</h3>{values.length === 0 ? <p>NONE EXPLICITLY LINKED</p> : values.map((value) => <code key={value}>{value}</code>)}</section>;
+  return <section className="lineage-reference-list"><h3>{title}</h3>{values.length === 0 ? <p>没有显式链接</p> : values.map((value) => <code key={value}>{value}</code>)}</section>;
 }
 
 function FilterSelect({ label, value, values, onChange }: { label: string; value: string; values: readonly string[]; onChange: (value: string) => void }) {
-  return <label><span>{label}</span><select aria-label={`${label} filter`} value={value} onChange={(event) => onChange(event.target.value)}>{values.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>;
+  return <label><span>{label}</span><select aria-label={`${label}筛选`} value={value} onChange={(event) => onChange(event.target.value)}>{values.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>;
 }
 
 function StateCell({ label, value }: { label: string; value: string }) {
@@ -270,7 +270,7 @@ function CopyExactButton({ label, value }: { label: string; value: string }) {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1200);
   };
-  return <button type="button" onClick={() => { void copy(); }} disabled={value === "UNKNOWN"}>{copied ? "Copied" : label}</button>;
+  return <button type="button" onClick={() => { void copy(); }} disabled={value === "UNKNOWN"}>{copied ? "已复制" : label}</button>;
 }
 
 function compactId(value: string) {
@@ -278,5 +278,5 @@ function compactId(value: string) {
 }
 
 function labLabel(lab: LabId) {
-  return lab[0].toUpperCase() + lab.slice(1);
+  return lab === "research" ? "研究" : lab === "strategy" ? "策略" : lab === "model" ? "模型" : lab === "backtest" ? "回测" : "结果";
 }

@@ -232,16 +232,16 @@ test("bounded large fixture returns promptly without rendering a hairball", () =
 test("Artifact Viewer and Explorer keep unsupported content passive and expose keyboard/a11y controls", () => {
   const artifactSource = readFileSync(new URL("../../apps/desktop/src/renderer/components/ArtifactViewer.tsx", import.meta.url), "utf8");
   const explorerSource = readFileSync(new URL("../../apps/desktop/src/renderer/evidence_explorer/EvidenceExplorer.tsx", import.meta.url), "utf8");
-  assert.match(artifactSource, /Unsupported renderer · passive safe state/);
-  assert.match(artifactSource, /No HTML, script, embedded active content, or filesystem target was executed/);
-  assert.match(artifactSource, /CONTENT SHA-256/);
-  assert.match(artifactSource, /ARTIFACT VALIDATION/);
-  assert.match(artifactSource, /SOURCE EVIDENCE VALIDATION/);
+  assert.match(artifactSource, /渲染器不受支持 · 被动安全状态/);
+  assert.match(artifactSource, /未执行 HTML、脚本、嵌入式活动内容或文件系统目标/);
+  assert.match(artifactSource, /内容 SHA-256/);
+  assert.match(artifactSource, /产物验证/);
+  assert.match(artifactSource, /来源证据验证/);
   assert.doesNotMatch(artifactSource, /artifact\.validationState \?\? evidence\?\.validationState/);
   assert.doesNotMatch(artifactSource, /artifact\.integrityStatus \?\? evidence\?\.integrityStatus/);
-  assert.match(artifactSource, /Copy artifact ID/);
+  assert.match(artifactSource, /复制产物 ID/);
   assert.match(explorerSource, /ArrowDown/);
-  assert.match(explorerSource, /aria-label="Exact lineage breadcrumb"/);
+  assert.match(explorerSource, /aria-label="精确来源链面包屑"/);
   assert.match(explorerSource, /onlyRenderVisibleElements/);
   assert.match(explorerSource, /data-testid="evidence-graph"/);
   assert.match(explorerSource, /data-testid="evidence-list"/);

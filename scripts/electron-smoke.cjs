@@ -6,6 +6,19 @@ const root = path.resolve(__dirname, "..");
 const phase = process.env.V3_SMOKE_PHASE || "capture";
 const screenshots = path.resolve(root, "deliverables", "visual-restoration-screenshots");
 const reviewEvidence = path.resolve(root, "docs", "research", "round5-t", "evidence");
+const requiredReviewEvidence = [
+  "01-agent-workspace-1920x1080.png",
+  "02-agent-workspace-1280x720.png",
+  "03-factor-library-1920x1080.png",
+  "04-factor-provenance-1536x864.png",
+  "05-strategy-lab-1536x864.png",
+  "06-model-lab-1536x864.png",
+  "07-backtest-lab-1536x864.png",
+  "08-result-lab-1536x864.png",
+  "09-tdx-editor-1536x864.png",
+  "10-chinese-not-connected-1536x864.png",
+  "11-high-contrast-1280x720.png"
+];
 const electronData = path.resolve(root, "deliverables", "electron-user-data-fr1-visual");
 fs.mkdirSync(screenshots, { recursive: true });
 fs.mkdirSync(reviewEvidence, { recursive: true });
@@ -102,6 +115,9 @@ app.whenReady().then(async () => {
     throw error;
   }
   if (phase === "capture") {
+    for (const entry of fs.readdirSync(reviewEvidence)) {
+      if (entry.endsWith(".png")) fs.rmSync(path.resolve(reviewEvidence, entry));
+    }
     await evaluate(win, "window.v3Desktop.resetWorkspace()");
     await evaluate(win, "window.localStorage.removeItem('v3-layout-contract')");
     win.reload();
@@ -138,6 +154,9 @@ app.whenReady().then(async () => {
     await waitFor(win, "Boolean(document.querySelector('[data-testid=factor-library]'))", "production Factor Library boundary");
     const productionBoundary = await evaluate(win, `(()=>({mode:document.querySelector('[data-testid=factor-workbench]')?.getAttribute('data-fixture-mode'),items:document.querySelectorAll('.factor-list [role=option]').length,body:document.querySelector('[data-testid=factor-library]')?.textContent??''}))()`);
     if (productionBoundary.mode !== "LIVE_READ_ONLY" || productionBoundary.items !== 0 || !productionBoundary.body.includes("尚未接入") || !productionBoundary.body.includes("未注入任何演示因子")) throw new Error(`Production fixture boundary failed ${JSON.stringify(productionBoundary)}`);
+    await reviewShot(win, "10-chinese-not-connected-1536x864.png", [1536, 864]);
+    const missingReviewEvidence = requiredReviewEvidence.filter((name) => !fs.existsSync(path.resolve(reviewEvidence, name)));
+    if (missingReviewEvidence.length) throw new Error(`Required A4 review evidence missing ${JSON.stringify(missingReviewEvidence)}`);
     fs.writeFileSync(path.resolve(screenshots, "production-boundary-result.json"), JSON.stringify({ productionBoundary, electron: process.versions.electron, prefs, consoleErrors }, null, 2));
   } else if (phase === "restart") {
     const geometryPath = path.resolve(screenshots, "layout-geometry.json");
@@ -198,19 +217,19 @@ app.whenReady().then(async () => {
       };
     })()`);
     const permissionContract = JSON.stringify(interactionEvidence.agentWorkspace.permissions) === JSON.stringify([
-      { level: "L0_READ", status: "AVAILABLE", allowed: "true" },
-      { level: "L1_DRAFT", status: "AVAILABLE", allowed: "true" },
-      { level: "L2_EXECUTE", status: "DENIED", allowed: "false" },
-      { level: "L3_PUBLISH", status: "DENIED", allowed: "false" }
+      { level: "L0_READ", status: "允许 · AVAILABLE", allowed: "true" },
+      { level: "L1_DRAFT", status: "允许 · AVAILABLE", allowed: "true" },
+      { level: "L2_EXECUTE", status: "拒绝 · DENIED", allowed: "false" },
+      { level: "L3_PUBLISH", status: "拒绝 · DENIED", allowed: "false" }
     ]);
     const defaultSessionId = "session-view-round3-integration-001";
     const evidenceKindCounts = Object.fromEntries(["PortfolioIntent","TargetWeightVector","RiskAdjustedWeightVector","RiskDecisionReport","BacktestRunSpec","BacktestRunResult"].map((kind)=>[kind,interactionEvidence.agentWorkspace.evidenceKinds.filter((value)=>value===kind).length]));
     if (interactionEvidence.agentWorkspace.defaultSurface !== "agent" || interactionEvidence.agentWorkspace.boundary !== "DEVELOPMENT_INTEGRATION_FIXTURE" || interactionEvidence.agentWorkspace.connection !== "READY" || !interactionEvidence.agentWorkspace.navigator || !interactionEvidence.agentWorkspace.inspector || !interactionEvidence.agentWorkspace.artifactViewer || !interactionEvidence.agentWorkspace.timeline || !permissionContract || interactionEvidence.agentWorkspace.forbiddenActions.length || interactionEvidence.agentWorkspace.agentRoles.length || interactionEvidence.agentWorkspace.statementSessions.length || interactionEvidence.agentWorkspace.timelineSessions.some((item)=>item!==defaultSessionId) || JSON.stringify(interactionEvidence.agentWorkspace.evidenceIds)!==JSON.stringify(exactEvidenceIds) || JSON.stringify(evidenceKindCounts)!==JSON.stringify({PortfolioIntent:2,TargetWeightVector:2,RiskAdjustedWeightVector:2,RiskDecisionReport:2,BacktestRunSpec:1,BacktestRunResult:1}) || interactionEvidence.agentWorkspace.timelineStates.length!==10 || interactionEvidence.agentWorkspace.timelineStates.some((item)=>item.state!=="PRE_ALPHA"||item.successClass||/executed|succeeded/i.test(item.title??'')) || JSON.stringify(interactionEvidence.agentWorkspace.connectionSlots.map((item)=>item.owner))!==JSON.stringify(["CANONICAL_H","CANONICAL_I","CANONICAL_J"]) || interactionEvidence.agentWorkspace.connectionSlots.some((item)=>item.status!=="CONNECTED_READ_ONLY_MAIN_CONTRACT")) throw new Error(`Agent workspace contract failed ${JSON.stringify(interactionEvidence.agentWorkspace)}`);
-    await evaluate(win, `(()=>{const input=document.querySelector('textarea[aria-label="Research question"]');const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(input,'Audit the exact dataset evidence before drafting a conclusion.');input.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
-    await clickText(win, "Save L1 draft", 300);
+    await evaluate(win, `(()=>{const input=document.querySelector('textarea[aria-label="研究问题"]');const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(input,'在起草结论前，审计精确数据集证据。');input.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
+    await clickText(win, "保存 L1 草案", 300);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=local-agent-draft]'))", "saved local L1 draft");
     await click(win, `[data-evidence-object-id='${exactEvidenceIds[2]}']`, 250);
-    if (!await evaluate(win, "document.querySelector('.open-in-lab')?.textContent==='Open in Strategy Lab'")) throw new Error("TargetWeightVector Open-in-Lab route label is not Strategy");
+    if (!await evaluate(win, "document.querySelector('.open-in-lab')?.textContent==='在策略实验室中打开'")) throw new Error("TargetWeightVector Open-in-Lab route label is not Strategy");
     await click(win, ".open-in-lab", 500);
     if (await evaluate(win, "document.querySelector('[data-lab-workbench]')?.getAttribute('data-lab-workbench')") !== "strategy") throw new Error("TargetWeightVector did not route to Strategy Lab");
     await click(win, "[data-surface='agent']", 400);
@@ -245,34 +264,31 @@ app.whenReady().then(async () => {
     await shot(win, geometry, "21-factor-library-1920x1080.png", [1920, 1080]);
     await reviewShot(win, "03-factor-library-1920x1080.png", [1920, 1080]);
     await shot(win, geometry, "22-factor-library-1280x720.png", [1280, 720]);
-    await reviewShot(win, "04-factor-library-1280x720.png", [1280, 720]);
-    await clickText(win, "定义", 300);
+    await click(win, ".factor-detail > nav button:nth-child(2)", 300);
     if (!await evaluate(win, "document.body.innerText.includes('fdv_sha256_91e750eaa4ef83a96dac412ed2a88c1b247d2357f69b455d2f350ec9804acee1')")) throw new Error("Exact GOLDEN definition ID missing");
     await shot(win, geometry, "23-factor-detail-definition.png", [1536, 864]);
-    await clickText(win, "版本 / 来源", 300);
-    await reviewShot(win, "05-factor-detail-scrollbar-1280x720.png", [1280, 720]);
+    await click(win, ".factor-detail > nav button:nth-child(6)", 300);
+    await reviewShot(win, "04-factor-provenance-1536x864.png", [1536, 864]);
     win.webContents.debugger.attach("1.3");
     await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", { features: [{ name: "prefers-contrast", value: "more" }] });
-    await reviewShot(win, "08-scrollbar-high-contrast-1280x720.png", [1280, 720]);
+    await reviewShot(win, "11-high-contrast-1280x720.png", [1280, 720]);
     await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", { features: [] });
     win.webContents.debugger.detach();
     await evaluate(win, "(()=>{document.documentElement.dataset.scrollbarEvidenceState='hover';const pane=document.querySelector('.factor-categories');if(pane)pane.scrollTop=240})()");
-    await reviewShot(win, "09-scrollbar-hover-long-content-1280x720.png", [1280, 720]);
     await evaluate(win, "delete document.documentElement.dataset.scrollbarEvidenceState");
     await clickText(win, "TDX 公式", 900);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=tdx-editor] .monaco-editor'))", "TDX Monaco editor");
     const tdx = await evaluate(win, "(()=>({state:document.querySelector('[data-testid=tdx-editor]')?.getAttribute('data-parse-state'),body:document.querySelector('[data-testid=tdx-editor]')?.textContent??''}))()");
     if (tdx.state!=='PASSED' || !tdx.body.includes('BOOLEAN_SERIES') || !tdx.body.includes('非 1/0') || !tdx.body.includes('canonical shares × 0.01')) throw new Error(`TDX typed fixture failed ${JSON.stringify(tdx)}`);
     await shot(win, geometry, "24-tdx-editor-w0-fixture.png", [1536, 864]);
-    await reviewShot(win, "06-tdx-monaco-w0-scrollbars-1536x864.png", [1536, 864]);
-    await clickText(win, "不支持函数状态", 500);
+    await reviewShot(win, "09-tdx-editor-1536x864.png", [1536, 864]);
+    await clickText(win, "查看不支持状态", 500);
     if (await evaluate(win, "document.querySelector('[data-testid=tdx-editor]')?.getAttribute('data-parse-state')") !== "UNSUPPORTED") throw new Error("TDX unsupported state missing");
     await shot(win, geometry, "25-tdx-editor-unsupported.png", [1536, 864]);
     await clickText(win, "AI 创建", 600);
     const aiDraft = await evaluate(win, "(()=>({authority:document.querySelector('[data-testid=ai-factor-draft]')?.getAttribute('data-authority'),body:document.querySelector('[data-testid=ai-factor-draft]')?.textContent??'',disabled:Array.from(document.querySelectorAll('[data-testid=ai-factor-draft] button:disabled')).map((item)=>item.textContent)}))()");
-    if (aiDraft.authority!=='L1_DRAFT' || !aiDraft.body.includes('REQUIRES USER CONFIRMATION') || !aiDraft.body.includes('非 Canonical FactorDefinitionVersion') || !aiDraft.disabled.some((item)=>item.includes('L2')) || !aiDraft.disabled.some((item)=>item.includes('L3'))) throw new Error(`AI Draft authority failed ${JSON.stringify(aiDraft)}`);
+    if (aiDraft.authority!=='L1_DRAFT' || !aiDraft.body.includes('需要用户确认') || !aiDraft.body.includes('非规范 FactorDefinitionVersion') || !aiDraft.disabled.some((item)=>item.includes('L2')) || !aiDraft.disabled.some((item)=>item.includes('L3'))) throw new Error(`AI Draft authority failed ${JSON.stringify(aiDraft)}`);
     await shot(win, geometry, "26-ai-draft-confirm-required.png", [1536, 864]);
-    await reviewShot(win, "07-ai-draft-confirm-required-1536x864.png", [1536, 864]);
     await clickText(win, "研究画布", 500);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=research-echart]'))", "return to Research canvas");
 
@@ -295,6 +311,7 @@ app.whenReady().then(async () => {
     await click(win, "[data-lab='strategy']", 900);
     await waitFor(win, "Boolean(document.querySelector('.react-flow'))", "React Flow");
     await shot(win, geometry, "05-strategy-visual-mode.png", [1536, 864]);
+    await reviewShot(win, "05-strategy-lab-1536x864.png", [1536, 864]);
     await click(win, "[data-strategy-mode='code']", 900);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=monaco-editor] .monaco-editor'))", "Monaco code editor");
     await shot(win, geometry, "06-strategy-code-mode.png", [1536, 864]);
@@ -310,8 +327,9 @@ app.whenReady().then(async () => {
     await click(win, "[data-model-phase='configure']", 500);
     if (await evaluate(win, "document.querySelectorAll('[data-model-family]').length") !== 7) throw new Error("Seven model families missing");
     await shot(win, geometry, "09-model-dataset-family-run-workflow.png", [1536, 864]);
+    await reviewShot(win, "06-model-lab-1536x864.png", [1536, 864]);
     await click(win, "[data-model-phase='study']", 700);
-    await clickText(win, "Importance", 400);
+    await clickText(win, "重要性", 400);
     await shot(win, geometry, "10-model-study-trial-hpo-workflow.png", [1536, 864]);
     await click(win, "[data-model-phase='version']", 700);
     await click(win, "[data-model-version-tab='signal']", 400);
@@ -322,12 +340,14 @@ app.whenReady().then(async () => {
     await click(win, "[data-lab='backtest']", 800);
     if (!await evaluate(win, "Boolean(document.querySelector('[data-truth-classification]'))")) throw new Error("Backtest provenance missing");
     await shot(win, geometry, "12-backtest-review.png", [1536, 864]);
+    await reviewShot(win, "07-backtest-lab-1536x864.png", [1536, 864]);
     await evaluate(win, "history.replaceState(null,'',location.pathname+'?resultAnalyticsFixture=development')");
     await click(win, "[data-lab='result']", 800);
-    interactionEvidence.resultAnalytics = await evaluate(win, "(()=>{const surface=document.querySelector('[data-result-analytics-id]');const chart=document.querySelector('[data-testid=result-analytics-chart]');return {analyticsId:surface?.getAttribute('data-result-analytics-id')??null,resultId:surface?.getAttribute('data-result-id')??null,policyId:surface?.getAttribute('data-policy-id')??null,benchmarkId:surface?.getAttribute('data-benchmark-id')??null,truth:document.body.innerText.includes('NOT_FORMAL · PRE_ALPHA'),policy:document.body.innerText.includes('A_SHARE_DAILY_RESEARCH_V0'),developmentBoundary:document.body.innerText.includes('DEVELOPMENT / INTEGRATION FIXTURE'),chartBound:Boolean(chart),chartAnalyticsId:chart?.getAttribute('data-analytics-id')??null}})()");
+    interactionEvidence.resultAnalytics = await evaluate(win, "(()=>{const surface=document.querySelector('[data-result-analytics-id]');const chart=document.querySelector('[data-testid=result-analytics-chart]');return {analyticsId:surface?.getAttribute('data-result-analytics-id')??null,resultId:surface?.getAttribute('data-result-id')??null,policyId:surface?.getAttribute('data-policy-id')??null,benchmarkId:surface?.getAttribute('data-benchmark-id')??null,truth:document.body.innerText.includes('NOT_FORMAL · PRE_ALPHA'),policy:document.body.innerText.includes('A_SHARE_DAILY_RESEARCH_V0'),developmentBoundary:document.body.innerText.includes('DEVELOPMENT_INTEGRATION_FIXTURE'),chartBound:Boolean(chart),chartAnalyticsId:chart?.getAttribute('data-analytics-id')??null}})()");
     const resultAnalytics = interactionEvidence.resultAnalytics;
     if (!resultAnalytics.analyticsId?.startsWith("bra_sha256_") || !resultAnalytics.resultId?.startsWith("btrr_sha256_") || !resultAnalytics.policyId?.startsWith("rap_sha256_") || !resultAnalytics.benchmarkId?.startsWith("bmsv_sha256_") || !resultAnalytics.truth || !resultAnalytics.policy || !resultAnalytics.developmentBoundary || !resultAnalytics.chartBound || resultAnalytics.chartAnalyticsId !== resultAnalytics.analyticsId) throw new Error(`Result Analytics identity/truth/policy/chart binding missing ${JSON.stringify(resultAnalytics)}`);
     await shot(win, geometry, "13-result-review.png", [1536, 864]);
+    await reviewShot(win, "08-result-lab-1536x864.png", [1536, 864]);
 
     await evaluate(win, "document.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true}))");
     await waitFor(win, "Boolean(document.querySelector('.command-palette'))", "keyboard-opened command palette");

@@ -1057,3 +1057,196 @@ h1, h2, h3, strong, b { font-family: "Segoe UI Variable Display", "Segoe UI Vari
   }
   .context-bar { background: #080a0f; backdrop-filter: none; }
 }
+
+/* Systemic A4 — Chinese-first, low-chrome whole-product hierarchy. */
+.editor-context,
+.workflow-header,
+.analysis-header,
+.factor-product-bar,
+.agent-workspace-head {
+  background: linear-gradient(100deg, rgba(18,25,36,.82), rgba(10,14,21,.66));
+  border-bottom-color: rgba(91,105,128,.28);
+}
+
+.editor-identity h1,
+.workflow-header h1,
+.analysis-header h1,
+.factor-product-bar h1,
+.agent-session-title h1 {
+  font-family: "Segoe UI Variable Display", "Microsoft YaHei UI", sans-serif;
+  font-weight: 660;
+  letter-spacing: -.018em;
+}
+
+.reviewer-panel,
+.artifact-viewer {
+  margin: 14px 16px;
+  border: 0;
+  background: transparent;
+}
+
+.review-summary,
+.reviewer-layer-grid,
+.reviewer-finding-grid,
+.truth-admission-grid,
+.artifact-metrics,
+.permission-strip {
+  border-color: rgba(91,105,128,.24);
+  background: transparent;
+}
+
+.review-overall,
+.review-counts > div,
+.review-check-grid article,
+.truth-admission-grid > div,
+.artifact-metrics > div,
+.permission-strip > div {
+  border-color: rgba(91,105,128,.22);
+  background: transparent;
+}
+
+.reviewer-layer-grid header,
+.finding-list header,
+.finding-detail header,
+.reviewer-panel-head,
+.agent-stream > header,
+.evidence-inspector > header,
+.artifact-viewer > header,
+.execution-timeline > header {
+  padding-block: 10px;
+  background: transparent;
+}
+
+.finding-list > button,
+.agent-statement,
+.evidence-index button,
+.artifact-meta,
+.command-receipt {
+  background: transparent;
+}
+
+.agent-statement { padding: 15px 16px; }
+.agent-statement.local-draft { background: rgba(83,104,174,.065); }
+.evidence-index { padding: 9px 10px; }
+.evidence-index button { min-width: 126px; }
+.future-slots { border: 0; border-top: 1px solid var(--v3-border-subtle); background: transparent; }
+.artifact-text,
+.future-renderer-slot { background: transparent; }
+
+.factor-library { grid-template-columns: 188px minmax(320px,.82fr) minmax(480px,1.38fr); }
+.factor-categories,
+.factor-list-pane,
+.factor-detail-pane { background: transparent; }
+.factor-categories,
+.factor-list-pane { border-right-color: rgba(91,105,128,.28); }
+.factor-detail > header { padding: 22px 22px 16px; }
+.factor-detail-body { gap: 14px; padding: 18px 22px 28px; }
+.factor-list > button { min-height: 76px; padding-inline: 12px; }
+
+.fact-grid {
+  grid-template-columns: minmax(134px,.36fr) minmax(0,1fr);
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.fact-grid dt,
+.fact-grid dd {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 7px 2px;
+  border-bottom: 1px solid rgba(91,105,128,.25);
+  background: transparent;
+}
+.fact-grid dd { padding-left: 14px; }
+
+.id-block {
+  display: grid;
+  grid-template-columns: minmax(170px,.42fr) minmax(0,1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
+  padding: 5px 2px;
+  border: 0;
+  border-bottom: 1px solid rgba(91,105,128,.25);
+  border-radius: 0;
+  background: transparent;
+}
+.id-block code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.id-block button { min-height: 24px; padding: 2px 7px; border-color: transparent; background: transparent; font-size: 8px; }
+.id-block button:hover { color: var(--v3-accent-text); background: var(--v3-accent-soft); }
+
+.output-grid { gap: 0 14px; }
+.output-grid > div {
+  padding: 10px 2px;
+  border: 0;
+  border-bottom: 1px solid rgba(91,105,128,.25);
+  border-radius: 0;
+  background: transparent;
+}
+.permission-stack { gap: 0; }
+.permission-stack span { padding: 9px 2px; border: 0; border-bottom: 1px solid rgba(91,105,128,.25); }
+.draft-flow span { border-color: transparent; background: rgba(255,255,255,.025); }
+.draft-flow span.active { border-color: rgba(167,139,250,.3); }
+
+.model-stage { grid-template-columns: 224px minmax(0,1fr); }
+.stage-intro { padding: 26px 21px; background: rgba(13,18,27,.72); }
+.stage-intro h2 { word-break: keep-all; overflow-wrap: normal; }
+.dataset-contract,
+.configure-canvas,
+.compare-canvas { padding-block: clamp(24px,4vh,44px); }
+.split-timeline > div { background: transparent; }
+.family-selector { border-right-color: rgba(91,105,128,.24); }
+.run-detail { padding-inline: 2px; }
+.lineage-flow span,
+.handoff-line span {
+  padding: 6px 0;
+  border: 0;
+  border-bottom: 1px solid rgba(91,105,128,.32);
+  background: transparent;
+}
+.version-metrics > div,
+.quality-grid span { border-color: rgba(91,105,128,.24); }
+.hunks > div { border: 0; border-top: 1px solid var(--v3-border-subtle); background: transparent; }
+
+.backtest-primary { padding: 14px 18px 18px; }
+.review-layout { gap: 18px; }
+.run-evidence { padding: 16px 4px 16px 18px; background: transparent; }
+.dimension-line span { background: transparent; border-bottom: 1px solid var(--v3-border-subtle); }
+.table-head,
+.grid-head.run,
+.compare-table > div { background: rgba(255,255,255,.018); }
+
+.truth-empty { min-height: 220px; }
+.truth-callout { border: 0; border-left: 2px solid #6e552e; border-radius: 0; }
+.truth-callout.danger { border-color: #8f4850; }
+
+:where(button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid #83d8ff;
+  outline-offset: 2px;
+}
+
+@media (max-width: 1439px) {
+  .factor-library { grid-template-columns: 158px minmax(300px,.82fr) minmax(410px,1.18fr); }
+  .id-block { grid-template-columns: minmax(145px,.38fr) minmax(0,1fr) auto; }
+  .agent-workspace-body { grid-template-columns: minmax(0,1fr) 304px; }
+}
+
+@media (max-width: 1260px) {
+  .factor-library { grid-template-columns: minmax(300px,.78fr) minmax(410px,1.22fr); }
+  .stage-intro { width: 190px; padding-inline: 15px; }
+  .model-stage { grid-template-columns: 190px minmax(0,1fr); }
+  .workflow-header nav button { padding-inline: 4px; }
+  .workflow-header nav small { display: none; }
+  .analysis-contextline { gap: 10px; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .editor-context, .workflow-header, .analysis-header, .factor-product-bar, .agent-workspace-head { background: #0d121b; }
+}
+
+@media (prefers-contrast: more) {
+  .fact-grid dt, .fact-grid dd, .id-block, .output-grid > div, .permission-stack span { border-bottom-color: var(--v3-border); }
+  .reviewer-panel, .artifact-viewer { border-top: 1px solid var(--v3-border); border-bottom: 1px solid var(--v3-border); }
+  :where(button, input, select, textarea, summary, [tabindex]):focus-visible { outline-width: 3px; }
+}
