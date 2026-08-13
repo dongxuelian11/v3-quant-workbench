@@ -37,6 +37,7 @@ const suites = [
   "ws_a_contracts",
   "ws_b_catalog",
   "ws_c_artifact",
+  "systemic_p1_payload_authority",
   "ws_d_task_workers",
   "ws_e_runtime",
   "br1_foundation_integration",
