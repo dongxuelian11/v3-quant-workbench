@@ -23,9 +23,16 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog.sqlite3"
             result = apply_migrations(path, application_version="test")
-            self.assertEqual(result.applied, ("0001_control_catalog", "0002_data_truth"))
-            self.assertEqual(result.schema_report.table_count, 69)
-            self.assertEqual(result.schema_report.user_version, 2)
+            self.assertEqual(
+                result.applied,
+                (
+                    "0001_control_catalog",
+                    "0002_data_truth",
+                    "0003_risk_application_publication",
+                ),
+            )
+            self.assertEqual(result.schema_report.table_count, 73)
+            self.assertEqual(result.schema_report.user_version, 3)
             connection = connect_catalog(path)
             try:
                 tables = {
@@ -199,9 +206,12 @@ class MigrationTests(unittest.TestCase):
                 application_version="v2",
                 backup_dir=root / "backups",
             )
-            self.assertEqual(upgraded.applied, ("0002_data_truth",))
-            self.assertEqual(len(upgraded.backups), 1)
-            self.assertEqual(upgraded.schema_report.user_version, 2)
+            self.assertEqual(
+                upgraded.applied,
+                ("0002_data_truth", "0003_risk_application_publication"),
+            )
+            self.assertEqual(len(upgraded.backups), 2)
+            self.assertEqual(upgraded.schema_report.user_version, 3)
             connection = connect_catalog(path)
             try:
                 self.assertIsNone(
