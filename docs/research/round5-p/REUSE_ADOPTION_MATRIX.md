@@ -43,7 +43,7 @@ Decisions use only:
 - No dependency is added for factor-count optics.
 - P reuses W0 FactorAsset/Catalog/TDX and the existing permissions/action contracts, and creates only P-owned orchestration, typed agent output, application command, exact-evidence projections, and bounded pack manifests.
 - Natural-language output remains `FactorDraftProposal NON_CANONICAL`. Deterministic translation is mandatory before any user-confirmable plan exists.
-- The application command is not registered as an Agent tool. It alone may apply an already previewed, exact user confirmation to W0 `FactorImportReceipt + FactorDefinitionVersion + FactorAssetVersion`.
+- The application command is not registered as an Agent tool and is not authority. Its retained seam always fails closed with `USER_EXECUTION_AUTHORITY_NOT_AVAILABLE`; no P-local approval object or caller metadata can create a W0 receipt/asset. `FactorApplicationSpec` is only a content-bound L1 draft for a future shared authority.
 - Alpha101/191 code without adequate license evidence is never copied or admitted. Qlib and third-party engines never become Canonical Factor IR.
 - A-share data lacking exact fields and available-time/PIT evidence is classified `UNSUPPORTED_DATA` or `PIT_UNRESOLVED`, never synthesized.
 - Bulk coverage is deterministic and reports every W0 status plus actual admitted canonical definition count. Pack listed does not mean pack supported.

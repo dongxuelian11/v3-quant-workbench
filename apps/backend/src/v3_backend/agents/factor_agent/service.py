@@ -10,6 +10,7 @@ from v3_backend.domain.agent_research_loop import (
 )
 from v3_backend.domain.factor_assets import CatalogQuery, FactorDraftProposal
 from v3_backend.domain.factor_library import (
+    FactorApplicationSpec,
     FactorEvidenceExplanation,
     FactorLibraryService,
     FactorTranslationPreview,
@@ -83,19 +84,23 @@ class FactorAgentService:
 
     def draft_import_action(
         self,
-        preview: FactorTranslationPreview,
+        application_spec: FactorApplicationSpec,
         *,
         resource_profile_ref: str,
         budget: ResearchLoopBudgetVersion,
     ) -> ResearchActionDraft:
         require_permission(self._permission, PermissionLevel.L1_DRAFT)
-        if preview.status != "READY_FOR_USER_CONFIRMATION" or preview.translation is None:
-            raise FactorAgentError("FACTOR_IMPORT_PREVIEW_NOT_READY", preview.preview_id)
+        application_spec.assert_canonical()
         return ResearchActionDraft.create(
             action_type=ResearchActionType.FACTOR_IMPORT,
-            exact_input_refs=(preview.preview_id, preview.translation.document.formula_document_version_id),
-            requested_capability="factor.import.user-confirmation-required",
-            expected_output_kind="FactorImportReceipt+FactorDefinitionVersion+FactorAssetVersion",
+            exact_input_refs=(
+                application_spec.application_spec_id,
+                "sha256:" + application_spec.content_hash,
+                application_spec.preview_id,
+                application_spec.factor_definition_version_id,
+            ),
+            requested_capability="factor.import.USER_EXECUTION_AUTHORITY_NOT_AVAILABLE",
+            expected_output_kind="NOT_AVAILABLE",
             resource_profile_ref=resource_profile_ref,
             budget_version_id=budget.budget_version_id,
         )

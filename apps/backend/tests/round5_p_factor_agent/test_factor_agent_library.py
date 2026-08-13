@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 from dataclasses import replace
 import pathlib
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -49,6 +51,7 @@ from v3_backend.domain.factor_assets import (
 from v3_backend.domain.factor_library import (
     EvaluationEvidence,
     FactorApplicationCommand,
+    FactorApplicationSpec,
     FactorLibraryError,
     FactorLibraryService,
     FactorTranslationPreview,
@@ -58,6 +61,34 @@ from v3_backend.domain.factors import signal_compatible_operator_registry
 
 
 TDX_SOURCE = "GOLDEN:MA(CLOSE,5)>MA(CLOSE,20);"
+
+
+def _untrusted_evidence(**overrides: object) -> EvaluationEvidence:
+    values: dict[str, object] = {
+        "evaluation_ref": "fev_sha256_" + "1" * 64,
+        "factor_definition_version_id": "fdv_sha256_" + "2" * 64,
+        "feature_materialization_ref": "fmat_sha256_" + "3" * 64,
+        "dataset_version_ref": "dsv_sha256_" + "4" * 64,
+        "label_spec_ref": "lbl_sha256_" + "5" * 64,
+        "split_spec_ref": "spl_sha256_" + "6" * 64,
+        "experiment_version_ref": "expv_sha256_" + "7" * 64,
+        "experiment_run_ref": "exprun_sha256_" + "8" * 64,
+        "experiment_attempt_ref": "expatt_sha256_" + "9" * 64,
+        "experiment_result_ref": "expres_sha256_" + "a" * 64,
+        "reward_vector_ref": "rwv_sha256_" + "b" * 64,
+        "reviewer_evidence_ref": "rve_sha256_" + "c" * 64,
+        "review_report_ref": "rrp_sha256_" + "c" * 64,
+        "evaluation_context_ref": "fectx_sha256_" + "d" * 64,
+        "snapshot_ref": "snapshot:exact",
+        "universe_ref": "universe:exact",
+        "evaluation_period_ref": "spl_sha256_" + "6" * 64,
+        "evaluation_policy_ref": "expv_sha256_" + "7" * 64,
+        "result_refs": ("art_sha256_" + "e" * 64,),
+        "reviewer_refs": ("rve_sha256_" + "c" * 64,),
+        "provenance_refs": ("art_sha256_" + "f" * 64,),
+    }
+    values.update(overrides)
+    return EvaluationEvidence(**values)  # type: ignore[arg-type]
 
 
 def _model_response(_messages: list[object], info: AgentInfo) -> ModelResponse:
@@ -113,11 +144,31 @@ class Round5PFactorAgentTests(unittest.TestCase):
             data_profile=self.profile,
             provenance_ref="test:round5-p",
         )
-        self.applied = FactorApplicationCommand().apply_user_confirmation(
+        translated = self.preview.translation.output("GOLDEN")  # type: ignore[union-attr]
+        receipt = FactorImportReceipt.create_from_user_formula(
+            translation=self.preview.translation,
+            compatibility_profile=self.translator.compatibility,
+            data_profile=self.profile,
+            definition=translated.definition,
+        )
+        asset = FactorAssetVersion.create(
+            asset_key="user.golden-cross",
+            definition=translated.definition,
+            source_family="AI_ASSISTED_TDX",
+            output_binding=translated.binding,
+            display_name="Golden Cross",
+            tags=("ai-draft", "tdx"),
+            categories=("canonical-test-fixture",),
+            frequency="1d",
+            lifecycle=FactorAssetLifecycle.DRAFT,
+            import_receipt=receipt,
+            formula_document=self.preview.translation.document,  # type: ignore[union-attr]
+        )
+        self.applied = SimpleNamespace(definition=translated.definition, import_receipt=receipt, asset=asset)
+        self.application_spec = FactorApplicationSpec.create(
             proposal=self.proposal,
             preview=self.preview,
-            confirmed_preview_id=self.preview.preview_id,
-            output_name="GOLDEN",
+            selected_output_name="GOLDEN",
             asset_key="user.golden-cross",
             display_name="Golden Cross",
             data_profile=self.profile,
@@ -168,16 +219,8 @@ class Round5PFactorAgentTests(unittest.TestCase):
         self.assertIsInstance(detail["canonical_ir"], dict)
 
     def test_unknown_evaluation_definition_fails_closed(self) -> None:
-        evidence = EvaluationEvidence(
-            "factor-evaluation:unknown",
-            "fdv_sha256_unknown",
-            "dataset-version:exact",
-            "evaluation-context:exact",
-            (),
-            (),
-            (),
-        )
-        with self.assertRaisesRegex(FactorLibraryError, "EVALUATION_DEFINITION_BINDING_MISMATCH"):
+        evidence = _untrusted_evidence()
+        with self.assertRaisesRegex(FactorLibraryError, "EVIDENCE_BINDING_UNAVAILABLE"):
             FactorLibraryService(
                 snapshot=FactorCatalogSnapshotVersion.create((self.applied.asset,)),
                 assets=(self.applied.asset,),
@@ -262,22 +305,33 @@ class Round5PFactorAgentTests(unittest.TestCase):
         self.assertEqual(preview.status, "NOT_ADMITTED")
         self.assertIn("TDX_DATA_SEMANTIC_PROFILE_NOT_REGISTERED", preview.diagnostics)
 
-    def test_explicit_confirmation_creates_exact_definition_and_asset(self) -> None:
-        self.assertEqual(self.applied.import_receipt.status.value, "ADMITTED")
-        self.assertEqual(
-            self.applied.import_receipt.resulting_factor_definition_version_id,
-            self.applied.definition.factor_definition_version_id,
-        )
-        self.assertEqual(self.applied.asset.factor_definition_version_id, self.applied.definition.factor_definition_version_id)
-        with self.assertRaisesRegex(FactorLibraryError, "USER_CONFIRMATION_BINDING_MISMATCH"):
+    def test_matching_preview_and_caller_metadata_cannot_apply(self) -> None:
+        with patch.object(FactorImportReceipt, "create_from_user_formula") as create_receipt:
+            with patch.object(FactorAssetVersion, "create") as create_asset:
+                with self.assertRaisesRegex(FactorLibraryError, "USER_EXECUTION_AUTHORITY_NOT_AVAILABLE"):
+                    FactorApplicationCommand().apply_user_confirmation(
+                        proposal=self.proposal,
+                        preview=self.preview,
+                        confirmed_preview_id=self.preview.preview_id,
+                        output_name="GOLDEN",
+                        asset_key="user.golden-cross",
+                        display_name="Golden Cross",
+                        data_profile=self.profile,
+                        actor="caller-supplied-actor",
+                        confirmed_at="2026-08-13T12:00:00+08:00",
+                    )
+                create_receipt.assert_not_called()
+                create_asset.assert_not_called()
+
+        with self.assertRaisesRegex(FactorLibraryError, "USER_EXECUTION_AUTHORITY_NOT_AVAILABLE"):
             FactorApplicationCommand().apply_user_confirmation(
                 proposal=self.proposal,
                 preview=self.preview,
-                confirmed_preview_id="ftp_sha256_wrong",
-                output_name="GOLDEN",
-                asset_key="wrong",
-                display_name="wrong",
+                application_spec=self.application_spec,
+                confirmed_application_spec_id=self.application_spec.application_spec_id,
                 data_profile=self.profile,
+                actor="caller-supplied-actor",
+                confirmed_at="2026-08-13T12:00:00+08:00",
             )
 
     def test_forged_preview_cannot_cross_confirmation_boundary(self) -> None:
@@ -293,25 +347,50 @@ class Round5PFactorAgentTests(unittest.TestCase):
                 data_profile=self.profile,
             )
 
-    def test_same_input_profile_has_deterministic_identity(self) -> None:
+    def test_application_spec_is_deterministic_and_post_confirmation_mutations_fail(self) -> None:
         clone = FactorTranslationPreview.from_proposal(
             self.proposal,
             translator=TdxTranslator(signal_compatible_operator_registry()),
             data_profile=registered_tdx_data_semantic_profile(),
             provenance_ref="test:round5-p",
         )
-        second = FactorApplicationCommand().apply_user_confirmation(
+        second = FactorApplicationSpec.create(
             proposal=self.proposal,
             preview=clone,
-            confirmed_preview_id=clone.preview_id,
-            output_name="GOLDEN",
+            selected_output_name="GOLDEN",
             asset_key="user.golden-cross",
             display_name="Golden Cross",
             data_profile=self.profile,
         )
         self.assertEqual(clone.preview_id, self.preview.preview_id)
-        self.assertEqual(second.confirmation_id, self.applied.confirmation_id)
-        self.assertEqual(second.asset.factor_asset_version_id, self.applied.asset.factor_asset_version_id)
+        self.assertEqual(second, self.application_spec)
+        self.application_spec.assert_binding(
+            proposal=self.proposal,
+            preview=self.preview,
+            data_profile=self.profile,
+        )
+        mutations = (
+            {"selected_output_name": "OTHER"},
+            {"asset_key": "mutated.asset"},
+            {"display_name": "Mutated"},
+            {"data_semantic_profile_id": "tdx-data-profile:mutated"},
+            {"lifecycle": FactorAssetLifecycle.REVIEWED},
+            {"source_formula_sha256": "0" * 64},
+            {"factor_definition_version_id": "fdv_sha256_" + "0" * 64},
+            {"factor_definition_wire_sha256": "0" * 64},
+            {"source_provenance_ref": "mutated:provenance"},
+            {"import_admission_options": ("MUTATED",)},
+            {"external_source_refs": ("pack:mutated",)},
+        )
+        for changes in mutations:
+            with self.subTest(changes=changes):
+                mutated = replace(self.application_spec, **changes)
+                with self.assertRaisesRegex(FactorLibraryError, "APPLICATION_SPEC_BINDING_MISMATCH"):
+                    mutated.assert_binding(
+                        proposal=self.proposal,
+                        preview=self.preview,
+                        data_profile=self.profile,
+                    )
 
     def test_agent_cannot_invoke_confirmation_as_l2(self) -> None:
         with self.assertRaises(PermissionDenied):
@@ -386,40 +465,33 @@ class Round5PFactorAgentTests(unittest.TestCase):
 
     def test_factor_import_action_is_a_not_run_user_confirmation_draft(self) -> None:
         action = self._agent().draft_import_action(
-            self.preview,
+            self.application_spec,
             resource_profile_ref="resource-profile:round5-p-test",
             budget=self.budget,
         )
         self.assertEqual(action.action_type.value, "FACTOR_IMPORT")
         self.assertIs(action.state, ResearchActionState.NOT_RUN)
+        self.assertIn(self.application_spec.application_spec_id, action.exact_input_refs)
+        self.assertIn("sha256:" + self.application_spec.content_hash, action.exact_input_refs)
         self.assertIn(self.preview.preview_id, action.exact_input_refs)
-        self.assertEqual(action.requested_capability, "factor.import.user-confirmation-required")
+        self.assertEqual(action.requested_capability, "factor.import.USER_EXECUTION_AUTHORITY_NOT_AVAILABLE")
+        self.assertEqual(action.expected_output_kind, "NOT_AVAILABLE")
 
     def test_factor_asset_cannot_execute_math(self) -> None:
         for method in ("evaluate", "execute", "compute", "run"):
             self.assertFalse(hasattr(self.applied.asset, method))
 
-    def test_evidence_explanation_uses_exact_refs_only(self) -> None:
-        evidence = EvaluationEvidence(
-            "factor-evaluation:exact-1",
-            self.applied.definition.factor_definition_version_id,
-            "dataset-version:exact-1",
-            "evaluation-context:exact-1",
-            ("result:exact-1",),
-            ("reviewer:exact-1",),
-            ("provenance:exact-1",),
-        )
-        library = FactorLibraryService(
-            snapshot=FactorCatalogSnapshotVersion.create((self.applied.asset,)),
-            assets=(self.applied.asset,),
-            definitions=(self.applied.definition,),
-            formula_documents=(self.preview.translation.document,),  # type: ignore[union-attr]
-            evaluations=(evidence,),
-        )
-        explanation = library.explain_evidence("user.golden-cross")
-        self.assertEqual(explanation.exact_evaluation_refs, ("factor-evaluation:exact-1",))
-        self.assertEqual(explanation.exact_result_refs, ("result:exact-1",))
-        self.assertNotIn("IC", explanation.statement)
+    def test_fabricated_evidence_dto_cannot_mark_factor_evaluated(self) -> None:
+        with self.assertRaisesRegex(FactorLibraryError, "EVIDENCE_BINDING_UNAVAILABLE"):
+            FactorLibraryService(
+                snapshot=FactorCatalogSnapshotVersion.create((self.applied.asset,)),
+                assets=(self.applied.asset,),
+                definitions=(self.applied.definition,),
+                formula_documents=(self.preview.translation.document,),  # type: ignore[union-attr]
+                evaluations=(_untrusted_evidence(
+                    factor_definition_version_id=self.applied.definition.factor_definition_version_id,
+                ),),
+            )
 
     def test_no_arbitrary_python_or_eval_path(self) -> None:
         root = pathlib.Path(__file__).parents[2] / "src" / "v3_backend"

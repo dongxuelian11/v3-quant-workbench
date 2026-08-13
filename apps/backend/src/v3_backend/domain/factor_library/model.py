@@ -25,6 +25,12 @@ from v3_backend.domain.factor_assets import (
 from v3_backend.domain.factors import FactorDefinitionVersion
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
+from .evidence import (
+    CanonicalEvaluationEvidenceResolver,
+    EvaluationEvidence,
+    ResolvedEvaluationEvidence,
+)
+
 
 class FactorLibraryError(ValueError):
     def __init__(self, code: str, detail: str) -> None:
@@ -44,29 +50,6 @@ def _refs(values: tuple[str, ...], name: str) -> tuple[str, ...]:
     if len(values) != len(set(values)):
         raise FactorLibraryError("INVALID_FACTOR_LIBRARY_CONTRACT", f"{name} must be unique")
     return tuple(sorted(values))
-
-
-@dataclass(frozen=True, slots=True)
-class EvaluationEvidence:
-    evaluation_ref: str
-    factor_definition_version_id: str
-    dataset_version_ref: str
-    evaluation_context_ref: str
-    result_refs: tuple[str, ...]
-    reviewer_refs: tuple[str, ...]
-    provenance_refs: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        for name in (
-            "evaluation_ref",
-            "factor_definition_version_id",
-            "dataset_version_ref",
-            "evaluation_context_ref",
-        ):
-            _text(getattr(self, name), name)
-        _refs(self.result_refs, "result_refs")
-        _refs(self.reviewer_refs, "reviewer_refs")
-        _refs(self.provenance_refs, "provenance_refs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +74,8 @@ class FactorDetail:
     reviewer_refs: tuple[str, ...]
     provenance_refs: tuple[str, ...]
     evaluation_status: str
+    exact_evaluation_contexts: tuple[Mapping[str, object], ...]
+    contextual_metrics: tuple[Mapping[str, float], ...]
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -114,6 +99,8 @@ class FactorDetail:
             "reviewer_refs": list(self.reviewer_refs),
             "provenance_refs": list(self.provenance_refs),
             "evaluation_status": self.evaluation_status,
+            "exact_evaluation_contexts": [dict(value) for value in self.exact_evaluation_contexts],
+            "contextual_metrics": [dict(value) for value in self.contextual_metrics],
         }
 
 
@@ -126,6 +113,8 @@ class FactorEvidenceExplanation:
     exact_result_refs: tuple[str, ...]
     exact_reviewer_refs: tuple[str, ...]
     exact_provenance_refs: tuple[str, ...]
+    exact_evaluation_contexts: tuple[Mapping[str, object], ...]
+    contextual_metrics: tuple[Mapping[str, float], ...]
     statement: str
 
 
@@ -140,6 +129,7 @@ class FactorLibraryService:
         definitions: tuple[FactorDefinitionVersion, ...],
         formula_documents: tuple[FormulaDocumentVersion, ...] = (),
         evaluations: tuple[EvaluationEvidence, ...] = (),
+        evidence_resolver: CanonicalEvaluationEvidenceResolver | None = None,
     ) -> None:
         self._catalog = FactorAssetCatalogService(snapshot, assets)
         self._definitions = MappingProxyType(
@@ -148,9 +138,16 @@ class FactorLibraryService:
         self._documents = MappingProxyType(
             {value.formula_document_version_id: value for value in formula_documents}
         )
-        by_definition: dict[str, list[EvaluationEvidence]] = {}
+        if evaluations and evidence_resolver is None:
+            raise FactorLibraryError(
+                "EVIDENCE_BINDING_UNAVAILABLE",
+                "public EvaluationEvidence requires canonical owner resolution",
+            )
+        by_definition: dict[str, list[ResolvedEvaluationEvidence]] = {}
         for evidence in evaluations:
-            by_definition.setdefault(evidence.factor_definition_version_id, []).append(evidence)
+            assert evidence_resolver is not None
+            resolved = evidence_resolver.resolve(evidence)
+            by_definition.setdefault(resolved.factor_definition_version_id, []).append(resolved)
         self._evaluations = MappingProxyType(
             {key: tuple(sorted(values, key=lambda item: item.evaluation_ref)) for key, values in by_definition.items()}
         )
@@ -185,6 +182,8 @@ class FactorLibraryService:
                 (),
                 (),
                 detail.provenance_refs,
+                (),
+                (),
                 "No exact Evaluation context is bound; performance is NOT_EVALUATED.",
             )
         return FactorEvidenceExplanation(
@@ -195,6 +194,8 @@ class FactorLibraryService:
             tuple(sorted({ref for item in evidence for ref in item.result_refs})),
             tuple(sorted({ref for item in evidence for ref in item.reviewer_refs})),
             tuple(sorted({ref for item in evidence for ref in item.provenance_refs})),
+            tuple(item.exact_context for item in evidence),
+            tuple(item.metrics for item in evidence),
             "Evidence is contextual and limited to the exact bound Evaluation references.",
         )
 
@@ -224,6 +225,8 @@ class FactorLibraryService:
             tuple(sorted({ref for item in evidence for ref in item.reviewer_refs})),
             tuple(sorted({*provenance, *(ref for item in evidence for ref in item.provenance_refs)})),
             "NOT_EVALUATED" if not evidence else "EVALUATED_IN_EXACT_CONTEXTS",
+            tuple(item.exact_context for item in evidence),
+            tuple(item.metrics for item in evidence),
         )
 
 
@@ -319,78 +322,230 @@ class FactorTranslationPreview:
 
 
 @dataclass(frozen=True, slots=True)
-class ConfirmedFactorApplication:
-    confirmation_id: str
+class FactorApplicationSpec:
+    """Immutable full intent for a future canonical application authority."""
+
+    application_spec_id: str
+    content_hash: str
+    proposal_id: str
     preview_id: str
-    definition: FactorDefinitionVersion
-    import_receipt: FactorImportReceipt
-    asset: FactorAssetVersion
+    source_formula_sha256: str
+    source_language: str
+    formula_document_version_id: str
+    source_provenance_ref: str
+    selected_output_name: str
+    factor_definition_version_id: str
+    factor_definition_wire_sha256: str
+    output_binding_id: str
+    asset_key: str
+    display_name: str
+    data_semantic_profile_id: str
+    lifecycle: FactorAssetLifecycle
+    source_family: str
+    tags: tuple[str, ...]
+    categories: tuple[str, ...]
+    frequency: str
+    compatibility_status: FactorPackItemStatus
+    import_admission_options: tuple[str, ...]
+    external_source_refs: tuple[str, ...]
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "proposal_id": self.proposal_id,
+            "preview_id": self.preview_id,
+            "source_formula_sha256": self.source_formula_sha256,
+            "source_language": self.source_language,
+            "formula_document_version_id": self.formula_document_version_id,
+            "source_provenance_ref": self.source_provenance_ref,
+            "selected_output_name": self.selected_output_name,
+            "factor_definition_version_id": self.factor_definition_version_id,
+            "factor_definition_wire_sha256": self.factor_definition_wire_sha256,
+            "output_binding_id": self.output_binding_id,
+            "asset_key": self.asset_key,
+            "display_name": self.display_name,
+            "data_semantic_profile_id": self.data_semantic_profile_id,
+            "lifecycle": self.lifecycle.value,
+            "source_family": self.source_family,
+            "tags": list(self.tags),
+            "categories": list(self.categories),
+            "frequency": self.frequency,
+            "compatibility_status": self.compatibility_status.value,
+            "import_admission_options": list(self.import_admission_options),
+            "external_source_refs": list(self.external_source_refs),
+        }
+
+    def assert_canonical(self) -> None:
+        if self.lifecycle is not FactorAssetLifecycle.DRAFT:
+            raise FactorLibraryError("APPLICATION_SPEC_BINDING_MISMATCH", "initial lifecycle must be DRAFT")
+        for name in (
+            "proposal_id",
+            "preview_id",
+            "source_formula_sha256",
+            "source_language",
+            "formula_document_version_id",
+            "source_provenance_ref",
+            "selected_output_name",
+            "factor_definition_version_id",
+            "factor_definition_wire_sha256",
+            "output_binding_id",
+            "asset_key",
+            "display_name",
+            "data_semantic_profile_id",
+            "source_family",
+            "frequency",
+        ):
+            _text(getattr(self, name), name)
+        _refs(self.tags, "tags")
+        _refs(self.categories, "categories")
+        _refs(self.import_admission_options, "import_admission_options")
+        _refs(self.external_source_refs, "external_source_refs")
+        digest = canonical_sha256(self._payload())
+        if self.content_hash != digest or self.application_spec_id != "fas_sha256_" + digest:
+            raise FactorLibraryError("APPLICATION_SPEC_BINDING_MISMATCH", "content-addressed spec mismatch")
+
+    def assert_binding(
+        self,
+        *,
+        proposal: FactorDraftProposal,
+        preview: FactorTranslationPreview,
+        data_profile: TdxDataSemanticProfileVersion,
+    ) -> None:
+        self.assert_canonical()
+        preview.assert_canonical()
+        data_profile.assert_canonical()
+        if preview.translation is None:
+            raise FactorLibraryError("APPLICATION_SPEC_BINDING_MISMATCH", "translation is unavailable")
+        translated = preview.translation.output(self.selected_output_name)
+        observed = (
+            proposal.proposal_id,
+            preview.proposal_id,
+            preview.preview_id,
+            preview.translation.document.source_sha256,
+            preview.translation.document.language,
+            preview.translation.document.formula_document_version_id,
+            preview.translation.document.provenance_ref,
+            translated.definition.factor_definition_version_id,
+            canonical_sha256(translated.definition.to_wire()),
+            translated.binding.binding_id,
+            preview.translation.static_analysis.data_semantic_profile_id,
+            data_profile.data_semantic_profile_id,
+        )
+        expected = (
+            self.proposal_id,
+            self.proposal_id,
+            self.preview_id,
+            self.source_formula_sha256,
+            self.source_language,
+            self.formula_document_version_id,
+            self.source_provenance_ref,
+            self.factor_definition_version_id,
+            self.factor_definition_wire_sha256,
+            self.output_binding_id,
+            self.data_semantic_profile_id,
+            self.data_semantic_profile_id,
+        )
+        if observed != expected:
+            raise FactorLibraryError("APPLICATION_SPEC_BINDING_MISMATCH", self.application_spec_id)
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        proposal: FactorDraftProposal,
+        preview: FactorTranslationPreview,
+        selected_output_name: str,
+        asset_key: str,
+        display_name: str,
+        data_profile: TdxDataSemanticProfileVersion,
+        lifecycle: FactorAssetLifecycle = FactorAssetLifecycle.DRAFT,
+        tags: tuple[str, ...] = ("ai-draft", "tdx"),
+        categories: tuple[str, ...] = ("user-application-request",),
+        frequency: str = "1d",
+        compatibility_status: FactorPackItemStatus = FactorPackItemStatus.SUPPORTED,
+        import_admission_options: tuple[str, ...] = ("EXACT_USER_FORMULA", "NO_WARNINGS"),
+        external_source_refs: tuple[str, ...] = (),
+    ) -> FactorApplicationSpec:
+        preview.assert_canonical()
+        data_profile.assert_canonical()
+        if preview.proposal_id != proposal.proposal_id or preview.translation is None:
+            raise FactorLibraryError("APPLICATION_SPEC_BINDING_MISMATCH", proposal.proposal_id)
+        if lifecycle is not FactorAssetLifecycle.DRAFT:
+            raise FactorLibraryError("APPLICATION_SPEC_BINDING_MISMATCH", "initial lifecycle must be DRAFT")
+        translated = preview.translation.output(selected_output_name)
+        document = preview.translation.document
+        source_family = "AI_ASSISTED_TDX" if proposal.natural_language_intent else "TDX_USER_FORMULA"
+        values = {
+            "proposal_id": proposal.proposal_id,
+            "preview_id": preview.preview_id,
+            "source_formula_sha256": document.source_sha256,
+            "source_language": document.language,
+            "formula_document_version_id": document.formula_document_version_id,
+            "source_provenance_ref": document.provenance_ref,
+            "selected_output_name": _text(selected_output_name, "selected_output_name"),
+            "factor_definition_version_id": translated.definition.factor_definition_version_id,
+            "factor_definition_wire_sha256": canonical_sha256(translated.definition.to_wire()),
+            "output_binding_id": translated.binding.binding_id,
+            "asset_key": _text(asset_key, "asset_key"),
+            "display_name": _text(display_name, "display_name"),
+            "data_semantic_profile_id": data_profile.data_semantic_profile_id,
+            "lifecycle": lifecycle,
+            "source_family": source_family,
+            "tags": _refs(tags, "tags"),
+            "categories": _refs(categories, "categories"),
+            "frequency": _text(frequency, "frequency"),
+            "compatibility_status": compatibility_status,
+            "import_admission_options": _refs(import_admission_options, "import_admission_options"),
+            "external_source_refs": _refs(external_source_refs, "external_source_refs"),
+        }
+        provisional = cls("", "", **values)
+        digest = canonical_sha256(provisional._payload())
+        result = cls("fas_sha256_" + digest, digest, **values)
+        result.assert_binding(proposal=proposal, preview=preview, data_profile=data_profile)
+        return result
 
 
 class FactorApplicationCommand:
-    """Explicit user application boundary. This class is deliberately not an Agent tool."""
+    """Retained seam that fails closed until a shared canonical authority exists."""
 
     def apply_user_confirmation(
         self,
         *,
         proposal: FactorDraftProposal,
         preview: FactorTranslationPreview,
-        confirmed_preview_id: str,
-        output_name: str,
-        asset_key: str,
-        display_name: str,
-        data_profile: TdxDataSemanticProfileVersion,
+        application_spec: FactorApplicationSpec | None = None,
+        confirmed_application_spec_id: str | None = None,
+        confirmed_preview_id: str | None = None,
+        output_name: str | None = None,
+        asset_key: str | None = None,
+        display_name: str | None = None,
+        data_profile: TdxDataSemanticProfileVersion | None = None,
         lifecycle: FactorAssetLifecycle = FactorAssetLifecycle.DRAFT,
-    ) -> ConfirmedFactorApplication:
+        actor: str | None = None,
+        confirmed_at: str | None = None,
+    ) -> None:
         preview.assert_canonical()
-        if preview.proposal_id != proposal.proposal_id or confirmed_preview_id != preview.preview_id:
+        if preview.proposal_id != proposal.proposal_id:
             raise FactorLibraryError("USER_CONFIRMATION_BINDING_MISMATCH", proposal.proposal_id)
-        if preview.status != "READY_FOR_USER_CONFIRMATION" or preview.translation is None:
-            raise FactorLibraryError("USER_CONFIRMATION_NOT_APPLICABLE", preview.preview_id)
-        translated = preview.translation.output(output_name)
-        receipt = FactorImportReceipt.create_from_user_formula(
-            translation=preview.translation,
-            compatibility_profile=TdxTranslator(
-                registry=_registry_from_translation(preview.translation)
-            ).compatibility,
-            data_profile=data_profile,
-            definition=translated.definition,
+        if application_spec is not None:
+            if data_profile is None:
+                raise FactorLibraryError("APPLICATION_SPEC_BINDING_MISMATCH", "data profile is required")
+            application_spec.assert_binding(
+                proposal=proposal,
+                preview=preview,
+                data_profile=data_profile,
+            )
+            if confirmed_application_spec_id != application_spec.application_spec_id:
+                raise FactorLibraryError("USER_CONFIRMATION_BINDING_MISMATCH", application_spec.application_spec_id)
+        elif confirmed_preview_id != preview.preview_id:
+            raise FactorLibraryError("USER_CONFIRMATION_BINDING_MISMATCH", preview.preview_id)
+        for value, name in ((actor, "actor"), (confirmed_at, "confirmed_at")):
+            if value is not None:
+                _text(value, name)
+        _ = (output_name, asset_key, display_name, lifecycle)
+        raise FactorLibraryError(
+            "USER_EXECUTION_AUTHORITY_NOT_AVAILABLE",
+            "caller confirmation is not canonical application authority; production application is NOT_AVAILABLE / NOT_RUN",
         )
-        asset = FactorAssetVersion.create(
-            asset_key=asset_key,
-            definition=translated.definition,
-            source_family="AI_ASSISTED_TDX" if proposal.natural_language_intent else "TDX_USER_FORMULA",
-            output_binding=translated.binding,
-            display_name=display_name,
-            tags=("ai-draft", "tdx"),
-            categories=("user-confirmed",),
-            frequency="1d",
-            lifecycle=lifecycle,
-            import_receipt=receipt,
-            formula_document=preview.translation.document,
-        )
-        confirmation_payload = {
-            "preview_id": preview.preview_id,
-            "proposal_id": proposal.proposal_id,
-            "factor_definition_version_id": translated.definition.factor_definition_version_id,
-            "factor_asset_version_id": asset.factor_asset_version_id,
-        }
-        return ConfirmedFactorApplication(
-            "fca_sha256_" + canonical_sha256(confirmation_payload),
-            preview.preview_id,
-            translated.definition,
-            receipt,
-            asset,
-        )
-
-
-def _registry_from_translation(translation: TdxTranslationResult):
-    from v3_backend.domain.factors import signal_compatible_operator_registry
-
-    registry = signal_compatible_operator_registry()
-    if registry.registry_version != translation.outputs[0].definition.operator_registry_version:
-        raise FactorLibraryError("FACTOR_DEFINITION_BINDING_MISMATCH", "operator registry")
-    return registry
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,9 +1,16 @@
 """Round 5 P Factor Library business projections around frozen W0 authorities."""
 
-from .model import (
-    ConfirmedFactorApplication,
+from .evidence import (
+    CanonicalEvaluationEvidenceResolver,
+    CanonicalFactorEvidenceSource,
     EvaluationEvidence,
+    FactorEvidenceBindingError,
+    ResolvedEvaluationEvidence,
+    evaluation_context_ref,
+)
+from .model import (
     FactorApplicationCommand,
+    FactorApplicationSpec,
     FactorDetail,
     FactorEvidenceExplanation,
     FactorLibraryError,
@@ -14,14 +21,19 @@ from .model import (
 )
 
 __all__ = [
-    "ConfirmedFactorApplication",
+    "CanonicalEvaluationEvidenceResolver",
+    "CanonicalFactorEvidenceSource",
     "EvaluationEvidence",
+    "FactorApplicationSpec",
     "FactorApplicationCommand",
     "FactorDetail",
     "FactorEvidenceExplanation",
+    "FactorEvidenceBindingError",
     "FactorLibraryError",
     "FactorLibraryService",
     "FactorTranslationPreview",
     "PackCoverage",
     "PackCoverageService",
+    "ResolvedEvaluationEvidence",
+    "evaluation_context_ref",
 ]
