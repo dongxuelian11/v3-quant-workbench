@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as monaco from "monaco-editor";
+import { ensureV3MonacoTheme, V3_MONACO_SCROLLBAR_OPTIONS } from "../monacoPresentation";
 import { Icon } from "./PresentationSystem";
+
+ensureV3MonacoTheme();
 
 export const USER_TDX_FORMULA = `MJ:=AMOUNT/VOL/100;
 MA5:=MA(MJ,5);
@@ -66,17 +69,17 @@ function FactorLibrary({ fixtureMode }: { fixtureMode: boolean }) {
   const categories = ["全部", "收藏", "最近使用", "我的因子", "内置", "AI 创建", "Alpha Mining 候选", "已评审", "候选", "已弃用", "price", "volume", "momentum", "reversal", "volatility", "liquidity", "value", "quality", "growth", "profitability", "sentiment", "technical", "custom"];
 
   return <div className="factor-library" data-testid="factor-library">
-    <aside className="factor-categories" aria-label="因子分类"><div className="factor-pane-title"><b>分类与视图</b><small>仅显示当前数据支持项</small></div>{categories.map((item) => {
+    <aside className="factor-categories v3-scroll-surface" data-scroll-surface="factor-categories" aria-label="因子分类"><div className="factor-pane-title"><b>分类与视图</b><small>仅显示当前数据支持项</small></div>{categories.map((item) => {
       const supported = item === "全部" || (fixtureMode && (item === "我的因子" || item === "候选" || item === "price"));
       return <button key={item} className={category === item ? "active" : ""} disabled={!supported} onClick={() => setCategory(item)}><span>{item}</span>{supported && fixtureMode ? <small>{item === "全部" || item === "我的因子" || item === "候选" ? 5 : 4}</small> : <small>—</small>}</button>;
     })}</aside>
-    <section className="factor-list-pane">
+    <section className="factor-list-pane v3-scroll-surface" data-scroll-surface="factor-list">
       <div className="factor-search"><Icon name="command" size={14}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或精确 asset key" aria-label="搜索因子"/><select aria-label="因子生命周期" defaultValue="CANDIDATE"><option>CANDIDATE</option></select></div>
       {!fixtureMode ? <TruthEmpty title="因子目录尚未接入" detail="当前 main 没有桌面只读目录路由；未注入任何演示因子。"/> : <div className="factor-list" role="listbox" aria-label="因子列表">{filtered.map((factor) => <button role="option" aria-selected={factor.assetKey === selected?.assetKey} key={factor.assetKey} onClick={() => setSelectedKey(factor.assetKey)}>
         <span className="factor-glyph">{factor.outputType === "BOOLEAN_SERIES" ? "ƒ?" : "ƒx"}</span><span><b>{factor.name}</b><code>{factor.assetKey}</code><small>TDX_USER_FORMULA · 1d · lookback {factor.lookback}</small></span><span><em>CANDIDATE</em><small>{factor.outputType}</small><small>未评估</small></span>
       </button>)}</div>}
     </section>
-    <aside className="factor-detail-pane">{selected ? <FactorDetail factor={selected}/> : <TruthEmpty title="未选择因子" detail="选择目录项以查看精确定义、评估与来源。"/>}</aside>
+    <aside className="factor-detail-pane v3-scroll-surface" data-scroll-surface="factor-detail">{selected ? <FactorDetail factor={selected}/> : <TruthEmpty title="未选择因子" detail="选择目录项以查看精确定义、评估与来源。"/>}</aside>
   </div>;
 }
 
@@ -92,7 +95,16 @@ function FactorDetail({ factor }: { factor: FactorRecord }) {
       {tab === "评估" && <TruthEmpty title="未评估" detail="Evaluation context 不存在：Universe / period / horizon / label / Evaluation ID 均不可用。"/>}
       {tab === "实验" && <TruthEmpty title="没有绑定实验" detail="实验必须绑定精确 FactorDefinitionVersion；当前 fixture 未声明 Experiment。"/>}
       {tab === "证据 / Reviewer" && <TruthEmpty title="Reviewer：NOT_RUN" detail="没有 ReviewerFinding；不会用 UI 状态推断评审通过。"/>}
-      {tab === "版本 / 来源" && <><IdBlock label="FactorAssetVersion" value={factor.assetVersionId}/><IdBlock label="FactorDefinitionVersion" value={factor.definitionVersionId}/><IdBlock label="FactorImportReceipt" value={factor.importReceiptId}/><IdBlock label="FormulaDocumentVersion" value={FORMULA_DOCUMENT_ID}/></>}
+      {tab === "版本 / 来源" && <>
+        <IdBlock label="FactorAssetVersion" value={factor.assetVersionId}/>
+        <IdBlock label="FactorDefinitionVersion" value={factor.definitionVersionId}/>
+        <IdBlock label="FactorImportReceipt" value={factor.importReceiptId}/>
+        <IdBlock label="FormulaDocumentVersion" value={FORMULA_DOCUMENT_ID}/>
+        <IdBlock label="CompatibilityProfile" value={COMPATIBILITY_PROFILE_ID}/>
+        <IdBlock label="DataSemanticProfile" value={DATA_PROFILE_ID}/>
+        <FactGrid facts={[["来源语言","TDX"],["输出类型",factor.outputType],["Canonical IR","current-main W0 translator 生成；UI 不计算"],["Reviewer","NOT_RUN"]]}/>
+        <TruthCallout tone="warning" title="版本链只读" detail="这些精确 ID 来自 current-main W0 fixture；候选状态不等于 canonical admission。"/>
+      </>}
     </div>
   </div>;
 }
@@ -110,7 +122,7 @@ function TdxEditor({ fixtureMode }: { fixtureMode: boolean }) {
   const analysis = contractFixtureAnalysis(source, fixtureMode);
   return <div className="tdx-workspace" data-testid="tdx-editor" data-parse-state={analysis.state}>
     <section className="tdx-editor-pane"><header><div><small>TDX SOURCE · L1 DRAFT</small><b>用户公式</b></div><div><button onClick={() => setSource(USER_TDX_FORMULA)}>载入 W0 fixture</button><button onClick={() => setSource(UNSUPPORTED_TDX_FIXTURE)}>不支持函数状态</button></div></header><FormulaEditor source={source} onChange={setSource}/><footer><span>UTF-8 · 中文标识符</span><span>仅编辑；无 JS/TS 公式 VM</span></footer></section>
-    <aside className="tdx-analysis-pane"><header><small>DETERMINISTIC VALIDATION PREVIEW</small><h2>{analysis.title}</h2><p>{analysis.detail}</p></header>
+    <aside className="tdx-analysis-pane v3-scroll-surface" data-scroll-surface="tdx-analysis"><header><small>DETERMINISTIC VALIDATION PREVIEW</small><h2>{analysis.title}</h2><p>{analysis.detail}</p></header>
       {analysis.state === "PASSED" ? <><section><h3>命名输出</h3><div className="output-grid">{W0_FACTORS.map((item) => <div key={item.name}><b>{item.name}</b><span>{item.outputType}</span><small>{item.name === "GOLDEN" ? "boolean / signal-compatible（非 1/0）" : `numeric · lookback ${item.lookback}`}</small></div>)}</div></section><section><h3>静态分析</h3><FactGrid facts={[['最大 lookback','60'],['数据依赖','amount, volume'],['Operator','AND, CROSS, DIVIDE, GT, MULTIPLY, SMA'],['Unsupported','无']]}/></section><section><h3>TDX 数据语义</h3><p><code>VOL</code> = 手（100 股）；canonical shares × 0.01 → hands。<code>AMOUNT</code> = CNY。原始 <code>AMOUNT/VOL/100</code> 保持不变。</p><IdBlock label="Compatibility profile" value={COMPATIBILITY_PROFILE_ID}/><IdBlock label="Data semantic profile" value={DATA_PROFILE_ID}/></section></> : <TruthCallout tone={analysis.state === "UNSUPPORTED" ? "danger" : "warning"} title={analysis.state} detail="没有生成 Canonical IR、FactorDefinitionVersion 或执行结果。"/>}
     </aside>
   </div>;
@@ -125,7 +137,7 @@ function FormulaEditor({ source, onChange }: { source: string; onChange: (value:
       monaco.languages.register({ id: "tdx" });
       monaco.languages.setMonarchTokensProvider("tdx", { tokenizer: { root: [[/[A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff]*/, { cases: { "@keywords": "keyword", "@default": "identifier" } }], [/\d+(?:\.\d+)?/, "number"], [/:=|:|>=|<=|!=|>|<|\+|-|\*|\//, "operator"], [/;/, "delimiter"]] }, keywords: ["AND", "OR", "NOT", "MA", "CROSS", "OPEN", "HIGH", "LOW", "CLOSE", "VOL", "AMOUNT"] });
     }
-    const instance = monaco.editor.create(host.current, { value: source, language: "tdx", theme: "vs-dark", fontFamily: "Cascadia Mono, Consolas, Microsoft YaHei UI, monospace", fontSize: 13, lineHeight: 21, minimap: { enabled: false }, automaticLayout: true, scrollBeyondLastLine: false, renderLineHighlight: "all", padding: { top: 14 }, accessibilitySupport: "auto" });
+    const instance = monaco.editor.create(host.current, { value: source, language: "tdx", theme: "v3-quant", fontFamily: "Cascadia Mono, Consolas, Microsoft YaHei UI, monospace", fontSize: 13, lineHeight: 21, minimap: { enabled: false }, automaticLayout: true, scrollBeyondLastLine: false, renderLineHighlight: "all", padding: { top: 14 }, accessibilitySupport: "auto", overviewRulerLanes: 0, hideCursorInOverviewRuler: true, scrollbar: V3_MONACO_SCROLLBAR_OPTIONS });
     editor.current = instance;
     const subscription = instance.onDidChangeModelContent(() => onChange(instance.getValue()));
     return () => { subscription.dispose(); instance.dispose(); editor.current = null; };
@@ -139,10 +151,10 @@ function AiDraft({ fixtureMode }: { fixtureMode: boolean }) {
   const [draftVisible, setDraftVisible] = useState(fixtureMode);
   const [receipt, setReceipt] = useState("等待用户审阅");
   return <div className="ai-draft-workspace" data-testid="ai-factor-draft" data-authority="L1_DRAFT">
-    <section className="draft-request"><small>NATURAL LANGUAGE · L1</small><h2>自然语言描述</h2><textarea value={description} onChange={(event) => setDescription(event.target.value)} aria-label="自然语言因子描述"/><button disabled={!fixtureMode} onClick={() => { setDraftVisible(true); setReceipt("AI Draft 已载入；必须由用户确认"); }}><Icon name="pulse"/>生成 AI Draft</button><p>{fixtureMode ? "开发集成 fixture：不会调用模型或创建正式因子。" : "尚未接入 / NOT_CONNECTED：current main 没有 P Factor Agent API。"}</p>
+    <section className="draft-request v3-scroll-surface" data-scroll-surface="ai-draft-request"><small>NATURAL LANGUAGE · L1</small><h2>自然语言描述</h2><textarea value={description} onChange={(event) => setDescription(event.target.value)} aria-label="自然语言因子描述"/><button disabled={!fixtureMode} onClick={() => { setDraftVisible(true); setReceipt("AI Draft 已载入；必须由用户确认"); }}><Icon name="pulse"/>生成 AI Draft</button><p>{fixtureMode ? "开发集成 fixture：不会调用模型或创建正式因子。" : "尚未接入 / NOT_CONNECTED：current main 没有 P Factor Agent API。"}</p>
       <div className="permission-stack"><span>L0 READ <b>允许</b></span><span>L1 DRAFT <b>允许</b></span><span>L2 EXECUTE <b>拒绝</b></span><span>L3 PUBLISH <b>拒绝</b></span></div>
     </section>
-    <section className="draft-review">{draftVisible ? <><header><div><span className="truth-state draft">AI PROPOSAL · DRAFT</span><h2>黄金交叉量价草案</h2><p>非 Canonical FactorDefinitionVersion · 需要用户确认</p></div><span className="confirm-required">REQUIRES USER CONFIRMATION</span></header><pre>{USER_TDX_FORMULA}</pre><div className="draft-flow"><span>自然语言描述</span><i>→</i><span className="active">AI Draft</span><i>→</i><span>确定性验证预览</span><i>→</i><span>用户确认</span></div><TruthCallout tone="warning" title="验证边界" detail="当前内容只映射到已知 W0 fixture；没有后端创建路由，不会生成 canonical factor。"/><footer><span role="status">{receipt}</span><button onClick={() => setReceipt("用户已确认审阅意图；仍为 L1 DRAFT / NOT_CONNECTED")}>确认审阅意图（L1）</button><button disabled>执行（L2 不可用）</button><button disabled>发布（L3 不可用）</button></footer></> : <TruthEmpty title="AI Factor Agent 尚未接入" detail="不会导入未合并 P 分支，也不会在生产中回退到 fixture。"/>}</section>
+    <section className="draft-review v3-scroll-surface" data-scroll-surface="ai-draft-review">{draftVisible ? <><header><div><span className="truth-state draft">AI PROPOSAL · DRAFT</span><h2>黄金交叉量价草案</h2><p>非 Canonical FactorDefinitionVersion · 需要用户确认</p></div><span className="confirm-required">REQUIRES USER CONFIRMATION</span></header><pre>{USER_TDX_FORMULA}</pre><div className="draft-flow"><span>自然语言描述</span><i>→</i><span className="active">AI Draft</span><i>→</i><span>确定性验证预览</span><i>→</i><span>用户确认</span></div><TruthCallout tone="warning" title="验证边界" detail="当前内容只映射到已知 W0 fixture；没有后端创建路由，不会生成 canonical factor。"/><footer><span role="status">{receipt}</span><button onClick={() => setReceipt("用户已确认审阅意图；仍为 L1 DRAFT / NOT_CONNECTED")}>确认审阅意图（L1）</button><button disabled>执行（L2 不可用）</button><button disabled>发布（L3 不可用）</button></footer></> : <TruthEmpty title="AI Factor Agent 尚未接入" detail="不会导入未合并 P 分支，也不会在生产中回退到 fixture。"/>}</section>
   </div>;
 }
 

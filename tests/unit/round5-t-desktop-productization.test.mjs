@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { resolveAgentEvidenceRuntime } from "../../apps/desktop/src/main/agentEvidenceRuntime.ts";
 
 const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
 
@@ -14,11 +15,64 @@ test("Round 5 T custom chrome suppresses the native menu and exposes bounded con
   assert.match(main, /titleBarStyle:\s*"hidden"/);
   for (const action of ["minimize", "toggle-maximize", "close"]) assert.match(contract, new RegExp(action));
   assert.match(preload, /window:control/);
+  assert.match(preload, /window:state-changed/);
+  assert.match(preload, /removeListener\(channel, receive\)/);
+  assert.match(main, /mainWindow\.on\("maximize", publishWindowState\)/);
+  assert.match(main, /mainWindow\.on\("unmaximize", publishWindowState\)/);
+  assert.match(windowControls, /onWindowStateChanged/);
+  assert.match(windowControls, /unsubscribe\(\)/);
   assert.match(windowControls, /data-window-control="minimize"/);
   assert.match(windowControls, /data-window-control="toggle-maximize"/);
   assert.match(windowControls, /data-window-control="close"/);
   assert.match(css, /-webkit-app-region:\s*drag/);
   assert.match(css, /-webkit-app-region:\s*no-drag/);
+  assert.match(main, /title:\s*"V3 量化研究工作台"/);
+  assert.doesNotMatch(main, /FR-1 Visual Restoration Candidate/);
+});
+
+test("packaged production denies every environment-only development fixture request", () => {
+  const development = resolveAgentEvidenceRuntime(false, "DEVELOPMENT_INTEGRATION_FIXTURE");
+  assert.deepEqual(development, {
+    mode: "DEVELOPMENT_INTEGRATION_FIXTURE",
+    backendModule: "v3_backend.adapters.round3_evidence.development_runtime",
+    fixtureDeniedByPackaging: false
+  });
+
+  const unpackagedDefault = resolveAgentEvidenceRuntime(false, undefined);
+  assert.equal(unpackagedDefault.mode, "LIVE_READ_ONLY");
+  assert.equal(unpackagedDefault.backendModule, "v3_backend.runtime.bootstrap");
+
+  const packagedFixture = resolveAgentEvidenceRuntime(true, "DEVELOPMENT_INTEGRATION_FIXTURE");
+  assert.equal(packagedFixture.mode, "LIVE_READ_ONLY");
+  assert.equal(packagedFixture.backendModule, "v3_backend.runtime.bootstrap");
+  assert.equal(packagedFixture.fixtureDeniedByPackaging, true);
+
+  for (const fixtureLikeValue of ["development_integration_fixture", "DEVELOPMENT_INTEGRATION_FIXTURE,DEMO", " DEVELOPMENT_INTEGRATION_FIXTURE ", "DEVELOPMENT_INTEGRATION_FIXTURE DEVELOPMENT_INTEGRATION_FIXTURE"]) {
+    const resolution = resolveAgentEvidenceRuntime(true, fixtureLikeValue);
+    assert.equal(resolution.mode, "LIVE_READ_ONLY");
+    assert.equal(resolution.backendModule, "v3_backend.runtime.bootstrap");
+  }
+});
+
+test("shared scrollbar system covers native overflow and Monaco without old coarse rules", async () => {
+  const [css, factors, monacoPresentation, strategy] = await Promise.all([
+    read("apps/desktop/src/renderer/styles.css"),
+    read("apps/desktop/src/renderer/components/FactorWorkbench.tsx"),
+    read("apps/desktop/src/renderer/monacoPresentation.tsx"),
+    read("apps/desktop/src/renderer/components/StrategyPanels.tsx")
+  ]);
+  for (const token of ["--v3-scrollbar-size", "--v3-scrollbar-thumb-idle", "--v3-scrollbar-thumb-hover", "--v3-scrollbar-thumb-active", "--v3-scrollbar-track", "--v3-scrollbar-radius"]) assert.match(css, new RegExp(token));
+  assert.match(css, /::-webkit-scrollbar\s*\{[^}]*width:\s*var\(--v3-scrollbar-size\);[^}]*height:\s*var\(--v3-scrollbar-size\)/s);
+  assert.match(css, /::-webkit-scrollbar-thumb:active/);
+  assert.match(css, /::-webkit-scrollbar-button\s*\{[^}]*display:\s*none/s);
+  assert.match(css, /scrollbar-color:\s*var\(--v3-scrollbar-thumb-idle\)\s*var\(--v3-scrollbar-track\)/);
+  assert.match(css, /prefers-contrast:\s*more[\s\S]*--v3-scrollbar-thumb-active/);
+  assert.match(css, /monaco-scrollable-element\s*>\s*\.scrollbar\s*>\s*\.slider/);
+  for (const surface of ["factor-categories", "factor-list", "factor-detail", "tdx-analysis", "ai-draft-request", "ai-draft-review"]) assert.match(factors, new RegExp(`data-scroll-surface="${surface}"`));
+  for (const option of ["verticalScrollbarSize: 7", "horizontalScrollbarSize: 7", "verticalSliderSize: 5", "horizontalSliderSize: 5", "alwaysConsumeMouseWheel: false", "useShadows: false"]) assert.match(monacoPresentation, new RegExp(option));
+  assert.match(factors, /scrollbar:\s*V3_MONACO_SCROLLBAR_OPTIONS/);
+  assert.match(strategy, /scrollbar:\s*V3_MONACO_SCROLLBAR_OPTIONS/);
+  assert.doesNotMatch(css, /scrollbar-color:\s*#3a4355/);
 });
 
 test("Factor Library preserves exact W0 identity and contextual evaluation truth", async () => {

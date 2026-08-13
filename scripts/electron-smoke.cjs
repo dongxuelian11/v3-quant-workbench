@@ -5,8 +5,10 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const phase = process.env.V3_SMOKE_PHASE || "capture";
 const screenshots = path.resolve(root, "deliverables", "visual-restoration-screenshots");
+const reviewEvidence = path.resolve(root, "docs", "research", "round5-t", "evidence");
 const electronData = path.resolve(root, "deliverables", "electron-user-data-fr1-visual");
 fs.mkdirSync(screenshots, { recursive: true });
+fs.mkdirSync(reviewEvidence, { recursive: true });
 fs.mkdirSync(electronData, { recursive: true });
 app.setPath("userData", electronData);
 app.setPath("cache", path.resolve(electronData, "cache"));
@@ -71,6 +73,18 @@ async function shot(win, geometry, name, size) {
   geometry.push(await measurement(win, name));
 }
 
+async function reviewShot(win, name, size) {
+  if (size) {
+    win.setContentSize(size[0], size[1]);
+    await delay(850);
+  }
+  win.webContents.invalidate();
+  await delay(120);
+  const bounds = win.getContentBounds();
+  const image = await win.webContents.capturePage({ x: 0, y: 0, width: bounds.width, height: bounds.height }, { stayHidden: false, stayAwake: true });
+  fs.writeFileSync(path.resolve(reviewEvidence, name), image.toPNG());
+}
+
 app.whenReady().then(async () => {
   require(path.resolve(root, "dist/apps/desktop/src/main.js"));
   for (let index = 0; index < 80 && BrowserWindow.getAllWindows().length === 0; index += 1) await delay(100);
@@ -97,10 +111,26 @@ app.whenReady().then(async () => {
   if (process.versions.electron !== "39.8.10") throw new Error(`Electron ${process.versions.electron}`);
   if (prefs.contextIsolation !== true || prefs.nodeIntegration !== false || prefs.sandbox !== true || prefs.webSecurity !== true) throw new Error(`Security preferences invalid ${JSON.stringify(prefs)}`);
   if (Menu.getApplicationMenu() !== null) throw new Error("Native application menu was not suppressed");
+  if (win.getTitle() !== "V3 量化研究工作台") throw new Error(`Stale product window title ${win.getTitle()}`);
   const chrome = await evaluate(win, "(()=>({controls:Array.from(document.querySelectorAll('[data-window-control]')).map((item)=>item.getAttribute('data-window-control')),labels:Array.from(document.querySelectorAll('[data-window-control]')).map((item)=>item.getAttribute('aria-label')),drag:getComputedStyle(document.querySelector('.context-bar')).getPropertyValue('-webkit-app-region')}))()");
   if (JSON.stringify(chrome.controls)!==JSON.stringify(['minimize','toggle-maximize','close']) || chrome.labels.some((label)=>!label)) throw new Error(`Custom window controls missing ${JSON.stringify(chrome)}`);
-  const maximizeRoundTrip = await evaluate(win, "(async()=>{const before=await window.v3Desktop.windowState();const first=await window.v3Desktop.windowControl('toggle-maximize');const second=await window.v3Desktop.windowControl('toggle-maximize');return {before,first,second}})()");
-  if (maximizeRoundTrip.first.maximized === maximizeRoundTrip.second.maximized) throw new Error(`Maximize/restore round trip failed ${JSON.stringify(maximizeRoundTrip)}`);
+  await evaluate(win, "(()=>{window.__v3WindowStateEventCount=0;window.__v3WindowStateUnsubscribe=window.v3Desktop.onWindowStateChanged(()=>{window.__v3WindowStateEventCount+=1})})()");
+  win.maximize();
+  await waitFor(win, "document.querySelector('[data-window-control=toggle-maximize]')?.getAttribute('aria-label')==='还原窗口'", "native maximize renderer synchronization");
+  win.unmaximize();
+  await waitFor(win, "document.querySelector('[data-window-control=toggle-maximize]')?.getAttribute('aria-label')==='最大化窗口'", "native unmaximize renderer synchronization");
+  const nativeEventCount = await evaluate(win, "window.__v3WindowStateEventCount");
+  if (nativeEventCount !== 2) throw new Error(`Native window-state event duplication ${nativeEventCount}`);
+  await evaluate(win, "window.__v3WindowStateUnsubscribe();window.__v3WindowStateUnsubscribe=null");
+  win.maximize();
+  await waitFor(win, "document.querySelector('[data-window-control=toggle-maximize]')?.getAttribute('aria-label')==='还原窗口'", "React listener after secondary listener cleanup");
+  win.unmaximize();
+  await waitFor(win, "document.querySelector('[data-window-control=toggle-maximize]')?.getAttribute('aria-label')==='最大化窗口'", "React unmaximize listener after secondary listener cleanup");
+  if (await evaluate(win, "window.__v3WindowStateEventCount") !== 2) throw new Error("Window-state unsubscribe did not remove the bounded listener");
+  await click(win, "[data-window-control='toggle-maximize']", 250);
+  await waitFor(win, "document.querySelector('[data-window-control=toggle-maximize]')?.getAttribute('aria-label')==='还原窗口'", "renderer maximize click");
+  await click(win, "[data-window-control='toggle-maximize']", 250);
+  await waitFor(win, "document.querySelector('[data-window-control=toggle-maximize]')?.getAttribute('aria-label')==='最大化窗口'", "renderer restore click");
 
   if (phase === "production-boundary") {
     await click(win, "[data-lab='research']", 500);
@@ -198,6 +228,8 @@ app.whenReady().then(async () => {
     interactionEvidence.backtestResult = await evaluate(win, `(()=>({renderer:document.querySelector('[data-testid=artifact-viewer]')?.getAttribute('data-renderer'),actual:Boolean(document.querySelector('[data-testid=canonical-backtest-result]')),body:document.querySelector('[data-testid=canonical-backtest-result]')?.textContent}))()`);
     if (interactionEvidence.evidenceInspector.objectId !== exactEvidenceIds[9] || interactionEvidence.evidenceInspector.truth.join(',') !== 'NOT_FORMAL,PRE_ALPHA,NOT_RUN' || interactionEvidence.backtestResult.renderer !== 'backtest-result' || !interactionEvidence.backtestResult.actual || !interactionEvidence.backtestResult.body.includes(exactEvidenceIds[9]) || !interactionEvidence.backtestResult.body.includes(exactEvidenceIds[8])) throw new Error(`Canonical BacktestRunResult rendering failed ${JSON.stringify(interactionEvidence)}`);
     await shot(win, geometry, "00-round3-canonical-agent-workspace.png", [1920, 1080]);
+    await reviewShot(win, "01-agent-workspace-1920x1080.png", [1920, 1080]);
+    await reviewShot(win, "02-agent-workspace-1280x720.png", [1280, 720]);
     await click(win, ".open-in-lab", 700);
     if (await evaluate(win, "document.querySelector('[data-lab-workbench]')?.getAttribute('data-lab-workbench')") !== "result") throw new Error("Canonical BacktestRunResult did not route to Result Lab");
     await click(win, "[data-surface='agent']", 500);
@@ -211,15 +243,28 @@ app.whenReady().then(async () => {
     interactionEvidence.factorLibrary = await evaluate(win, `(()=>({mode:document.querySelector('[data-testid=factor-workbench]')?.getAttribute('data-fixture-mode'),items:document.querySelectorAll('.factor-list [role=option]').length,selected:document.querySelector('.factor-detail')?.getAttribute('data-factor-key'),body:document.querySelector('[data-testid=factor-library]')?.textContent??'',ids:Array.from(document.querySelectorAll('.id-block code')).map((item)=>item.textContent)}))()`);
     if (interactionEvidence.factorLibrary.mode!=='DEVELOPMENT_INTEGRATION_FIXTURE' || interactionEvidence.factorLibrary.items!==5 || interactionEvidence.factorLibrary.selected!=='user.round5.golden' || !interactionEvidence.factorLibrary.body.includes('未评估') || /IC Mean|ICIR\s*[:=]\s*[0-9]/.test(interactionEvidence.factorLibrary.body)) throw new Error(`Factor Library truth failed ${JSON.stringify(interactionEvidence.factorLibrary)}`);
     await shot(win, geometry, "21-factor-library-1920x1080.png", [1920, 1080]);
+    await reviewShot(win, "03-factor-library-1920x1080.png", [1920, 1080]);
     await shot(win, geometry, "22-factor-library-1280x720.png", [1280, 720]);
+    await reviewShot(win, "04-factor-library-1280x720.png", [1280, 720]);
     await clickText(win, "定义", 300);
     if (!await evaluate(win, "document.body.innerText.includes('fdv_sha256_91e750eaa4ef83a96dac412ed2a88c1b247d2357f69b455d2f350ec9804acee1')")) throw new Error("Exact GOLDEN definition ID missing");
     await shot(win, geometry, "23-factor-detail-definition.png", [1536, 864]);
+    await clickText(win, "版本 / 来源", 300);
+    await reviewShot(win, "05-factor-detail-scrollbar-1280x720.png", [1280, 720]);
+    win.webContents.debugger.attach("1.3");
+    await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", { features: [{ name: "prefers-contrast", value: "more" }] });
+    await reviewShot(win, "08-scrollbar-high-contrast-1280x720.png", [1280, 720]);
+    await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", { features: [] });
+    win.webContents.debugger.detach();
+    await evaluate(win, "(()=>{document.documentElement.dataset.scrollbarEvidenceState='hover';const pane=document.querySelector('.factor-categories');if(pane)pane.scrollTop=240})()");
+    await reviewShot(win, "09-scrollbar-hover-long-content-1280x720.png", [1280, 720]);
+    await evaluate(win, "delete document.documentElement.dataset.scrollbarEvidenceState");
     await clickText(win, "TDX 公式", 900);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=tdx-editor] .monaco-editor'))", "TDX Monaco editor");
     const tdx = await evaluate(win, "(()=>({state:document.querySelector('[data-testid=tdx-editor]')?.getAttribute('data-parse-state'),body:document.querySelector('[data-testid=tdx-editor]')?.textContent??''}))()");
     if (tdx.state!=='PASSED' || !tdx.body.includes('BOOLEAN_SERIES') || !tdx.body.includes('非 1/0') || !tdx.body.includes('canonical shares × 0.01')) throw new Error(`TDX typed fixture failed ${JSON.stringify(tdx)}`);
     await shot(win, geometry, "24-tdx-editor-w0-fixture.png", [1536, 864]);
+    await reviewShot(win, "06-tdx-monaco-w0-scrollbars-1536x864.png", [1536, 864]);
     await clickText(win, "不支持函数状态", 500);
     if (await evaluate(win, "document.querySelector('[data-testid=tdx-editor]')?.getAttribute('data-parse-state')") !== "UNSUPPORTED") throw new Error("TDX unsupported state missing");
     await shot(win, geometry, "25-tdx-editor-unsupported.png", [1536, 864]);
@@ -227,6 +272,7 @@ app.whenReady().then(async () => {
     const aiDraft = await evaluate(win, "(()=>({authority:document.querySelector('[data-testid=ai-factor-draft]')?.getAttribute('data-authority'),body:document.querySelector('[data-testid=ai-factor-draft]')?.textContent??'',disabled:Array.from(document.querySelectorAll('[data-testid=ai-factor-draft] button:disabled')).map((item)=>item.textContent)}))()");
     if (aiDraft.authority!=='L1_DRAFT' || !aiDraft.body.includes('REQUIRES USER CONFIRMATION') || !aiDraft.body.includes('非 Canonical FactorDefinitionVersion') || !aiDraft.disabled.some((item)=>item.includes('L2')) || !aiDraft.disabled.some((item)=>item.includes('L3'))) throw new Error(`AI Draft authority failed ${JSON.stringify(aiDraft)}`);
     await shot(win, geometry, "26-ai-draft-confirm-required.png", [1536, 864]);
+    await reviewShot(win, "07-ai-draft-confirm-required-1536x864.png", [1536, 864]);
     await clickText(win, "研究画布", 500);
     await waitFor(win, "Boolean(document.querySelector('[data-testid=research-echart]'))", "return to Research canvas");
 

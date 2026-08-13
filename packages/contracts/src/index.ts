@@ -79,6 +79,7 @@ export interface DesktopBridge {
   executeCommand(command: DesktopCommandEnvelope): Promise<CommandReceipt>;
   runtimeInfo(): Promise<{ electron: string; platform: string; storePath: string; agentEvidenceMode: "LIVE_READ_ONLY" | "DEVELOPMENT_INTEGRATION_FIXTURE" }>;
   windowState(): Promise<{ maximized: boolean }>;
+  onWindowStateChanged(listener: (state: { maximized: boolean }) => void): () => void;
   windowControl(action: "minimize" | "toggle-maximize" | "close"): Promise<{ maximized: boolean }>;
 }
 

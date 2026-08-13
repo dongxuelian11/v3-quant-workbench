@@ -13,6 +13,7 @@ import {
   BackendSupervisor,
   registerBackendRuntimeIpc
 } from "./main/backendRuntime/index";
+import { resolveAgentEvidenceRuntime } from "./main/agentEvidenceRuntime";
 
 let mainWindow: BrowserWindow | null = null;
 let state: PersistedWorkspace = structuredClone(DEFAULT_WORKSPACE);
@@ -20,9 +21,7 @@ let storePath = "";
 let backendSupervisor: BackendSupervisor | null = null;
 let backendRelay: BackendRuntimeEventRelay | null = null;
 
-const AGENT_EVIDENCE_MODE = process.env.V3_AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE"
-  ? "DEVELOPMENT_INTEGRATION_FIXTURE" as const
-  : "LIVE_READ_ONLY" as const;
+const AGENT_EVIDENCE_RUNTIME = resolveAgentEvidenceRuntime(app.isPackaged, process.env.V3_AGENT_EVIDENCE_MODE);
 const BACKEND_PROJECT_ID = "prj_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const BACKEND_PROJECT_CONTEXT_REVISION_ID = "pcr_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
@@ -70,7 +69,7 @@ function registerIpc(): void {
     await persist();
     return applied.receipt;
   });
-  ipcMain.handle("runtime:info", (event) => { trusted(event); return { electron: process.versions.electron, platform: process.platform, storePath, agentEvidenceMode: AGENT_EVIDENCE_MODE }; });
+  ipcMain.handle("runtime:info", (event) => { trusted(event); return { electron: process.versions.electron, platform: process.platform, storePath, agentEvidenceMode: AGENT_EVIDENCE_RUNTIME.mode }; });
   ipcMain.handle("window:state", (event) => {
     trusted(event);
     return { maximized: mainWindow?.isMaximized() ?? false };
@@ -97,9 +96,7 @@ function startBackendRuntime(): void {
       projectContextRevisionId: BACKEND_PROJECT_CONTEXT_REVISION_ID,
       lastDurableProjectEventSequence: 0
     },
-    backendModule: AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE"
-      ? "v3_backend.adapters.round3_evidence.development_runtime"
-      : "v3_backend.runtime.bootstrap",
+    backendModule: AGENT_EVIDENCE_RUNTIME.backendModule,
     autoReconnect: false
   });
   backendRelay = new BackendRuntimeEventRelay(backendSupervisor, mainWindow.webContents);
@@ -121,7 +118,7 @@ function createWindow(): void {
     frame: false,
     titleBarStyle: "hidden",
     backgroundColor: "#0B0D14",
-    title: "V3 量化研究工作台 · FR-1 Visual Restoration Candidate",
+    title: "V3 量化研究工作台",
     webPreferences: {
       preload: join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -133,6 +130,12 @@ function createWindow(): void {
   void mainWindow.loadFile(join(__dirname, "renderer", "index.html"));
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+  const publishWindowState = (): void => {
+    if (!mainWindow || mainWindow.webContents.isDestroyed()) return;
+    mainWindow.webContents.send("window:state-changed", { maximized: mainWindow.isMaximized() });
+  };
+  mainWindow.on("maximize", publishWindowState);
+  mainWindow.on("unmaximize", publishWindowState);
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
