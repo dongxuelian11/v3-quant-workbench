@@ -1,6 +1,6 @@
 # V3 Quantitative Research IDE / Workbench
 
-V3 is a local-first, A-share-first, AI-native, reproducible and auditable professional Quant Research IDE / Workbench. It is organized around an Agent-first flow and five connected Labs: Research, Strategy, Model, Backtest, and Result.
+V3 is a local-first, A-share-first, AI-native, reproducible and auditable professional Quant Research IDE / Workbench. It is organized around an Agent-first flow and five professional Labs: Research, Strategy, Model, Backtest, and Result.
 
 > **Status: PRE-ALPHA / ACTIVE RECONSTRUCTION**
 >

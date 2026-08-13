@@ -123,8 +123,14 @@ async function validate() {
   }
 
   if (manifest.schema_version !== "1.0.0") failures.push("manifest schema_version must be 1.0.0");
-  if (manifest.authority_version !== "1.0.0") failures.push("manifest authority_version must be 1.0.0");
+  if (manifest.authority_version !== "1.0.1") failures.push("manifest authority_version must be 1.0.1");
   if (manifest.status !== "P0_PROJECT_AUTHORITY") failures.push("manifest status must be P0_PROJECT_AUTHORITY");
+  if (manifest.amendment_policy !== "P0_AUTHORITY_AMENDMENT") {
+    failures.push("manifest amendment_policy must be P0_AUTHORITY_AMENDMENT");
+  }
+  if (manifest.amendment_reason !== "Close P0 authority amendment governance and documentation precision findings.") {
+    failures.push("manifest amendment_reason must describe the authority governance and documentation correction");
+  }
   if (!Array.isArray(manifest.files)) failures.push("manifest files must be an array");
 
   const entries = Array.isArray(manifest.files) ? manifest.files : [];
@@ -189,6 +195,10 @@ async function validate() {
     "low-chrome/no-box",
     "same PR",
     "No rebase, reset, force push",
+    "P0 Authority Amendment Gate",
+    "P0_AUTHORITY_AMENDMENT",
+    "P0 authority file modification = forbidden",
+    "original complete task prompt",
   ], failures);
 
   const constitution = texts["V3_PROJECT_CONSTITUTION.md"];
@@ -214,6 +224,10 @@ async function validate() {
     "No recursive correction chains",
     "Context compaction and State Ledgers",
     "Whole-system review questions",
+    "P0 Authority Amendment Protocol — HARD",
+    "P0_AUTHORITY_AMENDMENT",
+    "MUST NOT modify any protected P0 Authority file or the Authority Manifest",
+    "tamper-evident, governance-controlled, and Git-history traceable",
   ], failures);
 
   const capabilities = texts["docs/status/V3_CAPABILITY_LEVELS.md"];
@@ -226,6 +240,29 @@ async function validate() {
     "Visual screenshot review",
     "runtime capability name",
   ], failures);
+  const maturityHeading = "## Positive maturity levels";
+  const orthogonalHeading = "## Orthogonal negative and unknown states";
+  const maturityStart = capabilities.indexOf(maturityHeading);
+  const maturityEnd = capabilities.indexOf(orthogonalHeading);
+  if (maturityStart === -1 || maturityEnd <= maturityStart) {
+    failures.push("Capability Levels must contain the bounded positive maturity table section");
+  } else {
+    const maturityRows = capabilities
+      .slice(maturityStart + maturityHeading.length, maturityEnd)
+      .split(/\r?\n/)
+      .filter((line) => /^\|.*\|$/.test(line.trim()))
+      .map((line) => line.trim().slice(1, -1).split("|").map((cell) => cell.trim()));
+    if (maturityRows.length !== MATURITY_LEVELS.length + 2) {
+      failures.push(`positive maturity table must have one header, one separator, and ${MATURITY_LEVELS.length} data rows; found ${maturityRows.length}`);
+    }
+    for (const row of maturityRows) {
+      if (row.length !== 5) failures.push(`positive maturity table row must have 5 columns: ${row.join(" | ")}`);
+    }
+    const dataLevels = maturityRows.slice(2).map((row) => row[0]?.replaceAll("`", ""));
+    if (JSON.stringify(dataLevels) !== JSON.stringify(MATURITY_LEVELS)) {
+      failures.push(`positive maturity table levels must exactly match: ${MATURITY_LEVELS.join(", ")}`);
+    }
+  }
 
   const architecture = texts["docs/architecture/V3_CANONICAL_ARCHITECTURE.md"];
   requireTokens("Canonical Architecture", architecture, [

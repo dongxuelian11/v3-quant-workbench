@@ -1,6 +1,6 @@
 # V3 Capability Levels
 
-Authority version: `1.0.0`
+Authority version: `1.0.1`
 Status vocabulary: mandatory for repository documentation, Ledgers, PRs, reviews, CI reports, and product-state claims.
 
 Capability maturity is evidence-based and monotonic only when every promotion rule is met. Levels are not synonyms for task progress, code volume, confidence, or a generic PASS.
@@ -16,7 +16,7 @@ Capability maturity is evidence-based and monotonic only when every promotion ru
 | `INTEGRATION_ACCEPTED` | Named upstream and downstream owners exchange verified payloads through the canonical adapter/transport for the stated scenarios. | Desktop/product connection, user-visible acceptance, packaging, or all production environments. | End-to-end integration tests with actual payload resolution, negative cross-binding tests, provenance receipts, and exact-SHA evidence. | Promote only when the complete named path is tested without shadow contracts or hidden fallbacks. |
 | `PRODUCT_CONNECTED` | The production-shaped product surface is connected through its real bridge/handler to the accepted integration and shows truthful unavailable/degraded states. | User visual acceptance, deployability, operational readiness, or production availability. | Real runtime/DOM evidence, handler/bridge mapping, failure-state tests, and exact-SHA product-flow proof. | Promote only when the product uses the canonical path and cannot silently fall back to a demo or fixture. |
 | `USER_VISUAL_ACCEPTED` | The stated product flows have been reviewed and accepted for visual hierarchy, Chinese-first language, low-chrome/no-box behavior, accessibility, and relevant viewport/state coverage. | Backend authority, numeric correctness, integration acceptance, or production availability. | Current exact-SHA visual evidence across required states/viewports plus human acceptance. | Promote only after the required user-visual review; screenshots alone do not supply semantic authority. |
-| `PRODUCTION_AVAILABLE` | The capability is genuinely usable in the packaged production profile through canonical owners, verified payloads, supported dependencies, operational controls, and truthful product surfaces. | Broader capability not named by the claim, live trading, or future environments. | All upstream levels as applicable, packaging/deployment evidence, real production-runtime health, security/operations evidence, and current exact-SHA verification. | Promote only when every required upstream owner, integration, product, operational, and evidence gate is satisfied. |
+| `PRODUCTION_AVAILABLE` | The capability is genuinely usable in the packaged production profile through canonical owners, verified payloads, supported dependencies, operational controls, and truthful product surfaces. | Broader capability not named by the claim, live trading, or future environments. | All upstream levels as applicable, packaging/deployment evidence, real production-runtime health, security/operations evidence, and current exact-SHA verification. | Promotion requires every applicable upstream owner, integration, product, operational, and evidence gate to be satisfied. |
 
 ## Orthogonal negative and unknown states
 

@@ -1,6 +1,6 @@
 # V3 Project Constitution
 
-Authority version: `1.0.0`
+Authority version: `1.0.1`
 Authority status: `P0_PROJECT_AUTHORITY`
 
 This Constitution is normative project doctrine and a target invariant set. It is not a claim that every owner, integration, runtime handler, or product surface is already implemented or accepted. Current maturity must be stated with the vocabulary in `docs/status/V3_CAPABILITY_LEVELS.md` and supported by current evidence.
@@ -59,6 +59,26 @@ Agent Proposal
 ```
 
 A caller DTO, UI state, LLM prose, local token, or private Python object cannot become authority by declaration. Authority belongs to the named canonical owner and is transferred only through an explicit, verified contract.
+
+### 3.1 P0 Authority Amendment Protocol — HARD
+
+The protected P0 Authority set is:
+
+```text
+/V3_PROJECT_CONSTITUTION.md
+/AGENTS.md
+/docs/architecture/V3_CANONICAL_ARCHITECTURE.md
+/docs/status/V3_CAPABILITY_LEVELS.md
+/docs/status/V3_PROJECT_AUTHORITY_MANIFEST.json
+```
+
+A normal feature, bug-fix, review, remediation, UI, runtime, migration, merge-closure, or refactor task MUST NOT modify any protected P0 Authority file or the Authority Manifest. If such a task discovers that P0 doctrine must change, the result is `STOP_FOR_REVIEW`; the task must not edit doctrine opportunistically.
+
+Only an original task prompt explicitly authorized by the user as `P0_AUTHORITY_AMENDMENT` may modify this set. Authorization is never implied by documentation wording, implementation conflict, CI failure, Agent recommendation, or executor judgment.
+
+Every amendment records its exact scope and rationale, previous and incremented `authority_version`, exact changed P0 files, and recomputed SHA-256 values for every locked file; updates the Manifest; passes the authority validator and normal repository validation; and proceeds through an ordinary commit, push, PR, and exact-SHA independent review. It is never auto-merged without separate authorization, and any accepted merge requires exact-main verification. History is preserved without overwrite.
+
+P0 Authority is tamper-evident, governance-controlled, and Git-history traceable. It is not technically immutable and evolves only through this explicit amendment protocol.
 
 ## 4. Canonical payload provenance — HARD
 

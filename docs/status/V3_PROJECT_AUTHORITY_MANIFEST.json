@@ -1,15 +1,17 @@
 {
   "schema_version": "1.0.0",
-  "authority_version": "1.0.0",
+  "authority_version": "1.0.1",
   "status": "P0_PROJECT_AUTHORITY",
+  "amendment_policy": "P0_AUTHORITY_AMENDMENT",
+  "amendment_reason": "Close P0 authority amendment governance and documentation precision findings.",
   "files": [
     {
       "path": "V3_PROJECT_CONSTITUTION.md",
-      "sha256": "a09b8d24ae87b9716e55b6c874ed2fb5652bd3fc4fe26a38c57ae5b43effae70"
+      "sha256": "63bfa526a607cf3e8f91667295a56377189ddf31d801bd9a4de8a4aa487e13f6"
     },
     {
       "path": "AGENTS.md",
-      "sha256": "ce07862e758479189935b3fcd7a3072ee1c68cb3d8f5fe7eb9cc71cd87406dd5"
+      "sha256": "cbe7d78e2eccbfd5254fd08b30a0b145dc7c37b60aa5eadbbf4649b490f5b385"
     },
     {
       "path": "docs/architecture/V3_CANONICAL_ARCHITECTURE.md",
@@ -17,7 +19,7 @@
     },
     {
       "path": "docs/status/V3_CAPABILITY_LEVELS.md",
-      "sha256": "86ef7b4937e6906b93218c6ae5278656fb2de8f2eee005eb09ebb59ce3f70e20"
+      "sha256": "e1ca59e408302c32e45390fc30372b19494351e8ebba58444504162a3ed6001d"
     }
   ]
 }

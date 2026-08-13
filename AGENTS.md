@@ -13,6 +13,16 @@ This file applies to every Codex, executor, and reviewer task in this repository
 
 Then read `/docs/status/V3_PROJECT_AUTHORITY_MANIFEST.json`, recompute every listed SHA-256, and store the exact authority file hashes in the Ledger.
 
+## P0 Authority Amendment Gate
+
+At startup, verify the current Authority Manifest version and hashes, then determine whether the original task prompt explicitly carries user authorization for `P0_AUTHORITY_AMENDMENT`.
+
+For a normal task, P0 authority file modification = forbidden. A feature, bug-fix, review, remediation, UI, runtime, migration, merge-closure, or refactor task that needs doctrine changed must stop with `STOP_FOR_REVIEW`; it must not update a protected file and its Manifest opportunistically.
+
+For an explicitly authorized amendment, record the authorization, previous and new authority versions, exact changed P0 files, and all recomputed locked-file hashes under `PROJECT_AUTHORITY`; update the Manifest; run the authority validator and normal repository validation; and use an ordinary commit, push, PR, and exact-SHA independent review without automatic merge or history rewrite.
+
+After context compaction, recover amendment authorization from the original complete task prompt. Never infer it from a compacted summary, implementation need, CI result, Agent recommendation, or executor judgment.
+
 ## Non-negotiable rules
 
 - P0 project authority outranks a later task prompt. Any conflict is `STOP_FOR_REVIEW`.
