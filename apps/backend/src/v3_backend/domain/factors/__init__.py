@@ -58,6 +58,7 @@ from .formal import (
     FormalFactorEvaluationRequest,
     FormalFactorEvaluationService,
     FormalFeatureMaterialization,
+    FormalFeatureMaterializationPublisher,
     factor_payload_context_identity,
 )
 
@@ -95,6 +96,7 @@ __all__ = [
     "FormalFactorEvaluationRequest",
     "FormalFactorEvaluationService",
     "FormalFeatureMaterialization",
+    "FormalFeatureMaterializationPublisher",
     "FloatScalar",
     "FloatSeries",
     "LiteralBroadcastSemantics",

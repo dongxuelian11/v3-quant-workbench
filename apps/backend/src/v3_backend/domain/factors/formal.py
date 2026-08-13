@@ -133,6 +133,12 @@ class CanonicalJsonArtifactPublisher(Protocol):
     ) -> ArtifactDescriptor: ...
 
 
+class FormalFeatureMaterializationPublisher(Protocol):
+    def publish_materialization(
+        self, materialization: "FormalFeatureMaterialization"
+    ) -> "FormalFeatureMaterialization": ...
+
+
 @dataclass(frozen=True, slots=True)
 class FactorInputPayload:
     snapshot_id: str
@@ -159,6 +165,42 @@ class FactorInputPayload:
         universe: CanonicalUniverseVersion,
         definition: FactorDefinitionVersion,
     ) -> "FactorInputPayload":
+        return cls._decode_verified_with_types(
+            payload,
+            snapshot=snapshot,
+            universe=universe,
+            expected_types=DeterministicReferenceEvaluator._feature_types(definition.root),
+        )
+
+    @classmethod
+    def decode_verified_source_field(
+        cls,
+        payload: bytes,
+        *,
+        snapshot: CanonicalSnapshotVersion,
+        universe: CanonicalUniverseVersion,
+        source_field: str,
+    ) -> "FactorInputPayload":
+        if not isinstance(source_field, str) or not source_field:
+            raise ValueError("canonical source_field is required")
+        return cls._decode_verified_with_types(
+            payload,
+            snapshot=snapshot,
+            universe=universe,
+            expected_types={source_field: ValueType.FLOAT_SERIES},
+        )
+
+    @classmethod
+    def _decode_verified_with_types(
+        cls,
+        payload: bytes,
+        *,
+        snapshot: CanonicalSnapshotVersion,
+        universe: CanonicalUniverseVersion,
+        expected_types: Mapping[str, ValueType],
+    ) -> "FactorInputPayload":
+        if not expected_types:
+            raise ValueError("verified Factor input requires at least one exact field")
         try:
             raw = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -191,7 +233,6 @@ class FactorInputPayload:
             raise ValueError("Factor input instrument order/membership does not match Universe")
         if not isinstance(root["fields"], list) or not root["fields"]:
             raise ValueError("fields must be a non-empty array")
-        expected_types = DeterministicReferenceEvaluator._feature_types(definition.root)
         values: dict[str, tuple[float | int | bool | None, ...]] = {}
         types: dict[str, ValueType] = {}
         expected_shape = [len(instruments), len(observations)]
@@ -265,6 +306,35 @@ class FormalFactorEvaluationRequest:
             raise TypeError("proposed_state must be typed")
 
 
+def _feature_materialization_identity_payload(
+    *,
+    factor_definition_version_id: str,
+    snapshot_id: str,
+    universe_version_id: str,
+    universe_membership_identity: str,
+    knowledge_cutoff: str,
+    evaluator_version: str,
+    input_receipt: PayloadResolutionReceipt,
+    output_descriptor: ArtifactDescriptor,
+    output_schema_fingerprint: str,
+    truth_admission: TruthAdmissionState,
+) -> dict[str, object]:
+    return {
+        "factor_definition_version_id": factor_definition_version_id,
+        "snapshot_id": snapshot_id,
+        "universe_version_id": universe_version_id,
+        "universe_membership_identity": universe_membership_identity,
+        "knowledge_cutoff": knowledge_cutoff,
+        "evaluator_version": evaluator_version,
+        "input_receipt_id": input_receipt.receipt_identity,
+        "output_artifact_id": output_descriptor.artifact_id,
+        "output_sha256": output_descriptor.sha256,
+        "output_byte_size": output_descriptor.byte_size,
+        "output_schema_fingerprint": output_schema_fingerprint,
+        "truth_admission": truth_admission.to_wire(),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class FormalFeatureMaterialization:
     feature_materialization_id: str
@@ -280,6 +350,36 @@ class FormalFeatureMaterialization:
     row_count: int
     missing_count: int
     truth_admission: TruthAdmissionState
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.input_receipt, PayloadResolutionReceipt):
+            raise TypeError("FeatureMaterialization requires a typed P1 input receipt")
+        if not isinstance(self.output_descriptor, ArtifactDescriptor):
+            raise TypeError("FeatureMaterialization requires a typed output Artifact")
+        if self.output_schema_fingerprint != FACTOR_OUTPUT_SCHEMA_FINGERPRINT:
+            raise ValueError("FeatureMaterialization output schema is not admitted")
+        if not isinstance(self.row_count, int) or isinstance(self.row_count, bool) or self.row_count < 0:
+            raise ValueError("FeatureMaterialization row_count must be non-negative")
+        if not isinstance(self.missing_count, int) or isinstance(self.missing_count, bool) or not 0 <= self.missing_count <= self.row_count:
+            raise ValueError("FeatureMaterialization missing_count is invalid")
+        if not isinstance(self.truth_admission, TruthAdmissionState):
+            raise TypeError("FeatureMaterialization truth_admission must be typed")
+        expected = "ffm_sha256_" + canonical_sha256(
+            _feature_materialization_identity_payload(
+                factor_definition_version_id=self.factor_definition_version_id,
+                snapshot_id=self.snapshot_id,
+                universe_version_id=self.universe_version_id,
+                universe_membership_identity=self.universe_membership_identity,
+                knowledge_cutoff=self.knowledge_cutoff,
+                evaluator_version=self.evaluator_version,
+                input_receipt=self.input_receipt,
+                output_descriptor=self.output_descriptor,
+                output_schema_fingerprint=self.output_schema_fingerprint,
+                truth_admission=self.truth_admission,
+            )
+        )
+        if self.feature_materialization_id != expected:
+            raise ValueError("FeatureMaterialization identity does not match canonical owner content")
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -310,6 +410,7 @@ class FormalFactorEvaluationService:
         payload_resolver: CanonicalPayloadResolver,
         evaluator: DeterministicReferenceEvaluator,
         artifact_publisher: CanonicalJsonArtifactPublisher,
+        materialization_publisher: FormalFeatureMaterializationPublisher,
     ) -> None:
         self._snapshots = snapshots
         self._universes = universes
@@ -317,6 +418,7 @@ class FormalFactorEvaluationService:
         self._resolver = payload_resolver
         self._evaluator = evaluator
         self._publisher = artifact_publisher
+        self._materialization_publisher = materialization_publisher
 
     def evaluate(self, request: FormalFactorEvaluationRequest) -> FormalFeatureMaterialization:
         if not isinstance(request, FormalFactorEvaluationRequest):
@@ -379,21 +481,19 @@ class FormalFactorEvaluationService:
                 UpstreamRequirement(universe.membership_identity, universe.truth_admission),
             ),
         )
-        identity_payload = {
-            "factor_definition_version_id": definition.factor_definition_version_id,
-            "snapshot_id": snapshot.snapshot_id,
-            "universe_version_id": universe.universe_version_id,
-            "universe_membership_identity": universe.membership_identity,
-            "knowledge_cutoff": decoded.knowledge_cutoff,
-            "evaluator_version": result.evaluator_version,
-            "input_receipt_id": resolution.receipt.receipt_identity,
-            "output_artifact_id": descriptor.artifact_id,
-            "output_sha256": descriptor.sha256,
-            "output_byte_size": descriptor.byte_size,
-            "output_schema_fingerprint": FACTOR_OUTPUT_SCHEMA_FINGERPRINT,
-            "truth_admission": truth.to_wire(),
-        }
-        return FormalFeatureMaterialization(
+        identity_payload = _feature_materialization_identity_payload(
+            factor_definition_version_id=definition.factor_definition_version_id,
+            snapshot_id=snapshot.snapshot_id,
+            universe_version_id=universe.universe_version_id,
+            universe_membership_identity=universe.membership_identity,
+            knowledge_cutoff=decoded.knowledge_cutoff,
+            evaluator_version=result.evaluator_version,
+            input_receipt=resolution.receipt,
+            output_descriptor=descriptor,
+            output_schema_fingerprint=FACTOR_OUTPUT_SCHEMA_FINGERPRINT,
+            truth_admission=truth,
+        )
+        materialization = FormalFeatureMaterialization(
             "ffm_sha256_" + canonical_sha256(identity_payload),
             definition.factor_definition_version_id,
             snapshot.snapshot_id,
@@ -408,6 +508,7 @@ class FormalFactorEvaluationService:
             sum(value is None for value in result.values),
             truth,
         )
+        return self._materialization_publisher.publish_materialization(materialization)
 
 
 __all__ = [
@@ -424,5 +525,6 @@ __all__ = [
     "FormalFactorEvaluationRequest",
     "FormalFactorEvaluationService",
     "FormalFeatureMaterialization",
+    "FormalFeatureMaterializationPublisher",
     "factor_payload_context_identity",
 ]

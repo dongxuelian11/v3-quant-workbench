@@ -1,5 +1,37 @@
 # Systemic A1 Payload Gap Audit
 
+## PR #34 bounded final correction
+
+The reviewed `f60022e` candidate proved actual-byte integrity but still permitted
+independently constructed Snapshot/Universe projections, caller-published label
+bytes, and MemoryRepository-only formal owners. This correction closes those
+three findings without changing P1:
+
+- `A1-OWNER-01`: `SQLiteA1CanonicalOwnerRepository` derives Snapshot only from
+  the existing `data_snapshot` publication/validation binding, exact persisted
+  partition Artifact, accepted raw-capture sources, calendar, and effective /
+  available-time ceiling. Universe is derived only from the existing published
+  `universe_version` and `SQLiteDataTruthRepository.resolve_members_as_of()` PIT
+  membership resolution. The A1 types remain projections and cannot mint owner
+  authority by construction.
+- `A1-LABEL-01`: `FormalLabelService` has no caller values argument. It resolves
+  the Snapshot payload through P1, decodes the already admitted Factor input
+  schema, and applies the existing `LabelSpec` horizon/source/missing semantics
+  with `DeterministicForwardReturnLabelEngine`. Insufficient future observations
+  are explicit JSON null and are never replaced with zero. The resulting label
+  has a context- and source-receipt-bound `clp_sha256_` identity and is persisted
+  before Dataset consumption re-resolves its bytes through P1.
+- `A1-PERSIST-01`: FeatureMaterialization, canonical Label, and formal Dataset
+  owner records are immutable canonical JSON Artifacts referenced through the
+  existing SQLite Catalog `artifact` / `artifact_reference` infrastructure.
+  There is no new database engine, payload resolver, Artifact Store, hash
+  namespace authority, Factor evaluator, or label-definition system. Reopening
+  the SQLite Catalog rehydrates the exact owner lineage; conflicting overwrite
+  and unpersisted formal-looking objects fail closed.
+
+The production formal service constructors require publisher ports. A memory
+repository remains only a unit-test double and is not integration evidence.
+
 Exact audit base: `origin/main@9dda07c254e1e3108d9ce3fec7624b4c7d0710f1` (P1 merge / GitHub CURRENT observed 2026-08-13).
 
 ## Owner map

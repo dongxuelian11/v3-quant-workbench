@@ -20,6 +20,7 @@ from v3_backend.domain.data_truth.formal import (
     require_resolved_context,
 )
 from v3_backend.domain.factors.formal import (
+    FACTOR_INPUT_SCHEMA_FINGERPRINT,
     FACTOR_OUTPUT_SCHEMA_FINGERPRINT,
     FACTOR_OUTPUT_SCHEMA_VERSION,
     CanonicalJsonArtifactPublisher,
@@ -32,18 +33,20 @@ from v3_backend.domain.payload_authority import (
 )
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
-from .model import LabelSpec, SplitSpec
+from .model import LabelMissingSemantics, LabelSpec, SplitSpec
 
 
 FEATURE_VALUES_PAYLOAD_ROLE = "FEATURE_MATERIALIZATION_VALUES"
+LABEL_SOURCE_PAYLOAD_ROLE = "DATASET_LABEL_SOURCE"
 LABEL_PAYLOAD_ROLE = "DATASET_LABELS"
 DATASET_ARTIFACT_ROLE = "DATASET_SAMPLES"
-LABEL_SCHEMA_VERSION = "v3.dataset-label-payload/1.0.0"
-DATASET_SCHEMA_VERSION = "v3.dataset-samples-payload/1.0.0"
+LABEL_SCHEMA_VERSION = "v3.dataset-label-payload/1.1.0"
+DATASET_SCHEMA_VERSION = "v3.dataset-samples-payload/1.1.0"
 LABEL_SCHEMA_FINGERPRINT = "sch_sha256_" + canonical_sha256(
     {
         "schema_version": LABEL_SCHEMA_VERSION,
         "coordinates": ["instrument_ids", "observation_ids"],
+        "context": ["snapshot_id", "universe_version_id", "calendar_version_id", "knowledge_cutoff"],
         "field": ["label_spec_id", "horizon_observations", "shape", "values"],
         "missing": "JSON_NULL_EXCLUDE_SAMPLE",
         "numeric_wire": "CANONICAL_DECIMAL_STRING",
@@ -54,6 +57,7 @@ DATASET_SCHEMA_FINGERPRINT = "sch_sha256_" + canonical_sha256(
         "schema_version": DATASET_SCHEMA_VERSION,
         "sample": ["sample_id", "instrument_id", "observation_id", "split", "features", "label"],
         "feature_order": "feature_materialization_ids",
+        "label_owner": "label_payload_id",
     }
 )
 
@@ -72,8 +76,14 @@ class SplitSpecRepository(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class CanonicalLabelPayloadVersion:
+    label_payload_id: str
     label_spec_id: str
+    snapshot_id: str
+    universe_version_id: str
+    calendar_version_id: str
     context_identity: str
+    source_receipt: PayloadResolutionReceipt
+    engine_version: str
     artifact_id: str
     sha256: str
     byte_size: int
@@ -83,8 +93,10 @@ class CanonicalLabelPayloadVersion:
     def __post_init__(self) -> None:
         from v3_backend.domain.artifacts.identity import sha256_from_artifact_id, validate_sha256
 
-        if not self.label_spec_id or not self.context_identity:
+        if not all((self.label_payload_id, self.label_spec_id, self.snapshot_id, self.universe_version_id, self.calendar_version_id, self.context_identity, self.engine_version)):
             raise ValueError("canonical Label payload identities are required")
+        if not isinstance(self.source_receipt, PayloadResolutionReceipt):
+            raise TypeError("canonical Label payload requires a P1 source receipt")
         validate_sha256(self.sha256)
         if sha256_from_artifact_id(self.artifact_id) != self.sha256:
             raise ValueError("Label Artifact identity must match sha256")
@@ -94,10 +106,49 @@ class CanonicalLabelPayloadVersion:
             raise ValueError("Label payload schema is not admitted")
         if not isinstance(self.truth_admission, TruthAdmissionState):
             raise TypeError("truth_admission must be typed")
+        expected = "clp_sha256_" + canonical_sha256(_label_owner_identity_payload(
+            label_spec_id=self.label_spec_id,
+            snapshot_id=self.snapshot_id,
+            universe_version_id=self.universe_version_id,
+            calendar_version_id=self.calendar_version_id,
+            context_identity=self.context_identity,
+            source_receipt=self.source_receipt,
+            engine_version=self.engine_version,
+            artifact_id=self.artifact_id,
+            sha256=self.sha256,
+            byte_size=self.byte_size,
+            schema_fingerprint=self.schema_fingerprint,
+            truth_admission=self.truth_admission,
+        ))
+        if self.label_payload_id != expected:
+            raise ValueError("canonical Label identity does not match owner content")
 
 
 class CanonicalLabelPayloadRepository(Protocol):
-    def get_label_payload(self, label_spec_id: str) -> CanonicalLabelPayloadVersion | None: ...
+    def get_label_payload(
+        self, label_spec_id: str, context_identity: str | None = None
+    ) -> CanonicalLabelPayloadVersion | None: ...
+
+
+class CanonicalHistoricalLabelSource(Protocol):
+    def resolve_label_source(
+        self,
+        *,
+        snapshot: CanonicalSnapshotVersion,
+        universe: CanonicalUniverseVersion,
+        label_spec: LabelSpec,
+        max_bytes: int,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[Decimal | None, ...], PayloadResolutionReceipt]: ...
+
+
+class CanonicalLabelPayloadPublisher(Protocol):
+    def publish_label_payload(
+        self, owner: CanonicalLabelPayloadVersion
+    ) -> CanonicalLabelPayloadVersion: ...
+
+
+class FormalDatasetPublisher(Protocol):
+    def publish_dataset(self, dataset: "FormalDatasetVersion") -> "FormalDatasetVersion": ...
 
 
 def feature_output_context_identity(materialization: FormalFeatureMaterialization) -> str:
@@ -124,6 +175,7 @@ def label_payload_context_identity(
     snapshot_id: str,
     universe_version_id: str,
     membership_identity: str,
+    calendar_version_id: str,
     knowledge_cutoff: str,
     label_spec: LabelSpec,
 ) -> str:
@@ -132,11 +184,221 @@ def label_payload_context_identity(
             "snapshot_id": snapshot_id,
             "universe_version_id": universe_version_id,
             "membership_identity": membership_identity,
+            "calendar_version_id": calendar_version_id,
             "knowledge_cutoff": knowledge_cutoff,
             "label_spec": label_spec.to_wire(),
             "label_schema_fingerprint": LABEL_SCHEMA_FINGERPRINT,
         }
     )
+
+
+def label_source_payload_context_identity(
+    *,
+    snapshot: CanonicalSnapshotVersion,
+    universe: CanonicalUniverseVersion,
+    label_spec: LabelSpec,
+) -> str:
+    return "lblsrcctx_sha256_" + canonical_sha256(
+        {
+            "snapshot": snapshot.to_context_wire(),
+            "universe": universe.to_context_wire(),
+            "label_spec": label_spec.to_wire(),
+            "payload_schema_fingerprint": FACTOR_INPUT_SCHEMA_FINGERPRINT,
+        }
+    )
+
+
+def _label_owner_identity_payload(
+    *,
+    label_spec_id: str,
+    snapshot_id: str,
+    universe_version_id: str,
+    calendar_version_id: str,
+    context_identity: str,
+    source_receipt: PayloadResolutionReceipt,
+    engine_version: str,
+    artifact_id: str,
+    sha256: str,
+    byte_size: int,
+    schema_fingerprint: str,
+    truth_admission: TruthAdmissionState,
+) -> dict[str, object]:
+    return {
+        "label_spec_id": label_spec_id,
+        "snapshot_id": snapshot_id,
+        "universe_version_id": universe_version_id,
+        "calendar_version_id": calendar_version_id,
+        "context_identity": context_identity,
+        "source_receipt_id": source_receipt.receipt_identity,
+        "engine_version": engine_version,
+        "artifact_id": artifact_id,
+        "sha256": sha256,
+        "byte_size": byte_size,
+        "schema_fingerprint": schema_fingerprint,
+        "truth_admission": truth_admission.to_wire(),
+    }
+
+
+class DeterministicForwardReturnLabelEngine:
+    """Pure LabelSpec engine over verified instrument-major historical values."""
+
+    version = "v3.label-forward-return/1.0.0"
+
+    def compute(
+        self,
+        *,
+        label_spec: LabelSpec,
+        instrument_ids: tuple[str, ...],
+        observation_ids: tuple[str, ...],
+        source_values: tuple[Decimal | None, ...],
+    ) -> tuple[str | None, ...]:
+        if label_spec.logical_name != "forward-return":
+            raise ValueError("formal Label engine requires logical_name=forward-return")
+        if label_spec.source_field != "close":
+            raise ValueError("formal Label engine currently admits source_field=close only")
+        if label_spec.missing_semantics is not LabelMissingSemantics.EXCLUDE_SAMPLE:
+            raise ValueError("formal Label engine requires EXCLUDE_SAMPLE missing semantics")
+        width = len(observation_ids)
+        if not instrument_ids or not observation_ids or len(source_values) != len(instrument_ids) * width:
+            raise ValueError("canonical Label source coordinates/shape are invalid")
+        horizon = label_spec.horizon_observations
+        values: list[str | None] = []
+        for instrument_index in range(len(instrument_ids)):
+            offset = instrument_index * width
+            for observation_index in range(width):
+                target_index = observation_index + horizon
+                if target_index >= width:
+                    values.append(None)
+                    continue
+                current = source_values[offset + observation_index]
+                future = source_values[offset + target_index]
+                if current is None or future is None:
+                    values.append(None)
+                    continue
+                if current == 0:
+                    values.append(None)
+                    continue
+                values.append(_decimal_wire((future / current) - Decimal(1)))
+        return tuple(values)
+
+
+class FormalLabelService:
+    def __init__(
+        self,
+        *,
+        snapshots: CanonicalSnapshotRepository,
+        universes: CanonicalUniverseRepository,
+        label_specs: LabelSpecRepository,
+        historical_source: CanonicalHistoricalLabelSource,
+        engine: DeterministicForwardReturnLabelEngine,
+        artifact_publisher: CanonicalJsonArtifactPublisher,
+        label_publisher: CanonicalLabelPayloadPublisher,
+    ) -> None:
+        self._snapshots = snapshots
+        self._universes = universes
+        self._label_specs = label_specs
+        self._historical_source = historical_source
+        self._engine = engine
+        self._artifact_publisher = artifact_publisher
+        self._label_publisher = label_publisher
+
+    def materialize(
+        self,
+        *,
+        label_spec_id: str,
+        snapshot_id: str,
+        universe_version_id: str,
+        max_payload_bytes: int,
+    ) -> CanonicalLabelPayloadVersion:
+        snapshot, universe = require_resolved_context(
+            snapshots=self._snapshots,
+            universes=self._universes,
+            snapshot_id=snapshot_id,
+            universe_version_id=universe_version_id,
+        )
+        label_spec = self._label_specs.get_label_spec(label_spec_id)
+        if label_spec is None:
+            raise ValueError("formal Label requires canonical LabelSpec owner resolution")
+        instruments, observations, source_values, source_receipt = self._historical_source.resolve_label_source(
+            snapshot=snapshot,
+            universe=universe,
+            label_spec=label_spec,
+            max_bytes=max_payload_bytes,
+        )
+        if instruments != universe.instrument_ids:
+            raise ValueError("canonical Label source Universe membership/order differs")
+        context = label_payload_context_identity(
+            snapshot_id=snapshot.snapshot_id,
+            universe_version_id=universe.universe_version_id,
+            membership_identity=universe.membership_identity,
+            calendar_version_id=snapshot.calendar_version_id,
+            knowledge_cutoff=_utc_time(snapshot.knowledge_cutoff),
+            label_spec=label_spec,
+        )
+        values = self._engine.compute(
+            label_spec=label_spec,
+            instrument_ids=instruments,
+            observation_ids=observations,
+            source_values=source_values,
+        )
+        payload: dict[str, object] = {
+            "schema_version": LABEL_SCHEMA_VERSION,
+            "schema_fingerprint": LABEL_SCHEMA_FINGERPRINT,
+            "context_identity": context,
+            "label_spec_id": label_spec.label_spec_id,
+            "snapshot_id": snapshot.snapshot_id,
+            "universe_version_id": universe.universe_version_id,
+            "calendar_version_id": snapshot.calendar_version_id,
+            "knowledge_cutoff": _utc_time(snapshot.knowledge_cutoff),
+            "horizon_observations": label_spec.horizon_observations,
+            "instrument_ids": list(instruments),
+            "observation_ids": list(observations),
+            "shape": [len(instruments), len(observations)],
+            "values": list(values),
+        }
+        descriptor = self._artifact_publisher.publish_canonical_json(
+            payload,
+            semantic_role=LABEL_PAYLOAD_ROLE,
+            provenance_entity_id=source_receipt.receipt_identity,
+            schema_fingerprint=LABEL_SCHEMA_FINGERPRINT,
+        )
+        truth = propagate_downstream_ceiling(
+            snapshot.truth_admission,
+            (
+                UpstreamRequirement(snapshot.snapshot_id, snapshot.truth_admission),
+                UpstreamRequirement(universe.membership_identity, universe.truth_admission),
+            ),
+        )
+        identity = _label_owner_identity_payload(
+            label_spec_id=label_spec.label_spec_id,
+            snapshot_id=snapshot.snapshot_id,
+            universe_version_id=universe.universe_version_id,
+            calendar_version_id=snapshot.calendar_version_id,
+            context_identity=context,
+            source_receipt=source_receipt,
+            engine_version=self._engine.version,
+            artifact_id=descriptor.artifact_id,
+            sha256=descriptor.sha256,
+            byte_size=descriptor.byte_size,
+            schema_fingerprint=LABEL_SCHEMA_FINGERPRINT,
+            truth_admission=truth,
+        )
+        owner = CanonicalLabelPayloadVersion(
+            "clp_sha256_" + canonical_sha256(identity),
+            label_spec.label_spec_id,
+            snapshot.snapshot_id,
+            universe.universe_version_id,
+            snapshot.calendar_version_id,
+            context,
+            source_receipt,
+            self._engine.version,
+            descriptor.artifact_id,
+            descriptor.sha256,
+            descriptor.byte_size,
+            LABEL_SCHEMA_FINGERPRINT,
+            truth,
+        )
+        return self._label_publisher.publish_label_payload(owner)
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +430,7 @@ class FormalDatasetVersion:
     feature_materialization_ids: tuple[str, ...]
     feature_receipts: tuple[PayloadResolutionReceipt, ...]
     label_spec_id: str
+    label_payload_id: str
     label_receipt: PayloadResolutionReceipt
     split_spec_id: str
     snapshot_id: str
@@ -178,12 +441,48 @@ class FormalDatasetVersion:
     sample_count: int
     truth_admission: TruthAdmissionState
 
+    def __post_init__(self) -> None:
+        if not self.feature_materialization_ids or tuple(sorted(self.feature_materialization_ids)) != self.feature_materialization_ids:
+            raise ValueError("formal Dataset feature owners must be non-empty and sorted")
+        if len(self.feature_receipts) != len(self.feature_materialization_ids) or not all(
+            isinstance(value, PayloadResolutionReceipt) for value in self.feature_receipts
+        ):
+            raise ValueError("formal Dataset requires one typed P1 receipt per FeatureMaterialization")
+        if not isinstance(self.label_receipt, PayloadResolutionReceipt):
+            raise TypeError("formal Dataset requires a typed Label P1 receipt")
+        if not isinstance(self.dataset_descriptor, ArtifactDescriptor):
+            raise TypeError("formal Dataset requires a typed output Artifact")
+        if self.dataset_schema_fingerprint != DATASET_SCHEMA_FINGERPRINT:
+            raise ValueError("formal Dataset schema is not admitted")
+        if not isinstance(self.sample_count, int) or isinstance(self.sample_count, bool) or self.sample_count < 0:
+            raise ValueError("formal Dataset sample_count must be non-negative")
+        if not isinstance(self.truth_admission, TruthAdmissionState):
+            raise TypeError("formal Dataset truth_admission must be typed")
+        expected = "fdsv_sha256_" + canonical_sha256(_dataset_identity_payload(
+            feature_materialization_ids=self.feature_materialization_ids,
+            feature_receipts=self.feature_receipts,
+            label_spec_id=self.label_spec_id,
+            label_payload_id=self.label_payload_id,
+            label_receipt=self.label_receipt,
+            split_spec_id=self.split_spec_id,
+            snapshot_id=self.snapshot_id,
+            universe_version_id=self.universe_version_id,
+            universe_membership_identity=self.universe_membership_identity,
+            dataset_descriptor=self.dataset_descriptor,
+            dataset_schema_fingerprint=self.dataset_schema_fingerprint,
+            sample_count=self.sample_count,
+            truth_admission=self.truth_admission,
+        ))
+        if self.dataset_version_id != expected:
+            raise ValueError("formal Dataset identity does not match canonical owner content")
+
     def to_wire(self) -> dict[str, object]:
         return {
             "dataset_version_id": self.dataset_version_id,
             "feature_materialization_ids": list(self.feature_materialization_ids),
             "feature_receipt_ids": [value.receipt_identity for value in self.feature_receipts],
             "label_spec_id": self.label_spec_id,
+            "label_payload_id": self.label_payload_id,
             "label_receipt_id": self.label_receipt.receipt_identity,
             "split_spec_id": self.split_spec_id,
             "snapshot_id": self.snapshot_id,
@@ -194,6 +493,41 @@ class FormalDatasetVersion:
             "sample_count": self.sample_count,
             "truth_admission": self.truth_admission.to_wire(),
         }
+
+
+def _dataset_identity_payload(
+    *,
+    feature_materialization_ids: tuple[str, ...],
+    feature_receipts: tuple[PayloadResolutionReceipt, ...],
+    label_spec_id: str,
+    label_payload_id: str,
+    label_receipt: PayloadResolutionReceipt,
+    split_spec_id: str,
+    snapshot_id: str,
+    universe_version_id: str,
+    universe_membership_identity: str,
+    dataset_descriptor: ArtifactDescriptor,
+    dataset_schema_fingerprint: str,
+    sample_count: int,
+    truth_admission: TruthAdmissionState,
+) -> dict[str, object]:
+    return {
+        "feature_materialization_ids": list(feature_materialization_ids),
+        "feature_receipt_ids": [value.receipt_identity for value in feature_receipts],
+        "label_spec_id": label_spec_id,
+        "label_payload_id": label_payload_id,
+        "label_receipt_id": label_receipt.receipt_identity,
+        "split_spec_id": split_spec_id,
+        "snapshot_id": snapshot_id,
+        "universe_version_id": universe_version_id,
+        "universe_membership_identity": universe_membership_identity,
+        "dataset_artifact_id": dataset_descriptor.artifact_id,
+        "dataset_sha256": dataset_descriptor.sha256,
+        "dataset_byte_size": dataset_descriptor.byte_size,
+        "dataset_schema_fingerprint": dataset_schema_fingerprint,
+        "sample_count": sample_count,
+        "truth_admission": truth_admission.to_wire(),
+    }
 
 
 def _decode_json(payload: bytes, label: str) -> dict[str, object]:
@@ -283,6 +617,7 @@ class FormalDatasetService:
         label_payloads: CanonicalLabelPayloadRepository,
         payload_resolver: CanonicalPayloadResolver,
         artifact_publisher: CanonicalJsonArtifactPublisher,
+        dataset_publisher: FormalDatasetPublisher,
     ) -> None:
         self._snapshots = snapshots
         self._universes = universes
@@ -292,6 +627,7 @@ class FormalDatasetService:
         self._label_payloads = label_payloads
         self._resolver = payload_resolver
         self._publisher = artifact_publisher
+        self._dataset_publisher = dataset_publisher
 
     def build(self, request: FormalDatasetBuildRequest) -> FormalDatasetVersion:
         if not isinstance(request, FormalDatasetBuildRequest):
@@ -350,17 +686,18 @@ class FormalDatasetService:
             snapshot_id=snapshot.snapshot_id,
             universe_version_id=universe.universe_version_id,
             membership_identity=universe.membership_identity,
+            calendar_version_id=snapshot.calendar_version_id,
             knowledge_cutoff=knowledge,
             label_spec=label_spec,
         )
-        label_owner = self._label_payloads.get_label_payload(label_spec.label_spec_id)
+        label_owner = self._label_payloads.get_label_payload(label_spec.label_spec_id, label_context)
         if label_owner is None or label_owner.context_identity != label_context:
             raise ValueError("formal Dataset requires canonical Label payload owner resolution")
         label_result = self._resolver.resolve(
             PayloadResolutionRequest(
                 owner_namespace="v3.data_truth.labels",
                 owner_id=label_spec.label_spec_id,
-                owner_version=label_spec.label_spec_id,
+                owner_version=label_owner.label_payload_id,
                 payload_role=LABEL_PAYLOAD_ROLE,
                 context_identity=label_context,
                 max_bytes=request.max_payload_bytes,
@@ -369,12 +706,23 @@ class FormalDatasetService:
         if label_result.verified_payload.schema_fingerprint != LABEL_SCHEMA_FINGERPRINT:
             raise ValueError("P1 binding does not admit Label payload schema")
         labels = _decode_json(label_result.verified_payload.payload, "Label payload")
-        expected_label_keys = {"schema_version", "schema_fingerprint", "context_identity", "label_spec_id", "horizon_observations", "instrument_ids", "observation_ids", "shape", "values"}
+        expected_label_keys = {
+            "schema_version", "schema_fingerprint", "context_identity", "label_spec_id",
+            "snapshot_id", "universe_version_id", "calendar_version_id", "knowledge_cutoff",
+            "horizon_observations", "instrument_ids", "observation_ids", "shape", "values",
+        }
         instruments, observations = coordinates
         if set(labels) != expected_label_keys or labels["schema_version"] != LABEL_SCHEMA_VERSION or labels["schema_fingerprint"] != LABEL_SCHEMA_FINGERPRINT:
             raise ValueError("Label payload schema is not admitted")
         if labels["context_identity"] != label_context or labels["label_spec_id"] != label_spec.label_spec_id or labels["horizon_observations"] != label_spec.horizon_observations:
             raise ValueError("Label payload spec/horizon/context mismatch")
+        if (
+            labels["snapshot_id"] != snapshot.snapshot_id
+            or labels["universe_version_id"] != universe.universe_version_id
+            or labels["calendar_version_id"] != snapshot.calendar_version_id
+            or labels["knowledge_cutoff"] != knowledge
+        ):
+            raise ValueError("Label payload canonical owner context mismatch")
         if labels["instrument_ids"] != list(instruments) or labels["observation_ids"] != list(observations) or labels["shape"] != [len(instruments), len(observations)] or not isinstance(labels["values"], list):
             raise ValueError("Label payload coordinates/shape mismatch")
         label_values = tuple(labels["values"])
@@ -412,6 +760,7 @@ class FormalDatasetService:
             "feature_materialization_ids": list(request.feature_materialization_ids),
             "feature_receipt_ids": [value.receipt_identity for value in receipts],
             "label_spec_id": label_spec.label_spec_id,
+            "label_payload_id": label_owner.label_payload_id,
             "label_receipt_id": label_result.receipt.receipt_identity,
             "split_spec_id": split_spec.split_spec_id,
             "feature_order": list(request.feature_materialization_ids),
@@ -427,29 +776,30 @@ class FormalDatasetService:
             UpstreamRequirement(snapshot.snapshot_id, snapshot.truth_admission),
             UpstreamRequirement(universe.membership_identity, universe.truth_admission),
             *(UpstreamRequirement(value.feature_materialization_id, value.truth_admission) for value in materializations),
-            UpstreamRequirement(label_owner.artifact_id, label_owner.truth_admission),
+            UpstreamRequirement(label_owner.label_payload_id, label_owner.truth_admission),
         ]
         truth = propagate_downstream_ceiling(request.proposed_state, upstreams)
-        identity = {
-            "feature_materialization_ids": list(request.feature_materialization_ids),
-            "feature_receipt_ids": [value.receipt_identity for value in receipts],
-            "label_spec_id": label_spec.label_spec_id,
-            "label_receipt_id": label_result.receipt.receipt_identity,
-            "split_spec_id": split_spec.split_spec_id,
-            "snapshot_id": snapshot.snapshot_id,
-            "universe_version_id": universe.universe_version_id,
-            "universe_membership_identity": universe.membership_identity,
-            "dataset_artifact_id": descriptor.artifact_id,
-            "dataset_sha256": descriptor.sha256,
-            "dataset_byte_size": descriptor.byte_size,
-            "dataset_schema_fingerprint": DATASET_SCHEMA_FINGERPRINT,
-            "truth_admission": truth.to_wire(),
-        }
-        return FormalDatasetVersion(
+        identity = _dataset_identity_payload(
+            feature_materialization_ids=request.feature_materialization_ids,
+            feature_receipts=tuple(receipts),
+            label_spec_id=label_spec.label_spec_id,
+            label_payload_id=label_owner.label_payload_id,
+            label_receipt=label_result.receipt,
+            split_spec_id=split_spec.split_spec_id,
+            snapshot_id=snapshot.snapshot_id,
+            universe_version_id=universe.universe_version_id,
+            universe_membership_identity=universe.membership_identity,
+            dataset_descriptor=descriptor,
+            dataset_schema_fingerprint=DATASET_SCHEMA_FINGERPRINT,
+            sample_count=len(samples),
+            truth_admission=truth,
+        )
+        dataset = FormalDatasetVersion(
             "fdsv_sha256_" + canonical_sha256(identity),
             request.feature_materialization_ids,
             tuple(receipts),
             label_spec.label_spec_id,
+            label_owner.label_payload_id,
             label_result.receipt,
             split_spec.split_spec_id,
             snapshot.snapshot_id,
@@ -460,6 +810,7 @@ class FormalDatasetService:
             len(samples),
             truth,
         )
+        return self._dataset_publisher.publish_dataset(dataset)
 
 
 def _split_for_ordinal(split: SplitSpec, ordinal: int) -> str | None:
@@ -473,6 +824,8 @@ def _split_for_ordinal(split: SplitSpec, ordinal: int) -> str | None:
 
 
 __all__ = [
+    "CanonicalHistoricalLabelSource",
+    "CanonicalLabelPayloadPublisher",
     "CanonicalLabelPayloadRepository",
     "CanonicalLabelPayloadVersion",
     "DATASET_ARTIFACT_ROLE",
@@ -480,14 +833,19 @@ __all__ = [
     "DATASET_SCHEMA_VERSION",
     "FEATURE_VALUES_PAYLOAD_ROLE",
     "FormalDatasetBuildRequest",
+    "FormalDatasetPublisher",
     "FormalDatasetService",
     "FormalDatasetVersion",
     "FormalFeatureMaterializationRepository",
+    "FormalLabelService",
+    "LABEL_SOURCE_PAYLOAD_ROLE",
     "LABEL_PAYLOAD_ROLE",
     "LABEL_SCHEMA_FINGERPRINT",
     "LABEL_SCHEMA_VERSION",
     "LabelSpecRepository",
     "SplitSpecRepository",
+    "DeterministicForwardReturnLabelEngine",
     "feature_output_context_identity",
     "label_payload_context_identity",
+    "label_source_payload_context_identity",
 ]

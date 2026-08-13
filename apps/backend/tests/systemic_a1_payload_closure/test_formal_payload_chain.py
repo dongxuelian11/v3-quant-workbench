@@ -44,7 +44,7 @@ from v3_backend.domain.factors import (
     factor_payload_context_identity,
 )
 from v3_backend.domain.payload_authority import CanonicalPayloadResolver
-from v3_backend.provenance.canonical_hash import canonical_json_bytes
+from v3_backend.provenance.canonical_hash import canonical_json_bytes, canonical_sha256
 
 
 class MemoryRepository:
@@ -69,8 +69,27 @@ class MemoryRepository:
     def get_split_spec(self, identity):
         return self._values.get(identity)
 
-    def get_label_payload(self, identity):
-        return self._values.get(identity)
+    def get_label_payload(self, identity, context_identity=None):
+        direct = self._values.get(identity)
+        if direct is not None:
+            return direct
+        matches = [value for value in self._values.values() if getattr(value, "label_spec_id", None) == identity and (context_identity is None or value.context_identity == context_identity)]
+        return matches[0] if len(matches) == 1 else None
+
+    def find_definitions_for_field(self, field_name):
+        return tuple(value for value in self._values.values() if getattr(getattr(value, "root", None), "feature_name", None) == field_name)
+
+    def publish_materialization(self, value):
+        self._values[value.feature_materialization_id] = value
+        return value
+
+    def publish_label_payload(self, value):
+        self._values[value.label_payload_id] = value
+        return value
+
+    def publish_dataset(self, value):
+        self._values[value.dataset_version_id] = value
+        return value
 
 
 class MemoryFactorContexts:
@@ -121,6 +140,7 @@ class FormalPayloadChainTests(unittest.TestCase):
         self.definitions = MemoryRepository({self.definition.factor_definition_version_id: self.definition})
         self.materializations = MemoryRepository({})
         self.label_payloads = MemoryRepository({})
+        self.datasets = MemoryRepository({})
         self.factor_contexts = MemoryFactorContexts({
             factor_payload_context_identity(snapshot=self.snapshot, universe=self.universe, definition=self.definition): (self.snapshot, self.universe, self.definition)
         })
@@ -138,6 +158,7 @@ class FormalPayloadChainTests(unittest.TestCase):
             payload_resolver=self.resolver,
             evaluator=DeterministicReferenceEvaluator(self.registry),
             artifact_publisher=self.publisher,
+            materialization_publisher=self.materializations,
         )
 
     def tearDown(self) -> None:
@@ -187,6 +208,7 @@ class FormalPayloadChainTests(unittest.TestCase):
             snapshot_id=self.snapshot.snapshot_id,
             universe_version_id=self.universe.universe_version_id,
             membership_identity=self.universe.membership_identity,
+            calendar_version_id=self.snapshot.calendar_version_id,
             knowledge_cutoff="2024-01-09T16:00:00Z",
             label_spec=label,
         )
@@ -195,6 +217,10 @@ class FormalPayloadChainTests(unittest.TestCase):
             "schema_fingerprint": LABEL_SCHEMA_FINGERPRINT,
             "context_identity": context,
             "label_spec_id": label.label_spec_id,
+            "snapshot_id": self.snapshot.snapshot_id,
+            "universe_version_id": self.universe.universe_version_id,
+            "calendar_version_id": self.snapshot.calendar_version_id,
+            "knowledge_cutoff": "2024-01-09T16:00:00Z",
             "horizon_observations": label.horizon_observations,
             "instrument_ids": list(self.universe.instrument_ids),
             "observation_ids": ["s0", "s1", "s2"],
@@ -207,11 +233,29 @@ class FormalPayloadChainTests(unittest.TestCase):
             provenance_entity_id=label.label_spec_id,
             schema_fingerprint=LABEL_SCHEMA_FINGERPRINT,
         )
+        label_identity = {
+            "label_spec_id": label.label_spec_id,
+            "snapshot_id": self.snapshot.snapshot_id,
+            "universe_version_id": self.universe.universe_version_id,
+            "calendar_version_id": self.snapshot.calendar_version_id,
+            "context_identity": context,
+            "source_receipt_id": materialization.input_receipt.receipt_identity,
+            "engine_version": "test-label-engine/1",
+            "artifact_id": descriptor.artifact_id,
+            "sha256": descriptor.sha256,
+            "byte_size": descriptor.byte_size,
+            "schema_fingerprint": LABEL_SCHEMA_FINGERPRINT,
+            "truth_admission": FORMAL_ADMITTED_CEILING.to_wire(),
+        }
         label_owner = CanonicalLabelPayloadVersion(
-            label.label_spec_id, context, descriptor.artifact_id, descriptor.sha256,
+            "clp_sha256_" + canonical_sha256(label_identity), label.label_spec_id,
+            self.snapshot.snapshot_id, self.universe.universe_version_id,
+            self.snapshot.calendar_version_id, context,
+            materialization.input_receipt, "test-label-engine/1",
+            descriptor.artifact_id, descriptor.sha256,
             descriptor.byte_size, LABEL_SCHEMA_FINGERPRINT, FORMAL_ADMITTED_CEILING,
         )
-        self.label_payloads._values[label.label_spec_id] = label_owner
+        self.label_payloads._values[label_owner.label_payload_id] = label_owner
         service = FormalDatasetService(
             snapshots=self.snapshots,
             universes=self.universes,
@@ -221,6 +265,7 @@ class FormalPayloadChainTests(unittest.TestCase):
             label_payloads=self.label_payloads,
             payload_resolver=self.resolver,
             artifact_publisher=self.publisher,
+            dataset_publisher=self.datasets,
         )
         request = FormalDatasetBuildRequest(
             (materialization.feature_materialization_id,), label.label_spec_id, split.split_spec_id,
@@ -265,6 +310,7 @@ class FormalPayloadChainTests(unittest.TestCase):
             snapshots=self.snapshots, universes=self.universes, definitions=self.definitions,
             payload_resolver=CanonicalPayloadResolver(binding_resolver=self.binding, byte_reader=ModifiedReader()),
             evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher,
+            materialization_publisher=self.materializations,
         )
         with self.assertRaisesRegex(Exception, "SHA-256|byte size|identity"):
             service.evaluate(self._factor_request())
@@ -279,18 +325,18 @@ class FormalPayloadChainTests(unittest.TestCase):
             snapshots = MemoryRepository({bad_snapshot.snapshot_id: bad_snapshot})
             contexts = MemoryFactorContexts({factor_payload_context_identity(snapshot=bad_snapshot, universe=self.universe, definition=self.definition): (bad_snapshot, self.universe, self.definition)})
             binding = A1CanonicalPayloadBindingResolver(snapshots=snapshots, factor_contexts=contexts, materializations=self.materializations, label_payloads=self.label_payloads)
-            service = FormalFactorEvaluationService(snapshots=snapshots, universes=self.universes, definitions=self.definitions, payload_resolver=CanonicalPayloadResolver(binding_resolver=binding, byte_reader=self.store), evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher)
+            service = FormalFactorEvaluationService(snapshots=snapshots, universes=self.universes, definitions=self.definitions, payload_resolver=CanonicalPayloadResolver(binding_resolver=binding, byte_reader=self.store), evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher, materialization_publisher=self.materializations)
             with self.assertRaisesRegex(ValueError, "context"):
                 service.evaluate(self._factor_request())
         wrong_asof = CanonicalUniverseVersion.create(universe_version_id=self.universe.universe_version_id, snapshot_id=self.universe.snapshot_id, as_of=date(2024, 1, 8), knowledge_cutoff=self.knowledge, instrument_ids=self.universe.instrument_ids, truth_admission=FORMAL_ADMITTED_CEILING)
         with self.assertRaisesRegex(ValueError, "as-of"):
-            FormalFactorEvaluationService(snapshots=self.snapshots, universes=MemoryRepository({wrong_asof.universe_version_id: wrong_asof}), definitions=self.definitions, payload_resolver=self.resolver, evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher).evaluate(self._factor_request())
+            FormalFactorEvaluationService(snapshots=self.snapshots, universes=MemoryRepository({wrong_asof.universe_version_id: wrong_asof}), definitions=self.definitions, payload_resolver=self.resolver, evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher, materialization_publisher=self.materializations).evaluate(self._factor_request())
 
     def test_unresolved_raw_snapshot_or_universe_cannot_be_formal(self):
         empty = MemoryRepository({})
         for snapshots, universes in ((empty, self.universes), (self.snapshots, empty)):
             with self.assertRaisesRegex(ValueError, "canonical (Snapshot|Universe)"):
-                FormalFactorEvaluationService(snapshots=snapshots, universes=universes, definitions=self.definitions, payload_resolver=self.resolver, evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher).evaluate(self._factor_request())
+                FormalFactorEvaluationService(snapshots=snapshots, universes=universes, definitions=self.definitions, payload_resolver=self.resolver, evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher, materialization_publisher=self.materializations).evaluate(self._factor_request())
 
     def test_pure_engine_result_cannot_mint_formal_materialization(self):
         result = DeterministicReferenceEvaluator(self.registry).evaluate(self.definition, {"close": [99, 99]})
@@ -301,11 +347,8 @@ class FormalPayloadChainTests(unittest.TestCase):
         materialization = self._materialize()
         service, request, _ = self._dataset_fixture(materialization)
         fake = replace(materialization.input_receipt, request_identity="prq_sha256_fake")
-        wrong = replace(materialization, input_receipt=fake)
-        self.materializations._values[materialization.feature_materialization_id] = wrong
-        with self.assertRaises(Exception):
-            service.build(request)
-        self.materializations._values[materialization.feature_materialization_id] = materialization
+        with self.assertRaisesRegex(ValueError, "identity"):
+            replace(materialization, input_receipt=fake)
         path = self.store._final_path(materialization.output_descriptor.sha256)
         path.write_bytes(b"corrupt")
         with self.assertRaisesRegex(Exception, "integrity|match|rejected"):
@@ -319,10 +362,8 @@ class FormalPayloadChainTests(unittest.TestCase):
     def test_label_horizon_and_split_context_mismatch_reject(self):
         materialization = self._materialize()
         service, request, label_owner = self._dataset_fixture(materialization)
-        wrong_context = replace(label_owner, context_identity="lblctx_sha256_wrong")
-        self.label_payloads._values[label_owner.label_spec_id] = wrong_context
-        with self.assertRaisesRegex(ValueError, "Label payload owner"):
-            service.build(request)
+        with self.assertRaisesRegex(ValueError, "identity"):
+            replace(label_owner, context_identity="lblctx_sha256_wrong")
         unsafe = SplitSpec.create(train_start=0, train_end=1, validation_start=2, validation_end=2, test_start=3, test_end=3, purge_observations=0, embargo_observations=0)
         service._split_specs = MemoryRepository({unsafe.split_spec_id: unsafe})
         with self.assertRaises(ValueError):
@@ -337,6 +378,7 @@ class FormalPayloadChainTests(unittest.TestCase):
             payload_resolver=self.resolver,
             evaluator=DeterministicReferenceEvaluator(self.registry),
             artifact_publisher=self.publisher,
+            materialization_publisher=self.materializations,
         )
         result = service.evaluate(self._factor_request())
         self.assertEqual(result.truth_admission, PRE_ALPHA_CEILING)
@@ -353,7 +395,7 @@ class FormalPayloadChainTests(unittest.TestCase):
         snapshots = MemoryRepository({snapshot.snapshot_id: snapshot})
         contexts = MemoryFactorContexts({factor_payload_context_identity(snapshot=snapshot, universe=self.universe, definition=self.definition): (snapshot, self.universe, self.definition)})
         binding = A1CanonicalPayloadBindingResolver(snapshots=snapshots, factor_contexts=contexts, materializations=self.materializations, label_payloads=self.label_payloads)
-        service = FormalFactorEvaluationService(snapshots=snapshots, universes=self.universes, definitions=self.definitions, payload_resolver=CanonicalPayloadResolver(binding_resolver=binding, byte_reader=self.store), evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher)
+        service = FormalFactorEvaluationService(snapshots=snapshots, universes=self.universes, definitions=self.definitions, payload_resolver=CanonicalPayloadResolver(binding_resolver=binding, byte_reader=self.store), evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher, materialization_publisher=self.materializations)
         with self.assertRaisesRegex(ValueError, "non-canonical"):
             service.evaluate(self._factor_request())
 
@@ -363,7 +405,7 @@ class FormalPayloadChainTests(unittest.TestCase):
         snapshots = MemoryRepository({snapshot.snapshot_id: snapshot})
         contexts = MemoryFactorContexts({factor_payload_context_identity(snapshot=snapshot, universe=self.universe, definition=self.definition): (snapshot, self.universe, self.definition)})
         binding = A1CanonicalPayloadBindingResolver(snapshots=snapshots, factor_contexts=contexts, materializations=self.materializations, label_payloads=self.label_payloads)
-        service = FormalFactorEvaluationService(snapshots=snapshots, universes=self.universes, definitions=self.definitions, payload_resolver=CanonicalPayloadResolver(binding_resolver=binding, byte_reader=self.store), evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher)
+        service = FormalFactorEvaluationService(snapshots=snapshots, universes=self.universes, definitions=self.definitions, payload_resolver=CanonicalPayloadResolver(binding_resolver=binding, byte_reader=self.store), evaluator=DeterministicReferenceEvaluator(self.registry), artifact_publisher=self.publisher, materialization_publisher=self.materializations)
         output = service.evaluate(self._factor_request())
         self.assertIn(b'"values":["10","20","30","40","50","60"]', self.store.read_bytes(output.output_descriptor.artifact_id))
 
