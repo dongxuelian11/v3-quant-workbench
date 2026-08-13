@@ -46,6 +46,7 @@ const suites = [
   "track_d_ai_copilot",
   "track_e_model_prediction_runtime",
   "track_f_strategy_runtime",
+  "systemic_a2_strategy_signal_payload",
   "track_g_ai_research_evidence_integration",
   "round3_w0_weight_seam",
   "track_h_portfolio_construction",

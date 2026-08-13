@@ -52,6 +52,18 @@ from .ir import (
     default_component_registry,
     normalize_decimal_string,
 )
+from .formal import (
+    FORMAL_EVALUATION_CONTRACT_VERSION,
+    SCORE_PAYLOAD_ROLE,
+    SCORE_PAYLOAD_SCHEMA_FINGERPRINT,
+    SCORE_PAYLOAD_SCHEMA_VERSION,
+    FormalStrategyEvaluationError,
+    FormalStrategyEvaluationRequest,
+    FormalStrategyEvaluationService,
+    FormalStrategyInputRequest,
+    encode_score_payload,
+    strategy_payload_context_identity,
+)
 
 __all__ = [
     "BindingInputRef",
@@ -67,6 +79,11 @@ __all__ = [
     "ExactSnapshotReference",
     "ExactUniverseReference",
     "ExternalReferenceResolution",
+    "FORMAL_EVALUATION_CONTRACT_VERSION",
+    "FormalStrategyEvaluationError",
+    "FormalStrategyEvaluationRequest",
+    "FormalStrategyEvaluationService",
+    "FormalStrategyInputRequest",
     "GenericAdmittedArtifactReference",
     "InputArtifactEvidence",
     "MissingSemantics",
@@ -83,6 +100,9 @@ __all__ = [
     "SignalArtifact",
     "SignalDirection",
     "SignalRow",
+    "SCORE_PAYLOAD_ROLE",
+    "SCORE_PAYLOAD_SCHEMA_FINGERPRINT",
+    "SCORE_PAYLOAD_SCHEMA_VERSION",
     "StrategyArtifactError",
     "StrategyBindingError",
     "StrategyCompiler",
@@ -99,5 +119,7 @@ __all__ = [
     "StrategySemantics",
     "UnknownComponent",
     "default_component_registry",
+    "encode_score_payload",
     "normalize_decimal_string",
+    "strategy_payload_context_identity",
 ]

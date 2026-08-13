@@ -8,10 +8,13 @@ from typing import Mapping
 
 from v3_backend.contracts.common.truth_admission import (
     FORMAL_ADMITTED_CEILING,
+    PRE_ALPHA_CEILING,
     TruthAdmissionState,
     UpstreamRequirement,
+    meet_pair,
     propagate_downstream_ceiling,
 )
+from v3_backend.domain.payload_authority import PayloadResolutionResult
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
 from .binding import StrategyEvaluationBindingVersion
@@ -65,18 +68,151 @@ class InputArtifactEvidence:
     binding_key: str
     artifact_id: str
     content_sha256: str
+    payload_verification: str = "DECLARED_ONLY"
+    payload_request_identity: str | None = None
+    payload_binding_identity: str | None = None
+    payload_resolution_receipt_identity: str | None = None
+    actual_byte_size: int | None = None
+    context_identity: str | None = None
+    schema_fingerprint: str | None = None
+    semantic_fingerprint: str | None = None
+    resolver_contract_version: str | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.binding_key, "binding_key")
         _require_text(self.artifact_id, "artifact_id")
         _require_text(self.content_sha256, "content_sha256")
 
-    def to_wire(self) -> dict[str, str]:
-        return {
+        if self.payload_verification == "DECLARED_ONLY":
+            optional = (
+                self.payload_request_identity,
+                self.payload_binding_identity,
+                self.payload_resolution_receipt_identity,
+                self.actual_byte_size,
+                self.context_identity,
+                self.schema_fingerprint,
+                self.semantic_fingerprint,
+                self.resolver_contract_version,
+            )
+            if any(value is not None for value in optional):
+                raise StrategyArtifactError(
+                    "declared-only input evidence cannot carry P1 resolution fields"
+                )
+            return
+        if self.payload_verification != "P1_VERIFIED":
+            raise StrategyArtifactError("unknown payload verification state")
+        for name in (
+            "payload_request_identity",
+            "payload_binding_identity",
+            "payload_resolution_receipt_identity",
+            "context_identity",
+            "resolver_contract_version",
+        ):
+            value = getattr(self, name)
+            if value is None:
+                raise StrategyArtifactError(f"P1 verified evidence requires {name}")
+            _require_text(value, name)
+        if (
+            not isinstance(self.actual_byte_size, int)
+            or isinstance(self.actual_byte_size, bool)
+            or self.actual_byte_size < 0
+        ):
+            raise StrategyArtifactError(
+                "P1 verified evidence requires a non-negative actual_byte_size"
+            )
+        for name in ("schema_fingerprint", "semantic_fingerprint"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_text(value, name)
+
+    @classmethod
+    def from_resolution(
+        cls,
+        *,
+        binding_key: str,
+        resolution: PayloadResolutionResult,
+    ) -> InputArtifactEvidence:
+        if not isinstance(resolution, PayloadResolutionResult):
+            raise TypeError("formal input evidence requires PayloadResolutionResult")
+        payload = resolution.verified_payload
+        receipt = resolution.receipt
+        return cls(
+            binding_key=binding_key,
+            artifact_id=payload.artifact_id,
+            content_sha256=payload.actual_sha256,
+            payload_verification="P1_VERIFIED",
+            payload_request_identity=payload.request_identity,
+            payload_binding_identity=payload.binding_identity,
+            payload_resolution_receipt_identity=receipt.receipt_identity,
+            actual_byte_size=payload.actual_byte_size,
+            context_identity=payload.context_identity,
+            schema_fingerprint=payload.schema_fingerprint,
+            semantic_fingerprint=payload.semantic_fingerprint,
+            resolver_contract_version=receipt.resolver_contract_version,
+        )
+
+    @property
+    def is_p1_verified(self) -> bool:
+        return self.payload_verification == "P1_VERIFIED"
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {
             "binding_key": self.binding_key,
             "artifact_id": self.artifact_id,
             "content_sha256": self.content_sha256,
         }
+        if self.is_p1_verified:
+            wire.update(
+                {
+                    "payload_verification": self.payload_verification,
+                    "payload_request_identity": self.payload_request_identity,
+                    "payload_binding_identity": self.payload_binding_identity,
+                    "payload_resolution_receipt_identity": self.payload_resolution_receipt_identity,
+                    "actual_byte_size": self.actual_byte_size,
+                    "context_identity": self.context_identity,
+                    "schema_fingerprint": self.schema_fingerprint,
+                    "semantic_fingerprint": self.semantic_fingerprint,
+                    "resolver_contract_version": self.resolver_contract_version,
+                }
+            )
+        return wire
+
+
+def _all_inputs_p1_verified(
+    input_artifacts: tuple[InputArtifactEvidence, ...],
+) -> bool:
+    return bool(input_artifacts) and all(
+        value.is_p1_verified for value in input_artifacts
+    )
+
+
+def _strategy_output_truth(
+    *,
+    definition: StrategyDefinitionVersion,
+    binding: StrategyEvaluationBindingVersion,
+    input_artifacts: tuple[InputArtifactEvidence, ...],
+    extra_requirements: tuple[UpstreamRequirement, ...] = (),
+) -> TruthAdmissionState:
+    proposed = (
+        FORMAL_ADMITTED_CEILING
+        if _all_inputs_p1_verified(input_artifacts)
+        else PRE_ALPHA_CEILING
+    )
+    truth = propagate_downstream_ceiling(
+        proposed,
+        (
+            UpstreamRequirement(
+                definition.strategy_definition_version_id,
+                definition.truth_admission,
+            ),
+            UpstreamRequirement(
+                binding.strategy_evaluation_binding_version_id,
+                binding.truth_admission,
+            ),
+            *extra_requirements,
+        ),
+    )
+    return meet_pair(truth, proposed)
 
 
 def _exact_input_evidence(
@@ -151,6 +287,7 @@ class SignalArtifact:
     compiler_version: str
     runtime_profile_id: str
     provenance_sha256: str
+    formal_execution_contract_version: str | None = None
 
     @classmethod
     def create(
@@ -162,6 +299,58 @@ class SignalArtifact:
         decision_time: datetime,
         rows: tuple[SignalRow, ...],
         missing_instrument_ids: tuple[str, ...],
+    ) -> SignalArtifact:
+        if _all_inputs_p1_verified(input_artifacts):
+            raise StrategyArtifactError(
+                "formal SignalArtifact can only be minted by FormalStrategyEvaluationService"
+            )
+        return cls._create(
+            definition=definition,
+            binding=binding,
+            input_artifacts=input_artifacts,
+            decision_time=decision_time,
+            rows=rows,
+            missing_instrument_ids=missing_instrument_ids,
+            formal_execution_contract_version=None,
+        )
+
+    @classmethod
+    def _create_formal(
+        cls,
+        *,
+        definition: StrategyDefinitionVersion,
+        binding: StrategyEvaluationBindingVersion,
+        input_artifacts: tuple[InputArtifactEvidence, ...],
+        decision_time: datetime,
+        rows: tuple[SignalRow, ...],
+        missing_instrument_ids: tuple[str, ...],
+        formal_execution_contract_version: str,
+    ) -> SignalArtifact:
+        if not _all_inputs_p1_verified(input_artifacts):
+            raise StrategyArtifactError(
+                "formal SignalArtifact requires complete P1 resolution evidence"
+            )
+        return cls._create(
+            definition=definition,
+            binding=binding,
+            input_artifacts=input_artifacts,
+            decision_time=decision_time,
+            rows=rows,
+            missing_instrument_ids=missing_instrument_ids,
+            formal_execution_contract_version=formal_execution_contract_version,
+        )
+
+    @classmethod
+    def _create(
+        cls,
+        *,
+        definition: StrategyDefinitionVersion,
+        binding: StrategyEvaluationBindingVersion,
+        input_artifacts: tuple[InputArtifactEvidence, ...],
+        decision_time: datetime,
+        rows: tuple[SignalRow, ...],
+        missing_instrument_ids: tuple[str, ...],
+        formal_execution_contract_version: str | None,
     ) -> SignalArtifact:
         _require_aware(decision_time, "decision_time")
         _require_definition_binding(definition, binding, "SignalArtifact")
@@ -177,18 +366,20 @@ class SignalArtifact:
         universe = set(binding.universe.instrument_ids)
         if any(value.instrument_id not in universe for value in ordered_rows) or not set(missing).issubset(universe):
             raise StrategyArtifactError("SignalArtifact instrument is outside bound universe")
-        truth = propagate_downstream_ceiling(
-            FORMAL_ADMITTED_CEILING,
-            (
-                UpstreamRequirement(
-                    definition.strategy_definition_version_id,
-                    definition.truth_admission,
-                ),
-                UpstreamRequirement(
-                    binding.strategy_evaluation_binding_version_id,
-                    binding.truth_admission,
-                ),
-            ),
+        formal_inputs = _all_inputs_p1_verified(ordered_inputs)
+        if formal_inputs != (formal_execution_contract_version is not None):
+            raise StrategyArtifactError(
+                "formal SignalArtifact requires both complete P1 evidence and formal execution contract"
+            )
+        if formal_execution_contract_version is not None:
+            _require_text(
+                formal_execution_contract_version,
+                "formal_execution_contract_version",
+            )
+        truth = _strategy_output_truth(
+            definition=definition,
+            binding=binding,
+            input_artifacts=ordered_inputs,
         )
         provenance = {
             "strategy_definition_version_id": definition.strategy_definition_version_id,
@@ -199,6 +390,10 @@ class SignalArtifact:
             "universe_version_id": binding.universe.universe_version_id,
             "membership_sha256": binding.universe.membership_sha256,
         }
+        if formal_execution_contract_version is not None:
+            provenance["formal_execution_contract_version"] = (
+                formal_execution_contract_version
+            )
         provenance_sha256 = canonical_sha256(provenance)
         payload = {
             **provenance,
@@ -220,10 +415,11 @@ class SignalArtifact:
             compiler_version=definition.compiler_version,
             runtime_profile_id=definition.runtime_profile_id,
             provenance_sha256=provenance_sha256,
+            formal_execution_contract_version=formal_execution_contract_version,
         )
 
     def to_wire(self) -> dict[str, object]:
-        return {
+        wire = {
             "artifact_type": "SignalArtifact",
             "signal_artifact_id": self.signal_artifact_id,
             "strategy_definition_version_id": self.strategy_definition_version_id,
@@ -237,6 +433,11 @@ class SignalArtifact:
             "runtime_profile_id": self.runtime_profile_id,
             "provenance_sha256": self.provenance_sha256,
         }
+        if self.formal_execution_contract_version is not None:
+            wire["formal_execution_contract_version"] = (
+                self.formal_execution_contract_version
+            )
+        return wire
 
 
 def _require_canonical_signal_source(
@@ -266,18 +467,15 @@ def _require_canonical_signal_source(
         raise StrategyArtifactError(
             "PortfolioIntent SignalArtifact runtime provenance mismatch"
         )
-    expected_truth = propagate_downstream_ceiling(
-        FORMAL_ADMITTED_CEILING,
-        (
-            UpstreamRequirement(
-                definition.strategy_definition_version_id,
-                definition.truth_admission,
-            ),
-            UpstreamRequirement(
-                binding.strategy_evaluation_binding_version_id,
-                binding.truth_admission,
-            ),
-        ),
+    formal_inputs = _all_inputs_p1_verified(ordered_inputs)
+    if formal_inputs != (signal.formal_execution_contract_version is not None):
+        raise StrategyArtifactError(
+            "PortfolioIntent SignalArtifact formal provenance is incomplete"
+        )
+    expected_truth = _strategy_output_truth(
+        definition=definition,
+        binding=binding,
+        input_artifacts=ordered_inputs,
     )
     if signal.truth_admission != expected_truth:
         raise StrategyArtifactError(
@@ -292,6 +490,10 @@ def _require_canonical_signal_source(
         "universe_version_id": binding.universe.universe_version_id,
         "membership_sha256": binding.universe.membership_sha256,
     }
+    if signal.formal_execution_contract_version is not None:
+        provenance["formal_execution_contract_version"] = (
+            signal.formal_execution_contract_version
+        )
     expected_provenance = canonical_sha256(provenance)
     payload = {
         **provenance,
@@ -351,6 +553,9 @@ class SelectionArtifact:
     excluded_instrument_ids: tuple[str, ...]
     truth_admission: TruthAdmissionState
     provenance_sha256: str
+    source_signal_artifact_id: str | None = None
+    source_signal_provenance_sha256: str | None = None
+    formal_execution_contract_version: str | None = None
 
     @classmethod
     def create(
@@ -361,6 +566,58 @@ class SelectionArtifact:
         entries: tuple[SelectionEntry, ...],
         excluded_instrument_ids: tuple[str, ...],
         input_artifacts: tuple[InputArtifactEvidence, ...],
+    ) -> SelectionArtifact:
+        if _all_inputs_p1_verified(input_artifacts):
+            raise StrategyArtifactError(
+                "formal SelectionArtifact can only be minted by FormalStrategyEvaluationService"
+            )
+        return cls._create(
+            definition=definition,
+            binding=binding,
+            entries=entries,
+            excluded_instrument_ids=excluded_instrument_ids,
+            input_artifacts=input_artifacts,
+            signal_artifact=None,
+            formal_execution_contract_version=None,
+        )
+
+    @classmethod
+    def _create_formal(
+        cls,
+        *,
+        definition: StrategyDefinitionVersion,
+        binding: StrategyEvaluationBindingVersion,
+        entries: tuple[SelectionEntry, ...],
+        excluded_instrument_ids: tuple[str, ...],
+        input_artifacts: tuple[InputArtifactEvidence, ...],
+        signal_artifact: SignalArtifact,
+        formal_execution_contract_version: str,
+    ) -> SelectionArtifact:
+        if not _all_inputs_p1_verified(input_artifacts):
+            raise StrategyArtifactError(
+                "formal SelectionArtifact requires complete P1 resolution evidence"
+            )
+        return cls._create(
+            definition=definition,
+            binding=binding,
+            entries=entries,
+            excluded_instrument_ids=excluded_instrument_ids,
+            input_artifacts=input_artifacts,
+            signal_artifact=signal_artifact,
+            formal_execution_contract_version=formal_execution_contract_version,
+        )
+
+    @classmethod
+    def _create(
+        cls,
+        *,
+        definition: StrategyDefinitionVersion,
+        binding: StrategyEvaluationBindingVersion,
+        entries: tuple[SelectionEntry, ...],
+        excluded_instrument_ids: tuple[str, ...],
+        input_artifacts: tuple[InputArtifactEvidence, ...],
+        signal_artifact: SignalArtifact | None,
+        formal_execution_contract_version: str | None,
     ) -> SelectionArtifact:
         _require_definition_binding(definition, binding, "SelectionArtifact")
         ordered_inputs = _exact_input_evidence(
@@ -382,18 +639,43 @@ class SelectionArtifact:
             raise StrategyArtifactError(
                 "SelectionArtifact must cover the exact bound universe membership"
             )
-        truth = propagate_downstream_ceiling(
-            FORMAL_ADMITTED_CEILING,
-            (
+        formal_inputs = _all_inputs_p1_verified(ordered_inputs)
+        if formal_inputs != (formal_execution_contract_version is not None):
+            raise StrategyArtifactError(
+                "formal SelectionArtifact requires both complete P1 evidence and formal execution contract"
+            )
+        source_signal_artifact_id: str | None = None
+        source_signal_provenance_sha256: str | None = None
+        extra_requirements: tuple[UpstreamRequirement, ...] = ()
+        if formal_inputs:
+            if signal_artifact is None:
+                raise StrategyArtifactError(
+                    "formal SelectionArtifact requires exact SignalArtifact"
+                )
+            signal_inputs = _require_canonical_signal_source(
+                signal_artifact, definition, binding
+            )
+            if signal_inputs != ordered_inputs:
+                raise StrategyArtifactError(
+                    "formal SelectionArtifact SignalArtifact input evidence mismatch"
+                )
+            source_signal_artifact_id = signal_artifact.signal_artifact_id
+            source_signal_provenance_sha256 = signal_artifact.provenance_sha256
+            extra_requirements = (
                 UpstreamRequirement(
-                    definition.strategy_definition_version_id,
-                    definition.truth_admission,
+                    signal_artifact.signal_artifact_id,
+                    signal_artifact.truth_admission,
                 ),
-                UpstreamRequirement(
-                    binding.strategy_evaluation_binding_version_id,
-                    binding.truth_admission,
-                ),
-            ),
+            )
+        elif signal_artifact is not None:
+            raise StrategyArtifactError(
+                "legacy SelectionArtifact cannot claim a formal SignalArtifact linkage"
+            )
+        truth = _strategy_output_truth(
+            definition=definition,
+            binding=binding,
+            input_artifacts=ordered_inputs,
+            extra_requirements=extra_requirements,
         )
         provenance = {
             "strategy_definition_version_id": definition.strategy_definition_version_id,
@@ -403,6 +685,14 @@ class SelectionArtifact:
             "membership_artifact_id": binding.universe.membership_artifact_id,
             "membership_sha256": binding.universe.membership_sha256,
         }
+        if formal_execution_contract_version is not None:
+            provenance.update(
+                {
+                    "source_signal_artifact_id": source_signal_artifact_id,
+                    "source_signal_provenance_sha256": source_signal_provenance_sha256,
+                    "formal_execution_contract_version": formal_execution_contract_version,
+                }
+            )
         provenance_sha256 = canonical_sha256(provenance)
         payload = {
             **provenance,
@@ -423,10 +713,13 @@ class SelectionArtifact:
             excluded_instrument_ids=excluded,
             truth_admission=truth,
             provenance_sha256=provenance_sha256,
+            source_signal_artifact_id=source_signal_artifact_id,
+            source_signal_provenance_sha256=source_signal_provenance_sha256,
+            formal_execution_contract_version=formal_execution_contract_version,
         )
 
     def to_wire(self) -> dict[str, object]:
-        return {
+        wire = {
             "artifact_type": "SelectionArtifact",
             "selection_artifact_id": self.selection_artifact_id,
             "strategy_definition_version_id": self.strategy_definition_version_id,
@@ -440,6 +733,15 @@ class SelectionArtifact:
             "truth_admission": self.truth_admission.to_wire(),
             "provenance_sha256": self.provenance_sha256,
         }
+        if self.formal_execution_contract_version is not None:
+            wire.update(
+                {
+                    "source_signal_artifact_id": self.source_signal_artifact_id,
+                    "source_signal_provenance_sha256": self.source_signal_provenance_sha256,
+                    "formal_execution_contract_version": self.formal_execution_contract_version,
+                }
+            )
+        return wire
 
 
 def _require_canonical_selection_source(
@@ -464,18 +766,15 @@ def _require_canonical_selection_source(
         raise StrategyArtifactError(
             "PortfolioIntent SelectionArtifact input evidence is not canonical"
         )
-    expected_truth = propagate_downstream_ceiling(
-        FORMAL_ADMITTED_CEILING,
-        (
-            UpstreamRequirement(
-                definition.strategy_definition_version_id,
-                definition.truth_admission,
-            ),
-            UpstreamRequirement(
-                binding.strategy_evaluation_binding_version_id,
-                binding.truth_admission,
-            ),
-        ),
+    formal_inputs = _all_inputs_p1_verified(ordered_inputs)
+    if formal_inputs != (selection.formal_execution_contract_version is not None):
+        raise StrategyArtifactError(
+            "PortfolioIntent SelectionArtifact formal provenance is incomplete"
+        )
+    expected_truth = _strategy_output_truth(
+        definition=definition,
+        binding=binding,
+        input_artifacts=ordered_inputs,
     )
     if selection.truth_admission != expected_truth:
         raise StrategyArtifactError(
@@ -489,6 +788,14 @@ def _require_canonical_selection_source(
         "membership_artifact_id": binding.universe.membership_artifact_id,
         "membership_sha256": binding.universe.membership_sha256,
     }
+    if selection.formal_execution_contract_version is not None:
+        provenance.update(
+            {
+                "source_signal_artifact_id": selection.source_signal_artifact_id,
+                "source_signal_provenance_sha256": selection.source_signal_provenance_sha256,
+                "formal_execution_contract_version": selection.formal_execution_contract_version,
+            }
+        )
     expected_provenance = canonical_sha256(provenance)
     payload = {
         **provenance,
@@ -587,6 +894,66 @@ class PortfolioIntent:
         items: tuple[PortfolioIntentItem, ...],
         constraints: Mapping[str, object],
     ) -> PortfolioIntent:
+        if selection_artifact.formal_execution_contract_version is not None:
+            raise StrategyArtifactError(
+                "formal PortfolioIntent can only be minted by FormalStrategyEvaluationService"
+            )
+        return cls._create(
+            definition=definition,
+            binding=binding,
+            selection_artifact=selection_artifact,
+            signal_artifact=signal_artifact,
+            exposure_mode=exposure_mode,
+            cash_policy=cash_policy,
+            rebalance_intent=rebalance_intent,
+            items=items,
+            constraints=constraints,
+        )
+
+    @classmethod
+    def _create_formal(
+        cls,
+        *,
+        definition: StrategyDefinitionVersion,
+        binding: StrategyEvaluationBindingVersion,
+        selection_artifact: SelectionArtifact,
+        signal_artifact: SignalArtifact | None,
+        exposure_mode: str,
+        cash_policy: str,
+        rebalance_intent: str,
+        items: tuple[PortfolioIntentItem, ...],
+        constraints: Mapping[str, object],
+    ) -> PortfolioIntent:
+        if selection_artifact.formal_execution_contract_version is None:
+            raise StrategyArtifactError(
+                "formal PortfolioIntent requires formal SelectionArtifact"
+            )
+        return cls._create(
+            definition=definition,
+            binding=binding,
+            selection_artifact=selection_artifact,
+            signal_artifact=signal_artifact,
+            exposure_mode=exposure_mode,
+            cash_policy=cash_policy,
+            rebalance_intent=rebalance_intent,
+            items=items,
+            constraints=constraints,
+        )
+
+    @classmethod
+    def _create(
+        cls,
+        *,
+        definition: StrategyDefinitionVersion,
+        binding: StrategyEvaluationBindingVersion,
+        selection_artifact: SelectionArtifact,
+        signal_artifact: SignalArtifact | None,
+        exposure_mode: str,
+        cash_policy: str,
+        rebalance_intent: str,
+        items: tuple[PortfolioIntentItem, ...],
+        constraints: Mapping[str, object],
+    ) -> PortfolioIntent:
         _require_definition_binding(definition, binding, "PortfolioIntent")
         if (
             selection_artifact.strategy_definition_version_id
@@ -641,6 +1008,20 @@ class PortfolioIntent:
             if signal_inputs != ordered_inputs:
                 raise StrategyArtifactError(
                     "PortfolioIntent source artifacts must share exact input evidence"
+                )
+        if selection_artifact.formal_execution_contract_version is not None:
+            if signal_artifact is None:
+                raise StrategyArtifactError(
+                    "formal PortfolioIntent requires the SelectionArtifact source SignalArtifact"
+                )
+            if (
+                selection_artifact.source_signal_artifact_id
+                != signal_artifact.signal_artifact_id
+                or selection_artifact.source_signal_provenance_sha256
+                != signal_artifact.provenance_sha256
+            ):
+                raise StrategyArtifactError(
+                    "PortfolioIntent SelectionArtifact points to an unrelated SignalArtifact"
                 )
         source_selection_artifact_id = selection_artifact.selection_artifact_id
         source_signal_artifact_id = (
