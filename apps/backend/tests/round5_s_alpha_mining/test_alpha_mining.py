@@ -8,9 +8,7 @@ from datetime import datetime, timezone
 from v3_backend.adapters.alpha_mining import AlphaMiningUserJobService
 from v3_backend.contracts.common.truth_admission import PRE_ALPHA_CEILING
 from v3_backend.control_plane.resource_governor import (
-    FakeResourceSampler,
     OperationProfile,
-    ResourceGovernor,
 )
 from v3_backend.domain.agent_research_loop import (
     BudgetLimit,
@@ -37,7 +35,6 @@ from v3_backend.domain.alpha_mining import (
     AlphaMiningSourceField,
     AlphaMiningStopReason,
     AlphaMiningStoppingRules,
-    AlphaMiningUserAuthorization,
     DeterministicGrammarCandidateGenerator,
     MissingRewardComponentPolicy,
     RewardComponentName,
@@ -203,23 +200,47 @@ class SequenceGenerator:
         )
 
 
-class ExactUserAuthorizationFixture:
-    def __init__(self, expected_authorization_id: str) -> None:
-        self.expected_authorization_id = expected_authorization_id
+class CallerClaimedAuthorization:
+    actor_kind = "USER"
+    issued_by = "V3_CONTROL_PLANE"
+    resolution_status = "RESOLVED_EXPLICIT_USER_REQUEST"
+
+    def __init__(self, job_id: str) -> None:
+        self.alpha_mining_job_spec_id = job_id
+
+
+class FakeAuthorizationPersistence:
+    def __init__(self) -> None:
         self.calls = 0
 
     def assert_explicit_user_authorized(self, authorization, job) -> None:
+        del authorization, job
         self.calls += 1
-        if authorization.authorization_id != self.expected_authorization_id:
-            raise AlphaMiningContractError(
-                "ALPHA_MINING_USER_AUTHORIZATION_REQUIRED",
-                "authorization is not present in Control Plane persistence",
-            )
-        if authorization.alpha_mining_job_spec_id != job.alpha_mining_job_spec_id:
-            raise AlphaMiningContractError(
-                "ALPHA_MINING_AUTHORIZATION_BINDING_MISMATCH",
-                job.alpha_mining_job_spec_id,
-            )
+
+
+class RecordingProductionEngine:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, job, *, resource_observation: str):
+        del job, resource_observation
+        self.calls += 1
+        raise AssertionError("denied production start reached engine.run")
+
+
+class RecordingResourceGovernor:
+    def __init__(self) -> None:
+        self.admit_calls = 0
+        self.release_calls = 0
+
+    def admit(self, lease_id, profile):
+        del lease_id, profile
+        self.admit_calls += 1
+        raise AssertionError("denied production start reached ResourceGovernor.admit")
+
+    def release(self, lease_id) -> None:
+        del lease_id
+        self.release_calls += 1
 
 
 class AlphaMiningTests(unittest.TestCase):
@@ -372,6 +393,42 @@ class AlphaMiningTests(unittest.TestCase):
             AlphaMiningContractError, "ALPHA_MINING_JOB_IDENTITY_MISMATCH"
         ):
             engine.run(forged, resource_observation="test-governor")
+        execution_changing_tampering = (
+            dataclasses.replace(
+                first_job, deterministic_seed=first_job.deterministic_seed + 1
+            ),
+            dataclasses.replace(
+                first_job, max_candidate_count=first_job.max_candidate_count - 1
+            ),
+            dataclasses.replace(
+                first_job,
+                evaluation_context=dataclasses.replace(
+                    first_job.evaluation_context, period_end="2026-01-31"
+                ),
+            ),
+            dataclasses.replace(
+                first_job,
+                reward_policy=dataclasses.replace(
+                    first_job.reward_policy, block_on_blocking_finding=False
+                ),
+            ),
+            dataclasses.replace(
+                first_job,
+                operation_profile=dataclasses.replace(
+                    first_job.operation_profile,
+                    memory_hard_limit_bytes=(
+                        first_job.operation_profile.memory_hard_limit_bytes + 1
+                    ),
+                ),
+            ),
+        )
+        for tampered in execution_changing_tampering:
+            self.assertEqual(
+                tampered.alpha_mining_job_spec_id,
+                first_job.alpha_mining_job_spec_id,
+            )
+            with self.assertRaises(AlphaMiningContractError):
+                engine.run(tampered, resource_observation="test-governor")
 
     def test_job_and_lineage_bounds_reject_coercible_or_invalid_values(self) -> None:
         with self.assertRaisesRegex(
@@ -650,7 +707,7 @@ class AlphaMiningTests(unittest.TestCase):
         self.assertEqual(result.factor_asset_lifecycle_transition, "NOT_RUN")
         self.assertEqual(result.candidate_records[0].reason_code, "BLOCKED_BY_REVIEWER")
 
-    def test_agent_draft_cannot_start_explicit_user_job_and_resources_release(self) -> None:
+    def test_production_user_start_has_no_local_or_caller_authority(self) -> None:
         job = self.job(target_evaluated_candidates=1)
         draft = AlphaMiningJobDraft.create(
             proposed_job_spec_id=job.alpha_mining_job_spec_id,
@@ -658,77 +715,57 @@ class AlphaMiningTests(unittest.TestCase):
         )
         self.assertFalse(draft.started)
         self.assertEqual(draft.authority_status, "NON_CANONICAL")
-        engine, _ = self.engine()
-        governor = ResourceGovernor(FakeResourceSampler())
-        authorization_port = ExactUserAuthorizationFixture(
-            "authorization:round5-s-user"
-        )
+        engine = RecordingProductionEngine()
+        governor = RecordingResourceGovernor()
         service = AlphaMiningUserJobService(
-            engine=engine,
-            resources=governor,
-            authorization_port=authorization_port,
+            engine=engine,  # type: ignore[arg-type]
+            resources=governor,  # type: ignore[arg-type]
         )
-        with self.assertRaisesRegex(
-            AlphaMiningContractError, "ALPHA_MINING_USER_AUTHORIZATION_REQUIRED"
-        ):
-            service.start_user_job(authorization=draft, job=job)  # type: ignore[arg-type]
-        authorization = AlphaMiningUserAuthorization(
-            authorization_id="authorization:round5-s-user",
-            alpha_mining_job_spec_id=job.alpha_mining_job_spec_id,
-            task_id="tsk_round5_s",
-            run_id="run_round5_s",
-            attempt_id="att_round5_s_1",
-            actor_kind="USER",
-            issued_by="V3_CONTROL_PLANE",
-            resolution_status="RESOLVED_EXPLICIT_USER_REQUEST",
-        )
-        forged = dataclasses.replace(
-            authorization, authorization_id="authorization:not-persisted"
-        )
-        with self.assertRaisesRegex(
-            AlphaMiningContractError, "ALPHA_MINING_USER_AUTHORIZATION_REQUIRED"
-        ):
-            service.start_user_job(authorization=forged, job=job)
-        result = service.start_user_job(authorization=authorization, job=job)
-        self.assertIs(result.status, AlphaMiningRunStatus.SUCCEEDED)
-        self.assertEqual(governor.active, {})
-        self.assertEqual(authorization_port.calls, 2)
-        self.assertIn("RESOURCE_GOVERNOR_ADMITTED", result.resource_observation)
+        claimed = CallerClaimedAuthorization(job.alpha_mining_job_spec_id)
+        fake_persistence = FakeAuthorizationPersistence()
+        for untrusted in (draft, claimed, fake_persistence):
+            with self.assertRaisesRegex(
+                AlphaMiningContractError,
+                "USER_EXECUTION_AUTHORITY_NOT_AVAILABLE",
+            ) as raised:
+                service.start_user_job(authorization=untrusted, job=job)
+            self.assertEqual(
+                raised.exception.code, "USER_EXECUTION_AUTHORITY_NOT_AVAILABLE"
+            )
+        with self.assertRaises(TypeError):
+            AlphaMiningUserJobService(
+                engine=engine,  # type: ignore[arg-type]
+                resources=governor,  # type: ignore[arg-type]
+                authorization_port=fake_persistence,  # type: ignore[call-arg]
+            )
+        self.assertEqual(fake_persistence.calls, 0)
+        self.assertEqual(governor.admit_calls, 0)
+        self.assertEqual(governor.release_calls, 0)
+        self.assertEqual(engine.calls, 0)
 
-    def test_explicit_user_job_stops_truthfully_at_candidate_budget(self) -> None:
+    def test_direct_domain_engine_remains_bounded_without_production_authority(
+        self,
+    ) -> None:
         job = self.job(
             max_candidate_count=1,
             max_generation_count=1,
             max_evaluation_count=1,
             target_evaluated_candidates=3,
         )
-        authorization = AlphaMiningUserAuthorization(
-            authorization_id="authorization:round5-s-budget-user",
-            alpha_mining_job_spec_id=job.alpha_mining_job_spec_id,
-            task_id="tsk_round5_s_budget",
-            run_id="run_round5_s_budget",
-            attempt_id="att_round5_s_budget_1",
-            actor_kind="USER",
-            issued_by="V3_CONTROL_PLANE",
-            resolution_status="RESOLVED_EXPLICIT_USER_REQUEST",
-        )
         engine, _ = self.engine()
-        governor = ResourceGovernor(FakeResourceSampler())
-        authorization_port = ExactUserAuthorizationFixture(
-            authorization.authorization_id
+        result = engine.run(
+            job,
+            resource_observation="TEST_ONLY_DIRECT_DOMAIN_ENGINE_NO_USER_AUTHORITY",
         )
-        result = AlphaMiningUserJobService(
-            engine=engine,
-            resources=governor,
-            authorization_port=authorization_port,
-        ).start_user_job(authorization=authorization, job=job)
         self.assertIs(result.status, AlphaMiningRunStatus.PARTIAL)
         self.assertIs(
             result.stop_reason, AlphaMiningStopReason.CANDIDATE_BUDGET_EXHAUSTED
         )
         self.assertEqual(result.generated_count, 1)
-        self.assertEqual(governor.active, {})
-        self.assertEqual(authorization_port.calls, 1)
+        self.assertEqual(
+            result.resource_observation,
+            "TEST_ONLY_DIRECT_DOMAIN_ENGINE_NO_USER_AUTHORITY",
+        )
 
     def test_w0_production_action_remains_not_run(self) -> None:
         job = self.job()

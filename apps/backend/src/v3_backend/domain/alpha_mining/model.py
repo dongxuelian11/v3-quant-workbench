@@ -993,36 +993,6 @@ class AlphaMiningJobDraft:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class AlphaMiningUserAuthorization:
-    authorization_id: str
-    alpha_mining_job_spec_id: str
-    task_id: str
-    run_id: str
-    attempt_id: str
-    actor_kind: str
-    issued_by: str
-    resolution_status: str
-
-    def __post_init__(self) -> None:
-        if self.actor_kind != "USER" or self.issued_by != "V3_CONTROL_PLANE":
-            raise AlphaMiningContractError(
-                "ALPHA_MINING_USER_AUTHORIZATION_REQUIRED", self.actor_kind
-            )
-        if self.resolution_status != "RESOLVED_EXPLICIT_USER_REQUEST":
-            raise AlphaMiningContractError(
-                "ALPHA_MINING_USER_AUTHORIZATION_REQUIRED", self.resolution_status
-            )
-        for name in (
-            "authorization_id",
-            "alpha_mining_job_spec_id",
-            "task_id",
-            "run_id",
-            "attempt_id",
-        ):
-            _text(getattr(self, name), name)
-
-
 __all__ = [
     "AlphaMiningCandidateDisposition",
     "AlphaMiningCandidateProposal",
@@ -1041,7 +1011,6 @@ __all__ = [
     "AlphaMiningSourceField",
     "AlphaMiningStopReason",
     "AlphaMiningStoppingRules",
-    "AlphaMiningUserAuthorization",
     "MissingRewardComponentPolicy",
     "RewardComponentName",
     "RewardComponentResult",

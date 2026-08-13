@@ -54,8 +54,9 @@ official PyPI release metadata. No blog or secondary package index was used.
 | Evaluation/experiment identity | Existing `FactorEvaluation`, Dataset, Experiment Run/Attempt | Reuse unchanged and validate exact bindings on return. |
 | Reviewer evidence | Existing `ReviewerEvidence` / `ReviewerFinding` | Reuse unchanged. |
 | Reward projection | S `AlphaMiningRewardPolicyVersion` | Native deterministic projection over actually present exact evidence; missing components remain explicit. |
-| Resource governance | Existing `ResourceGovernor` plus finite S job budgets | Reuse unchanged. |
-| Agent role | Draft only | Agent cannot construct the explicit user trigger and cannot start a job. |
+| Resource governance | Existing `ResourceGovernor` plus finite S job budgets | Reuse unchanged. Production user-start is `NOT_AVAILABLE / NOT_RUN` and fails before admission because current main lacks shared canonical user-action authority. |
+| Agent role | Draft only | Agent can propose a bounded L1 draft but cannot start a job or mint execution authority. |
+| Production user-start authority | No accepted shared canonical authority exists on current main | `NOT_AVAILABLE / NOT_RUN`; S defines no authorization DTO, Protocol, fake persistence authority, local receipt or approval repository. |
 | Promotion | Existing FactorAsset lifecycle authority | No promotion call; S output contains no REVIEWED/PROMOTED transition. |
 
 ## Rejected authority transfers

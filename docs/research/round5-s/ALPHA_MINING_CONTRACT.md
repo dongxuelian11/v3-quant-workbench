@@ -6,10 +6,25 @@ Base: `eda009b601b681c8a26d2a98a1093b3e6f33245e`
 
 ## Authority path
 
+Production user-start is deliberately unavailable on current main:
+
 ```text
-explicit Control Plane-resolved USER authorization
-  -> existing ResourceGovernor admission
-  -> AlphaMiningJobSpec
+untrusted caller / USER claim / Agent draft / fake persistence object
+  -> USER_EXECUTION_AUTHORITY_NOT_AVAILABLE
+  -> NOT_AVAILABLE / NOT_RUN
+  -> STOP before ResourceGovernor, engine.run, candidates, evaluation or reward
+```
+
+Current main has no accepted shared canonical user-action/approval authority that
+can authorize production Alpha Mining. S does not create that authority. A
+future production start requires a separately designed and accepted shared
+Control Plane user-action authority.
+
+The deterministic domain path remains available to unit tests, bounded domain
+tests, benchmarks and explicitly non-production test harnesses:
+
+```text
+AlphaMiningJobSpec
   -> deterministic closed grammar
   -> MiningFactorCandidate (NON_CANONICAL / DRAFT)
   -> existing Canonical Factor IR validation
@@ -81,11 +96,19 @@ reward.
 ## User / Agent / promotion boundaries
 
 - `AlphaMiningJobDraft` is always `NON_CANONICAL`, `DRAFT`, and `started=False`.
-- `AlphaMiningUserJobService` accepts only a resolved explicit USER authorization
-  issued by the existing V3 Control Plane and bound to the exact JobSpec. An
-  injected Control Plane persistence port must independently resolve it before
-  resource admission; the typed token alone grants no authority.
-- Resource admission/release uses the existing `ResourceGovernor`.
+- Production user-started Alpha Mining is `NOT_AVAILABLE / NOT_RUN` because
+  current main has no shared canonical user-action/approval authority.
+- `AlphaMiningUserJobService` rejects every caller DTO, actor string, claimed
+  Control Plane issuer, fake persistence object and Agent draft with
+  `USER_EXECUTION_AUTHORITY_NOT_AVAILABLE` before resource admission or engine
+  execution. S defines no authorization DTO, authorization Protocol, local
+  receipt, approval repository or persistence authority.
+- The existing `ResourceGovernor` remains the resource mechanism for a future
+  authorized runtime, but denied production starts never reach it.
+- Agent L1 may create and validate a bounded draft. It cannot start the job,
+  admit resources, run the engine, mint authority, publish or promote output.
+- Direct deterministic domain-engine calls in tests do not represent production
+  user execution authority.
 - Production W0 ResearchLoop actions remain `NOT_RUN`; S adds no Agent L2 action.
 - `AlphaMiningRunRecord.factor_asset_lifecycle_transition` is always `NOT_RUN`.
   S never calls REVIEWED, PROMOTED, publication, Truth or Admission elevation.
@@ -113,8 +136,8 @@ The `round5_s_alpha_mining` suite covers all required behaviors:
 17. deterministic complexity penalty;
 18. blocking Reviewer handling;
 19. no promotion;
-20. Agent draft cannot start;
-21. explicit user job stops truthfully at budget;
+20. Agent draft and caller-created USER claims cannot start;
+21. production user-start fails closed before ResourceGovernor and engine;
 22. production ResearchLoop remains `NOT_RUN`;
 23. deterministic non-LLM mode;
 24. truthful rejected/deduplicated/evaluated lineage.
