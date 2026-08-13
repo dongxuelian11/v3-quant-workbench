@@ -79,6 +79,20 @@ class SafeFormatPolicy:
                     "canonical GC plan JSON is non-executable and schema-validated",
                 ),
                 FormatRule(
+                    "TARGET_WEIGHT_VECTOR",
+                    "application/json",
+                    ADMITTED,
+                    "canonical-json-v1",
+                    "canonical TargetWeightVector JSON is non-executable and identity-checked",
+                ),
+                FormatRule(
+                    "RISK_POLICY_SET",
+                    "application/json",
+                    ADMITTED,
+                    "canonical-json-v1",
+                    "canonical RiskPolicySetVersion JSON is non-executable and identity-checked",
+                ),
+                FormatRule(
                     "TEXT_REPORT",
                     "text/plain",
                     ADMITTED,

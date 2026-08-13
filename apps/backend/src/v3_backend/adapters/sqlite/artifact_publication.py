@@ -18,6 +18,8 @@ _OWNER_TYPES = {
     "att_": "TaskAttempt",
     "prj_": "Project",
     "res_": "Result",
+    "twv_sha256_": "TargetWeightVector",
+    "rpsv_sha256_": "RiskPolicySetVersion",
 }
 
 
@@ -47,9 +49,29 @@ class SQLiteArtifactPublicationPort:
 
     def publish(self, publication: ArtifactPublication) -> None:
         descriptor = publication.descriptor
-        self.registry.artifact.declare_staged(
-            {
-                "artifact_id": descriptor.artifact_id,
+        artifact_row = {
+            "artifact_id": descriptor.artifact_id,
+            "sha256": descriptor.sha256,
+            "byte_size": descriptor.byte_size,
+            "media_type": descriptor.media_type,
+            "semantic_role": descriptor.role,
+            "storage_key": descriptor.storage_key,
+            "safe_format_id": descriptor.safe_format_id,
+            "schema_fingerprint": descriptor.schema_fingerprint,
+            "state": "STAGED",
+            "created_at": _wire_time(descriptor.created_at),
+        }
+        repository = self.registry.artifact.table("artifact")
+        existing = repository.get(descriptor.artifact_id)
+        if existing is None:
+            self.registry.artifact.declare_staged(artifact_row)
+            self.registry.artifact.publish_verified(
+                descriptor.artifact_id,
+                sha256=descriptor.sha256,
+                published_at=_wire_time(descriptor.published_at),
+            )
+        else:
+            expected = {
                 "sha256": descriptor.sha256,
                 "byte_size": descriptor.byte_size,
                 "media_type": descriptor.media_type,
@@ -57,15 +79,12 @@ class SQLiteArtifactPublicationPort:
                 "storage_key": descriptor.storage_key,
                 "safe_format_id": descriptor.safe_format_id,
                 "schema_fingerprint": descriptor.schema_fingerprint,
-                "state": "STAGED",
-                "created_at": _wire_time(descriptor.created_at),
+                "state": "PUBLISHED",
             }
-        )
-        self.registry.artifact.publish_verified(
-            descriptor.artifact_id,
-            sha256=descriptor.sha256,
-            published_at=_wire_time(descriptor.published_at),
-        )
+            if any(existing.get(key) != value for key, value in expected.items()):
+                raise ValueError(
+                    "existing published Artifact metadata conflicts with exact bytes"
+                )
         for reference in publication.active_references:
             self.registry.artifact.add_reference(
                 {
