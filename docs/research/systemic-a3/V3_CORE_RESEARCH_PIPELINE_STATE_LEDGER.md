@@ -4,7 +4,7 @@ TASK_GOAL
 : On existing PR #35 and branch `codex/systemic-a3-backtest-market-payload-closure-01`, ordinary-merge exact GitHub CURRENT main, then make the bounded backend research chain Strategy -> Portfolio -> TargetWeight -> Risk -> RiskAdjustedWeight -> Research Backtest -> Result runnable without weakening the retained Formal Backtest fail-closed path.
 
 TASK_PROGRESS
-: `LOCAL_VALIDATION_COMPLETE_COMMIT_PENDING`; exact CURRENT main ordinary-merged; existing owners audited and composed; explicit Research assumption profile, Research Backtest assembler, unified pipeline service, stage failures, integration tests, one-command smoke, and Deferred Gaps Ledger implemented. Focused regression, full backend, compile/import, `validate:public`, and full `validate` all passed. Feature commit, push, PR metadata update, and fresh exact-head CI remain unfinished as stated below.
+: `FEATURE_COMMIT_COMPLETE_PUSH_PENDING`; exact CURRENT main ordinary-merged; existing owners audited and composed; explicit Research assumption profile, Research Backtest assembler, unified pipeline service, stage failures, integration tests, one-command smoke, and Deferred Gaps Ledger implemented. Focused regression, full backend, compile/import, `validate:public`, and full `validate` all passed. Feature commit `4a948e65b46d68d3e956e5549aa336b958182941` exists; push, PR metadata update, and fresh exact-head CI remain unfinished as stated below.
 
 PROJECT_AUTHORITY
 : `P0_PROJECT_AUTHORITY 1.0.1`; normal task, `P0_AUTHORITY_AMENDMENT = NOT_AUTHORIZED`; protected files are read-only. Manifest hashes verified on exact CURRENT main:
@@ -19,12 +19,12 @@ TOOLING_AUTHORITY
 
 ## Execution checkpoint
 
-- `CURRENT_PHASE = PRE_COMMIT_DIFF_REVIEW`
-- `NEXT_EXACT_ACTION = finish bounded diff review, create a normal feature commit, and push the existing PR #35 branch`
+- `CURRENT_PHASE = DELIVERY_CHECKPOINT_BEFORE_PUSH`
+- `NEXT_EXACT_ACTION = create this ordinary State Ledger checkpoint commit, push the existing PR #35 branch, update PR metadata, and wait for fresh exact-head CI`
 - `CURRENT_MAIN = c5fb3b117c6466af3a19c12f65cfc8f7b5bd878c` (GitHub API exact ref; local commit object verified)
 - `PR35_BRANCH = codex/systemic-a3-backtest-market-payload-closure-01`
 - `PR35_PRE_TASK_HEAD = 862e0a1936c42cd70ab234324c79946d34fde490`
-- `PR35_LOCAL_HEAD = 56c175689e7dca3c4a9293f939a2f54bf7837792`
+- `PR35_LOCAL_HEAD = 4a948e65b46d68d3e956e5549aa336b958182941 before this documentation checkpoint commit`
 - `PR35_REMOTE_HEAD = 862e0a1936c42cd70ab234324c79946d34fde490`
 - `PR35_PR_HEAD = 862e0a1936c42cd70ab234324c79946d34fde490`
 - `PR35_MERGE_BASE = c5fb3b117c6466af3a19c12f65cfc8f7b5bd878c`
@@ -41,6 +41,8 @@ TOOLING_AUTHORITY
 - `MAIN_SYNC_STATE = PASS; ordinary merge commit 56c175689e7dca3c4a9293f939a2f54bf7837792`
 - `MAIN_SYNC_PARENTS = 862e0a1936c42cd70ab234324c79946d34fde490 c5fb3b117c6466af3a19c12f65cfc8f7b5bd878c`
 - `MAIN_SYNC_TREE = 2c14e5392e637e1d048c722ded38a70b5af26731`
+- `FEATURE_COMMIT = 4a948e65b46d68d3e956e5549aa336b958182941`
+- `FEATURE_TREE = c0f8e4587dbf9113852876605719e0a521a81435`
 - `CONFLICT_PATHS = scripts/backend-foundation-test.mjs`
 - `CONFLICT_RESOLUTIONS = additive suite union retaining systemic_a3_backtest_payload and CURRENT main systemic_a1_payload_closure plus all accepted A2/Portfolio/Risk/Data Truth suites`
 - `RESEARCH_PIPELINE_STATE = RUNNABLE BACKEND CANDIDATE LOCALLY VALIDATED; remote exact-head CI PENDING`
@@ -60,8 +62,8 @@ TOOLING_AUTHORITY
 - `FULL_VALIDATE = PASS`
 - `VISUAL_EVIDENCE_DEFER_STATUS = DEFERRED; historical issue not reproduced; current full validate PASS`
 - `CI_RUNS = old PR-head CI only; fresh exact-head CI NOT_RUN`
-- `NOT_RUN = feature commit; push; PR metadata update; fresh exact-head CI`
-- `PENDING = remote exact-head delivery and CI`
+- `NOT_RUN = push; PR metadata update; fresh exact-head CI`
+- `PENDING = checkpoint commit; remote exact-head delivery and CI`
 - `BLOCKED = none`
 - `OPTIONAL_TOOLING_STATUS = NOT_APPLICABLE`
 - `RECOVERY_CONSISTENCY = PASS`
