@@ -28,10 +28,10 @@ class MigrationTests(unittest.TestCase):
                 (
                     "0001_control_catalog",
                     "0002_data_truth",
-                    "0003_risk_application_publication",
+                    "0003_portfolio_riskpolicy_owner",
                 ),
             )
-            self.assertEqual(result.schema_report.table_count, 73)
+            self.assertEqual(result.schema_report.table_count, 71)
             self.assertEqual(result.schema_report.user_version, 3)
             connection = connect_catalog(path)
             try:
@@ -102,7 +102,7 @@ class MigrationTests(unittest.TestCase):
             finally:
                 connection.close()
 
-    def test_existing_v1_catalog_requires_backup_before_data_truth_upgrade(self) -> None:
+    def test_existing_v1_catalog_requires_backup_before_each_upgrade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             v1_versions = root / "v1"
@@ -208,7 +208,7 @@ class MigrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 upgraded.applied,
-                ("0002_data_truth", "0003_risk_application_publication"),
+                ("0002_data_truth", "0003_portfolio_riskpolicy_owner"),
             )
             self.assertEqual(len(upgraded.backups), 2)
             self.assertEqual(upgraded.schema_report.user_version, 3)

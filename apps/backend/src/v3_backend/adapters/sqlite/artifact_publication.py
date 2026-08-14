@@ -21,6 +21,7 @@ _OWNER_TYPES = {
     "twv_sha256_": "TargetWeightVector",
     "rar_sha256_": "RiskApplicationReceipt",
     "rawv_sha256_": "RiskAdjustedWeightVector",
+    "rpsv_sha256_": "RiskPolicySetVersion",
 }
 
 
@@ -83,7 +84,9 @@ class SQLiteArtifactPublicationPort:
                 "state": "PUBLISHED",
             }
             if any(existing.get(key) != value for key, value in expected.items()):
-                raise ValueError("existing published Artifact metadata conflicts with exact bytes")
+                raise ValueError(
+                    "existing published Artifact metadata conflicts with exact bytes"
+                )
         for reference in publication.active_references:
             self.registry.artifact.add_reference(
                 {

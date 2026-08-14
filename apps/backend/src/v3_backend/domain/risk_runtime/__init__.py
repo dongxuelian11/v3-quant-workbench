@@ -29,6 +29,15 @@ from .application import (
     CanonicalRiskApplicationService,
     RiskApplicationAuthorityError,
 )
+from .authoring import (
+    CanonicalRiskPolicyAuthoringService,
+    CanonicalRiskPolicySetResult,
+    GrossNetExposureValidatePolicyInput,
+    MaxSingleNamePolicyInput,
+    PassThroughPolicyInput,
+    RiskPolicyOwnerAuthorityError,
+    RiskPolicySetOwnerPublication,
+)
 
 __all__ = [
     "CanonicalRiskApplicationOwnerPort",
@@ -36,9 +45,14 @@ __all__ = [
     "CanonicalRiskApplicationRequest",
     "CanonicalRiskApplicationService",
     "DecisionStatus",
+    "CanonicalRiskPolicyAuthoringService",
+    "CanonicalRiskPolicySetResult",
     "ExposureValues",
     "ExternalSolverAuthorityError",
     "FailureBehavior",
+    "GrossNetExposureValidatePolicyInput",
+    "MaxSingleNamePolicyInput",
+    "PassThroughPolicyInput",
     "PitRequirement",
     "PolicyMode",
     "PolicyType",
@@ -47,8 +61,10 @@ __all__ = [
     "RiskDecisionReport",
     "RiskModelRequirement",
     "RiskPolicyDefinition",
+    "RiskPolicyOwnerAuthorityError",
     "RiskPolicyRejected",
     "RiskPolicySetVersion",
+    "RiskPolicySetOwnerPublication",
     "RiskRuntimeError",
     "RiskRuntimeResult",
     "RiskApplicationAuthorityError",

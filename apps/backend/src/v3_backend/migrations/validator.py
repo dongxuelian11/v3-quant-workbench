@@ -36,6 +36,7 @@ EXPECTED_TABLES = frozenset(
         "optimization_solution",
         "portfolio_construction_spec",
         "portfolio_version",
+        "target_weight_vector_publication",
         "prediction_signal_version",
         "project",
         "project_context_revision",
@@ -48,9 +49,6 @@ EXPECTED_TABLES = frozenset(
         "risk_model_spec",
         "risk_model_version",
         "risk_policy_set_publication",
-        "target_weight_vector_publication",
-        "risk_application_receipt_publication",
-        "risk_adjusted_weight_vector_publication",
         "run",
         "schema_migration",
         "snapshot_partition",
@@ -218,7 +216,7 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
     if applied != (
         "0001_control_catalog",
         "0002_data_truth",
-        "0003_risk_application_publication",
+        "0003_portfolio_riskpolicy_owner",
     ):
         raise SchemaValidationError(f"unexpected applied migration sequence: {applied!r}")
 

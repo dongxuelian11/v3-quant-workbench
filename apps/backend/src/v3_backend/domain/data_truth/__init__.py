@@ -36,12 +36,23 @@ from .provider_ingestion import (
     ResearchUniverseInput,
     normalize_a_share_eod,
 )
+from .formal import (
+    CanonicalSnapshotRepository,
+    CanonicalSnapshotVersion,
+    CanonicalUniverseRepository,
+    CanonicalUniverseVersion,
+    require_resolved_context,
+)
 
 __all__ = [
     "AdjustmentDoubleCountError",
     "AdjustmentFactorVersion",
     "CanonicalEodRecord",
     "CapabilityTruthState",
+    "CanonicalSnapshotRepository",
+    "CanonicalSnapshotVersion",
+    "CanonicalUniverseRepository",
+    "CanonicalUniverseVersion",
     "ConnectorCapabilityResolution",
     "ConnectorDataCapability",
     "CorporateAction",
@@ -71,4 +82,5 @@ __all__ = [
     "normalize_a_share_eod",
     "resolve_eod_as_of",
     "resolve_universe_as_of",
+    "require_resolved_context",
 ]
