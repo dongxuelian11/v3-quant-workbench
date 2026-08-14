@@ -4,7 +4,7 @@ TASK_GOAL
 : On existing PR #35 and branch `codex/systemic-a3-backtest-market-payload-closure-01`, ordinary-merge exact GitHub CURRENT main, then make the bounded backend research chain Strategy -> Portfolio -> TargetWeight -> Risk -> RiskAdjustedWeight -> Research Backtest -> Result runnable without weakening the retained Formal Backtest fail-closed path.
 
 TASK_PROGRESS
-: `FEATURE_COMMIT_COMPLETE_PUSH_PENDING`; exact CURRENT main ordinary-merged; existing owners audited and composed; explicit Research assumption profile, Research Backtest assembler, unified pipeline service, stage failures, integration tests, one-command smoke, and Deferred Gaps Ledger implemented. Focused regression, full backend, compile/import, `validate:public`, and full `validate` all passed. Feature commit `4a948e65b46d68d3e956e5549aa336b958182941` exists; push, PR metadata update, and fresh exact-head CI remain unfinished as stated below.
+: `FINAL_LEDGER_CHECKPOINT_READY_FOR_DELIVERY`; exact CURRENT main ordinary-merged; existing owners audited and composed; explicit Research assumption profile, Research Backtest assembler, unified pipeline service, stage failures, integration tests, one-command smoke, and Deferred Gaps Ledger implemented. Focused regression, full backend, compile/import, `validate:public`, and full `validate` all passed. The implementation and first ledger checkpoint were pushed to the original PR #35 branch, PR metadata was updated, and both push-event and PR-event CI were started on exact head `c1f481dc802ce631d6833ce44bab01fe2772a409`; the PR-event CI completed successfully. This final ledger-only checkpoint must now be committed, pushed, and verified by fresh exact-head CI.
 
 PROJECT_AUTHORITY
 : `P0_PROJECT_AUTHORITY 1.0.1`; normal task, `P0_AUTHORITY_AMENDMENT = NOT_AUTHORIZED`; protected files are read-only. Manifest hashes verified on exact CURRENT main:
@@ -19,25 +19,25 @@ TOOLING_AUTHORITY
 
 ## Execution checkpoint
 
-- `CURRENT_PHASE = DELIVERY_CHECKPOINT_BEFORE_PUSH`
-- `NEXT_EXACT_ACTION = create this ordinary State Ledger checkpoint commit, push the existing PR #35 branch, update PR metadata, and wait for fresh exact-head CI`
+- `CURRENT_PHASE = FINAL_LEDGER_CHECKPOINT_BEFORE_EXACT_HEAD_CI`
+- `NEXT_EXACT_ACTION = commit and push this final ledger-only checkpoint to the existing PR #35 branch, then wait for fresh CI on that resulting exact head and stop without merging`
 - `CURRENT_MAIN = c5fb3b117c6466af3a19c12f65cfc8f7b5bd878c` (GitHub API exact ref; local commit object verified)
 - `PR35_BRANCH = codex/systemic-a3-backtest-market-payload-closure-01`
 - `PR35_PRE_TASK_HEAD = 862e0a1936c42cd70ab234324c79946d34fde490`
-- `PR35_LOCAL_HEAD = 4a948e65b46d68d3e956e5549aa336b958182941 before this documentation checkpoint commit`
-- `PR35_REMOTE_HEAD = 862e0a1936c42cd70ab234324c79946d34fde490`
-- `PR35_PR_HEAD = 862e0a1936c42cd70ab234324c79946d34fde490`
+- `PR35_LOCAL_HEAD = c1f481dc802ce631d6833ce44bab01fe2772a409 before this final ledger-only checkpoint commit`
+- `PR35_REMOTE_HEAD = c1f481dc802ce631d6833ce44bab01fe2772a409`
+- `PR35_PR_HEAD = c1f481dc802ce631d6833ce44bab01fe2772a409`
 - `PR35_MERGE_BASE = c5fb3b117c6466af3a19c12f65cfc8f7b5bd878c`
 - `PR35_STATE = OPEN`
-- `PR35_CURRENT_CI = OLD_HEAD_SUCCESS; NOT_CURRENT_TASK_CI`
+- `PR35_CURRENT_CI = exact-head c1f481dc802ce631d6833ce44bab01fe2772a409 PR-event CI SUCCESS; final ledger-only checkpoint CI PENDING`
 - `CURRENT_MAIN_FETCH_STATE = FAILED_TRANSIENT_EMPTY_REPLY; exact GitHub ref and local object independently available`
 - `P0/P1_STATE = VERIFIED_CURRENT`
-- `DATA_TRUTH_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; detailed composition audit PENDING`
-- `A1_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; detailed composition audit PENDING`
-- `A2_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; detailed composition audit PENDING`
-- `PORTFOLIO_OWNER_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; composition audit PENDING`
-- `RISK_POLICY_OWNER_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; composition audit PENDING`
-- `RISK_APPLICATION_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; composition audit PENDING`
+- `DATA_TRUTH_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; bounded composition audit PASS`
+- `A1_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; bounded composition audit PASS`
+- `A2_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; FormalStrategyEvaluationService composition PASS`
+- `PORTFOLIO_OWNER_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; CanonicalPortfolioOwnerService composition PASS`
+- `RISK_POLICY_OWNER_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; canonical identity reuse PASS`
+- `RISK_APPLICATION_STATE = CURRENT_MAIN_ACCEPTED_BASELINE; CanonicalRiskApplicationService composition PASS`
 - `MAIN_SYNC_STATE = PASS; ordinary merge commit 56c175689e7dca3c4a9293f939a2f54bf7837792`
 - `MAIN_SYNC_PARENTS = 862e0a1936c42cd70ab234324c79946d34fde490 c5fb3b117c6466af3a19c12f65cfc8f7b5bd878c`
 - `MAIN_SYNC_TREE = 2c14e5392e637e1d048c722ded38a70b5af26731`
@@ -45,7 +45,7 @@ TOOLING_AUTHORITY
 - `FEATURE_TREE = c0f8e4587dbf9113852876605719e0a521a81435`
 - `CONFLICT_PATHS = scripts/backend-foundation-test.mjs`
 - `CONFLICT_RESOLUTIONS = additive suite union retaining systemic_a3_backtest_payload and CURRENT main systemic_a1_payload_closure plus all accepted A2/Portfolio/Risk/Data Truth suites`
-- `RESEARCH_PIPELINE_STATE = RUNNABLE BACKEND CANDIDATE LOCALLY VALIDATED; remote exact-head CI PENDING`
+- `RESEARCH_PIPELINE_STATE = RUNNABLE BACKEND CANDIDATE LOCALLY VALIDATED; exact-head c1f481dc802ce631d6833ce44bab01fe2772a409 PR-event CI PASS; final ledger-only checkpoint CI PENDING`
 - `STRATEGY_STAGE = PASS in focused integration; FormalStrategyEvaluationService produced live Signal/Selection/PortfolioIntent`
 - `PORTFOLIO_STAGE = PASS in focused integration; same live PortfolioIntent produced and published TargetWeight`
 - `RISK_STAGE = PASS in focused integration; canonical owner IDs produced Risk receipt and adjusted vector`
@@ -61,9 +61,9 @@ TOOLING_AUTHORITY
 - `VALIDATE_PUBLIC = PASS`
 - `FULL_VALIDATE = PASS`
 - `VISUAL_EVIDENCE_DEFER_STATUS = DEFERRED; historical issue not reproduced; current full validate PASS`
-- `CI_RUNS = old PR-head CI only; fresh exact-head CI NOT_RUN`
-- `NOT_RUN = push; PR metadata update; fresh exact-head CI`
-- `PENDING = checkpoint commit; remote exact-head delivery and CI`
+- `CI_RUNS = push-event run 31773065339 and PR-event run 31773067525 bind exact head c1f481dc802ce631d6833ce44bab01fe2772a409; PR-event run 31773067525 SUCCESS`
+- `NOT_RUN = final ledger-only checkpoint push and its fresh exact-head CI`
+- `PENDING = final ledger-only checkpoint remote delivery and CI`
 - `BLOCKED = none`
 - `OPTIONAL_TOOLING_STATUS = NOT_APPLICABLE`
 - `RECOVERY_CONSISTENCY = PASS`
