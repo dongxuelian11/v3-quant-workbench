@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import v3_backend.domain.backtest_runtime as backtest_runtime
 from round3_w0_weight_seam.test_weight_seam import WeightSeamFixture
 from v3_backend.adapters.artifact_store import FileSystemArtifactStore
 from v3_backend.adapters.backtest_payloads import BacktestCanonicalPayloadBindingResolver
@@ -511,6 +512,61 @@ class FormalBacktestPayloadTests(WeightSeamFixture):
         self._publish(self.market_ref, altered)
         with self.assertRaises(FormalBacktestPayloadError):
             self.service.execute(self.request())
+
+    def test_a3_19_formal_result_has_no_public_mint_seam(self):
+        execution = self.service.execute(self.request())
+
+        self.assertFalse(hasattr(FormalBacktestRunResult, "create"))
+        with self.assertRaisesRegex(TypeError, "minted only by FormalBacktestService"):
+            FormalBacktestRunResult()
+        constructor_values = tuple(
+            getattr(execution.result, field.name)
+            for field in dataclasses.fields(FormalBacktestRunResult)
+        )
+        with self.assertRaisesRegex(TypeError, "minted only by FormalBacktestService"):
+            FormalBacktestRunResult(*constructor_values)
+        self.assertNotIn(
+            "_materialize_formal_backtest_run_result",
+            backtest_runtime.__all__,
+        )
+        self.assertFalse(
+            hasattr(backtest_runtime, "_materialize_formal_backtest_run_result")
+        )
+
+    def test_a3_20_formal_result_identity_and_wire_remain_exact(self):
+        result = self.service.execute(self.request()).result
+
+        self.assertEqual(
+            result.formal_result_id,
+            "fbtrr_sha256_f299aacc3689a20285d0143acaa848d96a690afe8c7a9b1f112a29eb5609bc03",
+        )
+        self.assertEqual(
+            result.content_sha256,
+            "f299aacc3689a20285d0143acaa848d96a690afe8c7a9b1f112a29eb5609bc03",
+        )
+        self.assertEqual(
+            canonical_sha256(result.to_wire()),
+            "80021e9a4b5ab9e4af4db1f93f9211079397b4b262763a46040e657845ee8782",
+        )
+        result.assert_canonical()
+
+    def test_a3_21_caller_materials_do_not_expose_a_supported_mint_api(self):
+        execution = self.service.execute(self.request())
+        caller_materials = (
+            execution.request,
+            execution.run_spec,
+            execution.result.pure_result,
+            execution.result.resolution_evidence,
+        )
+
+        self.assertEqual(len(caller_materials), 4)
+        self.assertFalse(hasattr(FormalBacktestRunResult, "create"))
+        self.assertFalse(
+            any(
+                "mint" in name.lower() or "materialize" in name.lower()
+                for name in backtest_runtime.__all__
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -516,7 +516,7 @@ class FormalResolutionEvidence:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class FormalBacktestRunResult:
     formal_result_id: str
     content_sha256: str
@@ -537,68 +537,9 @@ class FormalBacktestRunResult:
 
     schema_version: ClassVar[str] = FORMAL_RESULT_SCHEMA
 
-    @classmethod
-    def create(
-        cls,
-        request: FormalBacktestRunRequest,
-        spec: BacktestRunSpec,
-        pure_result: BacktestRunResult,
-        evidence: tuple[FormalResolutionEvidence, ...],
-    ) -> "FormalBacktestRunResult":
-        if pure_result.run_spec_id != spec.run_spec_id:
-            raise FormalBacktestPayloadError("pure result does not bind the resolved RunSpec")
-        ordered = tuple(
-            sorted(
-                evidence,
-                key=lambda item: (item.payload_role, item.owner_namespace, item.owner_id),
-            )
-        )
-        required_roles = {
-            SNAPSHOT_ROLE,
-            MARKET_ROLE,
-            CALENDAR_ROLE,
-            CORPORATE_ACTION_ROLE,
-            UNIVERSE_ROLE,
-            WEIGHT_ROLE,
-        }
-        if required_roles - {item.payload_role for item in ordered}:
-            raise FormalBacktestPayloadError("formal result lacks required resolution evidence")
-        if len({item.receipt_id for item in ordered}) != len(ordered):
-            raise FormalBacktestPayloadError("resolution receipt IDs must be unique")
-        payload = cls._payload(
-            request.formal_request_id,
-            request.content_sha256,
-            spec.run_spec_id,
-            spec.content_sha256,
-            pure_result,
-            ordered,
-            request.engine_version,
-            request.runtime_identity,
-            request.rule_profile.profile_id,
-            request.rule_profile.content_sha256,
-            request.cost_policy.policy_id,
-            request.cost_policy.content_sha256,
-            request.execution_timing_profile.profile_id,
-            request.execution_timing_profile.content_sha256,
-        )
-        digest = canonical_sha256(payload)
-        return cls(
-            "fbtrr_sha256_" + digest,
-            digest,
-            request.formal_request_id,
-            request.content_sha256,
-            spec.run_spec_id,
-            spec.content_sha256,
-            pure_result,
-            ordered,
-            request.engine_version,
-            request.runtime_identity,
-            request.rule_profile.profile_id,
-            request.rule_profile.content_sha256,
-            request.cost_policy.policy_id,
-            request.cost_policy.content_sha256,
-            request.execution_timing_profile.profile_id,
-            request.execution_timing_profile.content_sha256,
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError(
+            "FormalBacktestRunResult is minted only by FormalBacktestService.execute()"
         )
 
     @classmethod
@@ -682,6 +623,67 @@ class FormalBacktestRunResult:
         }
 
 
+def _materialize_formal_backtest_run_result(
+    request: FormalBacktestRunRequest,
+    spec: BacktestRunSpec,
+    pure_result: BacktestRunResult,
+    evidence: tuple[FormalResolutionEvidence, ...],
+) -> FormalBacktestRunResult:
+    """Internal mint used only after FormalBacktestService resolves live inputs."""
+
+    if pure_result.run_spec_id != spec.run_spec_id:
+        raise FormalBacktestPayloadError("pure result does not bind the resolved RunSpec")
+    ordered = tuple(
+        sorted(
+            evidence,
+            key=lambda item: (item.payload_role, item.owner_namespace, item.owner_id),
+        )
+    )
+    required_roles = {
+        SNAPSHOT_ROLE,
+        MARKET_ROLE,
+        CALENDAR_ROLE,
+        CORPORATE_ACTION_ROLE,
+        UNIVERSE_ROLE,
+        WEIGHT_ROLE,
+    }
+    if required_roles - {item.payload_role for item in ordered}:
+        raise FormalBacktestPayloadError("formal result lacks required resolution evidence")
+    if len({item.receipt_id for item in ordered}) != len(ordered):
+        raise FormalBacktestPayloadError("resolution receipt IDs must be unique")
+
+    values = {
+        "formal_request_id": request.formal_request_id,
+        "formal_request_content_sha256": request.content_sha256,
+        "run_spec_id": spec.run_spec_id,
+        "run_spec_content_sha256": spec.content_sha256,
+        "pure_result": pure_result,
+        "resolution_evidence": ordered,
+        "engine_version": request.engine_version,
+        "runtime_identity": request.runtime_identity,
+        "rule_profile_id": request.rule_profile.profile_id,
+        "rule_profile_sha256": request.rule_profile.content_sha256,
+        "cost_policy_id": request.cost_policy.policy_id,
+        "cost_policy_sha256": request.cost_policy.content_sha256,
+        "execution_timing_profile_id": request.execution_timing_profile.profile_id,
+        "execution_timing_profile_sha256": (
+            request.execution_timing_profile.content_sha256
+        ),
+    }
+    payload = FormalBacktestRunResult._payload(**values)
+    digest = canonical_sha256(payload)
+    values = {
+        "formal_result_id": "fbtrr_sha256_" + digest,
+        "content_sha256": digest,
+        **values,
+    }
+
+    result = object.__new__(FormalBacktestRunResult)
+    for field_name, value in values.items():
+        object.__setattr__(result, field_name, value)
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class FormalBacktestExecution:
     request: FormalBacktestRunRequest
@@ -759,7 +761,7 @@ class FormalBacktestService:
             FormalResolutionEvidence.from_result(reference, result)
             for reference, result in resolved
         )
-        formal_result = FormalBacktestRunResult.create(
+        formal_result = _materialize_formal_backtest_run_result(
             request,
             spec,
             pure_result,
