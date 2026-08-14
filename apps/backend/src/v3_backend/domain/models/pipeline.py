@@ -88,7 +88,6 @@ class ModelPipelineRequest:
     training_split: DatasetSplitRole = DatasetSplitRole.TRAIN
     prediction_split: DatasetSplitRole = DatasetSplitRole.TEST
     max_payload_bytes: int = 16 * 1024 * 1024
-    proposed_state: TruthAdmissionState = PRE_ALPHA_CEILING
 
     def __post_init__(self) -> None:
         for value, label in (
@@ -113,8 +112,6 @@ class ModelPipelineRequest:
             raise ValueError("Model pipeline prediction_split is fixed to TEST")
         if not isinstance(self.max_payload_bytes, int) or isinstance(self.max_payload_bytes, bool) or self.max_payload_bytes <= 0:
             raise ValueError("max_payload_bytes must be a positive integer")
-        if not isinstance(self.proposed_state, TruthAdmissionState):
-            raise TypeError("proposed_state must be typed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -609,7 +606,7 @@ class CanonicalDatasetModelPipelineService:
                 code_version=request.code_version,
                 training_evidence_provenance_artifact_id=provenance_artifact_id,
                 model_provenance_artifact_id=provenance_artifact_id,
-                proposed_state=request.proposed_state,
+                proposed_state=PRE_ALPHA_CEILING,
             )
         except Exception as exc:
             return self._failure(ModelPipelineStatus.TRAIN_FAILED, request, _FailureEvidence(dataset), str(exc))
@@ -690,7 +687,7 @@ class CanonicalDatasetModelPipelineService:
                 prediction_timestamp=dataset.materialized.knowledge_cutoff,
                 target_semantics=request.target_semantics,
                 provenance_artifact_id=prediction_provenance_id,
-                proposed_state=request.proposed_state,
+                proposed_state=PRE_ALPHA_CEILING,
             )
         except Exception as exc:
             evidence = _FailureEvidence(

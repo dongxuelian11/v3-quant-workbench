@@ -12,7 +12,7 @@ from apps.backend.tests.systemic_a1_payload_closure.test_sqlite_canonical_owner_
 )
 from v3_backend.adapters.model_pipeline_artifacts import FileSystemModelPipelineArtifactPublisher
 from v3_backend.adapters.systemic_a1_payload import A1CanonicalPayloadBindingResolver
-from v3_backend.contracts.common.truth_admission import PRE_ALPHA_CEILING
+from v3_backend.contracts.common.truth_admission import PRE_ALPHA_CEILING, TruthAdmissionState
 from v3_backend.domain.datasets import (
     FormalDatasetBuildRequest,
     SplitSpec,
@@ -71,7 +71,11 @@ def model_pipeline_request(dataset_id: str) -> ModelPipelineRequest:
     )
 
 
-def build_model_pipeline_development_fixture(worker) -> ModelPipelineDevelopmentFixture:
+def build_model_pipeline_development_fixture(
+    worker,
+    *,
+    upstream_proposed_state: TruthAdmissionState = PRE_ALPHA_CEILING,
+) -> ModelPipelineDevelopmentFixture:
     case = ExtendedObservationA1Fixture(
         "test_a1_p01_p10_reopen_persistence_and_neg_c"
     )
@@ -94,7 +98,7 @@ def build_model_pipeline_development_fixture(worker) -> ModelPipelineDevelopment
                 "snp_a1",
                 "unv_a1",
                 100_000,
-                PRE_ALPHA_CEILING,
+                upstream_proposed_state,
             )
         )
         case._label_service(owner, resolver).materialize(
@@ -111,7 +115,7 @@ def build_model_pipeline_development_fixture(worker) -> ModelPipelineDevelopment
                 "snp_a1",
                 "unv_a1",
                 100_000,
-                PRE_ALPHA_CEILING,
+                upstream_proposed_state,
             )
         )
         unit_of_work.commit()

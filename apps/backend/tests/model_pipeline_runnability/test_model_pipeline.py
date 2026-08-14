@@ -9,6 +9,10 @@ from apps.backend.tests.model_pipeline_runnability.helpers import (
 )
 from v3_backend.adapters.artifact_store import FileSystemArtifactStore
 from v3_backend.adapters.model_workers import SklearnRidgeSubprocessWorker
+from v3_backend.contracts.common.truth_admission import (
+    FORMAL_ADMITTED_CEILING,
+    PRE_ALPHA_CEILING,
+)
 from v3_backend.domain.artifacts.exceptions import FormatRejected
 from v3_backend.domain.datasets import (
     DATASET_ARTIFACT_ROLE,
@@ -49,6 +53,22 @@ class ModelPipelineRunnabilityTests(unittest.TestCase):
         self.assertTrue(first.prediction_id.startswith("pred_sha256_"))
         self.assertEqual(first.truth, "PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE")
 
+    def test_canonical_model_and_prediction_truth_stay_pre_alpha(self) -> None:
+        fixture = build_model_pipeline_development_fixture(
+            SklearnRidgeSubprocessWorker(),
+            upstream_proposed_state=FORMAL_ADMITTED_CEILING,
+        )
+        try:
+            self.assertEqual(fixture.dataset.truth_admission, FORMAL_ADMITTED_CEILING)
+            result = fixture.service.run(model_pipeline_request(fixture.dataset.dataset_version_id))
+            self.assertEqual(result.status, ModelPipelineStatus.SUCCESS)
+            model_version = json.loads(fixture.store.read_bytes(result.model_version_artifact_id))
+            prediction = json.loads(fixture.store.read_bytes(result.prediction_artifact_id))
+            self.assertEqual(model_version["truth_admission"], PRE_ALPHA_CEILING.to_wire())
+            self.assertEqual(prediction["truth_admission"], PRE_ALPHA_CEILING.to_wire())
+        finally:
+            fixture.close()
+
     def test_pr27_formal_dataset_contract_resolves_actual_bytes(self) -> None:
         owner = self.fixture.dataset
         resolved = self.fixture.payload_resolver.resolve(
@@ -86,10 +106,11 @@ class ModelPipelineRunnabilityTests(unittest.TestCase):
                         )
                     )
 
-    def test_runnable_entry_has_no_caller_model_samples(self) -> None:
+    def test_runnable_entry_has_no_caller_samples_or_truth_elevation(self) -> None:
         fields = ModelPipelineRequest.__dataclass_fields__
         self.assertNotIn("samples", fields)
         self.assertNotIn("model_samples", fields)
+        self.assertNotIn("proposed_state", fields)
         self.assertEqual(set(fields) & {"dataset_id", "training_split", "prediction_split"}, {"dataset_id", "training_split", "prediction_split"})
 
     def test_missing_dataset_owner_fails_before_train(self) -> None:
