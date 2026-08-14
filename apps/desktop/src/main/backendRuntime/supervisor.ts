@@ -25,6 +25,8 @@ import type {
   SupervisorProjectContext
 } from "./types";
 
+const REPLAY_PAGE_LIMIT = 1000;
+
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
@@ -80,6 +82,7 @@ export class BackendSupervisor extends EventEmitter {
   private restartTimer?: NodeJS.Timeout;
   private restartAttempt = 0;
   private projectContext?: SupervisorProjectContext;
+  private replayFrozenWatermark: number | null = null;
   private expectedExit = false;
   private protocolRejected = false;
   private stderrBuffer = "";
@@ -231,6 +234,8 @@ export class BackendSupervisor extends EventEmitter {
     this.decoder = new FrameDecoder();
     this.stderrBuffer = "";
     this.hello = undefined;
+    this.replayFrozenWatermark = null;
+    this.bufferedEvents.clear();
     this.ready = deferred<void>();
     this.setState("STARTING");
     const token = this.tokenFactory();
@@ -282,7 +287,7 @@ export class BackendSupervisor extends EventEmitter {
       this.readyTimer = undefined;
       if (this.projectContext) {
         this.setState("REPLAYING");
-        this.send({ kind: "events.replay", after_sequence: this.projectContext.lastDurableProjectEventSequence, limit: 1000 });
+        this.send({ kind: "events.replay", after_sequence: this.projectContext.lastDurableProjectEventSequence, limit: REPLAY_PAGE_LIMIT });
       } else {
         this.becomeReady();
       }
@@ -327,7 +332,7 @@ export class BackendSupervisor extends EventEmitter {
       this.bufferedEvents.set(event.project_sequence, event);
       if (this.stateValue !== "REPLAYING") {
         this.setState("REPLAYING");
-        this.send({ kind: "events.replay", after_sequence: context.lastDurableProjectEventSequence, limit: 1000 });
+        this.send({ kind: "events.replay", after_sequence: context.lastDurableProjectEventSequence, limit: REPLAY_PAGE_LIMIT });
       }
       return;
     }
@@ -357,18 +362,41 @@ export class BackendSupervisor extends EventEmitter {
   }
 
   private onReplayComplete(message: Record<string, unknown>): void {
-    if (Object.keys(message).sort().join("|") !== "kind|last_sequence" || !Number.isInteger(message.last_sequence)) {
+    const keys = Object.keys(message).sort().join("|");
+    if (keys !== "has_more|high_watermark|kind|last_sequence|next_after_sequence" ||
+        !Number.isInteger(message.last_sequence) || !Number.isInteger(message.next_after_sequence) ||
+        !Number.isInteger(message.high_watermark) || typeof message.has_more !== "boolean") {
       throw new TransportProtocolError("events.replayComplete shape is invalid");
     }
+    if (message.next_after_sequence !== message.last_sequence) {
+      throw new TransportProtocolError("events.replayComplete next_after_sequence must equal the page last_sequence");
+    }
+    if (this.replayFrozenWatermark === null) {
+      // The first page freezes this replay round's historical high watermark.
+      // Live events above H must not extend the historical catch-up window.
+      this.replayFrozenWatermark = Number(message.high_watermark);
+    } else if (Number(message.high_watermark) < this.replayFrozenWatermark) {
+      throw new TransportProtocolError("events.replayComplete high watermark moved backwards");
+    }
     this.flushBufferedEvents();
-    if (message.last_sequence !== (this.projectContext?.lastDurableProjectEventSequence ?? 0)) {
+    const cursor = this.projectContext?.lastDurableProjectEventSequence ?? 0;
+    if (message.last_sequence !== cursor) {
       throw new TransportProtocolError("events.replayComplete sequence does not match contiguous delivery");
     }
-    if (this.bufferedEvents.size > 0) {
-      this.send({ kind: "events.replay", after_sequence: this.projectContext?.lastDurableProjectEventSequence ?? 0, limit: 1000 });
+    if (cursor < this.replayFrozenWatermark) {
+      if (!message.has_more) {
+        throw new TransportProtocolError("events.replayComplete reports no more pages before the frozen high watermark");
+      }
+      this.send({ kind: "events.replay", after_sequence: cursor, limit: REPLAY_PAGE_LIMIT });
       return;
     }
+    // Contiguous durable cursor has reached the frozen high watermark:
+    // historical catch-up is complete. Events above H are the live tail and
+    // are delivered through normal contiguous event delivery, never by
+    // chasing a moving watermark with more replay pages.
+    this.replayFrozenWatermark = null;
     this.becomeReady();
+    this.flushBufferedEvents();
   }
 
   private onHealth(message: Record<string, unknown>): void {
