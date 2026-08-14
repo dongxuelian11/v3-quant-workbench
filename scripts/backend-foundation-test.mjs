@@ -1,8 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { delimiter, resolve } from "node:path";
+import { readdirSync } from "node:fs";
+import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const backendSource = resolve(root, "apps/backend/src");
+const testsRoot = resolve(root, "apps/backend/tests");
+const testsTop = "apps/backend/tests";
 const candidates = process.env.V3_PYTHON
   ? [[process.env.V3_PYTHON, []]]
   : process.platform === "win32"
@@ -32,40 +35,28 @@ const env = {
     : backendSource
 };
 
-const suites = [
-  "track_a0_truth_admission",
-  "ws_a_contracts",
-  "ws_b_catalog",
-  "ws_c_artifact",
-  "systemic_p1_payload_authority",
-  "systemic_a1_payload_closure",
-  "systemic_a3_backtest_payload",
-  "core_research_pipeline",
-  "ws_d_task_workers",
-  "ws_e_runtime",
-  "br1_foundation_integration",
-  "ws_f_data_truth",
-  "track_c_factor_dataset_experiment",
-  "track_d_ai_copilot",
-  "track_e_model_prediction_runtime",
-  "track_f_strategy_runtime",
-  "systemic_a2_strategy_signal_payload",
-  "systemic_portfolio_riskpolicy_owner",
-  "track_g_ai_research_evidence_integration",
-  "round3_w0_weight_seam",
-  "track_h_portfolio_construction",
-  "round3_track_i_risk_runtime",
-  "systemic_risk_application_publication",
-  "track_j_a_share_backtest_core",
-  "round3_integration_closure",
-  "track_l_result_analytics",
-  "track_m_generative_research_ui",
-  "reviewer_integration",
-  "round5_w0_agent_research_loop",
-  "round5_w0_factor_assets",
-  "round5_r_portfolio_risk_agent",
-  "round5_s_alpha_mining"
-];
+// Recursive deterministic discovery: every test_*.py under apps/backend/tests
+// enters the execution inventory without any manual allowlist.
+function collectTestFiles(directory) {
+  const found = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+    const full = join(directory, entry.name);
+    if (entry.isDirectory()) found.push(...collectTestFiles(full));
+    else if (entry.isFile() && entry.name.startsWith("test_") && entry.name.endsWith(".py")) found.push(full);
+  }
+  return found;
+}
+
+const discoveredFiles = collectTestFiles(testsRoot).map((file) => relative(root, file).split(sep).join("/")).sort();
+const suites = [...new Set(discoveredFiles.map((file) => dirname(file)))].sort();
+const filesBySuite = new Map(suites.map((suite) => [suite, discoveredFiles.filter((file) => dirname(file) === suite)]));
+
+console.log(`Discovered ${discoveredFiles.length} backend test files across ${suites.length} suites (no manual allowlist).`);
+for (const file of discoveredFiles) console.log(`  discovered ${file}`);
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const executedSuites = [];
+let ranTotal = 0;
 
 for (const suite of suites) {
   const args = [
@@ -75,13 +66,39 @@ for (const suite of suites) {
     "unittest",
     "discover",
     "-s",
-    `apps/backend/tests/${suite}`,
+    suite,
     "-t",
-    "apps/backend/tests",
+    testsTop,
+    "-p",
+    "test_*.py",
     "-v"
   ];
-  const result = spawnSync(selected.command, args, { cwd: root, env, stdio: "inherit" });
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  const result = spawnSync(selected.command, args, { cwd: root, env, encoding: "utf8" });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.status !== 0) {
+    console.error(`Backend suite failed: ${suite} (exit ${String(result.status)})`);
+    process.exit(result.status ?? 1);
+  }
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const unloaded = filesBySuite.get(suite).filter((file) => {
+    const stem = file.slice(file.lastIndexOf("/") + 1, -3);
+    return !new RegExp(`\\b${escapeRegex(stem)}\\s*(?:\\(|\\.)`).test(output);
+  });
+  if (unloaded.length > 0) {
+    console.error(`Discovered backend test file(s) did not enter the execution inventory for ${suite}: ${unloaded.join(", ")}`);
+    process.exit(1);
+  }
+  const ran = /Ran (\d+) tests?/.exec(output)?.[1] ?? "?";
+  ranTotal += Number.isFinite(Number(ran)) ? Number(ran) : 0;
+  executedSuites.push(suite);
+  console.log(`  executed ${suite} (${filesBySuite.get(suite).length} file(s), ${ran} test case(s))`);
+}
+
+console.log(`Executed inventory: ${executedSuites.length}/${suites.length} suites, ${discoveredFiles.length}/${discoveredFiles.length} discovered files, ${ranTotal} test cases total.`);
+if (executedSuites.length !== suites.length) {
+  console.error(`Execution inventory mismatch: ${executedSuites.length} executed vs ${suites.length} discovered suites.`);
+  process.exit(1);
 }
 
 const compile = spawnSync(
@@ -90,4 +107,4 @@ const compile = spawnSync(
   { cwd: root, env, stdio: "inherit" }
 );
 if (compile.status !== 0) process.exit(compile.status ?? 1);
-console.log("Canonical Backend Foundation through Round 3 H/I/J and the Round 3 read-only integration closure: tests and compile gate passed.");
+console.log(`Canonical Backend Foundation suites (${executedSuites.length} discovered, ${ranTotal} test cases) and compile gate passed.`);
