@@ -7,6 +7,7 @@ import {
 } from "../../../packages/contracts/src/index";
 import {
   BackendRuntimeEventRelay,
+  BackendRuntimeLifecycle,
   BackendSupervisor,
   registerBackendRuntimeIpc
 } from "./main/backendRuntime/index";
@@ -17,6 +18,11 @@ let store: WorkspaceStore;
 let storePath = "";
 let backendSupervisor: BackendSupervisor | null = null;
 let backendRelay: BackendRuntimeEventRelay | null = null;
+let backendRuntimeLifecycle: BackendRuntimeLifecycle | null = null;
+let quitting = false;
+let shutdownComplete = false;
+
+const GRACEFUL_SHUTDOWN_DEADLINE_MS = 10_000;
 
 const AGENT_EVIDENCE_MODE = process.env.V3_AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE"
   ? "DEVELOPMENT_INTEGRATION_FIXTURE" as const
@@ -90,6 +96,7 @@ function startBackendRuntime(): void {
   });
   backendRelay = new BackendRuntimeEventRelay(backendSupervisor, mainWindow.webContents);
   backendRelay.start();
+  backendRuntimeLifecycle = new BackendRuntimeLifecycle(backendSupervisor);
   backendSupervisor.on("diagnostic", (item) => console.error(JSON.stringify(item)));
   registerBackendRuntimeIpc(ipcMain, trusted, backendSupervisor, () => backendRelay?.evidenceSnapshot ?? null);
   void backendSupervisor.start().catch((error: unknown) => {
@@ -132,8 +139,37 @@ app.whenReady().then(async () => {
   app.exit(1);
 });
 
+async function gracefulShutdown(): Promise<void> {
+  try {
+    await store.flush();
+    store.beginShutdown();
+    backendRelay?.stop();
+    if (backendRuntimeLifecycle && backendSupervisor) {
+      await backendRuntimeLifecycle.onExplicitQuit(GRACEFUL_SHUTDOWN_DEADLINE_MS);
+    }
+    console.error(JSON.stringify({
+      level: "INFO",
+      code: "GRACEFUL_SHUTDOWN_SUCCESS",
+      message: "runtime prepare/commit shutdown handshake completed and persistence queue drained"
+    }));
+  } catch (error) {
+    console.error(JSON.stringify({
+      level: "ERROR",
+      code: "FORCED_SHUTDOWN_FALLBACK",
+      message: error instanceof Error ? error.message : String(error)
+    }));
+    backendSupervisor?.stopNow();
+  } finally {
+    shutdownComplete = true;
+    app.quit();
+  }
+}
+
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-app.on("before-quit", () => {
-  backendRelay?.stop();
-  backendSupervisor?.stopNow();
+app.on("before-quit", (event) => {
+  if (shutdownComplete) return;
+  if (quitting) { event.preventDefault(); return; }
+  quitting = true;
+  event.preventDefault();
+  void gracefulShutdown();
 });
