@@ -1,6 +1,6 @@
 # V3 Canonical Architecture
 
-Authority version: `1.0.1`
+Authority version: `1.0.2`
 Status: target canonical architecture and owner map; not a claim that all integrations or product connections exist.
 
 ## 1. Mandatory cross-owner flow
@@ -44,6 +44,8 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 
 ## 4. Canonical owner map
 
+Implementation evidence boundaries below are stable P0 requirements, not a status registry. Mutable PR, branch, SHA, merge, and current-maturity state must be resolved from GitHub CURRENT and non-P0 evidence using `docs/status/V3_CAPABILITY_LEVELS.md`. This owner map does not encode those states.
+
 ### 4.1 Data Truth
 
 - **Owner:** Data Truth semantic owner and canonical market-data repositories.
@@ -58,7 +60,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Provider adapters, repositories, snapshot resolver, ingestion worker, and health/capability surface.
 - **Product Surface:** Data/source status, snapshot selector, PIT/as-of visibility, unavailable/degraded state.
 - **Forbidden Shortcuts:** Caller-supplied prices under a valid snapshot ID; current data substituted for historical data; Demo data as formal truth.
-- **Current Implementation Notes (conservative):** Current main contains Data Truth domain, provider-ingestion, PIT, migration, repository and adapter seams. External/provider admission and full production connection require current evidence; systemic payload/integration re-audit is `PENDING`.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Data Truth domain, provider-ingestion, PIT, migration, repository and adapter seams, external/provider admission, canonical payload resolution, and production connection at an exact SHA.
 
 ### 4.2 Universe
 
@@ -74,7 +76,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Universe repository/resolver and deterministic construction handler.
 - **Product Surface:** Universe Builder, membership inspection, exclusions, PIT status and evidence.
 - **Forbidden Shortcuts:** Caller-created symbol list presented as a canonical Universe; current index members used for past dates.
-- **Current Implementation Notes (conservative):** Current main contains Universe contracts and Data Truth membership policies/tests. Exact maturity beyond those bounded slices is `PENDING` systemic re-audit.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Universe contracts, historical membership policies, resolver-backed member payloads, integration, and product/runtime connection at an exact SHA.
 
 ### 4.3 Factor
 
@@ -90,7 +92,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Factor resolver/evaluator handler, optional isolated third-party adapters, task/worker boundary.
 - **Product Surface:** Factor Lab/library/editor/evidence, exact unavailable and draft states.
 - **Forbidden Shortcuts:** Frontend math; second TDX VM; caller-provided series with a valid Factor/Snapshot ID; third-party output minting truth.
-- **Current Implementation Notes (conservative):** Current main contains canonical Factor IR/evaluator, Factor assets/library, TDX translation, adapters, tests, and merged P Factor Agent/Library work. Production Agent execution remains `NOT_AVAILABLE / NOT_RUN`; payload and product maturity re-audit is `PENDING`.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish the canonical Factor IR/evaluator, assets/library, TDX translation, adapters, actual-payload resolution, Agent authority, and product/runtime connection at an exact SHA.
 
 ### 4.4 Dataset
 
@@ -106,7 +108,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Dataset construction/resolution handler and isolated storage adapters.
 - **Product Surface:** Dataset inspector, split/leakage evidence and unavailable state.
 - **Forbidden Shortcuts:** Training from caller arrays while citing a Dataset ID; relabeling without a new version; implicit row alignment.
-- **Current Implementation Notes (conservative):** Current main contains Dataset domain models/contracts and accepted historical tests. Resolver-backed actual payload and product/runtime maturity remain `PENDING` re-audit.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Dataset domain contracts, actual feature/label payload resolution, leakage controls, integration, and product/runtime connection at an exact SHA.
 
 ### 4.5 Experiment
 
@@ -122,7 +124,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Experiment coordinator backed by canonical Task/Worker and Artifact owners.
 - **Product Surface:** Experiment table, comparison view, context diff, metrics and evidence.
 - **Forbidden Shortcuts:** Context-free “best” ranking; metrics accepted only from caller summaries; missing runs treated as zero.
-- **Current Implementation Notes (conservative):** Current main contains Experiment domain models/metrics and historical acceptance evidence. Systemic payload/comparison/product re-audit is `PENDING`.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Experiment contracts, resolved run/result payloads, comparable-context enforcement, metrics/rewards, integration, and product connection at an exact SHA.
 
 ### 4.6 Model
 
@@ -137,8 +139,8 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Truth/PIT Boundary:** Training and prediction data must respect bound availability time, split, and reproducibility profile.
 - **Runtime Surface:** Model worker adapter, task handler, artifact resolver and resource governance.
 - **Product Surface:** Model Lab, Study/Trial inspection, training/prediction evidence and unavailable state.
-- **Forbidden Shortcuts:** Caller arrays under a Dataset ID; unpinned environment; Q candidate treated as current-main authority; model prose as result.
-- **Current Implementation Notes (conservative):** Current main contains Model domain/runtime and subprocess worker seams. Q Model Agent PR #27 is OPEN and unmerged; production Agent execution is `NOT_AVAILABLE / NOT_RUN`; broader maturity is `PENDING`.
+- **Forbidden Shortcuts:** Caller arrays under a Dataset ID; unpinned environment; proposal or branch-local code treated as canonical authority; model prose as result.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Model domain/runtime and worker seams, resolved Dataset/model payloads, reproducibility, Agent authority, integration, and product connection at an exact SHA.
 
 ### 4.7 Strategy
 
@@ -154,7 +156,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Strategy evaluator handler and isolated custom-code worker profile when separately accepted.
 - **Product Surface:** Strategy visual/code/split views, drafts, validation, evidence and handoff intent.
 - **Forbidden Shortcuts:** Strategy-owned broker/account state; independent caller score vectors; UI execution; hidden custom-code capabilities.
-- **Current Implementation Notes (conservative):** Current main contains Strategy IR, binding, evaluator and artifact modules with historical tests. Resolver-backed score authority and complete product/runtime connection are `PENDING` re-audit.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Strategy IR, binding, evaluator and artifact semantics, resolver-backed score authority, integration, and product/runtime connection at an exact SHA.
 
 ### 4.8 Signal / Selection
 
@@ -170,7 +172,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Strategy/selection handler feeding Portfolio intent construction.
 - **Product Surface:** Ranked candidates, exclusions, evidence and handoff.
 - **Forbidden Shortcuts:** Caller score vector paired with a valid prediction ref; nondeterministic tie-breaking; current eligibility substituted historically.
-- **Current Implementation Notes (conservative):** Current main contains relevant contracts and Strategy artifacts/evaluator seams. Standalone end-to-end maturity is not inferred and remains `PENDING` re-audit.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Signal/Selection contracts, exact upstream artifact resolution, deterministic ranking, downstream handoff, integration, and product connection at an exact SHA.
 
 ### 4.9 Portfolio
 
@@ -186,7 +188,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Portfolio construction handler and canonical artifact publication.
 - **Product Surface:** Portfolio intent/weights, constraints, diagnostics and evidence.
 - **Forbidden Shortcuts:** Caller weights/scores accepted under valid refs; account/broker mutation; silent normalization or cash assumptions.
-- **Current Implementation Notes (conservative):** Current main contains weight and Portfolio construction domain/runtime modules with historical acceptance. Systemic actual-payload and production integration re-audit is `PENDING`.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Portfolio construction domain/runtime semantics, actual score/state/market payload resolution, canonical publication, integration, and product connection at an exact SHA.
 
 ### 4.10 Risk
 
@@ -202,7 +204,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Risk handler, task/worker, artifact publication and read-only Agent evidence adapter.
 - **Product Surface:** Risk constraints, before/after weights, violations, evidence and unavailable state.
 - **Forbidden Shortcuts:** Caller-adjusted weights with a valid target ref; UI/model override minting canonical risk output; implicit pass-through.
-- **Current Implementation Notes (conservative):** Current main contains Risk runtime and merged R Portfolio/Risk Agent owner work. Production Agent execution remains `NOT_AVAILABLE / NOT_RUN`; full product/runtime maturity is `PENDING`.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Risk runtime and canonical owner publication, actual target/risk/state payload resolution, Agent authority, integration, and product connection at an exact SHA.
 
 ### 4.11 Backtest
 
@@ -218,7 +220,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Backtest handler/worker with verified Data Truth and Artifact Store access.
 - **Product Surface:** Backtest Lab configuration, progress, ledger, failure evidence and honest availability.
 - **Forbidden Shortcuts:** Caller-created `DailyMarketState` accepted by reference alone; omitted corporate actions/costs presented as formal; Demo market state as production.
-- **Current Implementation Notes (conservative):** Current main contains Backtest runtime engine/model and A-share semantics tests/docs. Systemic market-payload resolver and production connection re-audit is `PENDING`.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish the Backtest engine/model, A-share semantics, actual market/calendar/action payload resolution, integration, and production connection at an exact SHA.
 
 ### 4.12 Result Analytics
 
@@ -234,7 +236,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Analytics handler and artifact publisher.
 - **Product Surface:** Result Lab, ledger/performance/risk/attribution/comparison and evidence.
 - **Forbidden Shortcuts:** Caller summary metrics; missing benchmark as zero; comparison across materially different contexts.
-- **Current Implementation Notes (conservative):** Current main contains Result Analytics engine/model and historical accepted tests. Complete product/production connection is not established and remains `PENDING`.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Result Analytics engine/model semantics, exact result/ledger/benchmark resolution, contextual comparison, integration, and product/production connection at an exact SHA.
 
 ### 4.13 Artifact Store
 
@@ -250,7 +252,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Filesystem/SQLite/object-store adapter behind canonical port and product-safe streaming bridge.
 - **Product Surface:** Evidence Explorer, artifact metadata/preview/download and integrity status.
 - **Forbidden Shortcuts:** Trusting path/name/ID without bytes; mutable overwrite under the same hash; artifact existence treated as semantic acceptance.
-- **Current Implementation Notes (conservative):** Current main contains artifact domain, repositories, filesystem and SQLite publication seams plus runtime evidence projection. Production storage profile and all product flows require exact evidence.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish artifact domain/repository semantics, filesystem or SQLite publication, runtime evidence projection, production storage profile, and product flows at an exact SHA.
 
 ### 4.14 Reviewer
 
@@ -266,7 +268,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Review handler integrated with Artifact/Provenance and task scope.
 - **Product Surface:** Findings/evidence UI, diff and exact status; no confidence-as-truth display.
 - **Forbidden Shortcuts:** Reviewing caller summaries instead of payload; generic PASS; AI confidence minting acceptance.
-- **Current Implementation Notes (conservative):** Current main contains Reviewer Integration engine/model and round3 adapter with historical acceptance. System-wide actual-payload coverage remains `PENDING` re-audit.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Reviewer engine/model and adapter behavior, exact reviewed payload resolution, policy coverage, integration, and product evidence at an exact SHA.
 
 ### 4.15 Control Plane / Task / Worker
 
@@ -282,7 +284,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Supervisor, persistence, framed transport and worker boundary.
 - **Product Surface:** Task timeline, progress, cancellation/retry/resume and exact failure state.
 - **Forbidden Shortcuts:** UI-local task truth; worker success without persisted receipt; silent retry changing inputs.
-- **Current Implementation Notes (conservative):** Current main contains task/control-plane state machines, persistence, supervision, event replay and runtime transport with historical foundation evidence.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish task/control-plane state machines, persistence, supervision, event replay, runtime transport, recovery, and product connection at an exact SHA.
 
 ### 4.16 Resource Governance
 
@@ -298,7 +300,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Resource governor integrated with supervisor and isolated workers.
 - **Product Surface:** Resource status, queue, denial/degraded reason and operator controls.
 - **Forbidden Shortcuts:** Worker self-grant; ambient network/secrets/filesystem; resource success treated as domain acceptance.
-- **Current Implementation Notes (conservative):** Current main contains resource-governor and supervisor components with foundation tests. Production enforcement scope must be evidenced per worker profile.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish resource-governor and supervisor behavior, policy enforcement per worker profile, usage receipts, integration, and product visibility at an exact SHA.
 
 ### 4.17 Agent Plane
 
@@ -314,7 +316,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Bounded Agent workers/tools behind Control Plane and canonical resolvers.
 - **Product Surface:** Agent Workspace, evidence, drafts, confirmations/denials and trace.
 - **Forbidden Shortcuts:** Agent-local approval; caller token granting execution; hidden write tool; evidence lookup after model assertion.
-- **Current Implementation Notes (conservative):** Current main contains L0/L1 Agent/evidence modules, Factor and Portfolio/Risk Agent owner work, and an Agent Workspace read-only evidence path. L2 production execution is `NOT_AVAILABLE / NOT_RUN`; Q/S candidates are not main authority.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish L0/L1 Agent/evidence modules, domain-owner bindings, read-only workspace flows, and shared authority for any L2/L3 action at an exact SHA; proposal or branch state never supplies that authority.
 
 ### 4.18 Alpha Mining
 
@@ -330,7 +332,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Isolated Alpha Mining worker coordinated by Control Plane and Resource Governance.
 - **Product Surface:** Mining workspace, candidate/evidence inspection, budgets and honest unavailable state.
 - **Forbidden Shortcuts:** Second evaluator/TDX VM; bulk third-party formula truth; model-selected candidate auto-published; caller score arrays.
-- **Current Implementation Notes (conservative):** Current main contains shared Agent request vocabulary and Factor foundations. S Alpha Mining PR #30 is OPEN and unmerged; its candidate source is not current-main authority and production availability is not claimed.
+- **Implementation Evidence Boundary (stable):** Evidence must separately establish Alpha Mining request/search orchestration, canonical Factor evaluator reuse, Dataset/Experiment bindings, resource controls, integration, and product/production availability at an exact SHA.
 
 ### 4.19 Desktop / Product Runtime
 
@@ -346,7 +348,7 @@ The presence of one layer does not imply the next. A module is not a handler, a 
 - **Runtime Surface:** Electron main, production handler, preload bridge, renderer registry and supervised backend runtime.
 - **Product Surface:** Agent-first shell and five professional Labs, Chinese-first and low-chrome/no-box.
 - **Forbidden Shortcuts:** Renderer finance math; second IPC; fake connected state; hidden fixture/demo fallback; cross-session artifact leakage.
-- **Current Implementation Notes (conservative):** Current main contains a supervised `backendRuntime` bridge and read-only canonical evidence flow, plus an explicitly named development fixture path. This is not proof that all domain handlers are product-connected or production-available. T PR #29 remains OPEN and unmerged; full `USER_VISUAL_ACCEPTED` is not established.
+- **Implementation Evidence Boundary (stable):** Evidence must separately distinguish the supervised `backendRuntime` bridge, read-only canonical evidence flow, explicitly named development fixtures, domain-handler product connection, production availability, and `USER_VISUAL_ACCEPTED` at an exact SHA.
 
 ## 5. Architecture acceptance questions
 

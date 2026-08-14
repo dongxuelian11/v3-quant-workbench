@@ -1,6 +1,6 @@
 # V3 Capability Levels
 
-Authority version: `1.0.1`
+Authority version: `1.0.2`
 Status vocabulary: mandatory for repository documentation, Ledgers, PRs, reviews, CI reports, and product-state claims.
 
 Capability maturity is evidence-based and monotonic only when every promotion rule is met. Levels are not synonyms for task progress, code volume, confidence, or a generic PASS.
