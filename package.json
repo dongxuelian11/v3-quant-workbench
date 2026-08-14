@@ -27,13 +27,15 @@
     "smoke:electron": "node scripts/run-electron-smoke.mjs",
     "smoke:frontend": "node scripts/public-frontend-smoke.mjs",
     "smoke:visual-evidence": "node scripts/frontend-smoke.mjs",
+    "smoke:research-pipeline": "node scripts/research-pipeline-smoke.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
     "repo-audit": "node scripts/repo-audit.mjs",
     "sbom:generate": "node scripts/generate-sbom.mjs",
     "sbom:check": "node scripts/generate-sbom.mjs --check",
     "evidence:generate": "node scripts/generate-result.mjs",
+    "validate:authority": "node scripts/validate-project-authority.mjs",
     "validate": "npm run validate:public && npm run smoke:electron && npm run smoke:visual-evidence",
-    "validate:public": "npm run typecheck && npm run lint && npm test && npm run test:backend && npm run build && npm run test:runtime && npm run smoke:frontend && npm run secret-scan && npm run repo-audit && npm run sbom:check"
+    "validate:public": "npm run validate:authority && npm run typecheck && npm run lint && npm test && npm run test:backend && npm run build && npm run test:runtime && npm run smoke:frontend && npm run secret-scan && npm run repo-audit && npm run sbom:check"
   },
   "dependencies": {
     "@tanstack/react-table": "8.21.3",
