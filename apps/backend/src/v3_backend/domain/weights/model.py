@@ -232,11 +232,20 @@ def _assert_canonical_binding(binding: StrategyEvaluationBindingVersion) -> str:
 
 def _intent_identity_payload(intent: PortfolioIntent) -> dict[str, object]:
     wire = intent.to_wire()
-    return {
+    payload = {
         key: value
         for key, value in wire.items()
-        if key not in {"artifact_type", "portfolio_intent_id"}
+        if key
+        not in {
+            "artifact_type",
+            "portfolio_intent_id",
+            # FormalStrategyEvaluationService records this closed mint boundary
+            # after computing the PortfolioIntent identity.  It is provenance
+            # metadata, not part of the already-minted content identity.
+            "formal_execution_contract_version",
+        }
     }
+    return payload
 
 
 @dataclass(frozen=True, slots=True)

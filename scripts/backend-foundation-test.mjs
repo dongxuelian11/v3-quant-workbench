@@ -39,6 +39,8 @@ const suites = [
   "ws_c_artifact",
   "systemic_p1_payload_authority",
   "systemic_a1_payload_closure",
+  "systemic_a3_backtest_payload",
+  "core_research_pipeline",
   "ws_d_task_workers",
   "ws_e_runtime",
   "br1_foundation_integration",
