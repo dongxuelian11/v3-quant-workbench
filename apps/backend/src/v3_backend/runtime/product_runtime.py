@@ -1,0 +1,2002 @@
+"""B3 product runtime composition root.
+
+Composes the durable product substrate behind thin ASL facades:
+
+    durable catalog (SQLite, migrations 0001-0004)
+    + content-addressed artifact store (filesystem bytes + catalog descriptors)
+    + durable Task/Run/Attempt/event persistence
+    + accepted canonical owners (strategy / portfolio / risk / backtest engine)
+
+and executes the canonical research execution path:
+
+    persisted canonical BacktestRunSpec (btrs_sha256_ content identity)
+        -> deterministic A-share engine
+        -> durable Task lifecycle + events
+        -> durable Result record + content-addressed Result/Ledger artifacts
+
+Every numeric stage remains owned by its existing accepted owner.  This module
+adds composition, durable adapters and ASL facades only; it never re-implements
+strategy, weight, risk or NAV computation and never accepts caller numeric
+truth through the frozen ASL surface.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sqlite3
+import sys
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Mapping, Protocol
+
+from v3_backend.adapters.artifact_store import FileSystemArtifactStore
+from v3_backend.adapters.sqlite.artifact_publication import SQLiteArtifactPublicationPort
+from v3_backend.adapters.sqlite.connection import connect_catalog
+from v3_backend.adapters.sqlite.repositories import (
+    SQLiteRepositoryRegistry,
+    SQLiteTaskRepository,
+)
+from v3_backend.adapters.sqlite.task_persistence import (
+    SQLiteTaskPersistence,
+    SQLiteTaskUnitOfWork,
+)
+from v3_backend.adapters.sqlite.unit_of_work import SQLiteUnitOfWork
+from v3_backend.contracts.common.truth_admission import PRE_ALPHA_CEILING
+from v3_backend.domain.artifacts.identity import sha256_from_artifact_id
+from v3_backend.domain.artifacts.model import ArtifactDescriptor, ArtifactReference
+from v3_backend.domain.artifacts.policy import (
+    ADMITTED,
+    FormatRule,
+    SafeFormatPolicy,
+)
+from v3_backend.domain.artifacts.publication import ArtifactPublication
+from v3_backend.domain.backtest_runtime import (
+    AshareTradingRuleProfileVersion,
+    BacktestRunResult,
+    BacktestRunSpec,
+    Board,
+    BoardTradingRule,
+    CorporateAction,
+    CorporateActionType,
+    DailyMarketState,
+    DeterministicAshareBacktestEngine,
+    ExactInputReference,
+    ExecutionTimingProfileVersion,
+    InitialHolding,
+    InstrumentDefinition,
+    MarketSession,
+    ScheduledWeights,
+    cn_a_share_2023_08_28_cost_policy,
+)
+from v3_backend.domain.tasks.entities import (
+    AttemptState,
+    Run,
+    RunIdentity,
+    RunState,
+    Task,
+    TaskAttempt,
+    TaskState,
+)
+from v3_backend.domain.tasks.events import PendingTaskEvent
+from v3_backend.domain.tasks.retry_policy import ErrorCategory, RetryPolicy
+from v3_backend.domain.tasks.state_machine import (
+    TaskTransitionContext,
+    ImpossibleTransition,
+    transition_attempt,
+    transition_run,
+    transition_task,
+)
+from v3_backend.domain.weights import RuntimeIdentity
+from v3_backend.errors.exceptions import (
+    ArtifactNotPublishedError,
+    ConflictError,
+    IdempotencyConflictError,
+    InvalidArgumentError,
+    NotFoundError,
+    TruthPreconditionFailedError,
+    V3ContractError,
+)
+from v3_backend.migrations import apply_migrations
+from v3_backend.provenance.canonical_hash import canonical_json_bytes, canonical_sha256
+from v3_backend.repositories.unit_of_work import TransactionMode
+
+from .composition_root import Capability, RuntimePorts
+
+PRODUCT_RUNTIME_VERSION = "v3.product-runtime/1.0.0"
+PRODUCT_BACKEND_VERSION_FLAVOR = "product"
+CATALOG_FILENAME = "catalog.sqlite3"
+ARTIFACT_DIRNAME = "artifacts"
+MIGRATION_APPLICATION_VERSION = "v3-product-runtime-composition"
+
+# Frozen execution adapter identity: the only admitted engine for the product path.
+ADMITTED_EXECUTION_ADAPTER_VERSION_ID = "v3.a_share_daily_eod_engine/0.2.0"
+INLINE_WORKER_KIND = "PRODUCT_INLINE_V1"
+INLINE_ENVIRONMENT_PROFILE_ID = "v3.product-inline-executor/1.0.0"
+PRODUCT_CODE_VERSION = "git:" + PRODUCT_RUNTIME_VERSION
+
+# Product artifact roles (product composition policy; bounded and explicit).
+BACKTEST_RUN_SPEC_ROLE = "BACKTEST_RUN_SPEC"
+PRODUCT_EXECUTION_CONTEXT_ROLE = "PRODUCT_EXECUTION_CONTEXT"
+BACKTEST_RUN_RESULT_ROLE = "BACKTEST_RUN_RESULT"
+LEDGER_MANIFEST_ROLE = "LEDGER_MANIFEST"
+EXPORT_MANIFEST_ROLE = "EXPORT_MANIFEST"
+EXPERIMENT_EXPANSION_MANIFEST_ROLE = "EXPERIMENT_EXPANSION_MANIFEST"
+
+EXECUTION_CONTEXT_SCHEMA_VERSION = "v3.product-execution-context/1.0.0"
+RESEARCH_RUN_CONTEXT_KIND = "RESEARCH_RUN_CONTEXT"
+EXPORT_CONTEXT_KIND = "EXPORT_CONTEXT"
+EXPERIMENT_EXPANSION_CONTEXT_KIND = "EXPERIMENT_EXPANSION_CONTEXT"
+
+EXPORT_PROFILES = ("LIGHT_REVIEW", "FULL_REPRODUCTION")
+DEFAULT_EXPORT_PROFILE = "LIGHT_REVIEW"
+DEFAULT_RETENTION_PROFILE = "default"
+MAX_EXPERIMENT_CELLS = 64
+
+# Durable artifact-reference roles owned by a Project (assembly) / Run (execution).
+PROJECT_SPEC_REFERENCE_ROLE = "RESEARCH_RUN_SPEC"
+PROJECT_SPEC_CONTEXT_REFERENCE_ROLE = "RESEARCH_RUN_CONTEXT"
+RUN_CONTEXT_REFERENCE_ROLE = "EXECUTION_CONTEXT"
+RUN_RESULT_REFERENCE_ROLE = "BACKTEST_RUN_RESULT"
+RUN_LEDGER_MANIFEST_REFERENCE_ROLE = "LEDGER_MANIFEST"
+RUN_EXPORT_MANIFEST_REFERENCE_ROLE = "EXPORT_MANIFEST"
+
+_TASK_EVENT_VERSION = "1.0.0"
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def mint_v3_id(prefix: str) -> str:
+    """Mint a frozen-pattern V3 identity (prefix + 26 Crockford base32 chars)."""
+    if not prefix.endswith("_"):
+        raise ValueError("id prefix must end with '_'")
+    value = int.from_bytes(uuid.uuid4().bytes, "big") << 2
+    chars = "".join(_CROCKFORD[(value >> (5 * shift)) & 0x1F] for shift in range(25, -1, -1))
+    return prefix + chars
+
+
+def mint_uuid7() -> str:
+    """Mint a canonical UUIDv7 for ASL request/session identities."""
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    raw = bytearray(uuid.uuid4().bytes)
+    raw[0] = (now_ms >> 40) & 0xFF
+    raw[1] = (now_ms >> 32) & 0xFF
+    raw[2] = (now_ms >> 24) & 0xFF
+    raw[3] = (now_ms >> 16) & 0xFF
+    raw[4] = (now_ms >> 8) & 0xFF
+    raw[5] = now_ms & 0xFF
+    raw[6] = (raw[6] & 0x0F) | 0x70
+    raw[8] = (raw[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+
+def wire_time(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("product timestamps must be timezone-aware")
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def resolve_product_storage_root(explicit: str | None = None) -> Path:
+    """Explicit arg/env test root first; production local app-data root otherwise."""
+    if explicit:
+        return Path(explicit).resolve()
+    env = os.environ.get("V3_PRODUCT_STORAGE_ROOT")
+    if env:
+        return Path(env).resolve()
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA")
+        root = Path(base) if base else Path.home() / "AppData" / "Local"
+        return root / "v3-quant-workbench" / "product"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "v3-quant-workbench" / "product"
+    base = os.environ.get("XDG_DATA_HOME")
+    root = Path(base) if base else Path.home() / ".local" / "share"
+    return root / "v3-quant-workbench" / "product"
+
+
+def product_artifact_policy() -> SafeFormatPolicy:
+    """Bounded product publication policy; every role is explicit canonical JSON."""
+    from v3_backend.domain.research_pipeline import RESEARCH_BACKTEST_RESULT_ROLE
+    from v3_backend.domain.strategies import SCORE_PAYLOAD_ROLE
+
+    rules = (
+        FormatRule(
+            SCORE_PAYLOAD_ROLE,
+            "application/json",
+            ADMITTED,
+            "canonical-json-v1",
+            "bounded development score fixture resolved through P1 bytes",
+        ),
+        FormatRule(
+            RESEARCH_BACKTEST_RESULT_ROLE,
+            "application/json",
+            ADMITTED,
+            "canonical-json-v1",
+            "PRE_ALPHA research result envelope with explicit assumptions",
+        ),
+    )
+    product_roles = (
+        BACKTEST_RUN_SPEC_ROLE,
+        PRODUCT_EXECUTION_CONTEXT_ROLE,
+        BACKTEST_RUN_RESULT_ROLE,
+        LEDGER_MANIFEST_ROLE,
+        EXPORT_MANIFEST_ROLE,
+        EXPERIMENT_EXPANSION_MANIFEST_ROLE,
+    )
+    return SafeFormatPolicy(
+        rules
+        + tuple(
+            FormatRule(
+                role,
+                "application/json",
+                ADMITTED,
+                "canonical-json-v1",
+                f"product runtime {role} canonical JSON payload",
+            )
+            for role in product_roles
+        )
+    )
+
+
+class ProductArtifactBatch:
+    """PUBLISH UoW callbacks for a bounded batch of staged product artifacts."""
+
+    def __init__(
+        self,
+        *,
+        store: FileSystemArtifactStore,
+        payloads: tuple[tuple[str, bytes, str, str], ...],
+        published_at: datetime,
+    ) -> None:
+        """payloads: (provenance_entity_id, bytes, role, schema_fingerprint)."""
+        self.store = store
+        self.payloads = payloads
+        self.published_at = published_at
+        stages = tuple(store.stage_bytes(payload) for _, payload, _, _ in payloads)
+        self.stages: tuple[Any, ...] = stages
+        self.results: list[Any] = []
+
+    def verify_staged(self) -> None:
+        for (_, payload, _, _), stage in zip(self.payloads, self.stages, strict=True):
+            if stage.sha256 != hashlib.sha256(payload).hexdigest():
+                raise V3ContractError("staged product artifact hash mismatch")
+            if stage.byte_size != len(payload):
+                raise V3ContractError("staged product artifact size mismatch")
+
+    def publish_staged(self) -> None:
+        self.results = []
+        for (provenance_entity_id, _, role, schema_fingerprint), stage in zip(
+            self.payloads, self.stages, strict=True
+        ):
+            self.results.append(
+                self.store.publish(
+                    stage.staging_token,
+                    expected_sha256=stage.sha256,
+                    expected_byte_size=stage.byte_size,
+                    media_type="application/json",
+                    role=role,
+                    provenance_entity_id=provenance_entity_id,
+                    schema_fingerprint=schema_fingerprint,
+                    semantic_fingerprint=stage.sha256,
+                    published_at=self.published_at,
+                )
+            )
+
+    def compensate_unreferenced_staging(self) -> None:
+        for result in self.results:
+            if result.deduplicated:
+                continue
+            try:
+                self.store.delete_published_bytes(result.descriptor.artifact_id)
+            except Exception:
+                pass
+
+    def notify_committed(self) -> None:
+        return None
+
+
+def catalog_rows(connection: sqlite3.Connection, sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+    return [dict(row) for row in connection.execute(sql, params).fetchall()]
+
+
+def catalog_row(connection: sqlite3.Connection, sql: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
+    row = connection.execute(sql, params).fetchone()
+    return None if row is None else dict(row)
+
+
+class ProductEventReplay:
+    """Durable project-bound event replay port for the Runtime Core."""
+
+    def __init__(self, database_path: Path) -> None:
+        self.database_path = database_path
+        self._project_id: str | None = None
+
+    def bind_project(self, project_id: str) -> None:
+        if project_id is None:
+            return
+        connection = connect_catalog(self.database_path, read_only=True)
+        try:
+            exists = catalog_row(
+                connection, "SELECT project_id FROM project WHERE project_id=?", (project_id,)
+            )
+        finally:
+            connection.close()
+        if exists is None:
+            raise V3ContractError(f"supervisor project is unknown to the product catalog: {project_id}")
+        self._project_id = project_id
+
+    def replay(self, after_sequence: int, limit: int) -> list[dict[str, Any]]:
+        if self._project_id is None:
+            return []
+        connection = connect_catalog(self.database_path, read_only=True)
+        try:
+            rows = catalog_rows(
+                connection,
+                """
+                SELECT task_event_id, project_id, project_sequence, event_type,
+                       occurred_at, payload_json
+                FROM task_event
+                WHERE project_id=? AND project_sequence>? AND project_sequence<=?
+                ORDER BY project_sequence
+                """,
+                (self._project_id, after_sequence, after_sequence + limit),
+            )
+        finally:
+            connection.close()
+        return [
+            {
+                "event_id": str(row["task_event_id"]),
+                "project_id": str(row["project_id"]),
+                "project_sequence": int(row["project_sequence"]),
+                "event_type": str(row["event_type"]),
+                "occurred_at": str(row["occurred_at"]),
+                "body": json.loads(row["payload_json"]),
+            }
+            for row in rows
+        ]
+
+    def high_watermark(self) -> int:
+        if self._project_id is None:
+            return 0
+        connection = connect_catalog(self.database_path, read_only=True)
+        try:
+            value = connection.execute(
+                "SELECT COALESCE(MAX(project_sequence),0) FROM task_event WHERE project_id=?",
+                (self._project_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        return int(value)
+
+
+def _canonical_request_hash(operation_id: str, semantic: Mapping[str, Any]) -> str:
+    return canonical_sha256({"operation_id": operation_id, "semantic_request": dict(semantic)})
+
+
+def classify_execution_error(error: BaseException) -> ErrorCategory:
+    if isinstance(error, V3ContractError):
+        return ErrorCategory.INVALID_ARGUMENT
+    if isinstance(error, (ValueError, TypeError)):
+        return ErrorCategory.INVALID_ARGUMENT
+    if isinstance(error, (OSError, sqlite3.OperationalError)):
+        return ErrorCategory.TRANSIENT_IO
+    return ErrorCategory.RETRYABLE_ADAPTER
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionOutcome:
+    task_id: str
+    run_id: str
+    event_cursor: int | None
+
+
+def _rule_profile_params(profile: AshareTradingRuleProfileVersion) -> dict[str, Any]:
+    return {
+        "profile_name": profile.profile_name,
+        "effective_from": profile.effective_from.isoformat(),
+        "effective_to": None if profile.effective_to is None else profile.effective_to.isoformat(),
+        "settlement_days": profile.settlement_days,
+        "board_rules": [
+            {
+                "board": rule.board.value,
+                "buy_minimum_quantity": rule.buy_minimum_quantity,
+                "buy_quantity_step": rule.buy_quantity_step,
+                "normal_price_limit_rate": rule.normal_price_limit_rate,
+                "restricted_price_limit_rate": rule.restricted_price_limit_rate,
+                "price_tick": rule.price_tick,
+                "sell_odd_lot_in_one_order": rule.sell_odd_lot_in_one_order,
+            }
+            for rule in profile.board_rules
+        ],
+    }
+
+
+def _rebuild_rule_profile(params: Mapping[str, Any]) -> AshareTradingRuleProfileVersion:
+    return AshareTradingRuleProfileVersion.create(
+        profile_name=str(params["profile_name"]),
+        effective_from=datetime.fromisoformat(str(params["effective_from"])).date(),
+        effective_to=(
+            None if params.get("effective_to") is None else datetime.fromisoformat(str(params["effective_to"])).date()
+        ),
+        settlement_days=int(params["settlement_days"]),
+        board_rules=tuple(
+            BoardTradingRule(
+                board=Board(str(rule["board"])),
+                buy_minimum_quantity=int(rule["buy_minimum_quantity"]),
+                buy_quantity_step=int(rule["buy_quantity_step"]),
+                normal_price_limit_rate=str(rule["normal_price_limit_rate"]),
+                restricted_price_limit_rate=str(rule["restricted_price_limit_rate"]),
+                price_tick=str(rule.get("price_tick", "0.01")),
+                sell_odd_lot_in_one_order=bool(rule.get("sell_odd_lot_in_one_order", True)),
+            )
+            for rule in params["board_rules"]
+        ),
+        truth_admission=PRE_ALPHA_CEILING,
+    )
+
+
+def _timing_profile_params(profile: ExecutionTimingProfileVersion) -> dict[str, Any]:
+    return {
+        "profile_name": profile.profile_name,
+        "effective_from": profile.effective_from.isoformat(),
+        "effective_to": None if profile.effective_to is None else profile.effective_to.isoformat(),
+        "market_timezone": profile.market_timezone,
+        "raw_open_eligibility_cutoff_local_time": profile.raw_open_eligibility_cutoff_local_time,
+        "raw_open_execution_local_time": profile.raw_open_execution_local_time,
+    }
+
+
+def _rebuild_timing_profile(params: Mapping[str, Any]) -> ExecutionTimingProfileVersion:
+    return ExecutionTimingProfileVersion.create(
+        profile_name=str(params["profile_name"]),
+        effective_from=datetime.fromisoformat(str(params["effective_from"])).date(),
+        effective_to=(
+            None if params.get("effective_to") is None else datetime.fromisoformat(str(params["effective_to"])).date()
+        ),
+        market_timezone=str(params["market_timezone"]),
+        raw_open_eligibility_cutoff_local_time=str(params["raw_open_eligibility_cutoff_local_time"]),
+        raw_open_execution_local_time=str(params["raw_open_execution_local_time"]),
+        truth_admission=PRE_ALPHA_CEILING,
+    )
+
+
+def _cost_policy_params(policy) -> dict[str, Any]:
+    return {
+        "commission_rate": policy.commission_rate,
+        "minimum_commission": policy.minimum_commission,
+    }
+
+
+class ResearchRunSpecCodec:
+    """Persist and deterministically reconstruct a canonical BacktestRunSpec.
+
+    Reconstruction goes exclusively through public canonical constructors
+    (profile `create()` factories, the durable Risk owner's
+    `require_adjusted_weight_vector`) and is proven by exact content-hash
+    equality with the registered `run_spec_id` digest.  Any mismatch fails
+    closed before the numeric engine runs.
+    """
+
+    def __init__(self, product: "ProductRuntime") -> None:
+        self.product = product
+
+    def persist(
+        self,
+        *,
+        spec: BacktestRunSpec,
+        rule_profile: AshareTradingRuleProfileVersion,
+        cost_policy,
+        timing_profile: ExecutionTimingProfileVersion,
+        project_id: str,
+        project_context_revision_id: str,
+        published_at: datetime,
+    ) -> tuple[str, str]:
+        """Persist spec wire + execution context artifacts; return (run_spec_id, context_artifact_id)."""
+        spec_wire = spec.to_wire()
+        spec_payload = canonical_json_bytes(spec_wire)
+        if spec_wire.get("run_spec_id") != spec.run_spec_id or spec_wire.get("content_sha256") != spec.content_sha256:
+            raise V3ContractError("persisted BacktestRunSpec wire identity mismatch")
+        context = {
+            "schema_version": EXECUTION_CONTEXT_SCHEMA_VERSION,
+            "context_kind": RESEARCH_RUN_CONTEXT_KIND,
+            "project_id": project_id,
+            "project_context_revision_id": project_context_revision_id,
+            "run_spec_id": spec.run_spec_id,
+            "run_spec_content_sha256": spec.content_sha256,
+            "engine_version": spec.engine_version,
+            "rule_profile": _rule_profile_params(rule_profile),
+            "cost_policy": _cost_policy_params(cost_policy),
+            "execution_timing_profile": _timing_profile_params(timing_profile),
+            "published_at": wire_time(published_at),
+        }
+        context_payload = canonical_json_bytes(context)
+        batch = ProductArtifactBatch(
+            store=self.product.artifact_store,
+            payloads=(
+                ("prv_product_run_spec_" + spec.run_spec_id, spec_payload, BACKTEST_RUN_SPEC_ROLE, spec.schema_version),
+                (
+                    "prv_product_execution_context_" + spec.run_spec_id,
+                    context_payload,
+                    PRODUCT_EXECUTION_CONTEXT_ROLE,
+                    EXECUTION_CONTEXT_SCHEMA_VERSION,
+                ),
+            ),
+            published_at=published_at,
+        )
+        connection = connect_catalog(self.product.database_path)
+        uow = SQLiteUnitOfWork(
+            connection, TransactionMode.PUBLISH, publish_callbacks=batch
+        )
+        try:
+            uow.begin()
+            port = SQLiteArtifactPublicationPort(uow)
+            spec_result = batch.results[0]
+            context_result = batch.results[1]
+            port.publish(
+                ArtifactPublication(
+                    descriptor=spec_result.descriptor,
+                    active_references=(
+                        ArtifactReference(
+                            reference_id=mint_v3_id("arf_"),
+                            owner_id=project_id,
+                            artifact_id=spec_result.descriptor.artifact_id,
+                            role=PROJECT_SPEC_REFERENCE_ROLE,
+                            created_at=published_at,
+                            state="ACTIVE",
+                        ),
+                    ),
+                )
+            )
+            port.publish(
+                ArtifactPublication(
+                    descriptor=context_result.descriptor,
+                    active_references=(
+                        ArtifactReference(
+                            reference_id=mint_v3_id("arf_"),
+                            owner_id=project_id,
+                            artifact_id=context_result.descriptor.artifact_id,
+                            role=PROJECT_SPEC_CONTEXT_REFERENCE_ROLE,
+                            created_at=published_at,
+                            state="ACTIVE",
+                        ),
+                    ),
+                )
+            )
+            uow.commit()
+            batch.notify_committed()
+        finally:
+            if uow.active:
+                uow.rollback()
+            connection.close()
+        return spec.run_spec_id, context_result.descriptor.artifact_id
+
+    def resolve_reference(self, project_id: str, role: str) -> list[dict[str, Any]]:
+        connection = connect_catalog(self.product.database_path, read_only=True)
+        try:
+            rows = catalog_rows(
+                connection,
+                """
+                SELECT owner_id, role, artifact_id FROM artifact_reference
+                WHERE owner_id=? AND role=? AND state='ACTIVE'
+                """,
+                (project_id, role),
+            )
+        finally:
+            connection.close()
+        return rows
+
+    def reconstruct(
+        self, *, project_id: str, run_spec_id: str
+    ) -> tuple[BacktestRunSpec, str]:
+        """Reconstruct the canonical spec object; returns (spec, context_artifact_id)."""
+        spec_rows = self.resolve_reference(project_id, PROJECT_SPEC_REFERENCE_ROLE)
+        context_rows = self.resolve_reference(project_id, PROJECT_SPEC_CONTEXT_REFERENCE_ROLE)
+        spec_wire = None
+        context_wire = None
+        context_artifact_id = None
+        for row in context_rows:
+            payload = self._read_verified(row["artifact_id"])
+            candidate = json.loads(payload.decode("utf-8"))
+            if candidate.get("context_kind") == RESEARCH_RUN_CONTEXT_KIND and candidate.get("run_spec_id") == run_spec_id:
+                context_wire = candidate
+                context_artifact_id = str(row["artifact_id"])
+                break
+        if context_wire is None:
+            raise NotFoundError(f"no durable execution context for run spec: {run_spec_id}")
+        for row in spec_rows:
+            candidate = self._read_verified(row["artifact_id"])
+            wire = json.loads(candidate.decode("utf-8"))
+            if wire.get("run_spec_id") == run_spec_id:
+                spec_wire = wire
+                break
+        if spec_wire is None:
+            raise NotFoundError(f"no durable BacktestRunSpec wire for: {run_spec_id}")
+        return self._rebuild(spec_wire, context_wire), context_artifact_id
+
+    def _read_verified(self, artifact_id: str) -> bytes:
+        payload = self.product.read_verified_bytes(artifact_id)
+        return payload
+
+    def _rebuild(self, spec_wire: Mapping[str, Any], context: Mapping[str, Any]) -> BacktestRunSpec:
+        if spec_wire.get("content_sha256") != context.get("run_spec_content_sha256"):
+            raise TruthPreconditionFailedError("execution context and spec content identity diverge")
+        run_spec_id = str(spec_wire["run_spec_id"])
+        if not isinstance(run_spec_id, str) or not run_spec_id.startswith("btrs_sha256_"):
+            raise TruthPreconditionFailedError("run spec identity is not canonical")
+        expected_digest = run_spec_id.removeprefix("btrs_sha256_")
+        rule_profile = _rebuild_rule_profile(context["rule_profile"])
+        if spec_wire.get("rule_profile_id") != rule_profile.profile_id or spec_wire.get(
+            "rule_profile_sha256"
+        ) != rule_profile.content_sha256:
+            raise TruthPreconditionFailedError("rule profile reconstruction mismatch")
+        timing_profile = _rebuild_timing_profile(context["execution_timing_profile"])
+        if spec_wire.get("execution_timing_profile_id") != timing_profile.profile_id or spec_wire.get(
+            "execution_timing_profile_sha256"
+        ) != timing_profile.content_sha256:
+            raise TruthPreconditionFailedError("execution timing profile reconstruction mismatch")
+        cost_policy = cn_a_share_2023_08_28_cost_policy(
+            commission_rate=str(context["cost_policy"]["commission_rate"]),
+            minimum_commission=str(context["cost_policy"]["minimum_commission"]),
+        )
+        if spec_wire.get("cost_policy_id") != cost_policy.policy_id or spec_wire.get(
+            "cost_policy_sha256"
+        ) != cost_policy.content_sha256:
+            raise TruthPreconditionFailedError("cost policy reconstruction mismatch")
+        engine_version = str(spec_wire["engine_version"])
+        if engine_version != ADMITTED_EXECUTION_ADAPTER_VERSION_ID:
+            raise TruthPreconditionFailedError(
+                f"engine version is not the admitted product adapter: {engine_version}"
+            )
+
+        instruments = tuple(
+            InstrumentDefinition(str(item["instrument_id"]), Board(str(item["board"])))
+            for item in spec_wire["instruments"]
+        )
+        sessions = tuple(self._rebuild_session(item) for item in spec_wire["sessions"])
+        schedule = tuple(self._rebuild_schedule(item) for item in spec_wire["schedule"])
+        exact_references = tuple(
+            ExactInputReference(
+                str(item["reference_kind"]),
+                str(item["source_id"]),
+                str(item["content_sha256"]),
+                PRE_ALPHA_CEILING,
+            )
+            for item in spec_wire["exact_references"]
+        )
+        runtime_wire = spec_wire["runtime_identity"]
+        runtime_identity = RuntimeIdentity(
+            code_version=str(runtime_wire["code_version"]),
+            runtime_profile_id=str(runtime_wire["runtime_profile_id"]),
+            environment_fingerprint=str(runtime_wire["environment_fingerprint"]),
+        )
+        spec = BacktestRunSpec.create(
+            initial_cash=str(spec_wire["initial_cash"]),
+            initial_holdings=tuple(
+                InitialHolding(
+                    str(item["instrument_id"]),
+                    int(item["quantity"]),
+                    datetime.fromisoformat(str(item["acquired_on"])).date(),
+                )
+                for item in spec_wire["initial_holdings"]
+            ),
+            instruments=instruments,
+            sessions=sessions,
+            schedule=schedule,
+            rule_profile=rule_profile,
+            cost_policy=cost_policy,
+            execution_timing_profile=timing_profile,
+            exact_references=exact_references,
+            runtime_identity=runtime_identity,
+            engine_version=engine_version,
+        )
+        if spec.run_spec_id != run_spec_id or spec.content_sha256 != expected_digest:
+            raise TruthPreconditionFailedError("reconstructed BacktestRunSpec identity mismatch")
+        return spec
+
+    @staticmethod
+    def _rebuild_session(wire: Mapping[str, Any]) -> MarketSession:
+        return MarketSession(
+            session_date=datetime.fromisoformat(str(wire["session_date"])).date(),
+            is_open=bool(wire["is_open"]),
+            states=tuple(
+                DailyMarketState(
+                    instrument_id=str(item["instrument_id"]),
+                    raw_open=str(item["raw_open"]),
+                    raw_close=None if item.get("raw_close") is None else str(item["raw_close"]),
+                    suspended=bool(item.get("suspended", False)),
+                    tradable=bool(item.get("tradable", True)),
+                    buy_restricted=bool(item.get("buy_restricted", False)),
+                    restricted_security=bool(item.get("restricted_security", False)),
+                    at_limit_up_open=bool(item.get("at_limit_up_open", False)),
+                    at_limit_down_open=bool(item.get("at_limit_down_open", False)),
+                    no_price_limit_session=bool(item.get("no_price_limit_session", False)),
+                )
+                for item in wire["states"]
+            ),
+            corporate_actions=tuple(
+                CorporateAction(
+                    action_id=str(item["action_id"]),
+                    instrument_id=str(item["instrument_id"]),
+                    ex_date=datetime.fromisoformat(str(item["ex_date"])).date(),
+                    action_type=CorporateActionType(str(item["action_type"])),
+                    cash_per_share=str(item.get("cash_per_share", "0")),
+                    ratio_numerator=int(item.get("ratio_numerator", 1)),
+                    ratio_denominator=int(item.get("ratio_denominator", 1)),
+                )
+                for item in wire.get("corporate_actions", ())
+            ),
+        )
+
+    def _rebuild_schedule(self, wire: Mapping[str, Any]) -> ScheduledWeights:
+        rawv_id = str(wire["risk_adjusted_weight_vector_id"])
+        from v3_backend.adapters.sqlite.risk_application import SQLiteRiskApplicationRepository
+
+        repository = SQLiteRiskApplicationRepository(
+            self.product.database_path, self.product.artifact_root
+        )
+        vector = repository.require_adjusted_weight_vector(rawv_id)
+        if vector.content_sha256 != str(wire.get("content_sha256")):
+            raise TruthPreconditionFailedError("Risk owner vector content diverges from spec schedule")
+        return ScheduledWeights(datetime.fromisoformat(str(wire["effective_at"])), vector)
+
+
+@dataclass(frozen=True, slots=True)
+class DurableIdempotency:
+    """Durable per-operation idempotency over the frozen idempotency_record table."""
+
+    def __init__(self) -> None:
+        pass
+
+    @staticmethod
+    def scope_key(operation_id: str, project_id: str, idempotency_key: str) -> str:
+        return f"{operation_id}|{project_id}|{idempotency_key}"
+
+    def check_or_record(
+        self,
+        *,
+        unit: "SQLiteTaskUnitOfWork",
+        operation_id: str,
+        project_id: str,
+        idempotency_key: str,
+        canonical_request_hash: str,
+        outcome_kind: str,
+        outcome: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Return the previously recorded outcome, or record a new one.
+
+        Same key + different canonical request fails closed with
+        IDEMPOTENCY_CONFLICT; same key + same request returns the original
+        recorded outcome; a brand-new key records atomically with the unit.
+        """
+        repository: SQLiteTaskRepository = unit.registry.task
+        key = self.scope_key(operation_id, project_id, idempotency_key)
+        existing = repository.get_idempotency(key)
+        if existing is not None:
+            if str(existing["canonical_request_hash"]) != canonical_request_hash:
+                raise IdempotencyConflictError(
+                    "idempotency_key reuse with a different canonical request"
+                )
+            return json.loads(str(existing["outcome_json"]))
+        repository.record_idempotency(
+            {
+                "scope_key": key,
+                "operation_id": operation_id,
+                "project_id": project_id,
+                "canonical_request_hash": canonical_request_hash,
+                "outcome_kind": outcome_kind,
+                "outcome_json": json.dumps(dict(outcome), separators=(",", ":"), sort_keys=True),
+                "created_at": wire_time(datetime.now(timezone.utc)),
+                "expires_at": None,
+            }
+        )
+        return None
+
+
+
+
+class DurableIdempotency:
+    """Durable per-operation idempotency over the frozen idempotency_record table.
+
+    Same key + same canonical request returns the originally recorded
+    outcome; same key + different canonical request fails closed with
+    IDEMPOTENCY_CONFLICT.  Recording is atomic with the task-creation unit.
+    """
+
+    @staticmethod
+    def scope_key(operation_id: str, project_id: str, idempotency_key: str) -> str:
+        return f"{operation_id}|{project_id}|{idempotency_key}"
+
+    def lookup(
+        self, product: "ProductRuntime", scope_key: str, canonical_request_hash: str
+    ) -> dict[str, Any] | None:
+        connection = connect_catalog(product.database_path, read_only=True)
+        try:
+            row = catalog_row(
+                connection,
+                "SELECT canonical_request_hash, outcome_json FROM idempotency_record WHERE scope_key=?",
+                (scope_key,),
+            )
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        if str(row["canonical_request_hash"]) != canonical_request_hash:
+            raise IdempotencyConflictError(
+                "idempotency_key reuse with a different canonical request"
+            )
+        return json.loads(str(row["outcome_json"]))
+
+
+def _accept_outcome_json(task_id: str, run_id: str) -> str:
+    return json.dumps({"task_id": task_id, "run_id": run_id}, separators=(",", ":"), sort_keys=True)
+
+
+class ProductExecution:
+    """In-process product executor over the durable Task owner.
+
+    Execution is synchronous and bounded (PRE_ALPHA research runs); worker
+    isolation, leasing heartbeat and checkpointing remain future worker
+    infrastructure.  Every mutation is durable through SQLiteTaskPersistence
+    before and after engine execution; the Run's durable EXECUTION_CONTEXT
+    artifact reference makes retry re-execution deterministic and
+    restart-safe.  Failure transitions are persisted with an ErrorCategory
+    classification.
+    """
+
+    def __init__(self, product: "ProductRuntime") -> None:
+        self.product = product
+        self.engine = DeterministicAshareBacktestEngine()
+        self.retry_policy = RetryPolicy()
+
+    # -- durable task phases ------------------------------------------------
+
+    def _create_task(
+        self,
+        *,
+        operation_id: str,
+        project_id: str,
+        project_context_revision_id: str,
+        normalized_input_hash: str,
+        context_artifact_id: str | None,
+        idempotency: tuple[str, str, str] | None = None,
+        is_batch: bool = False,
+    ) -> tuple[Task, Run, TaskAttempt]:
+        run_id = mint_v3_id("run_")
+        task = Task(
+            task_id=mint_v3_id("tsk_"),
+            project_id=project_id,
+            operation_id=operation_id,
+            active_run_id=run_id,
+            state=TaskState.QUEUED,
+            state_version=0,
+            execution_epoch=0,
+            is_batch=is_batch,
+            child_task_ids=(),
+        )
+        run = Run(
+            run_id=run_id,
+            task_id=task.task_id,
+            identity=RunIdentity(
+                project_context_revision_id=project_context_revision_id,
+                normalized_input_hash=normalized_input_hash,
+                code_version=PRODUCT_CODE_VERSION,
+                environment_profile=INLINE_ENVIRONMENT_PROFILE_ID,
+                service_contract_version="1.0.0",
+            ),
+            state=RunState.SEALED,
+            state_version=0,
+        )
+        attempt = TaskAttempt(
+            attempt_id=mint_v3_id("att_"),
+            task_id=task.task_id,
+            run_id=run_id,
+            ordinal=1,
+            state=AttemptState.QUEUED,
+            state_version=0,
+            lease_id=mint_v3_id("lea_"),
+            resume_checkpoint_artifact_id=None,
+            terminal_error_category=None,
+        )
+        with self.product.task_persistence.begin() as unit:
+            unit.add_task(task)
+            unit.add_run(run)
+            unit.add_attempt(attempt)
+            now = wire_time(datetime.now(timezone.utc))
+            worker_id = mint_v3_id("wrk_")
+            unit.connection.execute(
+                """
+                INSERT INTO worker(worker_id, worker_kind, process_id, environment_profile_id,
+                                   state, started_at)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (worker_id, INLINE_WORKER_KIND, os.getpid(), INLINE_ENVIRONMENT_PROFILE_ID, "BUSY", now),
+            )
+            unit.connection.execute(
+                """
+                INSERT INTO worker_lease(lease_id, attempt_id, worker_id, cpu_slots,
+                                         memory_limit_bytes, scratch_limit_bytes, state,
+                                         granted_at, expires_at)
+                VALUES(?,?,?,1,1073741824,1073741824,'GRANTED',?,?)
+                """,
+                (
+                    attempt.lease_id,
+                    attempt.attempt_id,
+                    worker_id,
+                    now,
+                    wire_time(datetime.now(timezone.utc) + timedelta(hours=1)),
+                ),
+            )
+            if context_artifact_id is not None:
+                unit.connection.execute(
+                    """
+                    INSERT INTO artifact_reference(artifact_reference_id, owner_type, owner_id,
+                                                   role, artifact_id, state, created_at)
+                    VALUES(?,'Run',?,?,?,'ACTIVE',?)
+                    """,
+                    (mint_v3_id("arf_"), run_id, RUN_CONTEXT_REFERENCE_ROLE, context_artifact_id, now),
+                )
+            unit.append_event(
+                PendingTaskEvent(
+                    event_id=mint_v3_id("tev_"),
+                    event_version=_TASK_EVENT_VERSION,
+                    project_id=project_id,
+                    task_id=task.task_id,
+                    event_type="TASK_QUEUED",
+                    occurred_at=datetime.now(timezone.utc),
+                    payload={"operation_id": operation_id},
+                    run_id=run_id,
+                    attempt_id=None,
+                )
+            )
+            if idempotency is not None:
+                scope_key, request_hash, outcome_factory = idempotency
+                unit.registry.task.record_idempotency(
+                    {
+                        "scope_key": scope_key,
+                        "operation_id": operation_id,
+                        "project_id": project_id,
+                        "canonical_request_hash": request_hash,
+                        "outcome_kind": "TASK_ACCEPTED",
+                        "outcome_json": outcome_factory(task.task_id, run_id),
+                        "created_at": now,
+                        "expires_at": None,
+                    }
+                )
+            unit.commit()
+        return task, run, attempt
+
+    def _transition_to_running(
+        self, task: Task, run: Run, attempt: TaskAttempt, *, run_transition: bool = True
+    ) -> None:
+        with self.product.task_persistence.begin() as unit:
+            current_task = unit.require_task(task.task_id)
+            current_run = unit.require_run(run.run_id)
+            current_attempt = unit.require_attempt(attempt.attempt_id)
+            current_task.state = transition_task(
+                current_task.state,
+                "ATTEMPT_STARTED",
+                TaskTransitionContext(active_lease_persisted=True),
+            )
+            if run_transition:
+                current_run.state = transition_run(current_run.state, "ATTEMPT_ACTIVATED")
+            for event, expected in (
+                ("LEASE_GRANTED", AttemptState.LEASED),
+                ("WORKER_DISPATCHED", AttemptState.STARTING),
+                ("WORKER_ACKNOWLEDGED", AttemptState.RUNNING),
+            ):
+                current_attempt.state = transition_attempt(current_attempt.state, event)
+                if current_attempt.state is not expected:
+                    raise ImpossibleTransition(f"attempt transition produced {current_attempt.state}")
+            unit.save_task(current_task, expected_version=current_task.state_version)
+            if run_transition:
+                unit.save_run(current_run, expected_version=current_run.state_version)
+            unit.save_attempt(current_attempt, expected_version=current_attempt.state_version)
+            unit.append_event(
+                PendingTaskEvent(
+                    event_id=mint_v3_id("tev_"),
+                    event_version=_TASK_EVENT_VERSION,
+                    project_id=current_task.project_id,
+                    task_id=current_task.task_id,
+                    event_type="TASK_STARTED",
+                    occurred_at=datetime.now(timezone.utc),
+                    payload={"state": current_task.state.value},
+                    run_id=current_run.run_id,
+                    attempt_id=current_attempt.attempt_id,
+                )
+            )
+            unit.commit()
+
+    def _finish_success(
+        self,
+        task: Task,
+        run: Run,
+        attempt: TaskAttempt,
+        outputs: Mapping[str, Any],
+        *,
+        run_transition: bool = True,
+    ) -> None:
+        with self.product.task_persistence.begin() as unit:
+            current_task = unit.require_task(task.task_id)
+            current_run = unit.require_run(run.run_id)
+            current_attempt = unit.require_attempt(attempt.attempt_id)
+            current_attempt.state = transition_attempt(current_attempt.state, "ATTEMPT_SUCCEEDED")
+            unit.save_attempt(current_attempt, expected_version=current_attempt.state_version)
+            if run_transition:
+                current_run.state = transition_run(
+                    current_run.state, "TASK_TERMINAL_NO_ACTIVE_ATTEMPT", no_active_attempt=True
+                )
+                unit.save_run(current_run, expected_version=current_run.state_version)
+            current_task.state = transition_task(
+                current_task.state,
+                "ALL_REQUIRED_ARTIFACTS_PUBLISHED",
+                TaskTransitionContext(successful_attempt=True, publication_committed=True),
+            )
+            unit.save_task(current_task, expected_version=current_task.state_version)
+            unit.append_event(
+                PendingTaskEvent(
+                    event_id=mint_v3_id("tev_"),
+                    event_version=_TASK_EVENT_VERSION,
+                    project_id=current_task.project_id,
+                    task_id=current_task.task_id,
+                    event_type="TASK_SUCCEEDED",
+                    occurred_at=datetime.now(timezone.utc),
+                    payload={"outputs": dict(outputs)},
+                    run_id=current_run.run_id,
+                    attempt_id=current_attempt.attempt_id,
+                )
+            )
+            unit.connection.execute(
+                "UPDATE worker_lease SET state='RELEASED', released_at=? WHERE attempt_id=?",
+                (wire_time(datetime.now(timezone.utc)), current_attempt.attempt_id),
+            )
+            unit.commit()
+
+    def _finish_failure(
+        self,
+        task: Task,
+        run: Run,
+        attempt: TaskAttempt,
+        *,
+        error: BaseException,
+        category: ErrorCategory,
+        run_transition: bool = True,
+    ) -> None:
+        with self.product.task_persistence.begin() as unit:
+            current_task = unit.require_task(task.task_id)
+            current_run = unit.require_run(run.run_id)
+            current_attempt = unit.require_attempt(attempt.attempt_id)
+            current_attempt.terminal_error_category = category.value
+            current_attempt.state = transition_attempt(current_attempt.state, "ATTEMPT_FAILED")
+            unit.save_attempt(current_attempt, expected_version=current_attempt.state_version)
+            if run_transition:
+                current_run.state = transition_run(
+                    current_run.state, "TASK_TERMINAL_NO_ACTIVE_ATTEMPT", no_active_attempt=True
+                )
+                unit.save_run(current_run, expected_version=current_run.state_version)
+            current_task.state = transition_task(
+                current_task.state,
+                "ATTEMPT_FAILED_NO_RETRY",
+                TaskTransitionContext(error_persisted=True),
+            )
+            unit.save_task(current_task, expected_version=current_task.state_version)
+            unit.append_event(
+                PendingTaskEvent(
+                    event_id=mint_v3_id("tev_"),
+                    event_version=_TASK_EVENT_VERSION,
+                    project_id=current_task.project_id,
+                    task_id=current_task.task_id,
+                    event_type="TASK_FAILED",
+                    occurred_at=datetime.now(timezone.utc),
+                    payload={
+                        "error_type": type(error).__name__,
+                        "error_message": str(error)[:2048],
+                        "error_category": category.value,
+                    },
+                    run_id=current_run.run_id,
+                    attempt_id=current_attempt.attempt_id,
+                )
+            )
+            unit.connection.execute(
+                "UPDATE worker_lease SET state='RELEASED', released_at=? WHERE attempt_id=?",
+                (wire_time(datetime.now(timezone.utc)), current_attempt.attempt_id),
+            )
+            unit.commit()
+
+    def _latest_sequence(self, project_id: str) -> int:
+        connection = connect_catalog(self.product.database_path, read_only=True)
+        try:
+            value = connection.execute(
+                "SELECT COALESCE(MAX(project_sequence),0) FROM task_event WHERE project_id=?",
+                (project_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        return int(value)
+
+    # -- publication helpers -------------------------------------------------
+
+    def _publish_artifact_batch(
+        self,
+        *,
+        payloads: tuple[tuple[str, bytes, str, str], ...],
+        references: tuple[tuple[str, str, str], ...],
+    ) -> list[Any]:
+        """references: (owner_id, role, artifact_index)."""
+        published_at = datetime.now(timezone.utc)
+        batch = ProductArtifactBatch(
+            store=self.product.artifact_store,
+            payloads=payloads,
+            published_at=published_at,
+        )
+        connection = connect_catalog(self.product.database_path)
+        uow = SQLiteUnitOfWork(connection, TransactionMode.PUBLISH, publish_callbacks=batch)
+        results: list[Any] = []
+        try:
+            uow.begin()
+            port = SQLiteArtifactPublicationPort(uow)
+            for index, (provenance, _, _, _) in enumerate(payloads):
+                descriptor = batch.results[index].descriptor
+                active_references = tuple(
+                    ArtifactReference(
+                        reference_id=mint_v3_id("arf_"),
+                        owner_id=owner_id,
+                        artifact_id=descriptor.artifact_id,
+                        role=role,
+                        created_at=published_at,
+                        state="ACTIVE",
+                    )
+                    for owner_id, role, artifact_index in references
+                    if artifact_index == index
+                )
+                port.publish(
+                    ArtifactPublication(descriptor=descriptor, active_references=active_references)
+                )
+                results.append(batch.results[index])
+            uow.commit()
+            batch.notify_committed()
+            return results
+        finally:
+            if uow.active:
+                uow.rollback()
+            connection.close()
+
+    def _publish_backtest_outputs(
+        self, *, project_id: str, run_id: str, result: BacktestRunResult
+    ) -> dict[str, Any]:
+        """Publish the canonical result artifact + ledger manifest + durable Result row."""
+        result_payload = canonical_json_bytes(result.to_wire())
+        manifest_wire = {
+            "schema_version": "v3.ledger-manifest/1.0.0",
+            "backtest_result_id": result.result_id,
+            "backtest_result_sha256": result.content_sha256,
+            "run_spec_id": result.run_spec_id,
+            "ledger_digests": {
+                "cash_ledger": canonical_sha256([row.to_wire() for row in result.cash_ledger]),
+                "position_ledger": canonical_sha256([row.to_wire() for row in result.position_ledger]),
+                "orders": canonical_sha256([row.to_wire() for row in result.orders]),
+                "fills": canonical_sha256([row.to_wire() for row in result.fills]),
+                "holdings": canonical_sha256([row.to_wire() for row in result.holdings]),
+                "nav": canonical_sha256([row.to_wire() for row in result.nav]),
+            },
+        }
+        manifest_payload = canonical_json_bytes(manifest_wire)
+        published = self._publish_artifact_batch(
+            payloads=(
+                (
+                    "prv_backtest_run_result_" + result.result_id,
+                    result_payload,
+                    BACKTEST_RUN_RESULT_ROLE,
+                    result.schema_version,
+                ),
+                (
+                    "prv_ledger_manifest_" + result.result_id,
+                    manifest_payload,
+                    LEDGER_MANIFEST_ROLE,
+                    "v3.ledger-manifest/1.0.0",
+                ),
+            ),
+            references=(
+                (run_id, RUN_RESULT_REFERENCE_ROLE, 0),
+                (run_id, RUN_LEDGER_MANIFEST_REFERENCE_ROLE, 1),
+            ),
+        )
+        result_publication = published[0]
+        manifest_publication = published[1]
+        result_id = mint_v3_id("res_")
+        lineage_hash = canonical_sha256(
+            {
+                "run_id": run_id,
+                "backtest_result_id": result.result_id,
+                "result_artifact_id": result_publication.descriptor.artifact_id,
+                "ledger_manifest_artifact_id": manifest_publication.descriptor.artifact_id,
+            }
+        )
+        now = wire_time(datetime.now(timezone.utc))
+        connection = connect_catalog(self.product.database_path)
+        uow = SQLiteUnitOfWork(connection, TransactionMode.PUBLISH, publish_callbacks=_NoopPublishCallbacks())
+        try:
+            uow.begin()
+            SQLiteRepositoryRegistry(uow).result.publish_result(
+                {
+                    "result_id": result_id,
+                    "project_id": project_id,
+                    "backtest_run_id": run_id,
+                    "ledger_manifest_artifact_id": manifest_publication.descriptor.artifact_id,
+                    "reconciliation_artifact_id": None,
+                    "state": "PENDING_RECONCILIATION",
+                    "invalid_reason_code": None,
+                    "lineage_hash": lineage_hash,
+                    "created_at": now,
+                }
+            )
+            uow.commit()
+        finally:
+            if uow.active:
+                uow.rollback()
+            connection.close()
+        return {
+            "result_id": result_id,
+            "result_artifact_id": result_publication.descriptor.artifact_id,
+            "result_artifact_sha256": result_publication.descriptor.sha256,
+            "ledger_manifest_artifact_id": manifest_publication.descriptor.artifact_id,
+            "backtest_result_id": result.result_id,
+        }
+
+    # -- golden execution ------------------------------------------------------
+
+    def submit_backtest(
+        self,
+        *,
+        project_id: str,
+        project_context_revision_id: str,
+        run_spec_id: str,
+        execution_adapter_version_id: str,
+        idempotency_key: str,
+    ) -> ExecutionOutcome:
+        self.product.require_project_context_ownership(project_id, project_context_revision_id)
+        if execution_adapter_version_id != ADMITTED_EXECUTION_ADAPTER_VERSION_ID:
+            raise TruthPreconditionFailedError(
+                f"execution adapter is not admitted: {execution_adapter_version_id}"
+            )
+        operation_id = "BacktestService.v1.submitBacktest"
+        semantic = {
+            "project_id": project_id,
+            "project_context_revision_id": project_context_revision_id,
+            "run_spec_id": run_spec_id,
+            "execution_adapter_version_id": execution_adapter_version_id,
+        }
+        scope = DurableIdempotency.scope_key(operation_id, project_id, idempotency_key)
+        request_hash = _canonical_request_hash(operation_id, semantic)
+        existing = DurableIdempotency().lookup(self.product, scope, request_hash)
+        if existing is not None:
+            return ExecutionOutcome(
+                str(existing["task_id"]), str(existing["run_id"]), None
+            )
+        spec, context_artifact_id = self.product.spec_codec.reconstruct(
+            project_id=project_id, run_spec_id=run_spec_id
+        )
+        context_wire = json.loads(
+            self.product.read_verified_bytes(context_artifact_id).decode("utf-8")
+        )
+        if context_wire.get("project_context_revision_id") != project_context_revision_id:
+            raise TruthPreconditionFailedError(
+                "run spec context is bound to a different project context revision"
+            )
+        normalized_input_hash = canonical_sha256(
+            {"run_spec_id": run_spec_id, "execution_adapter_version_id": execution_adapter_version_id}
+        )
+        task, run, attempt = self._create_task(
+            operation_id=operation_id,
+            project_id=project_id,
+            project_context_revision_id=project_context_revision_id,
+            normalized_input_hash=normalized_input_hash,
+            context_artifact_id=context_artifact_id,
+            idempotency=(scope, request_hash, _accept_outcome_json),
+        )
+        try:
+            self._transition_to_running(task, run, attempt)
+            event_cursor = self._latest_sequence(project_id)
+            result = self.engine.run(spec)
+        except BaseException as error:
+            self._finish_failure(
+                task, run, attempt, error=error, category=classify_execution_error(error)
+            )
+            return ExecutionOutcome(task.task_id, run.run_id, self._latest_sequence(project_id))
+        try:
+            outputs = self._publish_backtest_outputs(
+                project_id=project_id, run_id=run.run_id, result=result
+            )
+            self._finish_success(task, run, attempt, outputs=outputs)
+        except BaseException as error:
+            self._finish_failure(
+                task, run, attempt, error=error, category=classify_execution_error(error)
+            )
+        return ExecutionOutcome(task.task_id, run.run_id, event_cursor)
+
+    def export_artifacts(
+        self,
+        *,
+        project_id: str,
+        project_context_revision_id: str,
+        artifact_ids: tuple[str, ...],
+        export_profile_id: str,
+        destination_token: str,
+        idempotency_key: str,
+    ) -> ExecutionOutcome:
+        self.product.require_project_context_ownership(project_id, project_context_revision_id)
+        if export_profile_id not in EXPORT_PROFILES:
+            raise InvalidArgumentError(f"unknown export profile: {export_profile_id}")
+        for artifact_id in artifact_ids:
+            self.product.require_published_artifact(artifact_id)
+        operation_id = "ArtifactService.v1.exportArtifact"
+        semantic = {
+            "project_id": project_id,
+            "project_context_revision_id": project_context_revision_id,
+            "artifact_ids": list(artifact_ids),
+            "export_profile_id": export_profile_id,
+            "destination_token": destination_token,
+        }
+        scope = DurableIdempotency.scope_key(operation_id, project_id, idempotency_key)
+        request_hash = _canonical_request_hash(operation_id, semantic)
+        existing = DurableIdempotency().lookup(self.product, scope, request_hash)
+        if existing is not None:
+            return ExecutionOutcome(str(existing["task_id"]), str(existing["run_id"]), None)
+        manifest_wire = {
+            "schema_version": "v3.export-manifest/1.0.0",
+            "export_profile_id": export_profile_id,
+            "destination_token": destination_token,
+            "artifacts": [
+                {
+                    "artifact_id": artifact_id,
+                    "sha256": sha256_from_artifact_id(artifact_id),
+                    "byte_size": len(self.product.read_verified_bytes(artifact_id)),
+                }
+                for artifact_id in artifact_ids
+            ],
+        }
+        manifest_payload = canonical_json_bytes(manifest_wire)
+        normalized_input_hash = canonical_sha256(
+            {"artifact_ids": list(artifact_ids), "export_profile_id": export_profile_id}
+        )
+        context_artifact_id = self._persist_context_artifact(
+            {
+                "schema_version": EXECUTION_CONTEXT_SCHEMA_VERSION,
+                "context_kind": EXPORT_CONTEXT_KIND,
+                "project_id": project_id,
+                "project_context_revision_id": project_context_revision_id,
+                "artifact_ids": list(artifact_ids),
+                "export_profile_id": export_profile_id,
+                "destination_token": destination_token,
+            },
+            provenance="prv_product_export_context",
+        )
+        task, run, attempt = self._create_task(
+            operation_id=operation_id,
+            project_id=project_id,
+            project_context_revision_id=project_context_revision_id,
+            normalized_input_hash=normalized_input_hash,
+            context_artifact_id=context_artifact_id,
+            idempotency=(scope, request_hash, _accept_outcome_json),
+        )
+        self._transition_to_running(task, run, attempt)
+        event_cursor = self._latest_sequence(project_id)
+        try:
+            outputs = self._publish_artifact_batch(
+                payloads=(
+                    (
+                        "prv_product_export_manifest",
+                        manifest_payload,
+                        EXPORT_MANIFEST_ROLE,
+                        "v3.export-manifest/1.0.0",
+                    ),
+                ),
+                references=((run.run_id, RUN_EXPORT_MANIFEST_REFERENCE_ROLE, 0),),
+            )[0]
+            self._finish_success(
+                task, run, attempt,
+                outputs={"artifact_id": outputs.descriptor.artifact_id, "artifact_sha256": outputs.descriptor.sha256},
+            )
+        except BaseException as error:
+            self._finish_failure(
+                task, run, attempt, error=error, category=classify_execution_error(error)
+            )
+        return ExecutionOutcome(task.task_id, run.run_id, event_cursor)
+
+    def _persist_context_artifact(self, wire: Mapping[str, Any], *, provenance: str) -> str:
+        payload = canonical_json_bytes(wire)
+        published = self._publish_artifact_batch(
+            payloads=(
+                (provenance, payload, PRODUCT_EXECUTION_CONTEXT_ROLE, EXECUTION_CONTEXT_SCHEMA_VERSION),
+            ),
+            references=((str(wire["project_id"]), PROJECT_SPEC_CONTEXT_REFERENCE_ROLE, 0),),
+        )
+        return published[0].descriptor.artifact_id
+
+    def expand_experiment(
+        self,
+        *,
+        project_id: str,
+        project_context_revision_id: str,
+        experiment_id: str,
+        idempotency_key: str,
+    ) -> ExecutionOutcome:
+        self.product.require_project_context_ownership(project_id, project_context_revision_id)
+        experiment = self.product.require_experiment(experiment_id)
+        if str(experiment["project_id"]) != project_id:
+            raise NotFoundError(f"experiment does not belong to project: {experiment_id}")
+        if str(experiment["state"]) != "DRAFT":
+            raise ConflictError("experiment is not in DRAFT state")
+        spec = json.loads(str(experiment["experiment_spec_json"]))
+        cells = list(spec.get("cells", ()))
+        if not cells or len(cells) > MAX_EXPERIMENT_CELLS:
+            raise InvalidArgumentError("experiment matrix must have 1..64 cells")
+        operation_id = "BacktestService.v1.expandExperiment"
+        semantic = {
+            "project_id": project_id,
+            "project_context_revision_id": project_context_revision_id,
+            "experiment_id": experiment_id,
+        }
+        scope = DurableIdempotency.scope_key(operation_id, project_id, idempotency_key)
+        request_hash = _canonical_request_hash(operation_id, semantic)
+        existing = DurableIdempotency().lookup(self.product, scope, request_hash)
+        if existing is not None:
+            return ExecutionOutcome(str(existing["task_id"]), str(existing["run_id"]), None)
+        normalized_input_hash = canonical_sha256({"experiment_id": experiment_id})
+        context_artifact_id = self._persist_context_artifact(
+            {
+                "schema_version": EXECUTION_CONTEXT_SCHEMA_VERSION,
+                "context_kind": EXPERIMENT_EXPANSION_CONTEXT_KIND,
+                "project_id": project_id,
+                "project_context_revision_id": project_context_revision_id,
+                "experiment_id": experiment_id,
+            },
+            provenance="prv_product_experiment_expansion_context",
+        )
+        task, run, attempt = self._create_task(
+            operation_id=operation_id,
+            project_id=project_id,
+            project_context_revision_id=project_context_revision_id,
+            normalized_input_hash=normalized_input_hash,
+            context_artifact_id=context_artifact_id,
+            is_batch=True,
+            idempotency=(scope, request_hash, _accept_outcome_json),
+        )
+        self._transition_to_running(task, run, attempt)
+        event_cursor = self._latest_sequence(project_id)
+        try:
+            child_ids: list[str] = []
+            child_failed = False
+            for cell in cells:
+                cell_spec_id = str(cell["run_spec_id"])
+                child = self.submit_backtest(
+                    project_id=project_id,
+                    project_context_revision_id=project_context_revision_id,
+                    run_spec_id=cell_spec_id,
+                    execution_adapter_version_id=str(cell["execution_adapter_version_id"]),
+                    idempotency_key=f"{idempotency_key}:cell:{cell_spec_id}",
+                )
+                child_ids.append(child.task_id)
+                with self.product.task_persistence.begin() as unit:
+                    unit.connection.execute(
+                        """
+                        INSERT INTO task_dependency(task_id, depends_on_task_id, required_terminal_state)
+                        VALUES(?,?,?)
+                        """,
+                        (task.task_id, child.task_id, "SUCCEEDED"),
+                    )
+                    unit.commit()
+                child_state = self.product.task_persistence.read_task(child.task_id).state
+                if child_state is not TaskState.SUCCEEDED:
+                    child_failed = True
+            manifest_wire = {
+                "schema_version": "v3.experiment-expansion-manifest/1.0.0",
+                "experiment_id": experiment_id,
+                "parent_task_id": task.task_id,
+                "child_task_ids": child_ids,
+            }
+            manifest_payload = canonical_json_bytes(manifest_wire)
+            outputs = self._publish_artifact_batch(
+                payloads=(
+                    (
+                        "prv_product_experiment_expansion_manifest",
+                        manifest_payload,
+                        EXPERIMENT_EXPANSION_MANIFEST_ROLE,
+                        "v3.experiment-expansion-manifest/1.0.0",
+                    ),
+                ),
+                references=((run.run_id, RUN_EXPORT_MANIFEST_REFERENCE_ROLE, 0),),
+            )[0]
+            now = wire_time(datetime.now(timezone.utc))
+            connection = connect_catalog(self.product.database_path)
+            cursor = connection.execute(
+                """
+                UPDATE experiment SET state='EXPANDED', expansion_manifest_artifact_id=?, updated_at=?
+                WHERE experiment_id=? AND state='DRAFT'
+                """,
+                (outputs.descriptor.artifact_id, now, experiment_id),
+            )
+            connection.commit()
+            connection.close()
+            if cursor.rowcount != 1:
+                raise ConflictError("experiment matrix was already expanded")
+            if child_failed:
+                with self.product.task_persistence.begin() as unit:
+                    current_task = unit.require_task(task.task_id)
+                    current_run = unit.require_run(run.run_id)
+                    current_attempt = unit.require_attempt(attempt.attempt_id)
+                    current_task.state = transition_task(
+                        current_task.state,
+                        "CHILDREN_TERMINAL_MIXED",
+                        TaskTransitionContext(is_batch=True),
+                    )
+                    unit.save_task(current_task, expected_version=current_task.state_version)
+                    current_attempt.state = transition_attempt(current_attempt.state, "ATTEMPT_SUCCEEDED")
+                    unit.save_attempt(current_attempt, expected_version=current_attempt.state_version)
+                    current_run.state = transition_run(
+                        current_run.state, "TASK_TERMINAL_NO_ACTIVE_ATTEMPT", no_active_attempt=True
+                    )
+                    unit.save_run(current_run, expected_version=current_run.state_version)
+                    unit.append_event(
+                        PendingTaskEvent(
+                            event_id=mint_v3_id("tev_"),
+                            event_version=_TASK_EVENT_VERSION,
+                            project_id=project_id,
+                            task_id=task.task_id,
+                            event_type="TASK_PARTIAL",
+                            occurred_at=datetime.now(timezone.utc),
+                            payload={"outputs": {"manifest_artifact_id": outputs.descriptor.artifact_id}, "child_task_ids": child_ids},
+                            run_id=run.run_id,
+                            attempt_id=attempt.attempt_id,
+                        )
+                    )
+                    unit.commit()
+            else:
+                self._finish_success(
+                    task, run, attempt,
+                    outputs={"manifest_artifact_id": outputs.descriptor.artifact_id, "child_task_ids": child_ids},
+                )
+        except BaseException as error:
+            self._finish_failure(
+                task, run, attempt, error=error, category=classify_execution_error(error)
+            )
+        return ExecutionOutcome(task.task_id, run.run_id, event_cursor)
+
+    def retry_failed_task(
+        self, *, task_id: str, failed_attempt_id: str, expected_state_version: int
+    ) -> str:
+        """Re-execute a FAILED product Task through its durable execution context.
+
+        Frozen attempt rule: retry always creates a new TaskAttempt on the same
+        immutable Run; the Run remains TERMINAL and is not re-transitioned.
+        """
+        task = self.product.task_persistence.read_task(task_id)
+        if task.state is not TaskState.FAILED and task.state is not TaskState.PARTIAL:
+            raise ConflictError("Task is not in a retryable state")
+        if task.state_version != expected_state_version:
+            raise ConflictError("Task state version is stale")
+        latest = self.product.task_persistence.latest_attempt(task_id)
+        if latest.attempt_id != failed_attempt_id or latest.state is not AttemptState.FAILED:
+            raise InvalidArgumentError("failed_attempt_id is not the latest failed Attempt")
+        if latest.terminal_error_category is None:
+            raise InvalidArgumentError("failed Attempt carries no error classification")
+        category = ErrorCategory(latest.terminal_error_category)
+        decision = self.retry_policy.decide(category, prior_attempt_count=latest.ordinal)
+        if not decision.allowed:
+            raise ConflictError(f"retry not admitted: {decision.reason}")
+        run_id = task.active_run_id
+        run = self._read_run(run_id)
+        context_artifact_id = self._run_context_artifact(run_id)
+        context_wire = json.loads(
+            self.product.read_verified_bytes(context_artifact_id).decode("utf-8")
+        )
+        kind = context_wire.get("context_kind")
+        with self.product.task_persistence.begin() as unit:
+            current_task = unit.require_task(task_id)
+            current_task.state = transition_task(
+                current_task.state,
+                "RETRY_SCHEDULED",
+                TaskTransitionContext(retry_epoch=True),
+            )
+            unit.save_task(current_task, expected_version=current_task.state_version)
+            attempt = TaskAttempt(
+                attempt_id=mint_v3_id("att_"),
+                task_id=task_id,
+                run_id=run_id,
+                ordinal=latest.ordinal + 1,
+                state=AttemptState.QUEUED,
+                state_version=0,
+                lease_id=mint_v3_id("lea_"),
+                resume_checkpoint_artifact_id=None,
+                terminal_error_category=None,
+            )
+            unit.add_attempt(attempt)
+            now = wire_time(datetime.now(timezone.utc))
+            worker_id = mint_v3_id("wrk_")
+            unit.connection.execute(
+                """
+                INSERT INTO worker(worker_id, worker_kind, process_id, environment_profile_id,
+                                   state, started_at)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (worker_id, INLINE_WORKER_KIND, os.getpid(), INLINE_ENVIRONMENT_PROFILE_ID, "BUSY", now),
+            )
+            unit.connection.execute(
+                """
+                INSERT INTO worker_lease(lease_id, attempt_id, worker_id, cpu_slots,
+                                         memory_limit_bytes, scratch_limit_bytes, state,
+                                         granted_at, expires_at)
+                VALUES(?,?,?,1,1073741824,1073741824,'GRANTED',?,?)
+                """,
+                (
+                    attempt.lease_id,
+                    attempt.attempt_id,
+                    worker_id,
+                    now,
+                    wire_time(datetime.now(timezone.utc) + timedelta(hours=1)),
+                ),
+            )
+            unit.append_event(
+                PendingTaskEvent(
+                    event_id=mint_v3_id("tev_"),
+                    event_version=_TASK_EVENT_VERSION,
+                    project_id=current_task.project_id,
+                    task_id=task_id,
+                    event_type="TASK_QUEUED",
+                    occurred_at=datetime.now(timezone.utc),
+                    payload={"operation_id": current_task.operation_id, "retry_of_attempt": failed_attempt_id},
+                    run_id=run_id,
+                    attempt_id=attempt.attempt_id,
+                )
+            )
+            unit.commit()
+        self._transition_to_running(task, run, attempt, run_transition=False)
+        if kind == RESEARCH_RUN_CONTEXT_KIND:
+            spec, _ = self.product.spec_codec.reconstruct(
+                project_id=context_wire["project_id"], run_spec_id=context_wire["run_spec_id"]
+            )
+            try:
+                result = self.engine.run(spec)
+                outputs = self._publish_backtest_outputs(
+                    project_id=context_wire["project_id"], run_id=run_id, result=result
+                )
+                self._finish_success(task, run, attempt, outputs=outputs, run_transition=False)
+            except BaseException as error:
+                self._finish_failure(
+                    task, run, attempt, error=error, category=classify_execution_error(error),
+                    run_transition=False,
+                )
+        elif kind == EXPORT_CONTEXT_KIND:
+            try:
+                manifest_wire = {
+                    "schema_version": "v3.export-manifest/1.0.0",
+                    "export_profile_id": context_wire["export_profile_id"],
+                    "destination_token": context_wire["destination_token"],
+                    "artifacts": [
+                        {
+                            "artifact_id": artifact_id,
+                            "sha256": sha256_from_artifact_id(artifact_id),
+                            "byte_size": len(self.product.read_verified_bytes(artifact_id)),
+                        }
+                        for artifact_id in context_wire["artifact_ids"]
+                    ],
+                }
+                outputs = self._publish_artifact_batch(
+                    payloads=(
+                        (
+                            "prv_product_export_manifest",
+                            canonical_json_bytes(manifest_wire),
+                            EXPORT_MANIFEST_ROLE,
+                            "v3.export-manifest/1.0.0",
+                        ),
+                    ),
+                    references=((run_id, RUN_EXPORT_MANIFEST_REFERENCE_ROLE, 0),),
+                )[0]
+                self._finish_success(
+                    task, run, attempt,
+                    outputs={"artifact_id": outputs.descriptor.artifact_id, "artifact_sha256": outputs.descriptor.sha256},
+                    run_transition=False,
+                )
+            except BaseException as error:
+                self._finish_failure(
+                    task, run, attempt, error=error, category=classify_execution_error(error),
+                    run_transition=False,
+                )
+        else:
+            self._finish_failure(
+                task, run, attempt,
+                error=InvalidArgumentError(f"unsupported execution context kind: {kind}"),
+                category=ErrorCategory.INVALID_ARGUMENT,
+                run_transition=False,
+            )
+        return task_id
+
+    def _read_run(self, run_id: str) -> Run:
+        with self.product.task_persistence.begin() as unit:
+            run = unit.require_run(run_id)
+            unit.commit()
+            return run
+
+    def _run_context_artifact(self, run_id: str) -> str:
+        connection = connect_catalog(self.product.database_path, read_only=True)
+        try:
+            row = catalog_row(
+                connection,
+                """
+                SELECT artifact_id FROM artifact_reference
+                WHERE owner_id=? AND role=? AND state='ACTIVE' LIMIT 1
+                """,
+                (run_id, RUN_CONTEXT_REFERENCE_ROLE),
+            )
+        finally:
+            connection.close()
+        if row is None:
+            raise NotFoundError(f"Run has no durable execution context: {run_id}")
+        return str(row["artifact_id"])
+
+
+class _NoopPublishCallbacks:
+    """PUBLISH UoW callbacks when the batch has no staged bytes to publish."""
+
+    def verify_staged(self) -> None:
+        return None
+
+    def publish_staged(self) -> None:
+        return None
+
+    def compensate_unreferenced_staging(self) -> None:
+        return None
+
+    def notify_committed(self) -> None:
+        return None
+
+
+class ProductRuntime:
+    """Durable product composition root behind the ASL facades."""
+
+    def __init__(self, storage_root: str | Path) -> None:
+        self.storage_root = Path(storage_root).resolve()
+        self.database_path = self.storage_root / CATALOG_FILENAME
+        self.artifact_root = self.storage_root / ARTIFACT_DIRNAME
+        self.storage_root.mkdir(parents=True, exist_ok=True)
+        apply_migrations(
+            self.database_path,
+            application_version=MIGRATION_APPLICATION_VERSION,
+            backup_dir=self.storage_root / "backups",
+        )
+        self.artifact_store = FileSystemArtifactStore(
+            self.artifact_root, policy=product_artifact_policy()
+        )
+        self.task_persistence = SQLiteTaskPersistence(self.database_path)
+        self.event_replay = ProductEventReplay(self.database_path)
+        self.spec_codec = ResearchRunSpecCodec(self)
+        self.execution = ProductExecution(self)
+        self.idempotency = DurableIdempotency()
+
+    # -- catalog access ------------------------------------------------------
+
+    def _connection(self, *, read_only: bool = False) -> sqlite3.Connection:
+        return connect_catalog(self.database_path, read_only=read_only)
+
+    def require_project(self, project_id: str) -> dict[str, Any]:
+        connection = self._connection(read_only=True)
+        try:
+            row = catalog_row(connection, "SELECT * FROM project WHERE project_id=?", (project_id,))
+        finally:
+            connection.close()
+        if row is None:
+            raise NotFoundError(f"unknown project: {project_id}")
+        if str(row["state"]) != "ACTIVE":
+            raise ConflictError(f"project is not ACTIVE: {project_id}")
+        return row
+
+    def require_context_revision(self, project_context_revision_id: str) -> dict[str, Any]:
+        connection = self._connection(read_only=True)
+        try:
+            row = catalog_row(
+                connection,
+                "SELECT * FROM project_context_revision WHERE project_context_revision_id=?",
+                (project_context_revision_id,),
+            )
+        finally:
+            connection.close()
+        if row is None:
+            raise NotFoundError(f"unknown project context revision: {project_context_revision_id}")
+        return row
+
+    def require_project_context_ownership(self, project_id: str, project_context_revision_id: str) -> dict[str, Any]:
+        """Fail closed when the context revision is missing or belongs elsewhere."""
+        self.require_project(project_id)
+        revision = self.require_context_revision(project_context_revision_id)
+        if str(revision["project_id"]) != project_id:
+            raise TruthPreconditionFailedError(
+                "project context revision does not belong to the request project"
+            )
+        return revision
+
+    def current_revision(self, project_id: str) -> dict[str, Any]:
+        connection = self._connection(read_only=True)
+        try:
+            row = catalog_row(
+                connection,
+                """
+                SELECT * FROM project_context_revision
+                WHERE project_id=? ORDER BY revision_no DESC LIMIT 1
+                """,
+                (project_id,),
+            )
+        finally:
+            connection.close()
+        if row is None:
+            raise NotFoundError(f"project has no context revision: {project_id}")
+        return row
+
+    def read_verified_bytes(self, artifact_id: str) -> bytes:
+        """Read canonical artifact bytes through the store's hash-verified read."""
+        return self.artifact_store.read_bytes(artifact_id)
+
+    def require_published_artifact(self, artifact_id: str) -> dict[str, Any]:
+        connection = self._connection(read_only=True)
+        try:
+            row = catalog_row(connection, "SELECT * FROM artifact WHERE artifact_id=?", (artifact_id,))
+        finally:
+            connection.close()
+        if row is None:
+            raise NotFoundError(f"unknown artifact: {artifact_id}")
+        if str(row["state"]) != "PUBLISHED":
+            raise ArtifactNotPublishedError(f"artifact is not published: {artifact_id}")
+        return row
+
+    def require_experiment(self, experiment_id: str) -> dict[str, Any]:
+        connection = self._connection(read_only=True)
+        try:
+            row = catalog_row(
+                connection, "SELECT * FROM experiment WHERE experiment_id=?", (experiment_id,)
+            )
+        finally:
+            connection.close()
+        if row is None:
+            raise NotFoundError(f"unknown experiment: {experiment_id}")
+        return row
+
+    def require_result(self, result_id: str) -> dict[str, Any]:
+        connection = self._connection(read_only=True)
+        try:
+            row = catalog_row(connection, "SELECT * FROM result WHERE result_id=?", (result_id,))
+        finally:
+            connection.close()
+        if row is None:
+            raise NotFoundError(f"unknown result: {result_id}")
+        return row
+
+    def references(self, owner_id: str, role: str | None = None) -> list[dict[str, Any]]:
+        connection = self._connection(read_only=True)
+        try:
+            if role is None:
+                rows = catalog_rows(
+                    connection,
+                    """
+                    SELECT owner_id, role, artifact_id FROM artifact_reference
+                    WHERE owner_id=? AND state='ACTIVE' ORDER BY role, artifact_id
+                    """,
+                    (owner_id,),
+                )
+            else:
+                rows = catalog_rows(
+                    connection,
+                    """
+                    SELECT owner_id, role, artifact_id FROM artifact_reference
+                    WHERE owner_id=? AND role=? AND state='ACTIVE' ORDER BY artifact_id
+                    """,
+                    (owner_id, role),
+                )
+        finally:
+            connection.close()
+        return rows
+
+    def latest_event_sequence(self, project_id: str) -> int:
+        connection = self._connection(read_only=True)
+        try:
+            value = connection.execute(
+                "SELECT COALESCE(MAX(project_sequence),0) FROM task_event WHERE project_id=?",
+                (project_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        return int(value)
+
+    def session_row(self, session_id: str) -> dict[str, Any] | None:
+        connection = self._connection(read_only=True)
+        try:
+            return catalog_row(
+                connection, "SELECT * FROM desktop_session WHERE session_id=?", (session_id,)
+            )
+        finally:
+            connection.close()
+
+    # -- capabilities ----------------------------------------------------------
+
+    def capabilities(self) -> tuple[Capability, ...]:
+        from v3_backend.contracts.registry import SERVICE_CONTRACTS
+
+        bound_services = {
+            "ProjectSessionService",
+            "TaskService",
+            "ArtifactService",
+            "BacktestService",
+        }
+        capabilities: list[Capability] = []
+        for service in sorted(SERVICE_CONTRACTS):
+            if service in bound_services:
+                capabilities.append(Capability(code=service, truth_state="FORMAL"))
+            elif service == "ResultService":
+                capabilities.append(
+                    Capability(
+                        code=service,
+                        truth_state="UNAVAILABLE",
+                        reason_code="PRODUCT_OPERATION_SET_INCOMPLETE",
+                    )
+                )
+            else:
+                capabilities.append(
+                    Capability(
+                        code=service,
+                        truth_state="UNAVAILABLE",
+                        reason_code="ASL_FACADE_NOT_BOUND",
+                    )
+                )
+        return tuple(capabilities)
+
+    # -- runtime seam -----------------------------------------------------------
+
+    def reconcile_supervisor(self, accepted) -> None:
+        if accepted.project_id is not None:
+            self.event_replay.bind_project(accepted.project_id)
+
+    def prepare_shutdown(self, deadline: str | None) -> None:
+        return None
+
+    def commit_shutdown(self) -> None:
+        return None
+
+
+def build_product_runtime(storage_root: str | Path | None = None) -> ProductRuntime:
+    return ProductRuntime(resolve_product_storage_root(None if storage_root is None else str(storage_root)))
+
+
+def build_product_ports(storage_root: str | Path | None = None) -> RuntimePorts:
+    """Normal production RuntimePorts: real facades over durable product stores."""
+    from .product_facades import build_product_facades
+
+    product = build_product_runtime(storage_root)
+    handlers: dict[str, Any] = {}
+    for facade in build_product_facades(product):
+        handlers.update(facade.handlers())
+    return RuntimePorts(
+        operation_handlers=handlers,
+        capabilities=product.capabilities(),
+        event_replay=product.event_replay,
+        startup_reconcile=product.reconcile_supervisor,
+        prepare_shutdown=product.prepare_shutdown,
+        commit_shutdown=product.commit_shutdown,
+    )
+
+
+__all__ = [
+    "ADMITTED_EXECUTION_ADAPTER_VERSION_ID",
+    "BACKTEST_RUN_RESULT_ROLE",
+    "BACKTEST_RUN_SPEC_ROLE",
+    "DEFAULT_RETENTION_PROFILE",
+    "EXPORT_MANIFEST_ROLE",
+    "LEDGER_MANIFEST_ROLE",
+    "PRODUCT_EXECUTION_CONTEXT_ROLE",
+    "PRODUCT_RUNTIME_VERSION",
+    "ProductRuntime",
+    "build_product_ports",
+    "build_product_runtime",
+    "mint_v3_id",
+    "mint_uuid7",
+    "product_artifact_policy",
+    "resolve_product_storage_root",
+]

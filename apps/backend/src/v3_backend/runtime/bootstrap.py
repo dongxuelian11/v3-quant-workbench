@@ -7,11 +7,12 @@ import json
 import sys
 from typing import Any
 
-from .composition_root import build_runtime
+from .composition_root import RuntimePorts, build_runtime, default_capabilities
 from .framed_stdio import ProtocolViolation
 from .handshake import read_supervisor_token
+from .product_runtime import build_product_ports, resolve_product_storage_root
 
-BACKEND_VERSION = "0.1.0-recovery.1"
+BACKEND_VERSION = "0.1.0-recovery.2"
 TRANSPORT = "stdio-framed-v1"
 
 
@@ -21,13 +22,36 @@ def _diagnostic(level: str, code: str, message: str) -> None:
     sys.stderr.flush()
 
 
+def _build_ports(args: argparse.Namespace) -> RuntimePorts:
+    """Normal production bootstrap binds the product runtime composition.
+
+    The transport-only development shell (every service UNAVAILABLE with
+    ASL_FACADE_NOT_BOUND) remains available exclusively through the explicit
+    --development-shell opt-in; it is never the normal path.
+    """
+    if args.development_shell:
+        return RuntimePorts(capabilities=default_capabilities())
+    storage_root = resolve_product_storage_root(args.storage_root)
+    return build_product_ports(storage_root)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m v3_backend.runtime.bootstrap")
     parser.add_argument("--transport", required=True, choices=[TRANSPORT])
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--storage-root",
+        default=None,
+        help="product storage root (default: $V3_PRODUCT_STORAGE_ROOT or the local app-data product root)",
+    )
+    parser.add_argument(
+        "--development-shell",
+        action="store_true",
+        help="explicit opt-in transport-only development shell (no product facades)",
+    )
+    args = parser.parse_args(argv)
     try:
         token = read_supervisor_token()
-        runtime = build_runtime(token, BACKEND_VERSION)
+        runtime = build_runtime(token, BACKEND_VERSION, _build_ports(args))
         runtime.run(sys.stdin.buffer, sys.stdout.buffer)
         return 0
     except ProtocolViolation as exc:
