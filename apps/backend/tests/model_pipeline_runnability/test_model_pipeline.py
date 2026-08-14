@@ -10,13 +10,23 @@ from apps.backend.tests.model_pipeline_runnability.helpers import (
 from v3_backend.adapters.artifact_store import FileSystemArtifactStore
 from v3_backend.adapters.model_workers import SklearnRidgeSubprocessWorker
 from v3_backend.domain.artifacts.exceptions import FormatRejected
+from v3_backend.domain.datasets import (
+    DATASET_ARTIFACT_ROLE,
+    formal_dataset_context_identity,
+)
 from v3_backend.domain.models import (
     ModelPipelineRequest,
     ModelPipelineStatus,
     SAFE_LINEAR_MODEL_MEDIA_TYPE,
     SafeLinearModelArtifact,
 )
+from v3_backend.domain.payload_authority import (
+    PayloadBindingUnavailable,
+    PayloadResolutionRequest,
+)
 from v3_backend.provenance.canonical_hash import canonical_json_bytes
+
+
 class ModelPipelineRunnabilityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = build_model_pipeline_development_fixture(SklearnRidgeSubprocessWorker())
@@ -38,6 +48,43 @@ class ModelPipelineRunnabilityTests(unittest.TestCase):
         self.assertTrue(first.model_version_id.startswith("mdv_sha256_"))
         self.assertTrue(first.prediction_id.startswith("pred_sha256_"))
         self.assertEqual(first.truth, "PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE")
+
+    def test_pr27_formal_dataset_contract_resolves_actual_bytes(self) -> None:
+        owner = self.fixture.dataset
+        resolved = self.fixture.payload_resolver.resolve(
+            PayloadResolutionRequest(
+                owner_namespace="v3.datasets.formal",
+                owner_id=owner.dataset_version_id,
+                owner_version=owner.dataset_version_id,
+                payload_role=DATASET_ARTIFACT_ROLE,
+                context_identity=formal_dataset_context_identity(owner),
+                max_bytes=100_000,
+            )
+        )
+        self.assertEqual(
+            resolved.verified_payload.payload,
+            self.fixture.store.read_bytes(owner.dataset_descriptor.artifact_id),
+        )
+
+    def test_pr27_legacy_namespace_and_wrong_context_do_not_mint_binding(self) -> None:
+        owner = self.fixture.dataset
+        rejected_contracts = (
+            ("v3.datasets", owner.dataset_version_id),
+            ("v3.datasets.formal", owner.dataset_version_id),
+        )
+        for owner_namespace, context_identity in rejected_contracts:
+            with self.subTest(owner_namespace=owner_namespace, context_identity=context_identity):
+                with self.assertRaises(PayloadBindingUnavailable):
+                    self.fixture.payload_resolver.resolve(
+                        PayloadResolutionRequest(
+                            owner_namespace=owner_namespace,
+                            owner_id=owner.dataset_version_id,
+                            owner_version=owner.dataset_version_id,
+                            payload_role=DATASET_ARTIFACT_ROLE,
+                            context_identity=context_identity,
+                            max_bytes=100_000,
+                        )
+                    )
 
     def test_runnable_entry_has_no_caller_model_samples(self) -> None:
         fields = ModelPipelineRequest.__dataclass_fields__

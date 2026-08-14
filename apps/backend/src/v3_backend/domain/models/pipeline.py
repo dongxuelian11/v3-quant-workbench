@@ -20,6 +20,7 @@ from v3_backend.domain.datasets import (
     FormalDatasetVersion,
     SplitSpec,
     SplitSpecRepository,
+    formal_dataset_context_identity,
 )
 from v3_backend.domain.payload_authority import (
     CanonicalPayloadResolver,
@@ -236,7 +237,10 @@ def _decode_dataset_root(
         raise TypeError("materialization requires a persisted FormalDatasetVersion owner")
     if not isinstance(receipt, PayloadResolutionReceipt):
         raise TypeError("materialization requires a typed P1 Dataset receipt")
-    if receipt.context_identity != owner.dataset_version_id or receipt.artifact_id != owner.dataset_descriptor.artifact_id:
+    if (
+        receipt.context_identity != formal_dataset_context_identity(owner)
+        or receipt.artifact_id != owner.dataset_descriptor.artifact_id
+    ):
         raise ValueError("P1 Dataset receipt does not bind the canonical Dataset owner/artifact")
     if split_spec.split_spec_id != owner.split_spec_id:
         raise ValueError("SplitSpec does not bind the canonical Dataset owner")
@@ -517,11 +521,11 @@ class CanonicalDatasetModelPipelineService:
                 raise ValueError("canonical Dataset owner not found")
             resolution = self._resolver.resolve(
                 PayloadResolutionRequest(
-                    owner_namespace="v3.datasets",
+                    owner_namespace="v3.datasets.formal",
                     owner_id=owner.dataset_version_id,
                     owner_version=owner.dataset_version_id,
                     payload_role=DATASET_ARTIFACT_ROLE,
-                    context_identity=owner.dataset_version_id,
+                    context_identity=formal_dataset_context_identity(owner),
                     max_bytes=request.max_payload_bytes,
                 )
             )

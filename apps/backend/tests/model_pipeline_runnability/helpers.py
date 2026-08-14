@@ -34,6 +34,7 @@ class ModelPipelineDevelopmentFixture:
     owner: object
     dataset: object
     split_spec: SplitSpec
+    payload_resolver: CanonicalPayloadResolver
     service: CanonicalDatasetModelPipelineService
 
     @property
@@ -147,6 +148,7 @@ def build_model_pipeline_development_fixture(worker) -> ModelPipelineDevelopment
         owner=owner,
         dataset=dataset,
         split_spec=case.split,
+        payload_resolver=payload_resolver,
         service=service,
     )
 
