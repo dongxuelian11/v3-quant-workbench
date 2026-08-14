@@ -80,6 +80,9 @@ function startBackendRuntime(): void {
       projectContextRevisionId: BACKEND_PROJECT_CONTEXT_REVISION_ID,
       lastDurableProjectEventSequence: store.getProjectEventCursor(BACKEND_PROJECT_ID)
     },
+    cursorPort: {
+      commit: (projectId, sequence) => store.commitProjectEventCursor(projectId, sequence)
+    },
     backendModule: AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE"
       ? "v3_backend.adapters.round3_evidence.development_runtime"
       : "v3_backend.runtime.bootstrap",
