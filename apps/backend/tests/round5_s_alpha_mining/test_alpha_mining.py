@@ -430,6 +430,74 @@ class AlphaMiningTests(unittest.TestCase):
             with self.assertRaises(AlphaMiningContractError):
                 engine.run(tampered, resource_observation="test-governor")
 
+    def test_reused_generator_resets_cross_run_feedback_but_keeps_in_run_rewards(
+        self,
+    ) -> None:
+        reward_policy = AlphaMiningRewardPolicyVersion.create(
+            policy_version="cross-run-isolation/1.0.0",
+            component_rules=(
+                RewardComponentRule.create(RewardComponentName.COMPLEXITY, "100"),
+            ),
+            block_on_blocking_finding=True,
+        )
+        job = self.job(
+            reward_policy=reward_policy,
+            max_candidate_count=4,
+            max_generation_count=2,
+            max_evaluation_count=4,
+            target_evaluated_candidates=3,
+        )
+        port = ExactExistingEvaluationFixture(self.registry)
+        generator = DeterministicGrammarCandidateGenerator(self.registry)
+        stale_definition = FactorDefinitionVersion.create(
+            "stale_parent",
+            OperatorNode(
+                "LAG",
+                "1.0.0",
+                (FeatureNode("close", "eod.close/1.0.0"),),
+                {"periods": 1},
+            ),
+            self.registry,
+        )
+        stale_reward = AlphaMiningReward.create(
+            policy=job.reward_policy,
+            evidence=port.evaluate_existing(stale_definition, job),
+        )
+        generator.observe_reward(
+            job=job,
+            generation_index=1,
+            definition=stale_definition,
+            reward=stale_reward,
+        )
+        engine = AlphaMiningEngine(
+            registry=self.registry,
+            evaluation_port=port,
+            candidate_generator=generator,
+        )
+
+        first = engine.run(job, resource_observation="test-governor")
+        second = engine.run(job, resource_observation="test-governor")
+
+        self.assertEqual(first.candidate_records, second.candidate_records)
+        second_generation = tuple(
+            record
+            for record in first.candidate_records
+            if record.generation_index == 2
+        )
+        self.assertTrue(second_generation)
+        self.assertTrue(
+            all(
+                "parent-reward:amrw_sha256_" in record.source_lineage_ref
+                for record in second_generation
+            )
+        )
+        self.assertTrue(
+            all(
+                stale_reward.alpha_mining_reward_id not in record.source_lineage_ref
+                for record in second_generation
+            )
+        )
+
     def test_job_and_lineage_bounds_reject_coercible_or_invalid_values(self) -> None:
         with self.assertRaisesRegex(
             AlphaMiningContractError, "INVALID_ALPHA_MINING_BUDGET"

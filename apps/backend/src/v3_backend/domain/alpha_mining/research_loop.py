@@ -44,6 +44,7 @@ from v3_backend.domain.factors import (
     FACTOR_OUTPUT_SCHEMA_FINGERPRINT,
     CanonicalJsonArtifactPublisher,
     FactorDefinitionVersion,
+    FormalFeatureMaterialization,
     FormalFactorEvaluationRequest,
     FormalFactorEvaluationService,
     OperatorRegistry,
@@ -52,6 +53,7 @@ from v3_backend.domain.payload_authority import (
     CanonicalPayloadResolver,
     PayloadResolutionReceipt,
     PayloadResolutionRequest,
+    PayloadResolutionResult,
 )
 from v3_backend.domain.reviewer_integration import (
     ExactEvidenceBinding,
@@ -174,6 +176,30 @@ class AlphaResearchLoopResult:
             "product_connected": self.product_connected,
             "production_available": self.production_available,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _FactorEvaluationProducts:
+    materialization: FormalFeatureMaterialization
+    feature_resolution: PayloadResolutionResult
+    samples: tuple[FactorSample, ...]
+    metrics: RewardMetrics
+    factor_evaluation: AlphaResearchFactorEvaluation
+
+
+@dataclass(frozen=True, slots=True)
+class _ExperimentProducts:
+    metrics_artifact: ArtifactDescriptor
+    run: ExperimentRun
+    attempt: ExperimentAttempt
+
+
+@dataclass(frozen=True, slots=True)
+class _ReviewProducts:
+    report: ResearchReviewReport
+    artifact: ArtifactDescriptor
+    findings: tuple[ReviewerFinding, ...]
+    evidence: ReviewerEvidence
 
 
 def _digest(identity: str) -> str:
@@ -314,11 +340,9 @@ class CanonicalAlphaEvaluationPort:
         self._previous_top_sample_ids: tuple[str, ...] = ()
         self.records: list[CanonicalAlphaEvaluationRecord] = []
 
-    def evaluate_existing(
-        self, definition: FactorDefinitionVersion, job: AlphaMiningJobSpec
-    ) -> AlphaMiningEvaluationEvidence:
-        if job != self.job:
-            raise AlphaMiningContractError("ALPHA_RESEARCH_JOB_MISMATCH", job.alpha_mining_job_spec_id)
+    def _resolve_factor_materialization(
+        self, definition: FactorDefinitionVersion
+    ) -> tuple[FormalFeatureMaterialization, PayloadResolutionResult]:
         self._binder.bind_for_dataset(definition, self.dataset)
         materialization = self._factor_service.evaluate(
             FormalFactorEvaluationRequest(
@@ -337,7 +361,7 @@ class CanonicalAlphaEvaluationPort:
                 "CANONICAL_FACTOR_MATERIALIZATION_NOT_AVAILABLE",
                 materialization.feature_materialization_id,
             )
-        feature_resolution = self._resolver.resolve(
+        resolution = self._resolver.resolve(
             PayloadResolutionRequest(
                 owner_namespace="v3.factors.materialization",
                 owner_id=materialization.feature_materialization_id,
@@ -347,29 +371,49 @@ class CanonicalAlphaEvaluationPort:
                 max_bytes=self.job.operation_profile.scratch_budget_bytes,
             )
         )
-        if feature_resolution.verified_payload.schema_fingerprint != FACTOR_OUTPUT_SCHEMA_FINGERPRINT:
+        if resolution.verified_payload.schema_fingerprint != FACTOR_OUTPUT_SCHEMA_FINGERPRINT:
             raise AlphaMiningContractError(
-                "FACTOR_OUTPUT_SCHEMA_NOT_ADMITTED", materialization.output_schema_fingerprint
+                "FACTOR_OUTPUT_SCHEMA_NOT_ADMITTED",
+                materialization.output_schema_fingerprint,
             )
+        return materialization, resolution
+
+    def _factor_samples(
+        self,
+        materialization: FormalFeatureMaterialization,
+        resolution: PayloadResolutionResult,
+    ) -> tuple[FactorSample, ...]:
         instruments, observations, values = decode_feature_materialization_payload(
-            feature_resolution.verified_payload.payload,
+            resolution.verified_payload.payload,
             materialization=materialization,
         )
-        by_coordinate = {
-            (instrument, observation): values[instrument_index * len(observations) + observation_index]
+        values_by_coordinate = {
+            (instrument, observation): values[
+                instrument_index * len(observations) + observation_index
+            ]
             for instrument_index, instrument in enumerate(instruments)
             for observation_index, observation in enumerate(observations)
         }
-        factor_samples = tuple(
+        return tuple(
             FactorSample(
-                value.sample_id,
-                by_coordinate.get((value.instrument_id, value.observation_id)),
-                value.label,
+                sample.sample_id,
+                values_by_coordinate.get(
+                    (sample.instrument_id, sample.observation_id)
+                ),
+                sample.label,
             )
-            for value in self.samples
+            for sample in self.samples
         )
+
+    def _compute_factor_evaluation(
+        self, definition: FactorDefinitionVersion
+    ) -> _FactorEvaluationProducts:
+        materialization, feature_resolution = self._resolve_factor_materialization(
+            definition
+        )
+        samples = self._factor_samples(materialization, feature_resolution)
         metrics = compute_reward_metrics(
-            factor_samples,
+            samples,
             previous_top_sample_ids=self._previous_top_sample_ids,
             quantiles=2,
             complexity=definition.metadata.complexity,
@@ -384,35 +428,43 @@ class CanonicalAlphaEvaluationPort:
             feature_resolution_receipt=feature_resolution.receipt,
             proposed_state=PRE_ALPHA_CEILING,
         )
-        metrics_artifact = self._publisher.publish_canonical_json(
+        return _FactorEvaluationProducts(
+            materialization,
+            feature_resolution,
+            samples,
+            metrics,
+            factor_evaluation,
+        )
+
+    def _publish_metrics(
+        self, products: _FactorEvaluationProducts
+    ) -> ArtifactDescriptor:
+        return self._publisher.publish_canonical_json(
             {
                 "schema": "v3.alpha-research-metrics/1.0.0",
-                "factor_evaluation_id": factor_evaluation.factor_evaluation_id,
-                "dataset_resolution_receipt_id": self.dataset_resolution.receipt.receipt_identity,
-                "feature_resolution_receipt_id": feature_resolution.receipt.receipt_identity,
+                "factor_evaluation_id": products.factor_evaluation.factor_evaluation_id,
+                "dataset_resolution_receipt_id": (
+                    self.dataset_resolution.receipt.receipt_identity
+                ),
+                "feature_resolution_receipt_id": (
+                    products.feature_resolution.receipt.receipt_identity
+                ),
                 "period_start": self.job.evaluation_context.period_start,
                 "period_end": self.job.evaluation_context.period_end,
-                "sample_ids": [value.sample_id for value in factor_samples],
-                "metrics": _metrics_wire(metrics),
+                "sample_ids": [sample.sample_id for sample in products.samples],
+                "metrics": _metrics_wire(products.metrics),
             },
             semantic_role="ALPHA_RESEARCH_METRICS",
-            provenance_entity_id=factor_evaluation.factor_evaluation_id,
+            provenance_entity_id=products.factor_evaluation.factor_evaluation_id,
             schema_fingerprint=ALPHA_METRICS_SCHEMA,
         )
-        run_provenance = self._publisher.publish_canonical_json(
-            {
-                "schema": "v3.alpha-research-run-provenance/1.0.0",
-                "job_spec_id": self.job.alpha_mining_job_spec_id,
-                "factor_evaluation_id": factor_evaluation.factor_evaluation_id,
-                "dataset_version_id": self.dataset.dataset_version_id,
-                "dataset_resolution_receipt_id": self.dataset_resolution.receipt.receipt_identity,
-                "feature_resolution_receipt_id": feature_resolution.receipt.receipt_identity,
-                "metrics_artifact_id": metrics_artifact.artifact_id,
-            },
-            semantic_role="ALPHA_RESEARCH_RUN",
-            provenance_entity_id=factor_evaluation.factor_evaluation_id,
-            schema_fingerprint=ALPHA_RUN_SCHEMA,
-        )
+
+    def _create_experiment(
+        self,
+        products: _FactorEvaluationProducts,
+        metrics_artifact: ArtifactDescriptor,
+    ) -> _ExperimentProducts:
+        run_provenance = self._publish_run_provenance(products, metrics_artifact)
         experiment = ExperimentVersion.create(
             "alpha-research-loop",
             self.job.reward_policy.reward_policy_version_id,
@@ -422,7 +474,7 @@ class CanonicalAlphaEvaluationPort:
             sorted(
                 {
                     self.dataset.dataset_descriptor.artifact_id,
-                    materialization.output_descriptor.artifact_id,
+                    products.materialization.output_descriptor.artifact_id,
                     metrics_artifact.artifact_id,
                 }
             )
@@ -430,9 +482,11 @@ class CanonicalAlphaEvaluationPort:
         run = ExperimentRun.create(
             experiment=experiment,
             dataset=self.dataset,
-            factor_evaluation=factor_evaluation,  # type: ignore[arg-type]
+            factor_evaluation=products.factor_evaluation,  # type: ignore[arg-type]
             code_version="v3.alpha-research-loop/1.0.0",
-            environment_fingerprint=self.job.evaluation_context.factor_context.environment_fingerprint,
+            environment_fingerprint=(
+                self.job.evaluation_context.factor_context.environment_fingerprint
+            ),
             input_artifact_ids=input_artifacts,
             run_provenance_artifact_id=run_provenance.artifact_id,
             proposed_state=PRE_ALPHA_CEILING,
@@ -447,93 +501,147 @@ class CanonicalAlphaEvaluationPort:
             evidence_artifact_ids=input_artifacts,
             result_artifact_id=metrics_artifact.artifact_id,
         )
+        return _ExperimentProducts(metrics_artifact, run, attempt)
+
+    def _publish_run_provenance(
+        self,
+        products: _FactorEvaluationProducts,
+        metrics_artifact: ArtifactDescriptor,
+    ) -> ArtifactDescriptor:
+        return self._publisher.publish_canonical_json(
+            {
+                "schema": "v3.alpha-research-run-provenance/1.0.0",
+                "job_spec_id": self.job.alpha_mining_job_spec_id,
+                "factor_evaluation_id": products.factor_evaluation.factor_evaluation_id,
+                "dataset_version_id": self.dataset.dataset_version_id,
+                "dataset_resolution_receipt_id": (
+                    self.dataset_resolution.receipt.receipt_identity
+                ),
+                "feature_resolution_receipt_id": (
+                    products.feature_resolution.receipt.receipt_identity
+                ),
+                "metrics_artifact_id": metrics_artifact.artifact_id,
+            },
+            semantic_role="ALPHA_RESEARCH_RUN",
+            provenance_entity_id=products.factor_evaluation.factor_evaluation_id,
+            schema_fingerprint=ALPHA_RUN_SCHEMA,
+        )
+
+    def _create_review_products(
+        self,
+        factor_evaluation: AlphaResearchFactorEvaluation,
+        experiment: _ExperimentProducts,
+    ) -> _ReviewProducts:
         report = self._review(
             factor_evaluation=factor_evaluation,
-            run=run,
-            attempt=attempt,
+            run=experiment.run,
+            attempt=experiment.attempt,
         )
         reviewer_artifact = self._publisher.publish_canonical_json(
             {"schema": "v3.alpha-research-review/1.0.0", **report.to_wire()},
             semantic_role="ALPHA_RESEARCH_REVIEW",
-            provenance_entity_id=run.experiment_run_id,
+            provenance_entity_id=experiment.run.experiment_run_id,
             schema_fingerprint=ALPHA_REVIEW_SCHEMA,
         )
-        legacy_findings = tuple(
+        findings = tuple(
             ReviewerFinding.create(
-                category=value.rule_id,
-                code=value.outcome.value,
+                category=check.rule_id,
+                code=check.outcome.value,
                 severity=(
                     FindingSeverity.BLOCKING
-                    if value.severity is ReviewSeverity.BLOCKING
+                    if check.severity is ReviewSeverity.BLOCKING
                     else FindingSeverity.WARNING
-                    if value.severity is ReviewSeverity.WARNING
+                    if check.severity is ReviewSeverity.WARNING
                     else FindingSeverity.INFO
                 ),
                 status=(
                     EvidenceStatus.FAIL
-                    if value.outcome in {ReviewOutcome.FINDING, ReviewOutcome.BLOCKED}
+                    if check.outcome in {ReviewOutcome.FINDING, ReviewOutcome.BLOCKED}
                     else EvidenceStatus.NOT_RUN
                 ),
                 evidence_artifact_ids=(reviewer_artifact.artifact_id,),
             )
-            for value in report.findings
+            for check in report.findings
         )
         reviewer = ReviewerEvidence.create(
             lookahead=_status_for(report, "O-050"),
             leakage=_status_for(report, "O-050"),
             split=_status_for(report, "O-010"),
-            sample_coverage=EvidenceStatus.PASS,
-            missingness=EvidenceStatus.PASS,
-            turnover=EvidenceStatus.PASS,
-            complexity=EvidenceStatus.PASS,
+            sample_coverage=EvidenceStatus.NOT_RUN,
+            missingness=EvidenceStatus.NOT_RUN,
+            turnover=EvidenceStatus.NOT_RUN,
+            complexity=EvidenceStatus.NOT_RUN,
             multiple_testing_robustness=_status_for(report, "O-060"),
-            findings=legacy_findings,
+            findings=findings,
             provenance_artifact_id=reviewer_artifact.artifact_id,
         )
+        return _ReviewProducts(report, reviewer_artifact, findings, reviewer)
+
+    def _create_evaluation_record(
+        self,
+        definition: FactorDefinitionVersion,
+        factor: _FactorEvaluationProducts,
+        experiment: _ExperimentProducts,
+        review: _ReviewProducts,
+    ) -> CanonicalAlphaEvaluationRecord:
         reward_vector = RewardVector.create(
-            run=run,
-            attempt=attempt,
-            coverage=metrics.coverage,
-            ic=metrics.ic,
-            rank_ic=metrics.rank_ic,
-            lower_quantile_return=metrics.lower_quantile_return,
-            upper_quantile_return=metrics.upper_quantile_return,
-            quantile_spread=metrics.quantile_spread,
-            turnover=metrics.turnover,
-            complexity=metrics.complexity,
-            reviewer_evidence=reviewer,
-            provenance_artifact_id=metrics_artifact.artifact_id,
+            run=experiment.run,
+            attempt=experiment.attempt,
+            coverage=factor.metrics.coverage,
+            ic=factor.metrics.ic,
+            rank_ic=factor.metrics.rank_ic,
+            lower_quantile_return=factor.metrics.lower_quantile_return,
+            upper_quantile_return=factor.metrics.upper_quantile_return,
+            quantile_spread=factor.metrics.quantile_spread,
+            turnover=factor.metrics.turnover,
+            complexity=factor.metrics.complexity,
+            reviewer_evidence=review.evidence,
+            provenance_artifact_id=experiment.metrics_artifact.artifact_id,
             proposed_state=PRE_ALPHA_CEILING,
         )
-        experiment_result = ExperimentResult.create(run, attempt, reward_vector)
+        experiment_result = ExperimentResult.create(
+            experiment.run, experiment.attempt, reward_vector
+        )
         evidence = AlphaMiningEvaluationEvidence(
             evaluation_context=self.job.evaluation_context,
-            factor_evaluation=factor_evaluation,
-            experiment_run=run,
-            experiment_attempt=attempt,
+            factor_evaluation=factor.factor_evaluation,
+            experiment_run=experiment.run,
+            experiment_attempt=experiment.attempt,
             reward_vector=reward_vector,
-            reviewer_evidence=reviewer,
-            reviewer_findings=legacy_findings,
+            reviewer_evidence=review.evidence,
+            reviewer_findings=review.findings,
             available_components=tuple(RewardComponentName),
         )
         evidence.validate_exact(definition, self.job)
-        self.records.append(
-            CanonicalAlphaEvaluationRecord(
-                definition,
-                factor_evaluation,
-                metrics,
-                metrics_artifact,
-                run,
-                attempt,
-                report,
-                reviewer_artifact,
-                reviewer,
-                reward_vector,
-                experiment_result,
-                evidence,
-            )
+        return CanonicalAlphaEvaluationRecord(
+            definition,
+            factor.factor_evaluation,
+            factor.metrics,
+            experiment.metrics_artifact,
+            experiment.run,
+            experiment.attempt,
+            review.report,
+            review.artifact,
+            review.evidence,
+            reward_vector,
+            experiment_result,
+            evidence,
         )
-        return evidence
+
+    def evaluate_existing(
+        self, definition: FactorDefinitionVersion, job: AlphaMiningJobSpec
+    ) -> AlphaMiningEvaluationEvidence:
+        if job != self.job:
+            raise AlphaMiningContractError("ALPHA_RESEARCH_JOB_MISMATCH", job.alpha_mining_job_spec_id)
+        factor = self._compute_factor_evaluation(definition)
+        metrics_artifact = self._publish_metrics(factor)
+        experiment = self._create_experiment(factor, metrics_artifact)
+        review = self._create_review_products(factor.factor_evaluation, experiment)
+        record = self._create_evaluation_record(
+            definition, factor, experiment, review
+        )
+        self.records.append(record)
+        return record.evidence
 
     def _review(
         self,

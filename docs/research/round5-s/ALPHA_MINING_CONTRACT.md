@@ -128,6 +128,21 @@ turnover, coverage and complexity. The highest scored earlier-generation reward
 ID is incorporated into the next generation's canonical source lineage and
 generation token.
 
+Reviewer dimensions without registered checks are `NOT_RUN`, not default
+`PASS`. The current registered rules map lookahead, leakage, split and
+multiple-testing robustness to actual rule outcomes. Sample coverage,
+missingness, turnover and complexity remain `NOT_RUN`; the resulting Reviewer
+and Reward truth ceiling remains `PRE_ALPHA` while scored research feedback
+continues to drive the bounded loop.
+
+Generator reward feedback is run-local and non-canonical. A new engine run
+clears feedback for the exact job before candidate generation, including when a
+`DeterministicGrammarCandidateGenerator` instance is injected and reused. A
+later generation in the same run can still select an earlier scored reward.
+This in-memory feedback is not durable state, a canonical owner, or product
+runtime evidence. Cross-run continuation requires the separately deferred
+durable lineage/state owner or an explicit stateless replay strategy.
+
 ## User / Agent / promotion boundaries
 
 - `AlphaMiningJobDraft` is always `NON_CANONICAL`, `DRAFT`, and `started=False`.
@@ -184,8 +199,14 @@ The `round5_s_alpha_mining` suite covers all required behaviors:
 28. no caller metrics or caller PASS evidence in the runnable entry;
 29. scored reward feedback changes the next generation lineage;
 30. content-deterministic replay and Artifact reproduction.
+31. unchecked Reviewer dimensions remain `NOT_RUN` with a `PRE_ALPHA` ceiling;
+32. scored reward remains available after the Reviewer truth correction;
+33. reward feedback is retained within a run and cleared across reused-generator runs;
+34. the Contract and Deferred Ledger contain the two post-merge guard records.
 
 `scripts/backend-foundation-test.mjs` retains this S test directory in the
 existing public validation harness. `scripts/alpha-research-smoke.mjs` is a
-bounded backend smoke wrapper. There is no router, Desktop, dependency manifest,
-lockfile, Model, Data Quality or Core Research Pipeline change.
+bounded backend smoke wrapper. `package.json` changed only to register the
+bounded `smoke:alpha-research` command. No dependency declaration,
+`package-lock.json` dependency graph, vendor SDK, router, Desktop, Model, Data
+Quality or Core Research Pipeline semantic dependency was added.

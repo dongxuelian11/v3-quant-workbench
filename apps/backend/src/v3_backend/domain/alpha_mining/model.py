@@ -481,9 +481,8 @@ class AlphaMiningJobSpec:
             raise AlphaMiningContractError(
                 "INVALID_ALPHA_MINING_BUDGET", "node bound cannot be smaller than depth bound"
             )
-        if stopping_rules.target_evaluated_candidates > limits["max_evaluation_count"]:
-            # A larger target is permitted only to express truthful budget exhaustion.
-            pass
+        # A target above max_evaluation_count intentionally expresses truthful
+        # evaluation-budget exhaustion and needs no additional upper-bound rejection.
         budget_limits = (
             research_budget.max_iterations,
             research_budget.max_actions,

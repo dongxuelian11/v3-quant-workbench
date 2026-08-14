@@ -3,14 +3,17 @@ from __future__ import annotations
 import inspect
 import json
 import unittest
+from pathlib import Path
 
 from v3_backend.adapters.systemic_a1_payload import A1CanonicalPayloadBindingResolver
+from v3_backend.contracts.common.truth_admission import PRE_ALPHA_CEILING
 from v3_backend.domain.alpha_mining import AlphaResearchLoopService
 from v3_backend.domain.datasets import (
     DATASET_ARTIFACT_ROLE,
     decode_formal_dataset_payload,
     formal_dataset_context_identity,
 )
+from v3_backend.domain.experiments import EvidenceStatus
 from v3_backend.domain.payload_authority import (
     CanonicalPayloadResolver,
     PayloadResolutionRequest,
@@ -94,12 +97,29 @@ class AlphaResearchLoopTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             self.fixture.service.run(self.fixture.job, metrics={"ic": 1.0})  # type: ignore[call-arg]
         result = self.fixture.service.run(self.fixture.job)
-        self.assertTrue(
-            all(
-                record.reviewer_evidence.multiple_testing_robustness.value == "NOT_RUN"
-                for record in result.evaluations
-            )
+        unchecked_dimensions = (
+            "sample_coverage",
+            "missingness",
+            "turnover",
+            "complexity",
         )
+        for record in result.evaluations:
+            self.assertTrue(
+                all(
+                    getattr(record.reviewer_evidence, dimension)
+                    is EvidenceStatus.NOT_RUN
+                    for dimension in unchecked_dimensions
+                )
+            )
+            self.assertIs(
+                record.reviewer_evidence.multiple_testing_robustness,
+                EvidenceStatus.NOT_RUN,
+            )
+            self.assertEqual(
+                record.reviewer_evidence.canonical_ceiling,
+                PRE_ALPHA_CEILING,
+            )
+            self.assertEqual(record.reward_vector.truth_admission, PRE_ALPHA_CEILING)
         self.assertTrue(
             all("V3_INTERNAL_RECOMPUTE" in self.fixture.store.read_bytes(record.metrics_artifact.artifact_id).decode("utf-8") for record in result.evaluations)
         )
@@ -151,6 +171,21 @@ class AlphaResearchLoopTests(unittest.TestCase):
         malformed["caller_summary_metrics"] = {"ic": 1}
         with self.assertRaisesRegex(ValueError, "schema is not admitted"):
             decode_formal_dataset_payload(canonical_json_bytes(malformed), dataset=dataset)
+
+    def test_contract_and_deferred_ledger_match_guard_closure(self) -> None:
+        repository_root = Path(__file__).resolve().parents[4]
+        contract = (
+            repository_root / "docs/research/round5-s/ALPHA_MINING_CONTRACT.md"
+        ).read_text(encoding="utf-8")
+        deferred = (
+            repository_root / "docs/status/V3_DEFERRED_GAPS.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("There is no router, Desktop, dependency manifest", contract)
+        self.assertIn("Reviewer dimensions without registered checks are `NOT_RUN`", contract)
+        self.assertIn("run-local and non-canonical", contract)
+        self.assertIn("ALPHA-REVIEW-EVIDENCE-DEFER-02", deferred)
+        self.assertIn("ALPHA-GENERATOR-STATE-DEFER-03", deferred)
 
 
 if __name__ == "__main__":
