@@ -41,7 +41,9 @@ app.whenReady().then(async () => {
   try {
     const command = { id: "runtime-core-smoke-001", name: "study.resume", issuedAt: new Date().toISOString() };
     if (phase === "capture") {
+      console.log("[runtime-core-smoke] stage: waiting READY");
       await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace][data-connection-state=READY]'))", "authenticated backend handshake + replay READY");
+      console.log("[runtime-core-smoke] stage: runtimeInfo");
       const runtime = await evaluate(win, "window.v3Desktop.runtimeInfo()");
       if (runtime.agentEvidenceMode !== "DEVELOPMENT_INTEGRATION_FIXTURE") throw new Error(`fixture mode not bound ${JSON.stringify(runtime)}`);
       const [first, second] = await evaluate(win, `(async()=>{const command=${JSON.stringify(command)};return [await window.v3Desktop.executeCommand(command),await window.v3Desktop.executeCommand(command)]})()`);
@@ -53,7 +55,32 @@ app.whenReady().then(async () => {
       if (workspace.savedAt === null || !Array.isArray(workspace.executedCommandIds) || !workspace.executedCommandIds.includes(command.id)) {
         throw new Error(`workspace persistence failed ${JSON.stringify(workspace)}`);
       }
-      console.log(`[runtime-core-smoke] capture: handshake READY, command accepted then duplicated, durable cursor=1, workspace persisted`);
+      // Single-instance guarantee: a second instance with the same userData
+      // must exit without reading or modifying the shared workspace store.
+      // Spawn asynchronously: a synchronous spawn would block the primary
+      // event loop that serves the single-instance handshake.
+      const { spawn } = require("node:child_process");
+      console.log("[runtime-core-smoke] stage: secondary probe");
+      const storeFile = path.join(electronData, "v3-workbench-state.json");
+      const storeBefore = fs.readFileSync(storeFile);
+      const secondary = await new Promise((resolve) => {
+        const child = spawn(process.execPath, ["--no-sandbox", "--no-zygote", path.resolve(__dirname, "runtime-core-second-instance-probe.cjs")], {
+          cwd: root,
+          env: { ...process.env, V3_SMOKE_USER_DATA: process.env.V3_SMOKE_USER_DATA }
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+        child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+        child.on("exit", (code, signal) => resolve({ code, signal, stdout, stderr }));
+      });
+      const storeAfter = fs.readFileSync(storeFile);
+      if (secondary.code !== 0 || secondary.signal !== null) throw new Error(`second instance did not exit cleanly (code ${secondary.code}, signal ${secondary.signal}): ${secondary.stdout} ${secondary.stderr}`);
+      if (!storeBefore.equals(storeAfter)) throw new Error("second instance modified the shared workspace store");
+      if (secondary.stderr.includes("SECONDARY_INSTANCE_BYPASSED_SINGLE_INSTANCE_LOCK")) throw new Error("second instance bypassed the single-instance lock");
+      // Primary remains alive and functional after the secondary attempt.
+      if (!(await evaluate(win, "window.v3Desktop.runtimeInfo().then((info)=>Boolean(info.storePath))"))) throw new Error("primary instance did not survive the secondary probe");
+      console.log(`[runtime-core-smoke] capture: handshake READY, command accepted then duplicated, durable cursor=1, workspace persisted, single-instance secondary exit verified`);
     } else {
       await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace][data-connection-state=READY]'))", "restart handshake + replay READY");
       const replay = await evaluate(win, `window.v3Desktop.executeCommand(${JSON.stringify(command)})`);

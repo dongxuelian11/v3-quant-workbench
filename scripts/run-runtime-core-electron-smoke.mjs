@@ -1,5 +1,5 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { access, mkdir, rename, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
@@ -32,6 +32,17 @@ const electronArgs = [
   resolve(root, "scripts", "runtime-core-electron-smoke.cjs")
 ];
 for (const phase of ["capture", "restart"]) {
+  // POSIX-only: Chromium's single-instance lock files live in userData and
+  // are cleaned up at exit. On mounts that deny unlink (e.g. this Linux
+  // sandbox) the cleanup fails and the next phase would be mis-detected as
+  // a secondary instance, so stale lock files are renamed aside between
+  // sequential phases. Windows uses a named mutex and has no such files.
+  if (process.platform !== "win32") {
+    const userDataDir = resolve(root, `deliverables/electron-user-data-runtime-core-${runId}`);
+    for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+      try { await rename(join(userDataDir, name), join(userDataDir, `${name}.stale-${phase}`)); } catch { /* absent */ }
+    }
+  }
   const result = spawnSync(electron, electronArgs, {
     cwd: root,
     encoding: "utf8",

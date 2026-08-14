@@ -127,26 +127,47 @@ function createWindow(): void {
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
-app.whenReady().then(async () => {
-  await loadState();
-  registerIpc();
-  createWindow();
-  startBackendRuntime();
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-}).catch((error: unknown) => {
-  const code = error instanceof WorkspaceStoreError ? error.code : "APP_STARTUP_FAILED";
-  console.error(JSON.stringify({ level: "ERROR", code, message: error instanceof Error ? error.message : String(error) }));
-  app.exit(1);
-});
+// Electron single-instance guarantee: the workspace store is a process-local
+// serialized queue over one shared state file, so a second V3 instance must
+// never read or modify it. This decision happens before any WorkspaceStore
+// access (loadState runs inside whenReady below).
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.exit(0);
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+
+  app.whenReady().then(async () => {
+    await loadState();
+    registerIpc();
+    createWindow();
+    startBackendRuntime();
+    app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  }).catch((error: unknown) => {
+    const code = error instanceof WorkspaceStoreError ? error.code : "APP_STARTUP_FAILED";
+    console.error(JSON.stringify({ level: "ERROR", code, message: error instanceof Error ? error.message : String(error) }));
+    app.exit(1);
+  });
 
 async function gracefulShutdown(): Promise<void> {
   try {
+    // Reject new durable user mutations first, then drain pre-quit user
+    // work, then shut the backend down gracefully while the relay and the
+    // store stay alive, then perform the final cursor/state flush. Only
+    // then may the store be closed and the relay stopped.
+    store.beginQuiesce();
     await store.flush();
-    store.beginShutdown();
-    backendRelay?.stop();
     if (backendRuntimeLifecycle && backendSupervisor) {
       await backendRuntimeLifecycle.onExplicitQuit(GRACEFUL_SHUTDOWN_DEADLINE_MS);
     }
+    await store.flush();
+    store.beginShutdown();
+    backendRelay?.stop();
     console.error(JSON.stringify({
       level: "INFO",
       code: "GRACEFUL_SHUTDOWN_SUCCESS",
@@ -165,11 +186,12 @@ async function gracefulShutdown(): Promise<void> {
   }
 }
 
-app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-app.on("before-quit", (event) => {
-  if (shutdownComplete) return;
-  if (quitting) { event.preventDefault(); return; }
-  quitting = true;
-  event.preventDefault();
-  void gracefulShutdown();
-});
+  app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+  app.on("before-quit", (event) => {
+    if (shutdownComplete) return;
+    if (quitting) { event.preventDefault(); return; }
+    quitting = true;
+    event.preventDefault();
+    void gracefulShutdown();
+  });
+}

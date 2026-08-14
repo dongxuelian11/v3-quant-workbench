@@ -125,16 +125,20 @@ class CursorBackend {
 }
 
 class CursorMockFactory {
-  constructor({ autoReplay = false, replayPages = [], order = null } = {}) {
+  constructor({ autoReplay = false, replayPages = [], order = null, spawnPages = null } = {}) {
     this.autoReplay = autoReplay;
     this.replayPages = replayPages;
     this.order = order;
+    this.spawnPages = spawnPages;   // per-spawn replay page batches when set
+    this.spawnResults = [];
   }
   spawn() {
     const process = new MockProcess();
-    const backend = new CursorBackend(process, { autoReplay: this.autoReplay, replayPages: this.replayPages, order: this.order });
+    const pages = this.spawnPages && this.spawnPages.length > 0 ? this.spawnPages.shift() : this.replayPages;
+    const backend = new CursorBackend(process, { autoReplay: this.autoReplay, replayPages: pages, order: this.order });
     setImmediate(() => backend.hello());
     this.spawnResult = { process, backend };
+    this.spawnResults.push(this.spawnResult);
     return process;
   }
 }
@@ -153,7 +157,7 @@ function create(factory, overrides = {}, cursorPort) {
   }, factory, () => Buffer.alloc(32, 7));
 }
 
-test("events.ack is only sent after the durable cursor commit", async () => {
+test("event delivery is emit -> durable commit -> ack", async () => {
   const order = [];
   const factory = new CursorMockFactory({
     autoReplay: true,
@@ -167,9 +171,9 @@ test("events.ack is only sent after the durable cursor commit", async () => {
   await supervisor.start();
   await waitFor(() => supervisor.state === "READY");
   assert.deepEqual(order, [
-    "commit:1", "emit:1", "ack:1",
-    "commit:2", "emit:2", "ack:2",
-    "commit:3", "emit:3", "ack:3"
+    "emit:1", "commit:1", "ack:1",
+    "emit:2", "commit:2", "ack:2",
+    "emit:3", "commit:3", "ack:3"
   ]);
   assert.deepEqual(events, [1, 2, 3]);
   supervisor.stopNow();
@@ -208,9 +212,10 @@ test("cursor commits persist and a restart replays from the durable cursor", asy
   restarted.stopNow();
 });
 
-test("cursor persistence failure sends no ack and fails closed honestly", async () => {
+test("cursor persistence failure emits first, sends no ack, and fails closed honestly", async () => {
   const commits = [];
   const diagnostics = [];
+  const emitted = [];
   const factory = new CursorMockFactory({
     autoReplay: true,
     replayPages: [{ end: 3, watermark: 3 }]
@@ -223,8 +228,10 @@ test("cursor persistence failure sends no ack and fails closed honestly", async 
   };
   const supervisor = create(factory, {}, port);
   supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  supervisor.on("event", (event) => emitted.push(event.project_sequence));
   await assert.rejects(supervisor.start(), (error) => error instanceof Error);
   await waitFor(() => supervisor.state === "DISCONNECTED");
+  assert.deepEqual(emitted, [1, 2], "event 2 is emitted before its commit attempt (at-least-once)");
   assert.deepEqual(commits, [1, 2]);
   assert.deepEqual(factory.spawnResult.backend.ackSequences, [1], "event 2 must not be acked");
   assert.equal(diagnostics.some((item) => item.code === "CURSOR_COMMIT_FAILED"), true);
@@ -258,6 +265,82 @@ test("normal sequence gap recovers through replay without loss or reorder", asyn
   assert.deepEqual(commits, [1, 2, 3, 4, 5]);
   assert.deepEqual(backend.ackSequences, [1, 2, 3, 4, 5]);
   supervisor.stopNow();
+});
+
+test("commit failure + reconnect replays the event without stale cache suppression", async () => {
+  const commits = [];
+  const diagnostics = [];
+  let failedOnce = false;
+  const factory = new CursorMockFactory({
+    autoReplay: true,
+    spawnPages: [
+      [{ end: 3, watermark: 3 }],
+      [{ end: 3, watermark: 3 }]
+    ]
+  });
+  const port = {
+    commit: async (_projectId, sequence) => {
+      commits.push(sequence);
+      if (sequence === 2 && !failedOnce) { failedOnce = true; throw new Error("disk write failed"); }
+    }
+  };
+  const supervisor = new BackendSupervisor({
+    pythonExecutable: "python.exe",
+    backendWorkingDirectory: "D:\\V3\\backend",
+    desktopVersion: "0.1.0",
+    projectContext: { projectId: PROJECT_ID, projectContextRevisionId: REVISION_ID, lastDurableProjectEventSequence: 0 },
+    handshakeTimeoutMs: 500,
+    requestTimeoutMs: 500,
+    autoReconnect: true,
+    reconnectBaseDelayMs: 1,
+    reconnectMaxDelayMs: 2,
+    cursorPort: port
+  }, factory, () => Buffer.alloc(32, 7));
+  const emitted = [];
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  supervisor.on("event", (event) => emitted.push(event.project_sequence));
+  supervisor.on("error", () => {});
+  const starting = supervisor.start();
+  starting.catch(() => {});
+  // First session: 1 committed+acked, 2 emitted but commit failed -> disconnect.
+  await waitFor(() => supervisor.state === "DISCONNECTED");
+  assert.deepEqual(emitted, [1, 2]);
+  assert.deepEqual(factory.spawnResults[0].backend.ackSequences, [1]);
+  // Reconnect: the backend replays from the durable cursor (1), so event 2
+  // must be re-delivered (at-least-once), not swallowed by any stale cache.
+  await waitFor(() => supervisor.state === "READY", 5000);
+  assert.deepEqual(emitted, [1, 2, 2, 3], "event 2 replayed after reconnect and event 3 followed");
+  assert.deepEqual(commits, [1, 2, 2, 3]);
+  assert.deepEqual(factory.spawnResults[1].backend.ackSequences, [2, 3]);
+  assert.equal(diagnostics.some((item) => item.code === "CURSOR_COMMIT_FAILED"), true);
+  supervisor.stopNow();
+});
+
+test("application delivery failure before commit: no commit, no ack, replay possible", async () => {
+  const commits = [];
+  const diagnostics = [];
+  const factory = new CursorMockFactory({ autoReplay: true, replayPages: [{ end: 1, watermark: 1 }] });
+  const supervisor = create(factory, {}, { commit: async (_projectId, sequence) => { commits.push(sequence); } });
+  supervisor.on("event", () => { throw new Error("application relay exploded"); });
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await assert.rejects(supervisor.start(), (error) => error instanceof Error);
+  await waitFor(() => supervisor.state === "DISCONNECTED");
+  assert.deepEqual(commits, [], "no durable cursor commit after an application delivery failure");
+  assert.deepEqual(factory.spawnResult.backend.ackSequences, [], "no ack after an application delivery failure");
+  assert.equal(diagnostics.some((item) => item.code === "EVENT_APPLICATION_DELIVERY_FAILED"), true);
+  assert.equal(factory.spawnResult.process.terminated, true);
+
+  // A fresh runtime replays the same event: the failure left no durable
+  // cursor and no stale cache entry, so the event is delivered again.
+  const retryFactory = new CursorMockFactory({ autoReplay: true, replayPages: [{ end: 1, watermark: 1 }] });
+  const retry = create(retryFactory, {}, { commit: async (_projectId, sequence) => { commits.push(sequence); } });
+  const retried = [];
+  retry.on("event", (event) => retried.push(event.project_sequence));
+  await retry.start();
+  await waitFor(() => retry.state === "READY");
+  assert.deepEqual(retried, [1]);
+  assert.deepEqual(commits, [1]);
+  retry.stopNow();
 });
 
 test("duplicate event id redelivery is dropped", async () => {

@@ -225,6 +225,7 @@ export class WorkspaceStore {
   private state: PersistedWorkspace;
   private chain: Promise<unknown> = Promise.resolve();
   private tempCounter = 0;
+  private quiescing = false;
   private shuttingDown = false;
   quarantinePath: string | null = null;
 
@@ -284,7 +285,7 @@ export class WorkspaceStore {
   }
 
   saveUserState(userSnapshot: PersistedWorkspace): Promise<PersistedWorkspace> {
-    return this.enqueue(async () => {
+    return this.enqueueUser(async () => {
       if (!validateUserState(userSnapshot)) {
         throw new WorkspaceStoreError("WORKSPACE_STORE_INVALID_STATE", "renderer workspace snapshot does not match the closed user-state shape");
       }
@@ -299,7 +300,7 @@ export class WorkspaceStore {
   }
 
   resetUserState(): Promise<PersistedWorkspace> {
-    return this.enqueue(async () => {
+    return this.enqueueUser(async () => {
       const next = materialize(this.state);
       Object.assign(next, pickUserFields(structuredClone(DEFAULT_WORKSPACE)));
       next.savedAt = this.now();
@@ -311,7 +312,7 @@ export class WorkspaceStore {
   }
 
   executeCommand(command: DesktopCommandEnvelope): Promise<CommandReceipt> {
-    return this.enqueue(async () => {
+    return this.enqueueUser(async () => {
       const applied = applyCommandExactlyOnce(this.state, command);
       if (!applied.receipt.accepted) return applied.receipt;
       applied.state.savedAt = this.now();
@@ -342,13 +343,32 @@ export class WorkspaceStore {
     return this.enqueue(async () => {});
   }
 
+  /**
+   * Reject new durable user mutations (save/reset/command) while keeping
+   * runtime cursor commits and flush alive for the shutdown drain.
+   */
+  beginQuiesce(): void {
+    this.quiescing = true;
+  }
+
+  /** Reject every mutation including runtime cursor commits. */
   beginShutdown(): void {
     this.shuttingDown = true;
   }
 
+  private enqueueUser<T>(task: () => Promise<T>): Promise<T> {
+    if (this.shuttingDown) {
+      return Promise.reject(new WorkspaceStoreError("WORKSPACE_STORE_SHUTTING_DOWN", "workspace store is shut down and rejects new mutations"));
+    }
+    if (this.quiescing) {
+      return Promise.reject(new WorkspaceStoreError("WORKSPACE_STORE_QUIESCING", "workspace store is quitting and rejects new user mutations"));
+    }
+    return this.enqueue(task);
+  }
+
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
     if (this.shuttingDown) {
-      return Promise.reject(new WorkspaceStoreError("WORKSPACE_STORE_SHUTTING_DOWN", "workspace store is shutting down and rejects new mutations"));
+      return Promise.reject(new WorkspaceStoreError("WORKSPACE_STORE_SHUTTING_DOWN", "workspace store is shut down and rejects new mutations"));
     }
     const result = this.chain.then(task, task);
     this.chain = result.then(() => undefined, () => undefined);
