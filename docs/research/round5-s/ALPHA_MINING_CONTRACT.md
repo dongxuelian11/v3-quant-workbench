@@ -1,8 +1,11 @@
-# Round 5 S Bounded Alpha Mining Contract
+# Round 5 S Bounded Alpha Mining and Research-Loop Contract
 
 Task: `V3-ROUND5-S-ALPHA-MINING-01`
 
-Base: `eda009b601b681c8a26d2a98a1093b3e6f33245e`
+Original base: `eda009b601b681c8a26d2a98a1093b3e6f33245e`
+
+CURRENT main merged for the runnability correction:
+`d975c06382b15323176891dbe29347d516edb62f`
 
 ## Authority path
 
@@ -35,11 +38,35 @@ AlphaMiningJobSpec
   -> AlphaMiningRunRecord
 ```
 
-S never evaluates factor values. The injected port must return existing canonical
-objects, and S rejects evidence unless FactorDefinitionVersion, FactorEvaluation
-context, Dataset, Experiment Run/Attempt, ReviewerEvidence, RewardVector,
-complexity, period, label, horizon, evaluation policy and cost context all match
-the exact job.
+The backend research entry added by the runnability correction is:
+
+```text
+AlphaResearchLoopService.run(AlphaMiningJobSpec)
+  -> canonical FormalDatasetVersion owner
+  -> P1 resolve and verify Dataset actual bytes
+  -> strict canonical Dataset sample decoder
+  -> deterministic candidate generation
+  -> existing FactorDefinitionVersion and sole FormalFactorEvaluationService
+  -> P1 resolve and verify FeatureMaterialization actual bytes
+  -> V3 compute_reward_metrics(IC, RankIC, quantile returns, turnover, coverage)
+  -> registered Reviewer review_research_scope
+  -> ExperimentRun / ExperimentAttempt / ExperimentResult + RewardVector
+  -> scored reward feedback into the next deterministic generation
+  -> existing Artifact Store result publication
+```
+
+`run` accepts only the canonical job. It has no caller metric, caller Reviewer
+PASS, caller RewardVector or caller evaluation-evidence argument. Dataset and
+Feature bytes are resolved through the one P1 `CanonicalPayloadResolver`; the
+path creates neither another resolver nor another Artifact Store.
+
+The original injectable engine port remains for bounded contract tests. The
+runnable backend adapter never accepts caller evidence: it binds generated IR to
+the existing Formal Factor service, and rejects evidence unless
+FactorDefinitionVersion, FactorEvaluation context, Dataset actual bytes,
+FeatureMaterialization actual bytes, Experiment Run/Attempt, Reviewer evidence,
+RewardVector, complexity, period, label, horizon, evaluation policy and cost
+context all match the exact job.
 
 ## V1 search space
 
@@ -93,6 +120,14 @@ policy says `EXPLICIT_ZERO`, which changes policy identity. A blocking Reviewer
 finding yields `BLOCKED_BY_REVIEWER` and no total reward. LLM output never assigns
 reward.
 
+For the runnable adapter these components are computed from the exact joined
+FeatureMaterialization and Dataset sample coordinates by V3
+`compute_reward_metrics`; caller summaries are not an authority seam. The
+current deterministic fixture exercises IC, RankIC, quantile return/spread,
+turnover, coverage and complexity. The highest scored earlier-generation reward
+ID is incorporated into the next generation's canonical source lineage and
+generation token.
+
 ## User / Agent / promotion boundaries
 
 - `AlphaMiningJobDraft` is always `NON_CANONICAL`, `DRAFT`, and `started=False`.
@@ -109,6 +144,8 @@ reward.
   admit resources, run the engine, mint authority, publish or promote output.
 - Direct deterministic domain-engine calls in tests do not represent production
   user execution authority.
+- `AlphaResearchLoopService` is a backend research composition candidate. It is
+  not wired to a production user-start endpoint, Task runtime or Agent L2 action.
 - Production W0 ResearchLoop actions remain `NOT_RUN`; S adds no Agent L2 action.
 - `AlphaMiningRunRecord.factor_asset_lifecycle_transition` is always `NOT_RUN`.
   S never calls REVIEWED, PROMOTED, publication, Truth or Admission elevation.
@@ -141,7 +178,14 @@ The `round5_s_alpha_mining` suite covers all required behaviors:
 22. production ResearchLoop remains `NOT_RUN`;
 23. deterministic non-LLM mode;
 24. truthful rejected/deduplicated/evaluated lineage.
+25. strict Dataset actual-byte decoding and altered-byte rejection through P1;
+26. actual FeatureMaterialization byte resolution through P1;
+27. V3-computed IC, RankIC, returns, turnover and coverage;
+28. no caller metrics or caller PASS evidence in the runnable entry;
+29. scored reward feedback changes the next generation lineage;
+30. content-deterministic replay and Artifact reproduction.
 
-`scripts/backend-foundation-test.mjs` adds only this S test directory to the
-existing public validation harness. That one-line suite registration is the sole
-`SHARED_INTEGRATION_PATH`; no router, dependency manifest or lockfile changes.
+`scripts/backend-foundation-test.mjs` retains this S test directory in the
+existing public validation harness. `scripts/alpha-research-smoke.mjs` is a
+bounded backend smoke wrapper. There is no router, Desktop, dependency manifest,
+lockfile, Model, Data Quality or Core Research Pipeline change.

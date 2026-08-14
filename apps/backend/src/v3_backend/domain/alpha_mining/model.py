@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 
+from v3_backend.contracts.common.truth_admission import (
+    TruthAdmissionState,
+    UpstreamRequirement,
+    propagate_downstream_ceiling,
+)
 from v3_backend.control_plane.resource_governor import OperationProfile
 from v3_backend.domain.agent_research_loop import (
     BudgetLimitMode,
@@ -22,14 +27,17 @@ from v3_backend.domain.experiments import (
     RewardVector,
 )
 from v3_backend.domain.factor_assets import MiningFactorCandidate
+from v3_backend.domain.datasets import FormalDatasetVersion
 from v3_backend.domain.factors import (
     FactorDefinitionVersion,
     FactorEvaluation,
     FactorEvaluationContext,
     FactorNode,
+    FormalFeatureMaterialization,
     OperatorRegistry,
     ValueType,
 )
+from v3_backend.domain.payload_authority import PayloadResolutionReceipt
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
 
@@ -645,15 +653,99 @@ class AlphaMiningCandidateProposal:
 
 
 @dataclass(frozen=True, slots=True)
+class AlphaResearchFactorEvaluation:
+    """Research-only evidence bound to formal Factor/Dataset owners and P1 bytes."""
+
+    factor_evaluation_id: str
+    factor_definition_version_id: str
+    feature_materialization_id: str
+    dataset_version_id: str
+    context: FactorEvaluationContext
+    evaluation_provenance_artifact_id: str
+    dataset_resolution_receipt: PayloadResolutionReceipt
+    feature_resolution_receipt: PayloadResolutionReceipt
+    truth_admission: TruthAdmissionState
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        definition: FactorDefinitionVersion,
+        materialization: FormalFeatureMaterialization,
+        dataset: FormalDatasetVersion,
+        context: FactorEvaluationContext,
+        dataset_resolution_receipt: PayloadResolutionReceipt,
+        feature_resolution_receipt: PayloadResolutionReceipt,
+        proposed_state: TruthAdmissionState,
+    ) -> "AlphaResearchFactorEvaluation":
+        if materialization.factor_definition_version_id != definition.factor_definition_version_id:
+            raise AlphaMiningContractError(
+                "EVALUATION_BINDING_MISMATCH", "formal FeatureMaterialization definition"
+            )
+        if (
+            materialization.snapshot_id != dataset.snapshot_id
+            or materialization.universe_version_id != dataset.universe_version_id
+            or context.snapshot_id != dataset.snapshot_id
+            or context.universe_version_id != dataset.universe_version_id
+            or context.evaluator_version != materialization.evaluator_version
+        ):
+            raise AlphaMiningContractError(
+                "EVALUATION_BINDING_MISMATCH", "formal Factor/Dataset context"
+            )
+        if (
+            dataset_resolution_receipt.artifact_id != dataset.dataset_descriptor.artifact_id
+            or feature_resolution_receipt.artifact_id != materialization.output_descriptor.artifact_id
+        ):
+            raise AlphaMiningContractError(
+                "EVALUATION_BINDING_MISMATCH", "P1 actual-payload receipts"
+            )
+        truth = propagate_downstream_ceiling(
+            proposed_state,
+            (
+                UpstreamRequirement(dataset.dataset_version_id, dataset.truth_admission),
+                UpstreamRequirement(
+                    materialization.feature_materialization_id,
+                    materialization.truth_admission,
+                ),
+            ),
+        )
+        payload = {
+            "factor_definition_version_id": definition.factor_definition_version_id,
+            "feature_materialization_id": materialization.feature_materialization_id,
+            "dataset_version_id": dataset.dataset_version_id,
+            "context": context.to_wire(),
+            "evaluation_provenance_artifact_id": materialization.output_descriptor.artifact_id,
+            "dataset_resolution_receipt_id": dataset_resolution_receipt.receipt_identity,
+            "feature_resolution_receipt_id": feature_resolution_receipt.receipt_identity,
+            "truth_admission": truth.to_wire(),
+        }
+        return cls(
+            "fev_sha256_" + canonical_sha256(payload),
+            definition.factor_definition_version_id,
+            materialization.feature_materialization_id,
+            dataset.dataset_version_id,
+            context,
+            materialization.output_descriptor.artifact_id,
+            dataset_resolution_receipt,
+            feature_resolution_receipt,
+            truth,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AlphaMiningEvaluationEvidence:
     evaluation_context: AlphaMiningEvaluationContext
-    factor_evaluation: FactorEvaluation
+    factor_evaluation: FactorEvaluation | AlphaResearchFactorEvaluation
     experiment_run: ExperimentRun
     experiment_attempt: ExperimentAttempt
     reward_vector: RewardVector
     reviewer_evidence: ReviewerEvidence
     reviewer_findings: tuple[ReviewerFinding, ...]
     available_components: tuple[RewardComponentName, ...]
+
+    @property
+    def factor_evaluation_id(self) -> str:
+        return self.factor_evaluation.factor_evaluation_id
 
     def validate_exact(
         self, definition: FactorDefinitionVersion, job: AlphaMiningJobSpec
@@ -1011,6 +1103,7 @@ __all__ = [
     "AlphaMiningSourceField",
     "AlphaMiningStopReason",
     "AlphaMiningStoppingRules",
+    "AlphaResearchFactorEvaluation",
     "MissingRewardComponentPolicy",
     "RewardComponentName",
     "RewardComponentResult",

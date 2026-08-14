@@ -24,11 +24,19 @@ from .model import (
     AlphaMiningSourceField,
     AlphaMiningStopReason,
     AlphaMiningStoppingRules,
+    AlphaResearchFactorEvaluation,
     MissingRewardComponentPolicy,
     RewardComponentName,
     RewardComponentResult,
     RewardComponentRule,
     RewardComponentStatus,
+)
+from .research_loop import (
+    AlphaResearchLoopResult,
+    AlphaResearchLoopService,
+    CanonicalAlphaEvaluationPort,
+    CanonicalAlphaEvaluationRecord,
+    FactorEvaluationDefinitionBinder,
 )
 
 __all__ = [
@@ -51,8 +59,14 @@ __all__ = [
     "AlphaMiningSourceField",
     "AlphaMiningStopReason",
     "AlphaMiningStoppingRules",
+    "AlphaResearchFactorEvaluation",
+    "AlphaResearchLoopResult",
+    "AlphaResearchLoopService",
+    "CanonicalAlphaEvaluationPort",
+    "CanonicalAlphaEvaluationRecord",
     "DeterministicGrammarCandidateGenerator",
     "ExistingFactorEvaluationPort",
+    "FactorEvaluationDefinitionBinder",
     "MissingRewardComponentPolicy",
     "RewardComponentName",
     "RewardComponentResult",

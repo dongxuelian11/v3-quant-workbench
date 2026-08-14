@@ -4,7 +4,10 @@ Task: `V3-ROUND5-S-ALPHA-MINING-01`
 
 Reviewed: 2026-08-13 (Asia/Shanghai)
 
-Authorized V3 revision: `eda009b601b681c8a26d2a98a1093b3e6f33245e`
+Original authorized V3 revision: `eda009b601b681c8a26d2a98a1093b3e6f33245e`
+
+CURRENT main merged for this correction:
+`d975c06382b15323176891dbe29347d516edb62f`
 
 ## Decision
 
@@ -12,14 +15,16 @@ Round 5 S uses a small V3-native, seeded, closed-world grammar and the already
 accepted V3 evaluation/reviewer contracts. It adds no dependency, parser,
 evaluator, experiment store, resource manager, or promotion authority.
 
-The core path remains:
+The runnable backend path is now:
 
 ```text
 MiningFactorCandidate (NON_CANONICAL / DRAFT)
   -> existing Canonical Factor IR validation
   -> existing FactorDefinitionVersion
-  -> injected existing FactorEvaluation / Experiment / Reviewer evidence port
-  -> S-owned deterministic reward projection
+  -> sole existing FormalFactorEvaluationService
+  -> canonical Dataset and Feature actual bytes through P1
+  -> existing V3 experiment metrics and Reviewer integration
+  -> deterministic reward projection and next-generation feedback
 ```
 
 `FactorDefinitionVersion` remains the sole factor-math identity and the existing
@@ -50,10 +55,13 @@ official PyPI release metadata. No blog or secondary package index was used.
 | Search-space identity | S content-addressed policy over exact existing `OperatorRegistry` | Native, bounded and versioned. |
 | Candidate generation/mutation | S seeded closed grammar | Native; output is only `MiningFactorCandidate` plus a typed IR proposal. |
 | Canonical validation and identity | Existing V3 Factor IR / `FactorDefinitionVersion` | Reuse unchanged. |
-| Factor math | Existing evaluator behind an injected exact-evidence port | Reuse unchanged; S never computes factor values. |
-| Evaluation/experiment identity | Existing `FactorEvaluation`, Dataset, Experiment Run/Attempt | Reuse unchanged and validate exact bindings on return. |
-| Reviewer evidence | Existing `ReviewerEvidence` / `ReviewerFinding` | Reuse unchanged. |
-| Reward projection | S `AlphaMiningRewardPolicyVersion` | Native deterministic projection over actually present exact evidence; missing components remain explicit. |
+| Dataset bytes | Existing `FormalDatasetVersion` owner, Artifact Store and P1 `CanonicalPayloadResolver` | Reuse unchanged; strict decode binds sample coordinates, labels, splits and provenance. |
+| Factor math | Existing `FormalFactorEvaluationService` and its `DeterministicReferenceEvaluator` | Sole executor; no second evaluator and no caller-computed factor values. |
+| Feature bytes | Existing `FormalFeatureMaterialization`, Artifact Store and P1 resolver | Resolve and strictly join actual values to canonical Dataset samples. |
+| Evaluation metrics | Existing V3 `compute_reward_metrics` | V3 computes IC, RankIC, quantile returns/spread, turnover, coverage and complexity; caller summaries have no seam. |
+| Evaluation/experiment identity | Existing Formal Factor/Dataset, `ExperimentRun`, `ExperimentAttempt`, `ExperimentResult` | Reuse and bind exact owner/P1/evaluation identities. |
+| Reviewer evidence | Existing registered `review_research_scope` plus bounded Alpha evidence adapter | Reviewer output is produced internally; caller PASS evidence is not accepted. |
+| Reward projection | S `AlphaMiningRewardPolicyVersion` | Deterministic projection over V3-computed exact evidence; scored earlier-generation reward feeds the next generation lineage. |
 | Resource governance | Existing `ResourceGovernor` plus finite S job budgets | Reuse unchanged. Production user-start is `NOT_AVAILABLE / NOT_RUN` and fails before admission because current main lacks shared canonical user-action authority. |
 | Agent role | Draft only | Agent can propose a bounded L1 draft but cannot start a job or mint execution authority. |
 | Production user-start authority | No accepted shared canonical authority exists on current main | `NOT_AVAILABLE / NOT_RUN`; S defines no authorization DTO, Protocol, fake persistence authority, local receipt or approval repository. |
@@ -67,5 +75,7 @@ official PyPI release metadata. No blog or secondary package index was used.
   normalization, or third-party label creation.
 - No hidden metric substitution. Missing reward evidence is `NOT_AVAILABLE` or a
   policy-identified explicit zero rule.
+- No caller summary metrics, caller Reviewer PASS or caller RewardVector can
+  authorize a runnable reward.
 - No Agent L2 execution, generic Control Plane authority change, automatic
   FactorAsset promotion, or automatic publication.

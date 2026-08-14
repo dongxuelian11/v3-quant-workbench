@@ -4,6 +4,7 @@ import hashlib
 import math
 import time
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Protocol
 
 from v3_backend.domain.factors import (
@@ -81,6 +82,26 @@ class DeterministicGrammarCandidateGenerator:
 
     def __init__(self, registry: OperatorRegistry) -> None:
         self.registry = registry
+        self._rewarded: dict[str, list[tuple[int, Decimal, str, str]]] = {}
+
+    def observe_reward(
+        self,
+        *,
+        job: AlphaMiningJobSpec,
+        generation_index: int,
+        definition: FactorDefinitionVersion,
+        reward: AlphaMiningReward,
+    ) -> None:
+        if reward.status is not AlphaMiningRewardStatus.SCORED or reward.total_reward is None:
+            return
+        self._rewarded.setdefault(job.alpha_mining_job_spec_id, []).append(
+            (
+                generation_index,
+                Decimal(reward.total_reward),
+                reward.alpha_mining_reward_id,
+                definition.factor_definition_version_id,
+            )
+        )
 
     def _operators(self, job: AlphaMiningJobSpec) -> tuple[OperatorSpec, ...]:
         values: list[OperatorSpec] = []
@@ -151,7 +172,21 @@ class DeterministicGrammarCandidateGenerator:
             raise AlphaMiningContractError(
                 "OPERATOR_REGISTRY_BINDING_MISMATCH", self.registry.registry_version
             )
-        token = f"g{generation_index}|c{candidate_ordinal}|{job.search_mutation_policy_version}"
+        eligible_parents = tuple(
+            value
+            for value in self._rewarded.get(job.alpha_mining_job_spec_id, ())
+            if value[0] < generation_index
+        )
+        parent = (
+            sorted(eligible_parents, key=lambda value: (-value[1], value[3]))[0]
+            if eligible_parents
+            else None
+        )
+        parent_reward_id = parent[2] if parent is not None else "SEED_GENERATION"
+        token = (
+            f"g{generation_index}|c{candidate_ordinal}|{job.search_mutation_policy_version}|"
+            f"parent-reward:{parent_reward_id}"
+        )
         # Emit exact registered terminals first, then bounded operator trees.
         if candidate_ordinal <= len(job.search_space.source_fields):
             field = job.search_space.source_fields[candidate_ordinal - 1]
@@ -179,7 +214,7 @@ class DeterministicGrammarCandidateGenerator:
             root=root,  # type: ignore[arg-type]
             source_lineage_ref=(
                 f"alpha-mining:{job.alpha_mining_job_spec_id}:generation:{generation_index}:"
-                f"candidate:{candidate_ordinal}"
+                f"candidate:{candidate_ordinal}:parent-reward:{parent_reward_id}"
             ),
         )
 
@@ -357,6 +392,14 @@ class AlphaMiningEngine:
                     reward = AlphaMiningReward.create(
                         policy=job.reward_policy, evidence=evidence
                     )
+                    observe_reward = getattr(self.candidate_generator, "observe_reward", None)
+                    if callable(observe_reward):
+                        observe_reward(
+                            job=job,
+                            generation_index=generation_index,
+                            definition=definition,
+                            reward=reward,
+                        )
                 except (AlphaMiningContractError, ValueError, TypeError) as error:
                     rejected += 1
                     records.append(
@@ -386,7 +429,7 @@ class AlphaMiningEngine:
                         reason_code=reward.status.value,
                         factor_definition_version_id=definition_id,
                         duplicate_of_factor_definition_version_id=None,
-                        factor_evaluation_id=evidence.factor_evaluation.factor_evaluation_id,
+                        factor_evaluation_id=evidence.factor_evaluation_id,
                         alpha_mining_reward_id=reward.alpha_mining_reward_id,
                     )
                 )
