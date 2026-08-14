@@ -18,7 +18,20 @@ from ...domain.data_truth import (
     RawCaptureEnvelope,
     RevisionSemantics,
 )
-from ...domain.data_truth.provider import RawCaptureSubmission
+from ...domain.data_truth.capabilities import (
+    AvailableTimeSemantics,
+    FieldCapability,
+    FieldCapabilityPolicy,
+    FieldCapabilityState,
+    MarketDataFieldCode,
+    SourceCostClass,
+)
+from ...domain.data_truth.provider import (
+    PROVIDER_NEUTRAL_EOD_CONTRACT,
+    ProviderNeutralEodRow,
+    ProviderNeutralObservationBatch,
+    RawCaptureSubmission,
+)
 from ...provenance.canonical_hash import canonical_json_bytes, canonical_sha256
 
 
@@ -184,6 +197,47 @@ def _range(records: Sequence[Mapping[str, object]]) -> tuple[datetime | None, da
     )
 
 
+def _provider_neutral_rows(
+    records: Sequence[Mapping[str, object]],
+) -> tuple[ProviderNeutralEodRow, ...]:
+    rows: list[ProviderNeutralEodRow] = []
+    semantics = {
+        "open": "AKShare.stock_zh_a_hist.开盘",
+        "high": "AKShare.stock_zh_a_hist.最高",
+        "low": "AKShare.stock_zh_a_hist.最低",
+        "close": "AKShare.stock_zh_a_hist.收盘",
+        "volume": "AKShare.stock_zh_a_hist.成交量",
+        "amount": "AKShare.stock_zh_a_hist.成交额",
+    }
+    for row in records:
+        try:
+            session_date = date.fromisoformat(str(row["日期"]))
+        except (KeyError, ValueError) as error:
+            raise ProviderAcquisitionError("AKShare 日期 must use ISO calendar dates") from error
+        rows.append(
+            ProviderNeutralEodRow(
+                symbol=str(row.get("股票代码", "")),
+                session_date=session_date,
+                open=row.get("开盘"),
+                high=row.get("最高"),
+                low=row.get("最低"),
+                close=row.get("收盘"),
+                volume=row.get("成交量"),
+                amount=row.get("成交额"),
+                trading_status=None,
+                available_time=None,
+                revision_id=None,
+                source_semantics=semantics,
+                missing_reasons={
+                    "trading_status": "PROVIDER_COLUMN_ABSENT",
+                    "available_time": "PROVIDER_FIELD_UNAVAILABLE",
+                    "revision_id": "PROVIDER_FIELD_UNAVAILABLE",
+                },
+            )
+        )
+    return tuple(rows)
+
+
 class AkshareAShareEodAdapter:
     """Capture one explicit AKShare source without automatic fallback."""
 
@@ -215,6 +269,7 @@ class AkshareAShareEodAdapter:
         )
 
     def capabilities(self) -> tuple[ConnectorDataCapability, ...]:
+        policy = self.field_capability_policy()
         return (
             ConnectorDataCapability(
                 connector_version_id=self._connector_version_id,
@@ -223,7 +278,90 @@ class AkshareAShareEodAdapter:
                 logical_dataset=_PROVIDER_DATASET,
                 frequency="P1D",
                 revision_semantics=RevisionSemantics.UNKNOWN,
+                provenance_required=True,
+                policy_artifact_id=policy.policy_artifact_id,
             ),
+        )
+
+    def field_capability_policy(self) -> FieldCapabilityPolicy:
+        available = {
+            MarketDataFieldCode.OHLC: "open/high/low/close",
+            MarketDataFieldCode.VOLUME: "volume",
+            MarketDataFieldCode.AMOUNT: "amount",
+        }
+        unavailable_reasons = {
+            MarketDataFieldCode.TRADING_CALENDAR: "DATASET_DOES_NOT_DECLARE_CALENDAR",
+            MarketDataFieldCode.TRADING_SESSION: "DATASET_DOES_NOT_DECLARE_SESSION",
+            MarketDataFieldCode.TRADING_STATUS: "PROVIDER_COLUMN_ABSENT",
+            MarketDataFieldCode.SUSPENSION_STATUS: "PROVIDER_FIELD_UNAVAILABLE",
+            MarketDataFieldCode.TRADABILITY: "PROVIDER_FIELD_UNAVAILABLE",
+            MarketDataFieldCode.SECURITY_TYPE: "PROVIDER_FIELD_UNAVAILABLE",
+            MarketDataFieldCode.BOARD: "PROVIDER_FIELD_UNAVAILABLE",
+            MarketDataFieldCode.LISTING_STATUS: "PROVIDER_FIELD_UNAVAILABLE",
+            MarketDataFieldCode.DELISTING_STATUS: "PROVIDER_FIELD_UNAVAILABLE",
+            MarketDataFieldCode.ST_OR_RESTRICTED_STATUS: "PROVIDER_FIELD_UNAVAILABLE",
+            MarketDataFieldCode.PRICE_LIMIT_RULE_INPUTS: "PROVIDER_FIELD_UNAVAILABLE",
+            MarketDataFieldCode.NO_PRICE_LIMIT_SESSION_INPUTS: "PROVIDER_FIELD_UNAVAILABLE",
+            MarketDataFieldCode.CORPORATE_ACTION: "DATASET_DOES_NOT_DECLARE_CORPORATE_ACTION",
+            MarketDataFieldCode.ADJUSTMENT_FACTOR: "UNADJUSTED_DATASET_ONLY",
+            MarketDataFieldCode.UNIVERSE_MEMBERSHIP: "OBSERVED_SYMBOLS_ARE_NOT_UNIVERSE_AUTHORITY",
+            MarketDataFieldCode.AVAILABLE_TIME: "PROVIDER_FIELD_UNAVAILABLE",
+            MarketDataFieldCode.REVISION_ID: "PROVIDER_FIELD_UNAVAILABLE",
+        }
+        fields = [
+            FieldCapability(
+                field_code=code,
+                state=FieldCapabilityState.AVAILABLE,
+                source_field_semantic=semantic,
+                available_time_semantics=AvailableTimeSemantics.NOT_PROVIDED,
+                revision_semantics=RevisionSemantics.UNKNOWN,
+                provenance_required=True,
+            )
+            for code, semantic in available.items()
+        ]
+        fields.extend(
+            FieldCapability(
+                field_code=code,
+                state=FieldCapabilityState.UNAVAILABLE,
+                source_field_semantic=None,
+                available_time_semantics=AvailableTimeSemantics.NOT_PROVIDED,
+                revision_semantics=RevisionSemantics.UNKNOWN,
+                provenance_required=True,
+                reason_code=reason,
+            )
+            for code, reason in unavailable_reasons.items()
+        )
+        fields.extend(
+            (
+                FieldCapability(
+                    field_code=MarketDataFieldCode.REVISION_SEMANTICS,
+                    state=FieldCapabilityState.UNKNOWN,
+                    source_field_semantic=None,
+                    available_time_semantics=AvailableTimeSemantics.NOT_PROVIDED,
+                    revision_semantics=RevisionSemantics.UNKNOWN,
+                    provenance_required=True,
+                    reason_code="PROVIDER_REVISION_SEMANTICS_UNKNOWN",
+                ),
+                FieldCapability(
+                    field_code=MarketDataFieldCode.PIT_VISIBILITY,
+                    state=FieldCapabilityState.UNKNOWN,
+                    source_field_semantic=None,
+                    available_time_semantics=AvailableTimeSemantics.UNKNOWN,
+                    revision_semantics=RevisionSemantics.UNKNOWN,
+                    provenance_required=True,
+                    reason_code="PROVIDER_PIT_EVIDENCE_UNKNOWN",
+                ),
+            )
+        )
+        return FieldCapabilityPolicy(
+            policy_version="akshare-eastmoney-a-share-eod-field-policy-v1",
+            connector_version_id=self._connector_version_id,
+            provider_id=_PROVIDER_ID,
+            logical_dataset=_PROVIDER_DATASET,
+            frequency="P1D",
+            normalization_contract_version=PROVIDER_NEUTRAL_EOD_CONTRACT,
+            source_cost_class=SourceCostClass.FREE,
+            fields=tuple(fields),
         )
 
     def capture(self, request: Mapping[str, Any]) -> RawCaptureSubmission:
@@ -252,6 +390,11 @@ class AkshareAShareEodAdapter:
                 "AKShare acquisition failed; automatic fallback is forbidden"
             ) from error
         records = _records(frame)
+        observations = ProviderNeutralObservationBatch(
+            logical_dataset=_PROVIDER_DATASET,
+            frequency="P1D",
+            rows=_provider_neutral_rows(records),
+        )
         raw_payload = {
             "schema_id": _RAW_SCHEMA_ID,
             "provider": {
@@ -263,6 +406,7 @@ class AkshareAShareEodAdapter:
                 "endpoint": _ENDPOINT,
             },
             "records": records,
+            "provider_neutral_observations": observations.to_wire(),
         }
         payload_bytes = canonical_json_bytes(raw_payload)
         content_hash = hashlib.sha256(payload_bytes).hexdigest()
@@ -302,9 +446,11 @@ class AkshareAShareEodAdapter:
             "available_time_evidence": "UNKNOWN",
             "revision_evidence": "UNKNOWN",
             "provenance_complete": False,
+            "field_capability_policy_artifact_id": self.field_capability_policy().policy_artifact_id,
             "raw_payload": raw_payload,
         }
         return RawCaptureSubmission(
             envelope=envelope,
             source_metadata=_freeze(metadata),
+            observations=observations,
         )

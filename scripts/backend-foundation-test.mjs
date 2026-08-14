@@ -37,6 +37,10 @@ const suites = [
   "ws_a_contracts",
   "ws_b_catalog",
   "ws_c_artifact",
+  "systemic_p1_payload_authority",
+  "systemic_a1_payload_closure",
+  "systemic_a3_backtest_payload",
+  "core_research_pipeline",
   "ws_d_task_workers",
   "ws_e_runtime",
   "br1_foundation_integration",
@@ -45,10 +49,13 @@ const suites = [
   "track_d_ai_copilot",
   "track_e_model_prediction_runtime",
   "track_f_strategy_runtime",
+  "systemic_a2_strategy_signal_payload",
+  "systemic_portfolio_riskpolicy_owner",
   "track_g_ai_research_evidence_integration",
   "round3_w0_weight_seam",
   "track_h_portfolio_construction",
   "round3_track_i_risk_runtime",
+  "systemic_risk_application_publication",
   "track_j_a_share_backtest_core",
   "round3_integration_closure",
   "track_l_result_analytics",
@@ -56,6 +63,7 @@ const suites = [
   "reviewer_integration",
   "round5_w0_agent_research_loop",
   "round5_w0_factor_assets",
+  "round5_r_portfolio_risk_agent",
   "round5_s_alpha_mining"
 ];
 

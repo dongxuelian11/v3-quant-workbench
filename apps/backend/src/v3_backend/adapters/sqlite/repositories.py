@@ -55,8 +55,22 @@ _REPOSITORY_TABLES: dict[str, frozenset[str]] = {
     "strategy": frozenset({"strategy_draft", "strategy_version"}),
     "model": frozenset({"model_spec", "model_version", "prediction_signal_version"}),
     "study": frozenset({"study", "trial", "checkpoint"}),
-    "portfolio": frozenset({"portfolio_construction_spec", "portfolio_version"}),
-    "risk": frozenset({"risk_model_spec", "risk_model_version"}),
+    "portfolio": frozenset(
+        {
+            "portfolio_construction_spec",
+            "portfolio_version",
+            "target_weight_vector_publication",
+        }
+    ),
+    "risk": frozenset(
+        {
+            "risk_model_spec",
+            "risk_model_version",
+            "risk_policy_set_publication",
+            "risk_application_receipt_publication",
+            "risk_adjusted_weight_vector_publication",
+        }
+    ),
     "optimization": frozenset({"constraint_set_version", "optimization_problem", "optimization_solution"}),
     "backtest": frozenset({"experiment", "backtest_run_spec"}),
     "result": frozenset({"result", "result_component"}),
@@ -113,6 +127,10 @@ _IMMUTABLE_TABLES = frozenset(
         "corporate_action",
         "adjustment_factor_version",
         "universe_membership_interval",
+        "risk_policy_set_publication",
+        "target_weight_vector_publication",
+        "risk_application_receipt_publication",
+        "risk_adjusted_weight_vector_publication",
     }
 )
 
