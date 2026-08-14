@@ -30,6 +30,8 @@ SKIPPED != RESOLVED
 | `MODEL-DEFER` | `DEFERRED` | Model boundary | Dataset actual bytes to deterministic `ModelSample` remains outside this task. | Model/PR #27 is not advanced by pipeline runnability. | Dataset/Model actual-payload owner integration. |
 | `EXPERIMENT-REWARD-DEFER` | `CLOSED_FOR_ALPHA_RESEARCH_BACKEND` | PR #30 Alpha research-loop runnability | The bounded Alpha backend now resolves canonical Dataset/Feature actual bytes through P1, uses the sole Formal Factor evaluator, computes metrics in V3, invokes the registered Reviewer, and binds Experiment/Reward identities. | Closure is limited to the Alpha backend research composition; it grants no product or production authority. | No further strengthening for this bounded backend seam; product runtime remains separately deferred below. |
 | `ALPHA-RESEARCH-PRODUCT-RUNTIME-DEFER-01` | `DEFERRED` | PR #30 Alpha research-loop runnability | The runnable composition is not connected to a product Task/Run registry, production endpoint, or canonical user-start approval authority. | `RUNNABLE_BACKEND_CANDIDATE / PRE_ALPHA / RESEARCH_ONLY`; production user-start and Agent L2/L3 remain `NOT_AVAILABLE / NOT_RUN`. | Separately accepted product composition root, durable Run registry, and shared canonical user-action authority. |
+| `ALPHA-REVIEW-EVIDENCE-DEFER-02` | `DEFERRED` | PR #30 post-merge guard closure | Registered Reviewer rules do not currently check sample coverage, missingness, turnover or complexity. The Alpha backend records those dimensions as `NOT_RUN`, never default `PASS`. | Research reward remains scored under the `PRE_ALPHA` ceiling, but these dimensions cannot support a stronger Reviewer or maturity claim. | Add real deterministic Reviewer rules and evidence before any of these dimensions can become `PASS`. |
+| `ALPHA-GENERATOR-STATE-DEFER-03` | `DEFERRED` | PR #30 post-merge guard closure | Reward feedback is explicitly run-local, in-memory and non-canonical; a new run clears exact-job feedback even when the generator instance is reused. | Bounded same-run search uses prior-generation reward, but no cross-run recovery or continuation is available. | For B3 cross-run continuation, establish durable lineage/state ownership or an explicit stateless replay strategy. |
 | `RESULT-ANALYTICS-DEFER` | `DEFERRED` | Result stage | Result Analytics is not re-anchored to the new Research Backtest result/P1 artifact. | Result Artifact is readable, but analytics/product integration is not complete. | Result Analytics canonical result/ledger resolver and P1 re-anchor. |
 | `RISK-APP-HARDEN-01` | `DEFERRED` | Risk Application | Summary truth/admission presentation requires additional hardening beyond the accepted owner publication. | Core Risk output remains usable through exact owner IDs, but broader summaries must not overstate truth. | Risk Application summary/evidence truth-ceiling review. |
 
@@ -44,3 +46,7 @@ SKIPPED != RESOLVED
   Research Pipeline claim is changed.
 - `ALPHA-RESEARCH-PRODUCT-RUNTIME-DEFER-01 = DEFERRED` and production
   user-start remains `NOT_AVAILABLE / NOT_RUN`.
+- `ALPHA-REVIEW-EVIDENCE-DEFER-02 = DEFERRED`; unchecked Reviewer dimensions
+  remain `NOT_RUN`, not `PASS`.
+- `ALPHA-GENERATOR-STATE-DEFER-03 = DEFERRED`; reward feedback is run-local and
+  non-canonical, with no durable product-runtime state owner.

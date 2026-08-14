@@ -4,6 +4,7 @@ import hashlib
 import math
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Protocol
 
@@ -83,6 +84,9 @@ class DeterministicGrammarCandidateGenerator:
     def __init__(self, registry: OperatorRegistry) -> None:
         self.registry = registry
         self._rewarded: dict[str, list[tuple[int, Decimal, str, str]]] = {}
+
+    def begin_run(self, *, job: AlphaMiningJobSpec) -> None:
+        self._rewarded.pop(job.alpha_mining_job_spec_id, None)
 
     def observe_reward(
         self,
@@ -224,6 +228,26 @@ def _reason(error: Exception, fallback: str) -> str:
     return str(code) if code else fallback
 
 
+@dataclass(frozen=True, slots=True)
+class _CanonicalCandidate:
+    proposal: AlphaMiningCandidateProposal
+    definition: FactorDefinitionVersion
+    generation_index: int
+    candidate_ordinal: int
+
+
+@dataclass(slots=True)
+class _MiningRunState:
+    records: list[AlphaMiningCandidateRecord] = field(default_factory=list)
+    seen_definition_ids: set[str] = field(default_factory=set)
+    generated: int = 0
+    canonicalized: int = 0
+    deduplicated: int = 0
+    evaluated: int = 0
+    rejected: int = 0
+    stop_reason: AlphaMiningStopReason | None = None
+
+
 class AlphaMiningEngine:
     def __init__(
         self,
@@ -264,9 +288,7 @@ class AlphaMiningEngine:
             )
         return definition
 
-    def run(
-        self, job: AlphaMiningJobSpec, *, resource_observation: str
-    ) -> AlphaMiningRunRecord:
+    def _validate_job(self, job: AlphaMiningJobSpec) -> None:
         canonical_search_space = AlphaMiningSearchSpaceVersion.create(
             registry=self.registry,
             operator_allowlist=job.search_space.operator_allowlist,
@@ -283,176 +305,255 @@ class AlphaMiningEngine:
             raise AlphaMiningContractError(
                 "OPERATOR_REGISTRY_BINDING_MISMATCH", self.registry.registry_version
             )
-        started = self.clock()
-        records: list[AlphaMiningCandidateRecord] = []
-        seen_definitions: set[str] = set()
-        generated = canonicalized = deduplicated = evaluated = rejected = 0
-        stop_reason: AlphaMiningStopReason | None = None
-        candidates_per_generation = math.ceil(
-            job.max_candidate_count / job.max_generation_count
+
+    def _begin_generator_run(self, job: AlphaMiningJobSpec) -> None:
+        begin_run = getattr(self.candidate_generator, "begin_run", None)
+        if callable(begin_run):
+            begin_run(job=job)
+
+    def _generate_candidate(
+        self,
+        job: AlphaMiningJobSpec,
+        generation_index: int,
+        state: _MiningRunState,
+    ) -> AlphaMiningCandidateProposal | None:
+        candidate_ordinal = state.generated + 1
+        try:
+            proposal = self.candidate_generator.propose(
+                job,
+                generation_index=generation_index,
+                candidate_ordinal=candidate_ordinal,
+            )
+        except (FactorIrError, AlphaMiningContractError, ValueError) as error:
+            state.generated += 1
+            state.rejected += 1
+            state.records.append(
+                AlphaMiningCandidateRecord.create(
+                    candidate_id=f"candidate-generation-failure:{candidate_ordinal}",
+                    source_lineage_ref=(
+                        f"generation:{generation_index}:candidate:{candidate_ordinal}"
+                    ),
+                    generation_index=generation_index,
+                    candidate_ordinal=candidate_ordinal,
+                    disposition=AlphaMiningCandidateDisposition.REJECTED,
+                    reason_code=_reason(error, "CANDIDATE_GENERATION_REJECTED"),
+                    factor_definition_version_id=None,
+                    duplicate_of_factor_definition_version_id=None,
+                    factor_evaluation_id=None,
+                    alpha_mining_reward_id=None,
+                )
+            )
+            return None
+        state.generated += 1
+        return proposal
+
+    def _canonicalize_candidate(
+        self,
+        proposal: AlphaMiningCandidateProposal,
+        job: AlphaMiningJobSpec,
+        generation_index: int,
+        state: _MiningRunState,
+    ) -> _CanonicalCandidate | None:
+        candidate_ordinal = state.generated
+        try:
+            definition = self._definition(proposal, job)
+        except (FactorIrError, AlphaMiningContractError, ValueError) as error:
+            state.rejected += 1
+            state.records.append(
+                AlphaMiningCandidateRecord.create(
+                    candidate_id=proposal.candidate.candidate_id,
+                    source_lineage_ref=proposal.source_lineage_ref,
+                    generation_index=generation_index,
+                    candidate_ordinal=candidate_ordinal,
+                    disposition=AlphaMiningCandidateDisposition.REJECTED,
+                    reason_code=_reason(error, "CANONICAL_IR_REJECTED"),
+                    factor_definition_version_id=None,
+                    duplicate_of_factor_definition_version_id=None,
+                    factor_evaluation_id=None,
+                    alpha_mining_reward_id=None,
+                )
+            )
+            return None
+        state.canonicalized += 1
+        return _CanonicalCandidate(
+            proposal,
+            definition,
+            generation_index,
+            candidate_ordinal,
         )
 
-        for generation_index in range(1, job.max_generation_count + 1):
-            for _ in range(candidates_per_generation):
-                if generated >= job.max_candidate_count:
-                    stop_reason = AlphaMiningStopReason.CANDIDATE_BUDGET_EXHAUSTED
-                    break
-                candidate_ordinal = generated + 1
-                try:
-                    proposal = self.candidate_generator.propose(
-                        job,
-                        generation_index=generation_index,
-                        candidate_ordinal=candidate_ordinal,
-                    )
-                except (FactorIrError, AlphaMiningContractError, ValueError) as error:
-                    generated += 1
-                    rejected += 1
-                    records.append(
-                        AlphaMiningCandidateRecord.create(
-                            candidate_id=f"candidate-generation-failure:{candidate_ordinal}",
-                            source_lineage_ref=f"generation:{generation_index}:candidate:{candidate_ordinal}",
-                            generation_index=generation_index,
-                            candidate_ordinal=candidate_ordinal,
-                            disposition=AlphaMiningCandidateDisposition.REJECTED,
-                            reason_code=_reason(error, "CANDIDATE_GENERATION_REJECTED"),
-                            factor_definition_version_id=None,
-                            duplicate_of_factor_definition_version_id=None,
-                            factor_evaluation_id=None,
-                            alpha_mining_reward_id=None,
-                        )
-                    )
-                    continue
-
-                generated += 1
-                try:
-                    definition = self._definition(proposal, job)
-                    canonicalized += 1
-                except (FactorIrError, AlphaMiningContractError, ValueError) as error:
-                    rejected += 1
-                    records.append(
-                        AlphaMiningCandidateRecord.create(
-                            candidate_id=proposal.candidate.candidate_id,
-                            source_lineage_ref=proposal.source_lineage_ref,
-                            generation_index=generation_index,
-                            candidate_ordinal=candidate_ordinal,
-                            disposition=AlphaMiningCandidateDisposition.REJECTED,
-                            reason_code=_reason(error, "CANONICAL_IR_REJECTED"),
-                            factor_definition_version_id=None,
-                            duplicate_of_factor_definition_version_id=None,
-                            factor_evaluation_id=None,
-                            alpha_mining_reward_id=None,
-                        )
-                    )
-                    continue
-
-                definition_id = definition.factor_definition_version_id
-                if definition_id in seen_definitions:
-                    deduplicated += 1
-                    records.append(
-                        AlphaMiningCandidateRecord.create(
-                            candidate_id=proposal.candidate.candidate_id,
-                            source_lineage_ref=proposal.source_lineage_ref,
-                            generation_index=generation_index,
-                            candidate_ordinal=candidate_ordinal,
-                            disposition=AlphaMiningCandidateDisposition.DEDUPLICATED,
-                            reason_code="CANONICAL_DEFINITION_ALREADY_EVALUATED_IN_CONTEXT",
-                            factor_definition_version_id=definition_id,
-                            duplicate_of_factor_definition_version_id=definition_id,
-                            factor_evaluation_id=None,
-                            alpha_mining_reward_id=None,
-                        )
-                    )
-                    continue
-                # One canonical definition is attempted at most once per exact job context.
-                # A failed evaluation remains part of truthful lineage; retry requires a new
-                # explicit job/reason rather than an accidental duplicate source candidate.
-                seen_definitions.add(definition_id)
-                if evaluated >= job.max_evaluation_count:
-                    rejected += 1
-                    records.append(
-                        AlphaMiningCandidateRecord.create(
-                            candidate_id=proposal.candidate.candidate_id,
-                            source_lineage_ref=proposal.source_lineage_ref,
-                            generation_index=generation_index,
-                            candidate_ordinal=candidate_ordinal,
-                            disposition=AlphaMiningCandidateDisposition.REJECTED,
-                            reason_code="EVALUATION_BUDGET_EXHAUSTED",
-                            factor_definition_version_id=definition_id,
-                            duplicate_of_factor_definition_version_id=None,
-                            factor_evaluation_id=None,
-                            alpha_mining_reward_id=None,
-                        )
-                    )
-                    stop_reason = AlphaMiningStopReason.EVALUATION_BUDGET_EXHAUSTED
-                    break
-
-                try:
-                    evidence = self.evaluation_port.evaluate_existing(definition, job)
-                    evidence.validate_exact(definition, job)
-                    reward = AlphaMiningReward.create(
-                        policy=job.reward_policy, evidence=evidence
-                    )
-                    observe_reward = getattr(self.candidate_generator, "observe_reward", None)
-                    if callable(observe_reward):
-                        observe_reward(
-                            job=job,
-                            generation_index=generation_index,
-                            definition=definition,
-                            reward=reward,
-                        )
-                except (AlphaMiningContractError, ValueError, TypeError) as error:
-                    rejected += 1
-                    records.append(
-                        AlphaMiningCandidateRecord.create(
-                            candidate_id=proposal.candidate.candidate_id,
-                            source_lineage_ref=proposal.source_lineage_ref,
-                            generation_index=generation_index,
-                            candidate_ordinal=candidate_ordinal,
-                            disposition=AlphaMiningCandidateDisposition.REJECTED,
-                            reason_code=_reason(error, "EXACT_EVALUATION_EVIDENCE_REJECTED"),
-                            factor_definition_version_id=definition_id,
-                            duplicate_of_factor_definition_version_id=None,
-                            factor_evaluation_id=None,
-                            alpha_mining_reward_id=None,
-                        )
-                    )
-                    continue
-
-                evaluated += 1
-                records.append(
-                    AlphaMiningCandidateRecord.create(
-                        candidate_id=proposal.candidate.candidate_id,
-                        source_lineage_ref=proposal.source_lineage_ref,
-                        generation_index=generation_index,
-                        candidate_ordinal=candidate_ordinal,
-                        disposition=AlphaMiningCandidateDisposition.EVALUATED,
-                        reason_code=reward.status.value,
-                        factor_definition_version_id=definition_id,
-                        duplicate_of_factor_definition_version_id=None,
-                        factor_evaluation_id=evidence.factor_evaluation_id,
-                        alpha_mining_reward_id=reward.alpha_mining_reward_id,
-                    )
-                )
-                if (
-                    reward.status is AlphaMiningRewardStatus.BLOCKED_BY_REVIEWER
-                    and job.stopping_rules.stop_on_blocking_finding
-                ):
-                    stop_reason = AlphaMiningStopReason.BLOCKING_REVIEWER_FINDING
-                    break
-                if evaluated >= job.stopping_rules.target_evaluated_candidates:
-                    stop_reason = (
-                        AlphaMiningStopReason.TARGET_EVALUATED_CANDIDATES_REACHED
-                    )
-                    break
-            if stop_reason is not None:
-                break
-
-        if stop_reason is None:
-            stop_reason = (
-                AlphaMiningStopReason.CANDIDATE_BUDGET_EXHAUSTED
-                if generated >= job.max_candidate_count
-                else AlphaMiningStopReason.GENERATION_BUDGET_EXHAUSTED
+    @staticmethod
+    def _record_duplicate(
+        candidate: _CanonicalCandidate, state: _MiningRunState
+    ) -> bool:
+        definition_id = candidate.definition.factor_definition_version_id
+        if definition_id not in state.seen_definition_ids:
+            return False
+        state.deduplicated += 1
+        state.records.append(
+            AlphaMiningCandidateRecord.create(
+                candidate_id=candidate.proposal.candidate.candidate_id,
+                source_lineage_ref=candidate.proposal.source_lineage_ref,
+                generation_index=candidate.generation_index,
+                candidate_ordinal=candidate.candidate_ordinal,
+                disposition=AlphaMiningCandidateDisposition.DEDUPLICATED,
+                reason_code="CANONICAL_DEFINITION_ALREADY_EVALUATED_IN_CONTEXT",
+                factor_definition_version_id=definition_id,
+                duplicate_of_factor_definition_version_id=definition_id,
+                factor_evaluation_id=None,
+                alpha_mining_reward_id=None,
             )
+        )
+        return True
+
+    @staticmethod
+    def _record_evaluation_budget_exhaustion(
+        candidate: _CanonicalCandidate,
+        job: AlphaMiningJobSpec,
+        state: _MiningRunState,
+    ) -> bool:
+        if state.evaluated < job.max_evaluation_count:
+            return False
+        state.rejected += 1
+        state.records.append(
+            AlphaMiningCandidateRecord.create(
+                candidate_id=candidate.proposal.candidate.candidate_id,
+                source_lineage_ref=candidate.proposal.source_lineage_ref,
+                generation_index=candidate.generation_index,
+                candidate_ordinal=candidate.candidate_ordinal,
+                disposition=AlphaMiningCandidateDisposition.REJECTED,
+                reason_code="EVALUATION_BUDGET_EXHAUSTED",
+                factor_definition_version_id=(
+                    candidate.definition.factor_definition_version_id
+                ),
+                duplicate_of_factor_definition_version_id=None,
+                factor_evaluation_id=None,
+                alpha_mining_reward_id=None,
+            )
+        )
+        state.stop_reason = AlphaMiningStopReason.EVALUATION_BUDGET_EXHAUSTED
+        return True
+
+    def _evaluate_candidate(
+        self,
+        candidate: _CanonicalCandidate,
+        job: AlphaMiningJobSpec,
+        state: _MiningRunState,
+    ) -> AlphaMiningReward | None:
+        definition_id = candidate.definition.factor_definition_version_id
+        try:
+            evidence = self.evaluation_port.evaluate_existing(candidate.definition, job)
+            evidence.validate_exact(candidate.definition, job)
+            reward = AlphaMiningReward.create(policy=job.reward_policy, evidence=evidence)
+            observe_reward = getattr(self.candidate_generator, "observe_reward", None)
+            if callable(observe_reward):
+                observe_reward(
+                    job=job,
+                    generation_index=candidate.generation_index,
+                    definition=candidate.definition,
+                    reward=reward,
+                )
+        except (AlphaMiningContractError, ValueError, TypeError) as error:
+            state.rejected += 1
+            state.records.append(
+                AlphaMiningCandidateRecord.create(
+                    candidate_id=candidate.proposal.candidate.candidate_id,
+                    source_lineage_ref=candidate.proposal.source_lineage_ref,
+                    generation_index=candidate.generation_index,
+                    candidate_ordinal=candidate.candidate_ordinal,
+                    disposition=AlphaMiningCandidateDisposition.REJECTED,
+                    reason_code=_reason(error, "EXACT_EVALUATION_EVIDENCE_REJECTED"),
+                    factor_definition_version_id=definition_id,
+                    duplicate_of_factor_definition_version_id=None,
+                    factor_evaluation_id=None,
+                    alpha_mining_reward_id=None,
+                )
+            )
+            return None
+        self._record_evaluated_candidate(candidate, evidence, reward, state)
+        return reward
+
+    @staticmethod
+    def _record_evaluated_candidate(
+        candidate: _CanonicalCandidate,
+        evidence: AlphaMiningEvaluationEvidence,
+        reward: AlphaMiningReward,
+        state: _MiningRunState,
+    ) -> None:
+        state.evaluated += 1
+        state.records.append(
+            AlphaMiningCandidateRecord.create(
+                candidate_id=candidate.proposal.candidate.candidate_id,
+                source_lineage_ref=candidate.proposal.source_lineage_ref,
+                generation_index=candidate.generation_index,
+                candidate_ordinal=candidate.candidate_ordinal,
+                disposition=AlphaMiningCandidateDisposition.EVALUATED,
+                reason_code=reward.status.value,
+                factor_definition_version_id=(
+                    candidate.definition.factor_definition_version_id
+                ),
+                duplicate_of_factor_definition_version_id=None,
+                factor_evaluation_id=evidence.factor_evaluation_id,
+                alpha_mining_reward_id=reward.alpha_mining_reward_id,
+            )
+        )
+
+    @staticmethod
+    def _apply_reward_stop(
+        reward: AlphaMiningReward,
+        job: AlphaMiningJobSpec,
+        state: _MiningRunState,
+    ) -> None:
+        if (
+            reward.status is AlphaMiningRewardStatus.BLOCKED_BY_REVIEWER
+            and job.stopping_rules.stop_on_blocking_finding
+        ):
+            state.stop_reason = AlphaMiningStopReason.BLOCKING_REVIEWER_FINDING
+        elif state.evaluated >= job.stopping_rules.target_evaluated_candidates:
+            state.stop_reason = AlphaMiningStopReason.TARGET_EVALUATED_CANDIDATES_REACHED
+
+    def _run_candidate(
+        self,
+        job: AlphaMiningJobSpec,
+        generation_index: int,
+        state: _MiningRunState,
+    ) -> None:
+        if state.generated >= job.max_candidate_count:
+            state.stop_reason = AlphaMiningStopReason.CANDIDATE_BUDGET_EXHAUSTED
+            return
+        proposal = self._generate_candidate(job, generation_index, state)
+        if proposal is None:
+            return
+        candidate = self._canonicalize_candidate(
+            proposal, job, generation_index, state
+        )
+        if candidate is None or self._record_duplicate(candidate, state):
+            return
+        state.seen_definition_ids.add(candidate.definition.factor_definition_version_id)
+        if self._record_evaluation_budget_exhaustion(candidate, job, state):
+            return
+        reward = self._evaluate_candidate(candidate, job, state)
+        if reward is not None:
+            self._apply_reward_stop(reward, job, state)
+
+    @staticmethod
+    def _finalize_stop_reason(
+        job: AlphaMiningJobSpec, state: _MiningRunState
+    ) -> AlphaMiningStopReason:
+        if state.stop_reason is not None:
+            return state.stop_reason
+        if state.generated >= job.max_candidate_count:
+            return AlphaMiningStopReason.CANDIDATE_BUDGET_EXHAUSTED
+        return AlphaMiningStopReason.GENERATION_BUDGET_EXHAUSTED
+
+    def _create_run_record(
+        self,
+        job: AlphaMiningJobSpec,
+        resource_observation: str,
+        state: _MiningRunState,
+        started: float,
+    ) -> AlphaMiningRunRecord:
+        stop_reason = self._finalize_stop_reason(job, state)
         status = (
             AlphaMiningRunStatus.SUCCEEDED
             if stop_reason is AlphaMiningStopReason.TARGET_EVALUATED_CANDIDATES_REACHED
@@ -463,15 +564,34 @@ class AlphaMiningEngine:
             alpha_mining_job_spec_id=job.alpha_mining_job_spec_id,
             status=status,
             stop_reason=stop_reason,
-            candidate_records=tuple(records),
-            generated_count=generated,
-            canonicalized_count=canonicalized,
-            deduplicated_count=deduplicated,
-            evaluated_count=evaluated,
-            rejected_count=rejected,
+            candidate_records=tuple(state.records),
+            generated_count=state.generated,
+            canonicalized_count=state.canonicalized,
+            deduplicated_count=state.deduplicated,
+            evaluated_count=state.evaluated,
+            rejected_count=state.rejected,
             elapsed_seconds=f"{elapsed:.9f}",
             resource_observation=resource_observation,
         )
+
+    def run(
+        self, job: AlphaMiningJobSpec, *, resource_observation: str
+    ) -> AlphaMiningRunRecord:
+        self._validate_job(job)
+        self._begin_generator_run(job)
+        started = self.clock()
+        state = _MiningRunState()
+        candidates_per_generation = math.ceil(
+            job.max_candidate_count / job.max_generation_count
+        )
+        for generation_index in range(1, job.max_generation_count + 1):
+            for _ in range(candidates_per_generation):
+                self._run_candidate(job, generation_index, state)
+                if state.stop_reason is not None:
+                    break
+            if state.stop_reason is not None:
+                break
+        return self._create_run_record(job, resource_observation, state, started)
 
 
 __all__ = [
