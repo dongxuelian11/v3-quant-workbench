@@ -4,7 +4,7 @@ TASK_GOAL
 : On existing PR #35 and branch `codex/systemic-a3-backtest-market-payload-closure-01`, close only `A3-MINT-01` so `FormalBacktestService.execute()` is the sole supported Formal Backtest result mint seam; preserve the accepted Strategy -> Portfolio -> Risk -> Research Backtest -> Result behavior, do not modify data quality, Model, Alpha, Desktop, or open R2/C2, and stop after bounded correction, tests, push, fresh exact-head CI, and the required report without merging PR #35.
 
 TASK_PROGRESS
-: `A3_MINT_01_LOCAL_CLOSED_CANDIDATE`; the public `FormalBacktestRunResult.create(...)` seam is removed, the normal constructor fails closed, the non-exported internal materializer is called only by `FormalBacktestService.execute()`, and exact Formal identity/content/wire compatibility is preserved. All required focused, layered, full-backend, compile/import, authority, public, Research smoke, and full validation gates pass locally. Commit, push, and fresh exact-head push/PR CI remain `NOT_RUN`.
+: `A3_MINT_01_IMPLEMENTATION_COMMITTED`; implementation commit `e10005dbb776ba1e9304214c15741733a217b364` closes the public mint seams and preserves exact Formal identity/content/wire compatibility. All required local validation gates pass. This final Ledger-only checkpoint, normal push, and fresh exact-head push/PR CI remain `NOT_RUN`.
 
 PROJECT_AUTHORITY
 : `P0_PROJECT_AUTHORITY 1.0.1`; normal task, `P0_AUTHORITY_AMENDMENT = NOT_AUTHORIZED`; protected files are read-only. Manifest hashes verified on exact CURRENT main:
@@ -19,18 +19,19 @@ TOOLING_AUTHORITY
 
 ## A3-MINT-01 execution checkpoint
 
-- `CURRENT_PHASE = PRE_COMMIT_FINAL_REVIEW`
-- `NEXT_EXACT_ACTION = commit the bounded four-path correction, push normally to the existing PR #35 branch, then wait for fresh push-event and PR-event CI bound to the resulting exact head`
+- `CURRENT_PHASE = FINAL_LEDGER_CHECKPOINT_BEFORE_PUSH`
+- `NEXT_EXACT_ACTION = commit this Ledger-only checkpoint, push both ordinary commits to the existing PR #35 branch, then wait for fresh push-event and PR-event CI bound to the resulting exact head`
 - `CURRENT_MAIN = c5fb3b117c6466af3a19c12f65cfc8f7b5bd878c` (GitHub API exact ref; local commit object verified)
 - `PR35_BRANCH = codex/systemic-a3-backtest-market-payload-closure-01`
 - `PR35_ACCEPTED_HEAD = 79dcba91c69d9496e77f2b7706807d8ff130bc92`
 - `PR35_PRE_CORRECTION_HEAD = 79dcba91c69d9496e77f2b7706807d8ff130bc92`
-- `PR35_LOCAL_HEAD = 79dcba91c69d9496e77f2b7706807d8ff130bc92`
+- `PR35_LOCAL_HEAD = e10005dbb776ba1e9304214c15741733a217b364 before the final Ledger-only checkpoint commit`
 - `PR35_REMOTE_HEAD = 79dcba91c69d9496e77f2b7706807d8ff130bc92`
 - `PR35_PR_HEAD = 79dcba91c69d9496e77f2b7706807d8ff130bc92`
 - `PR35_MERGE_BASE = c5fb3b117c6466af3a19c12f65cfc8f7b5bd878c`
 - `PR35_STATE = OPEN / CLEAN / MERGEABLE / UNMERGED`
 - `PR35_CURRENT_CI = accepted-head push run 31773269919 SUCCESS and PR run 31773272478 SUCCESS; correction exact-head CI NOT_RUN`
+- `IMPLEMENTATION_COMMIT = e10005dbb776ba1e9304214c15741733a217b364`
 - `P0/P1_STATE = VERIFIED_CURRENT`
 - `A3_MINT_01_STATE = CLOSED CANDIDATE LOCALLY; remote delivery and exact-head CI NOT_RUN`
 - `FORMAL_RESULT_PUBLIC_API_STATE = public create(...) ABSENT; normal constructor mint ABSENT; public export mint helper ABSENT`
@@ -50,8 +51,8 @@ TOOLING_AUTHORITY
 - `FULL_VALIDATE = PASS`
 - `VISUAL_EVIDENCE_DEFER_STATUS = DEFERRED; historical issue not reproduced; current full validate PASS`
 - `CI_RUNS = baseline push 31773269919 SUCCESS; baseline PR 31773272478 SUCCESS; correction exact-head CI NOT_RUN`
-- `NOT_RUN = correction commit; push; fresh exact-head push CI; fresh exact-head PR CI`
-- `PENDING = remote delivery and fresh exact-head CI only`
+- `NOT_RUN = final Ledger-only checkpoint commit; push; fresh exact-head push CI; fresh exact-head PR CI`
+- `PENDING = final Ledger checkpoint, remote delivery, and fresh exact-head CI only`
 - `BLOCKED = none`
 - `OPTIONAL_TOOLING_STATUS = NOT_APPLICABLE`
 - `RECOVERY_CONSISTENCY = PASS`
