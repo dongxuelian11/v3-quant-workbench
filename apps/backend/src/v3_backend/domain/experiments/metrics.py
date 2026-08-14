@@ -39,6 +39,7 @@ class RewardMetrics:
     quantile_spread: float
     turnover: float
     complexity: int
+    top_sample_ids: tuple[str, ...]
 
 
 def _mean(values: tuple[float, ...]) -> float:
@@ -131,6 +132,7 @@ def compute_reward_metrics(
         quantile_spread=upper_return - lower_return,
         turnover=turnover,
         complexity=complexity,
+        top_sample_ids=tuple(sorted(current_top_ids)),
     )
 
 

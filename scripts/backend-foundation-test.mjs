@@ -63,7 +63,8 @@ const suites = [
   "reviewer_integration",
   "round5_w0_agent_research_loop",
   "round5_w0_factor_assets",
-  "round5_r_portfolio_risk_agent"
+  "round5_r_portfolio_risk_agent",
+  "round5_s_alpha_mining"
 ];
 
 for (const suite of suites) {

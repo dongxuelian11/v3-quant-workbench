@@ -28,7 +28,8 @@ SKIPPED != RESOLVED
 | `VISUAL-EVIDENCE-DEFER-01` | `DEFERRED` | Prior full local validation | Electron restart/layout functional assertions passed historically, but screenshot `15-workbench-restored-layout-after-restart.png` was once captured as 0 bytes. | Only an exact recurrence of this visual-capture defect may be recorded `DEFERRED_UNCHANGED`; other validation failures block. | Stabilize screenshot capture and re-run exact-head visual evidence; do not repair in this backend task. |
 | `STRATEGY-PORTFOLIO-DEFER` | `DEFERRED` | Core research pipeline runtime connection | The same live Formal Strategy execution now feeds Portfolio, but a persisted canonical `PortfolioIntent` owner/handoff is not established. | `RUNTIME_CONNECTED CANDIDATE` only; not `INTEGRATION_ACCEPTED`. | Canonical PortfolioIntent publication, reachability, resolver and negative cross-binding evidence. |
 | `MODEL-DEFER` | `DEFERRED` | Model boundary | Dataset actual bytes to deterministic `ModelSample` remains outside this task. | Model/PR #27 is not advanced by pipeline runnability. | Dataset/Model actual-payload owner integration. |
-| `EXPERIMENT-REWARD-DEFER` | `DEFERRED` | Experiment boundary | Experiment/Reviewer/Reward canonical recomputation is not connected to this result. | The smoke result is not a canonical experiment/reward result. | Exact result payload resolution and deterministic experiment/reward recompute. |
+| `EXPERIMENT-REWARD-DEFER` | `CLOSED_FOR_ALPHA_RESEARCH_BACKEND` | PR #30 Alpha research-loop runnability | The bounded Alpha backend now resolves canonical Dataset/Feature actual bytes through P1, uses the sole Formal Factor evaluator, computes metrics in V3, invokes the registered Reviewer, and binds Experiment/Reward identities. | Closure is limited to the Alpha backend research composition; it grants no product or production authority. | No further strengthening for this bounded backend seam; product runtime remains separately deferred below. |
+| `ALPHA-RESEARCH-PRODUCT-RUNTIME-DEFER-01` | `DEFERRED` | PR #30 Alpha research-loop runnability | The runnable composition is not connected to a product Task/Run registry, production endpoint, or canonical user-start approval authority. | `RUNNABLE_BACKEND_CANDIDATE / PRE_ALPHA / RESEARCH_ONLY`; production user-start and Agent L2/L3 remain `NOT_AVAILABLE / NOT_RUN`. | Separately accepted product composition root, durable Run registry, and shared canonical user-action authority. |
 | `RESULT-ANALYTICS-DEFER` | `DEFERRED` | Result stage | Result Analytics is not re-anchored to the new Research Backtest result/P1 artifact. | Result Artifact is readable, but analytics/product integration is not complete. | Result Analytics canonical result/ledger resolver and P1 re-anchor. |
 | `RISK-APP-HARDEN-01` | `DEFERRED` | Risk Application | Summary truth/admission presentation requires additional hardening beyond the accepted owner publication. | Core Risk output remains usable through exact owner IDs, but broader summaries must not overstate truth. | Risk Application summary/evidence truth-ceiling review. |
 
@@ -38,3 +39,8 @@ SKIPPED != RESOLVED
 - `FORMAL_BACKTEST_MARKET_STATE = NOT_AVAILABLE` and the Formal path remains fail closed.
 - `RESEARCH_FREE_DATA_V1` records every research assumption in result evidence.
 - `DEFERRED_GAPS_CLOSED = NONE` for task `V3-CORE-RESEARCH-PIPELINE-RUNNABILITY-PR35-20260814-01`.
+- `EXPERIMENT-REWARD-DEFER = CLOSED_FOR_ALPHA_RESEARCH_BACKEND` only for task
+  `V3-PR30-ALPHA-EXPERIMENT-RUNNABILITY-20260814-01`; no PR #35 or Core
+  Research Pipeline claim is changed.
+- `ALPHA-RESEARCH-PRODUCT-RUNTIME-DEFER-01 = DEFERRED` and production
+  user-start remains `NOT_AVAILABLE / NOT_RUN`.
