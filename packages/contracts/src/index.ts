@@ -44,7 +44,25 @@ export interface PersistedWorkspace {
   executedCommandIds: string[];
   commandExecutionCount: Record<string, number>;
   savedAt: string | null;
+  /** Runtime-owned: exact command id -> binding evidence for fail-closed idempotency. */
+  executedCommands?: Record<string, { name: string; issuedAt: string }>;
+  /** Runtime-owned: durable project event cursors keyed by projectId. */
+  projectEventCursors?: Record<string, number>;
+  /** Runtime-owned: monotonically increasing persistence revision. */
+  persistenceRevision?: number;
+  /** Runtime-owned: store schema marker for forward compatibility checks. */
+  runtimeMeta?: { storeSchemaVersion: number };
 }
+
+export const WORKSPACE_USER_FIELDS = [
+  "activeLab", "inspectorOpen", "bottomOpen", "activeProject", "selectedAsset",
+  "selectedUniverseMode", "dockLayouts", "strategy", "model"
+] as const;
+
+export const WORKSPACE_RUNTIME_FIELDS = [
+  "executedCommandIds", "commandExecutionCount", "executedCommands",
+  "projectEventCursors", "persistenceRevision", "runtimeMeta", "savedAt"
+] as const;
 
 export interface DesktopCommandEnvelope {
   id: string;
@@ -59,11 +77,35 @@ export interface CommandReceipt {
   executionCount: number;
 }
 
+export class CommandConflictError extends Error {
+  readonly code = "COMMAND_ID_CONFLICT";
+  readonly commandId: string;
+  readonly previousName: string;
+  readonly nextName: string;
+  constructor(commandId: string, previousName: string, nextName: string) {
+    super(`command id ${commandId} is already bound to ${previousName}; refusing conflicting ${nextName}`);
+    this.name = "CommandConflictError";
+    this.commandId = commandId;
+    this.previousName = previousName;
+    this.nextName = nextName;
+  }
+}
+
 export function applyCommandExactlyOnce(current: PersistedWorkspace, command: DesktopCommandEnvelope): { state: PersistedWorkspace; receipt: CommandReceipt } {
   const previous = current.commandExecutionCount[command.id] ?? 0;
-  if (current.executedCommandIds.includes(command.id)) return { state: structuredClone(current), receipt: { id: command.id, accepted: false, duplicate: true, executionCount: previous } };
+  const bound = current.executedCommands?.[command.id];
+  if (bound) {
+    if (bound.name !== command.name) throw new CommandConflictError(command.id, bound.name, command.name);
+    return { state: structuredClone(current), receipt: { id: command.id, accepted: false, duplicate: true, executionCount: previous } };
+  }
+  if (current.executedCommandIds.includes(command.id)) {
+    return { state: structuredClone(current), receipt: { id: command.id, accepted: false, duplicate: true, executionCount: previous } };
+  }
   const state = structuredClone(current);
-  state.executedCommandIds = [...state.executedCommandIds.slice(-199), command.id];
+  // V1 keeps the full durable command ledger; long-term retention/epoch
+  // compaction is deferred to V1.1. No slice-based eviction may re-execute.
+  state.executedCommandIds = [...state.executedCommandIds, command.id];
+  state.executedCommands = { ...(state.executedCommands ?? {}), [command.id]: { name: command.name, issuedAt: command.issuedAt } };
   state.commandExecutionCount = { ...state.commandExecutionCount, [command.id]: previous + 1 };
   if (command.name === "study.resume") state.model.studyState = "running";
   if (command.name === "study.pause") state.model.studyState = "paused";
@@ -118,6 +160,10 @@ export const DEFAULT_WORKSPACE: PersistedWorkspace = {
   },
   executedCommandIds: [],
   commandExecutionCount: {},
+  executedCommands: {},
+  projectEventCursors: {},
+  persistenceRevision: 0,
+  runtimeMeta: { storeSchemaVersion: 1 },
   savedAt: null
 };
 

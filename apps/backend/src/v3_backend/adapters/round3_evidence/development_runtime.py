@@ -294,6 +294,9 @@ class _SingleBundleReplay:
             return (self._event,)
         return ()
 
+    def high_watermark(self) -> int:
+        return 1
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(

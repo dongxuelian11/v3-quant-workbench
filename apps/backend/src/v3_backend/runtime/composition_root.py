@@ -117,7 +117,14 @@ class RuntimeSession:
         for event in events:
             write_frame(sink, event)
         last = events[-1]["project_sequence"] if events else message["after_sequence"]
-        write_frame(sink, {"kind": "events.replayComplete", "last_sequence": last})
+        watermark = self.events.high_watermark()
+        write_frame(sink, {
+            "kind": "events.replayComplete",
+            "last_sequence": last,
+            "next_after_sequence": last,
+            "high_watermark": watermark,
+            "has_more": last < watermark,
+        })
 
     def _prepare_shutdown(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
         if set(message) != {"kind", "deadline_at"}:

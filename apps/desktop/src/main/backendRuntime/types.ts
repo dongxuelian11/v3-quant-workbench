@@ -65,11 +65,21 @@ export interface SupervisorProjectContext {
   readonly lastDurableProjectEventSequence: number;
 }
 
+/**
+ * Durable event cursor commit seam. The supervisor only sends events.ack
+ * after this port has durably persisted the applied sequence; a failed
+ * commit must never ack and must never claim durable advancement.
+ */
+export interface DurableEventCursorPort {
+  commit(projectId: string, sequence: number): Promise<void>;
+}
+
 export interface SupervisorConfig {
   readonly pythonExecutable: string;
   readonly backendWorkingDirectory: string;
   readonly desktopVersion: string;
   readonly projectContext?: SupervisorProjectContext;
+  readonly cursorPort?: DurableEventCursorPort;
   readonly handshakeTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
   readonly reconnectBaseDelayMs?: number;
@@ -77,6 +87,8 @@ export interface SupervisorConfig {
   readonly crashLoopLimit?: number;
   readonly crashLoopWindowMs?: number;
   readonly autoReconnect?: boolean;
+  readonly maxBufferedEvents?: number;
+  readonly maxEventSequenceGap?: number;
   readonly backendModule?: "v3_backend.runtime.bootstrap" | "v3_backend.adapters.round3_evidence.development_runtime";
 }
 
