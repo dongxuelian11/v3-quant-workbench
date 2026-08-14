@@ -151,6 +151,10 @@ class FormalDatasetPublisher(Protocol):
     def publish_dataset(self, dataset: "FormalDatasetVersion") -> "FormalDatasetVersion": ...
 
 
+class FormalDatasetRepository(Protocol):
+    def get_dataset(self, dataset_version_id: str) -> "FormalDatasetVersion" | None: ...
+
+
 def feature_output_context_identity(materialization: FormalFeatureMaterialization) -> str:
     return "fmctx_sha256_" + canonical_sha256(
         {
@@ -834,6 +838,7 @@ __all__ = [
     "FEATURE_VALUES_PAYLOAD_ROLE",
     "FormalDatasetBuildRequest",
     "FormalDatasetPublisher",
+    "FormalDatasetRepository",
     "FormalDatasetService",
     "FormalDatasetVersion",
     "FormalFeatureMaterializationRepository",

@@ -28,6 +28,7 @@ from v3_backend.domain.artifacts.identity import (
 )
 from v3_backend.domain.artifacts.model import ArtifactDescriptor
 from v3_backend.domain.artifacts.policy import SafeFormatPolicy
+from v3_backend.provenance.canonical_hash import canonical_json_bytes
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{32,128}")
@@ -111,6 +112,35 @@ def _validate_safe_payload(path: Path, safe_format_id: str | None) -> None:
             ).encode("utf-8")
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise FormatRejected("invalid canonical JSON control artifact") from exc
+        if canonical != payload:
+            raise FormatRejected("JSON bytes are not in canonical form")
+        return
+    if safe_format_id == "canonical-finite-json-v1":
+        if path.stat().st_size > _MAX_CANONICAL_JSON_BYTES:
+            raise FormatRejected("canonical JSON control artifacts must remain small")
+        try:
+            payload = path.read_bytes()
+            text = payload.decode("utf-8")
+
+            def closed_finite_object(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError(f"duplicate JSON key: {key}")
+                    result[key] = value
+                return result
+
+            parsed = json.loads(
+                text,
+                object_pairs_hook=closed_finite_object,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError("non-finite values are forbidden")
+                ),
+            )
+
+            canonical = canonical_json_bytes(parsed)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise FormatRejected("invalid canonical finite JSON artifact") from exc
         if canonical != payload:
             raise FormatRejected("JSON bytes are not in canonical form")
         return

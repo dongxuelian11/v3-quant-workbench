@@ -32,14 +32,34 @@ from .runtime import (
     predict_model,
     train_model,
 )
+from .pipeline import (
+    CanonicalDatasetModelPipelineService,
+    MODEL_PIPELINE_SCHEMA_FINGERPRINT,
+    MODEL_PIPELINE_SCHEMA_VERSION,
+    MaterializedModelDataset,
+    ModelPipelineArtifactPublisher,
+    ModelPipelineRequest,
+    ModelPipelineResult,
+    ModelPipelineStatus,
+    ResolvedModelDatasetVersion,
+    materialize_model_samples,
+)
 
 __all__ = [
     "DatasetSplitRole",
+    "CanonicalDatasetModelPipelineService",
     "FeatureColumn",
     "FeatureDtype",
     "IsolatedModelWorker",
     "MissingValuePolicy",
     "ModelAlgorithmFamily",
+    "MODEL_PIPELINE_SCHEMA_FINGERPRINT",
+    "MODEL_PIPELINE_SCHEMA_VERSION",
+    "MaterializedModelDataset",
+    "ModelPipelineArtifactPublisher",
+    "ModelPipelineRequest",
+    "ModelPipelineResult",
+    "ModelPipelineStatus",
     "ModelEvaluationEvidence",
     "ModelPredictionRequest",
     "ModelRun",
@@ -52,6 +72,7 @@ __all__ = [
     "PredictionDatasetView",
     "PredictionValue",
     "SAFE_LINEAR_MODEL_MEDIA_TYPE",
+    "ResolvedModelDatasetVersion",
     "SafeLinearModelArtifact",
     "TrainingDatasetView",
     "TrainingEvidence",
@@ -64,4 +85,5 @@ __all__ = [
     "predict_model",
     "split_role",
     "train_model",
+    "materialize_model_samples",
 ]

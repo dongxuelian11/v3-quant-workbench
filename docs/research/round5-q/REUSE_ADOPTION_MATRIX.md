@@ -83,3 +83,27 @@ uses repository pins plus official upstream/PyPI evidence.
 - [LightGBM 4.7.0 package metadata](https://pypi.org/project/lightgbm/)
 - [XGBoost 3.3.0 package metadata](https://pypi.org/project/xgboost/)
 - [Optuna 4.9.0 package metadata](https://pypi.org/project/optuna/)
+
+## 2026-08-14 runnable backend integration on the same PR
+
+- The non-Agent `CanonicalDatasetModelPipelineService` directly reuses the persisted
+  A1 `FormalDatasetVersion`, the P1 `CanonicalPayloadResolver`, the existing
+  `FileSystemArtifactStore`, and Track E `train_model` / `predict_model` with the
+  admitted scikit-learn Ridge subprocess worker. It adds no second Dataset owner,
+  byte resolver, trainer, model store, or prediction engine.
+- `ModelPipelineRequest` contains the canonical Dataset ID, model configuration and
+  split roles; it has no `ModelSample[]` field. A low-level pure decoder exists only
+  for bounded tests and is not the runnable entry.
+- The A1 Dataset Artifact's ordered `feature_materialization_ids` are projected into
+  Track E's legacy feature-source field names. The projection is content-addressed,
+  remains bound to the exact formal Dataset ID/Artifact/P1 receipt, and does not mint
+  a FeatureSet or FactorEvaluation owner.
+- The accepted A1 Dataset payload does not carry row-level event/decision timestamps
+  or original observation ordinals. The bounded pipeline therefore reports
+  `STABLE_SPLIT_LOCAL_PROJECTION_RESEARCH_ONLY` and
+  `DATASET_KNOWLEDGE_CUTOFF_PROXY_RESEARCH_ONLY`; maturity stays
+  `PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE`.
+- Safe model bytes, training evidence, ModelVersion record and prediction result are
+  persisted as finite canonical JSON through the existing Artifact Store and are
+  restart/reopen verified. This is backend runnability only, not Agent L2/L3,
+  `PRODUCT_CONNECTED`, or `PRODUCTION_AVAILABLE`.

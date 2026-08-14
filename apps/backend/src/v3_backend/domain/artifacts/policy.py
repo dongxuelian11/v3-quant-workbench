@@ -121,6 +121,20 @@ class SafeFormatPolicy:
                     "source authority evidence JSON is non-executable and content-addressed",
                 ),
                 FormatRule(
+                    "MODEL_SAFE_LINEAR",
+                    "application/vnd.v3.safe-linear-model+json;version=1",
+                    ADMITTED,
+                    "canonical-finite-json-v1",
+                    "closed finite coefficient JSON is non-executable and identity-checked",
+                ),
+                FormatRule(
+                    "MODEL_PIPELINE_RECORD",
+                    "application/json",
+                    ADMITTED,
+                    "canonical-finite-json-v1",
+                    "model pipeline receipts and predictions are bounded finite canonical JSON",
+                ),
+                FormatRule(
                     "TEXT_REPORT",
                     "text/plain",
                     ADMITTED,

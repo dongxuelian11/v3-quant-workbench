@@ -28,6 +28,7 @@
     "smoke:frontend": "node scripts/public-frontend-smoke.mjs",
     "smoke:visual-evidence": "node scripts/frontend-smoke.mjs",
     "smoke:research-pipeline": "node scripts/research-pipeline-smoke.mjs",
+    "smoke:model-pipeline": "node scripts/model-pipeline-smoke.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
     "repo-audit": "node scripts/repo-audit.mjs",
     "sbom:generate": "node scripts/generate-sbom.mjs",
