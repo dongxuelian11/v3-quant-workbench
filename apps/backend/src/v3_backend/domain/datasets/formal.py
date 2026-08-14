@@ -499,6 +499,33 @@ class FormalDatasetVersion:
         }
 
 
+def formal_dataset_context_identity(dataset: FormalDatasetVersion) -> str:
+    if not isinstance(dataset, FormalDatasetVersion):
+        raise TypeError("formal Dataset context requires FormalDatasetVersion")
+    return "fdsctx_sha256_" + canonical_sha256(
+        {
+            "dataset_version_id": dataset.dataset_version_id,
+            "snapshot_id": dataset.snapshot_id,
+            "universe_version_id": dataset.universe_version_id,
+            "universe_membership_identity": dataset.universe_membership_identity,
+            "label_spec_id": dataset.label_spec_id,
+            "label_payload_id": dataset.label_payload_id,
+            "split_spec_id": dataset.split_spec_id,
+            "dataset_schema_fingerprint": dataset.dataset_schema_fingerprint,
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class FormalDatasetSample:
+    sample_id: str
+    instrument_id: str
+    observation_id: str
+    split: str
+    features: tuple[float | int | bool | None, ...]
+    label: float
+
+
 def _dataset_identity_payload(
     *,
     feature_materialization_ids: tuple[str, ...],
@@ -544,7 +571,7 @@ def _decode_json(payload: bytes, label: str) -> dict[str, object]:
     return value
 
 
-def _decode_feature(
+def decode_feature_materialization_payload(
     payload: bytes,
     *,
     materialization: FormalFeatureMaterialization,
@@ -575,6 +602,98 @@ def _decode_feature(
     if len(values) != shape[0] * shape[1]:
         raise ValueError("Feature materialization value count differs from shape")
     return instruments, observations, values
+
+
+def decode_formal_dataset_payload(
+    payload: bytes,
+    *,
+    dataset: FormalDatasetVersion,
+) -> tuple[FormalDatasetSample, ...]:
+    if not isinstance(dataset, FormalDatasetVersion):
+        raise TypeError("formal Dataset decode requires its canonical owner object")
+    root = _decode_json(payload, "Dataset payload")
+    expected = {
+        "schema_version",
+        "schema_fingerprint",
+        "snapshot_id",
+        "universe_version_id",
+        "universe_membership_identity",
+        "knowledge_cutoff",
+        "feature_materialization_ids",
+        "feature_receipt_ids",
+        "label_spec_id",
+        "label_payload_id",
+        "label_receipt_id",
+        "split_spec_id",
+        "feature_order",
+        "samples",
+    }
+    if (
+        set(root) != expected
+        or root["schema_version"] != DATASET_SCHEMA_VERSION
+        or root["schema_fingerprint"] != DATASET_SCHEMA_FINGERPRINT
+    ):
+        raise ValueError("Dataset payload schema is not admitted")
+    exact = {
+        "snapshot_id": dataset.snapshot_id,
+        "universe_version_id": dataset.universe_version_id,
+        "universe_membership_identity": dataset.universe_membership_identity,
+        "feature_materialization_ids": list(dataset.feature_materialization_ids),
+        "feature_receipt_ids": [value.receipt_identity for value in dataset.feature_receipts],
+        "label_spec_id": dataset.label_spec_id,
+        "label_payload_id": dataset.label_payload_id,
+        "label_receipt_id": dataset.label_receipt.receipt_identity,
+        "split_spec_id": dataset.split_spec_id,
+        "feature_order": list(dataset.feature_materialization_ids),
+    }
+    if any(root[name] != value for name, value in exact.items()):
+        raise ValueError("Dataset payload provenance differs from its canonical owner")
+    raw_samples = root["samples"]
+    if not isinstance(raw_samples, list) or len(raw_samples) != dataset.sample_count:
+        raise ValueError("Dataset payload sample count differs from its canonical owner")
+    samples: list[FormalDatasetSample] = []
+    seen: set[str] = set()
+    for raw in raw_samples:
+        if not isinstance(raw, dict) or set(raw) != {
+            "sample_id", "instrument_id", "observation_id", "split", "features", "label"
+        }:
+            raise ValueError("Dataset sample schema is not admitted")
+        if not all(isinstance(raw[name], str) and raw[name] for name in (
+            "sample_id", "instrument_id", "observation_id", "split"
+        )):
+            raise ValueError("Dataset sample identities and split are required")
+        expected_sample_id = "smp_sha256_" + canonical_sha256(
+            {
+                "instrument_id": raw["instrument_id"],
+                "observation_id": raw["observation_id"],
+                "label_spec_id": dataset.label_spec_id,
+            }
+        )
+        if raw["sample_id"] != expected_sample_id or raw["sample_id"] in seen:
+            raise ValueError("Dataset sample identity is non-canonical or duplicated")
+        if raw["split"] not in {"TRAIN", "VALIDATION", "TEST"}:
+            raise ValueError("Dataset sample split is not admitted")
+        features = raw["features"]
+        if not isinstance(features, list) or len(features) != len(dataset.feature_materialization_ids):
+            raise ValueError("Dataset sample feature vector differs from feature_order")
+        decoded_features: list[float | int | bool | None] = []
+        for value in features:
+            decoded_features.append(value if isinstance(value, bool) else _decimal_value(value, "feature"))
+        label = _decimal_value(raw["label"], "label")
+        if label is None:
+            raise ValueError("Dataset sample label cannot be null")
+        seen.add(raw["sample_id"])
+        samples.append(
+            FormalDatasetSample(
+                raw["sample_id"],
+                raw["instrument_id"],
+                raw["observation_id"],
+                raw["split"],
+                tuple(decoded_features),
+                label,
+            )
+        )
+    return tuple(samples)
 
 
 def _decimal_value(value: object, field: str) -> float | None:
@@ -674,7 +793,9 @@ class FormalDatasetService:
             )
             if result.verified_payload.schema_fingerprint != FACTOR_OUTPUT_SCHEMA_FINGERPRINT:
                 raise ValueError("P1 binding does not admit Feature materialization schema")
-            instruments, observations, values = _decode_feature(result.verified_payload.payload, materialization=materialization)
+            instruments, observations, values = decode_feature_materialization_payload(
+                result.verified_payload.payload, materialization=materialization
+            )
             if instruments != universe.instrument_ids:
                 raise ValueError("Feature materialization Universe membership/order differs")
             observed_coordinates = (instruments, observations)
@@ -840,6 +961,7 @@ __all__ = [
     "FormalDatasetPublisher",
     "FormalDatasetRepository",
     "FormalDatasetService",
+    "FormalDatasetSample",
     "FormalDatasetVersion",
     "FormalFeatureMaterializationRepository",
     "FormalLabelService",
@@ -851,6 +973,9 @@ __all__ = [
     "SplitSpecRepository",
     "DeterministicForwardReturnLabelEngine",
     "feature_output_context_identity",
+    "formal_dataset_context_identity",
+    "decode_feature_materialization_payload",
+    "decode_formal_dataset_payload",
     "label_payload_context_identity",
     "label_source_payload_context_identity",
 ]

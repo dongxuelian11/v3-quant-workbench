@@ -18,6 +18,7 @@ from v3_backend.domain.datasets.formal import (
     FormalFeatureMaterializationRepository,
     FormalDatasetRepository,
     feature_output_context_identity,
+    formal_dataset_context_identity,
     label_source_payload_context_identity,
 )
 from v3_backend.domain.factors.formal import (
@@ -152,6 +153,30 @@ class A1CanonicalPayloadBindingResolver:
                 semantic_fingerprint=owner.label_spec_id,
                 provenance_reference_id=owner.source_receipt.receipt_identity,
             )
+        if request.owner_namespace == "v3.datasets.formal" and request.payload_role == DATASET_ARTIFACT_ROLE:
+            if self._datasets is None:
+                return None
+            owner = self._datasets.get_dataset(request.owner_id)
+            if owner is None or request.owner_version != owner.dataset_version_id:
+                return None
+            exact_context = formal_dataset_context_identity(owner)
+            if request.context_identity != exact_context:
+                return None
+            descriptor = owner.dataset_descriptor
+            return CanonicalPayloadBinding(
+                owner_namespace=request.owner_namespace,
+                owner_id=owner.dataset_version_id,
+                owner_version=owner.dataset_version_id,
+                payload_role=DATASET_ARTIFACT_ROLE,
+                artifact_id=descriptor.artifact_id,
+                expected_sha256=descriptor.sha256,
+                expected_byte_size=descriptor.byte_size,
+                context_identity=exact_context,
+                binding_version=self.binding_version,
+                schema_fingerprint=owner.dataset_schema_fingerprint,
+                semantic_fingerprint=owner.label_payload_id,
+                provenance_reference_id=owner.label_receipt.receipt_identity,
+            )
         if request.owner_namespace == "v3.datasets" and request.payload_role == DATASET_ARTIFACT_ROLE:
             return self._resolve_dataset(request)
         return None
@@ -204,6 +229,10 @@ class FileSystemCanonicalJsonArtifactPublisher(CanonicalJsonArtifactPublisher):
             "DATASET_LABELS",
             "DATASET_SAMPLES",
             "CANONICAL_OWNER_RECORD",
+            "ALPHA_RESEARCH_METRICS",
+            "ALPHA_RESEARCH_REVIEW",
+            "ALPHA_RESEARCH_RUN",
+            "ALPHA_RESEARCH_RESULT",
         }:
             raise ValueError("A1 canonical JSON publisher received an unsupported semantic role")
         encoded = canonical_json_bytes(payload)
