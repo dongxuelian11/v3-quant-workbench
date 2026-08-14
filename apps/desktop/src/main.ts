@@ -1,9 +1,6 @@
 import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
-  DEFAULT_WORKSPACE,
-  applyCommandExactlyOnce,
   type CommandReceipt,
   type DesktopCommandEnvelope,
   type PersistedWorkspace
@@ -13,9 +10,10 @@ import {
   BackendSupervisor,
   registerBackendRuntimeIpc
 } from "./main/backendRuntime/index";
+import { WorkspaceStore, WorkspaceStoreError } from "./main/runtimePersistence/workspaceStore";
 
 let mainWindow: BrowserWindow | null = null;
-let state: PersistedWorkspace = structuredClone(DEFAULT_WORKSPACE);
+let store: WorkspaceStore;
 let storePath = "";
 let backendSupervisor: BackendSupervisor | null = null;
 let backendRelay: BackendRuntimeEventRelay | null = null;
@@ -32,45 +30,43 @@ function trusted(event: IpcMainInvokeEvent): void {
 
 async function loadState(): Promise<void> {
   storePath = join(app.getPath("userData"), "v3-workbench-state.json");
-  try {
-    const parsed = JSON.parse(await readFile(storePath, "utf8")) as PersistedWorkspace;
-    state = { ...structuredClone(DEFAULT_WORKSPACE), ...parsed };
-  } catch {
-    state = structuredClone(DEFAULT_WORKSPACE);
-    await persist();
+  store = new WorkspaceStore(storePath);
+  const loaded = await store.load();
+  if (loaded.quarantinedPath !== null) {
+    console.error(JSON.stringify({
+      level: "WARN",
+      code: "WORKSPACE_STORE_CORRUPT_QUARANTINED",
+      message: "workspace store was malformed or schema-invalid; original file was quarantined and defaults were initialized",
+      quarantine_file: loaded.quarantinedPath
+    }));
   }
 }
 
-async function persist(): Promise<PersistedWorkspace> {
-  state.savedAt = new Date().toISOString();
-  await mkdir(dirname(storePath), { recursive: true });
-  const temporary = `${storePath}.tmp`;
-  await writeFile(temporary, JSON.stringify(state, null, 2), "utf8");
-  await rename(temporary, storePath);
-  return structuredClone(state);
-}
-
 function registerIpc(): void {
-  ipcMain.handle("workspace:load", (event) => { trusted(event); return structuredClone(state); });
-  ipcMain.handle("workspace:save", async (event, next: PersistedWorkspace) => {
+  ipcMain.handle("workspace:load", (event) => { trusted(event); return store.snapshot(); });
+  ipcMain.handle("workspace:save", (event, next: PersistedWorkspace) => {
     trusted(event);
-    state = structuredClone(next);
-    return persist();
+    return store.saveUserState(next);
   });
-  ipcMain.handle("workspace:reset", async (event) => {
+  ipcMain.handle("workspace:reset", (event) => {
     trusted(event);
-    state = structuredClone(DEFAULT_WORKSPACE);
-    return persist();
+    return store.resetUserState();
   });
-  ipcMain.handle("command:execute", async (event, command: DesktopCommandEnvelope): Promise<CommandReceipt> => {
+  ipcMain.handle("command:execute", (event, command: DesktopCommandEnvelope): Promise<CommandReceipt> => {
     trusted(event);
-    const applied = applyCommandExactlyOnce(state, command);
-    if (applied.receipt.duplicate) return applied.receipt;
-    state = applied.state;
-    await persist();
-    return applied.receipt;
+    return store.executeCommand(command);
   });
-  ipcMain.handle("runtime:info", (event) => { trusted(event); return { electron: process.versions.electron, platform: process.platform, storePath, agentEvidenceMode: AGENT_EVIDENCE_MODE }; });
+  ipcMain.handle("runtime:info", (event) => {
+    trusted(event);
+    return {
+      electron: process.versions.electron,
+      platform: process.platform,
+      storePath,
+      agentEvidenceMode: AGENT_EVIDENCE_MODE,
+      durableEventCursor: store.getProjectEventCursor(BACKEND_PROJECT_ID),
+      persistenceRevision: store.persistenceRevision
+    };
+  });
 }
 
 function startBackendRuntime(): void {
@@ -82,7 +78,7 @@ function startBackendRuntime(): void {
     projectContext: {
       projectId: BACKEND_PROJECT_ID,
       projectContextRevisionId: BACKEND_PROJECT_CONTEXT_REVISION_ID,
-      lastDurableProjectEventSequence: 0
+      lastDurableProjectEventSequence: store.getProjectEventCursor(BACKEND_PROJECT_ID)
     },
     backendModule: AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE"
       ? "v3_backend.adapters.round3_evidence.development_runtime"
@@ -127,7 +123,11 @@ app.whenReady().then(async () => {
   createWindow();
   startBackendRuntime();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-}).catch((error) => { console.error(error); app.exit(1); });
+}).catch((error: unknown) => {
+  const code = error instanceof WorkspaceStoreError ? error.code : "APP_STARTUP_FAILED";
+  console.error(JSON.stringify({ level: "ERROR", code, message: error instanceof Error ? error.message : String(error) }));
+  app.exit(1);
+});
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("before-quit", () => {

@@ -23,7 +23,7 @@
     "test": "node --test tests/unit/*.test.mjs",
     "test:unit": "npm run test",
     "test:backend": "node scripts/backend-foundation-test.mjs",
-    "test:runtime": "node --test tests/ws_e_electron_runtime/cross-language.test.mjs tests/ws_e_electron_runtime/framing-and-boundary.test.mjs tests/ws_e_electron_runtime/supervisor.test.mjs",
+    "test:runtime": "node --test tests/ws_e_electron_runtime/*.test.mjs",
     "smoke:electron": "node scripts/run-electron-smoke.mjs",
     "smoke:frontend": "node scripts/public-frontend-smoke.mjs",
     "smoke:visual-evidence": "node scripts/frontend-smoke.mjs",
