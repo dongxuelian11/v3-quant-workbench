@@ -1,6 +1,6 @@
 # V3 Project Constitution
 
-Authority version: `1.0.1`
+Authority version: `1.0.2`
 Authority status: `P0_PROJECT_AUTHORITY`
 
 This Constitution is normative project doctrine and a target invariant set. It is not a claim that every owner, integration, runtime handler, or product surface is already implemented or accepted. Current maturity must be stated with the vocabulary in `docs/status/V3_CAPABILITY_LEVELS.md` and supported by current evidence.
