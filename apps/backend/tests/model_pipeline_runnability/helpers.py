@@ -18,7 +18,10 @@ from v3_backend.domain.datasets import (
     SplitSpec,
 )
 from v3_backend.domain.factors import FormalFactorEvaluationRequest
-from v3_backend.domain.models import CanonicalDatasetModelPipelineService
+from v3_backend.domain.models import (
+    CanonicalDatasetModelPipelineService,
+    ModelPipelineDependencies,
+)
 from v3_backend.domain.payload_authority import CanonicalPayloadResolver
 
 
@@ -117,11 +120,13 @@ def build_model_pipeline_development_fixture(worker) -> ModelPipelineDevelopment
         byte_reader=case.store,
     )
     service = CanonicalDatasetModelPipelineService(
-        datasets=owner,
-        split_specs=SpecRepository(case.split),
-        payload_resolver=payload_resolver,
-        worker=worker,
-        artifact_publisher=FileSystemModelPipelineArtifactPublisher(case.store),
+        ModelPipelineDependencies(
+            datasets=owner,
+            split_specs=SpecRepository(case.split),
+            payload_resolver=payload_resolver,
+            worker=worker,
+            artifact_publisher=FileSystemModelPipelineArtifactPublisher(case.store),
+        )
     )
     return ModelPipelineDevelopmentFixture(
         case=case,

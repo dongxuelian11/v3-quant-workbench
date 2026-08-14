@@ -153,31 +153,34 @@ class A1CanonicalPayloadBindingResolver:
                 provenance_reference_id=owner.source_receipt.receipt_identity,
             )
         if request.owner_namespace == "v3.datasets" and request.payload_role == DATASET_ARTIFACT_ROLE:
-            if self._datasets is None:
-                return None
-            owner = self._datasets.get_dataset(request.owner_id)
-            if (
-                owner is None
-                or request.owner_version != owner.dataset_version_id
-                or request.context_identity != owner.dataset_version_id
-            ):
-                return None
-            descriptor = owner.dataset_descriptor
-            return CanonicalPayloadBinding(
-                owner_namespace=request.owner_namespace,
-                owner_id=owner.dataset_version_id,
-                owner_version=owner.dataset_version_id,
-                payload_role=DATASET_ARTIFACT_ROLE,
-                artifact_id=descriptor.artifact_id,
-                expected_sha256=descriptor.sha256,
-                expected_byte_size=descriptor.byte_size,
-                context_identity=owner.dataset_version_id,
-                binding_version=self.binding_version,
-                schema_fingerprint=owner.dataset_schema_fingerprint,
-                semantic_fingerprint=owner.split_spec_id,
-                provenance_reference_id=owner.label_receipt.receipt_identity,
-            )
+            return self._resolve_dataset(request)
         return None
+
+    def _resolve_dataset(self, request: PayloadResolutionRequest) -> CanonicalPayloadBinding | None:
+        if self._datasets is None:
+            return None
+        owner = self._datasets.get_dataset(request.owner_id)
+        if (
+            owner is None
+            or request.owner_version != owner.dataset_version_id
+            or request.context_identity != owner.dataset_version_id
+        ):
+            return None
+        descriptor = owner.dataset_descriptor
+        return CanonicalPayloadBinding(
+            owner_namespace=request.owner_namespace,
+            owner_id=owner.dataset_version_id,
+            owner_version=owner.dataset_version_id,
+            payload_role=DATASET_ARTIFACT_ROLE,
+            artifact_id=descriptor.artifact_id,
+            expected_sha256=descriptor.sha256,
+            expected_byte_size=descriptor.byte_size,
+            context_identity=owner.dataset_version_id,
+            binding_version=self.binding_version,
+            schema_fingerprint=owner.dataset_schema_fingerprint,
+            semantic_fingerprint=owner.split_spec_id,
+            provenance_reference_id=owner.label_receipt.receipt_identity,
+        )
 
 
 class FileSystemCanonicalJsonArtifactPublisher(CanonicalJsonArtifactPublisher):

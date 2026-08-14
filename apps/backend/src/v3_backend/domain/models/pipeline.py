@@ -25,6 +25,7 @@ from v3_backend.domain.payload_authority import (
     CanonicalPayloadResolver,
     PayloadResolutionReceipt,
     PayloadResolutionRequest,
+    PayloadResolutionResult,
 )
 from v3_backend.provenance.canonical_hash import canonical_artifact_id, canonical_sha256
 
@@ -53,23 +54,24 @@ class ModelPipelineStatus(StrEnum):
     SUCCESS = "SUCCESS"
 
 
+@dataclass(frozen=True, slots=True)
+class ModelArtifactPublication:
+    provenance_entity_id: str
+    schema_fingerprint: str
+    semantic_fingerprint: str
+
+
 class ModelPipelineArtifactPublisher(Protocol):
     def publish_record(
         self,
         payload: Mapping[str, object],
-        *,
-        provenance_entity_id: str,
-        schema_fingerprint: str,
-        semantic_fingerprint: str,
+        publication: ModelArtifactPublication,
     ) -> ArtifactDescriptor: ...
 
     def publish_safe_model(
         self,
         artifact: SafeLinearModelArtifact,
-        *,
-        provenance_entity_id: str,
-        schema_fingerprint: str,
-        semantic_fingerprint: str,
+        publication: ModelArtifactPublication,
     ) -> ArtifactDescriptor: ...
 
 
@@ -214,23 +216,27 @@ def _parse_utc(value: object, label: str) -> datetime:
     return parsed
 
 
-def materialize_model_samples(
-    *,
+@dataclass(frozen=True, slots=True)
+class _DecodedDatasetSample:
+    sample_id: str
+    instrument_id: str
+    observation_id: str
+    split: DatasetSplitRole
+    features: tuple[float, ...]
+    label: float
+
+
+def _decode_dataset_root(
     owner: FormalDatasetVersion,
     payload: bytes,
     receipt: PayloadResolutionReceipt,
     split_spec: SplitSpec,
-) -> MaterializedModelDataset:
-    """Strictly decode P1-verified A1 Dataset bytes into deterministic ModelSample values."""
-
+) -> tuple[dict[str, object], datetime]:
     if not isinstance(owner, FormalDatasetVersion):
         raise TypeError("materialization requires a persisted FormalDatasetVersion owner")
     if not isinstance(receipt, PayloadResolutionReceipt):
         raise TypeError("materialization requires a typed P1 Dataset receipt")
-    if (
-        receipt.context_identity != owner.dataset_version_id
-        or receipt.artifact_id != owner.dataset_descriptor.artifact_id
-    ):
+    if receipt.context_identity != owner.dataset_version_id or receipt.artifact_id != owner.dataset_descriptor.artifact_id:
         raise ValueError("P1 Dataset receipt does not bind the canonical Dataset owner/artifact")
     if split_spec.split_spec_id != owner.split_spec_id:
         raise ValueError("SplitSpec does not bind the canonical Dataset owner")
@@ -238,15 +244,21 @@ def materialize_model_samples(
         root = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("Dataset actual bytes must be UTF-8 JSON") from exc
-    expected_root = {
+    if not isinstance(root, dict):
+        raise ValueError("Dataset actual bytes must contain a JSON object")
+    expected_keys = {
         "schema_version", "schema_fingerprint", "snapshot_id", "universe_version_id",
         "universe_membership_identity", "knowledge_cutoff", "feature_materialization_ids",
         "feature_receipt_ids", "label_spec_id", "label_payload_id", "label_receipt_id",
         "split_spec_id", "feature_order", "samples",
     }
-    if not isinstance(root, dict) or set(root) != expected_root:
+    if set(root) != expected_keys:
         raise ValueError("Dataset actual bytes have an unrecognized root schema")
-    exact = {
+    return root, _parse_utc(root["knowledge_cutoff"], "knowledge_cutoff")
+
+
+def _verify_dataset_owner_fields(owner: FormalDatasetVersion, root: Mapping[str, object]) -> None:
+    owner_fields = {
         "schema_version": DATASET_SCHEMA_VERSION,
         "schema_fingerprint": DATASET_SCHEMA_FINGERPRINT,
         "snapshot_id": owner.snapshot_id,
@@ -260,78 +272,103 @@ def materialize_model_samples(
         "split_spec_id": owner.split_spec_id,
         "feature_order": list(owner.feature_materialization_ids),
     }
-    for key, value in exact.items():
-        if root[key] != value:
-            raise ValueError(f"Dataset actual bytes differ from canonical owner field {key}")
-    raw_samples = root["samples"]
+    for field, expected in owner_fields.items():
+        if root[field] != expected:
+            raise ValueError(f"Dataset actual bytes differ from canonical owner field {field}")
+
+
+def _decode_dataset_samples(
+    owner: FormalDatasetVersion,
+    raw_samples: object,
+) -> tuple[_DecodedDatasetSample, ...]:
     if not isinstance(raw_samples, list) or len(raw_samples) != owner.sample_count:
         raise ValueError("Dataset sample count differs from canonical owner")
-    knowledge_cutoff = _parse_utc(root["knowledge_cutoff"], "knowledge_cutoff")
-    expected_row = {"sample_id", "instrument_id", "observation_id", "split", "features", "label"}
-    rows: list[dict[str, object]] = []
+    expected_keys = {"sample_id", "instrument_id", "observation_id", "split", "features", "label"}
+    decoded: list[_DecodedDatasetSample] = []
     observed_ids: set[str] = set()
-    observations_by_role: dict[str, set[str]] = {role.value: set() for role in DatasetSplitRole}
     for index, row in enumerate(raw_samples):
-        if not isinstance(row, dict) or set(row) != expected_row:
+        if not isinstance(row, dict) or set(row) != expected_keys:
             raise ValueError(f"Dataset sample[{index}] has an unrecognized schema")
-        sample_id, instrument_id, observation_id, role = (
-            row["sample_id"], row["instrument_id"], row["observation_id"], row["split"]
-        )
-        if not all(isinstance(value, str) and value for value in (sample_id, instrument_id, observation_id, role)):
+        sample_id = row["sample_id"]
+        instrument_id = row["instrument_id"]
+        observation_id = row["observation_id"]
+        split = row["split"]
+        identities = (sample_id, instrument_id, observation_id, split)
+        if not all(isinstance(identity, str) and identity for identity in identities):
             raise ValueError(f"Dataset sample[{index}] identities must be non-empty strings")
-        expected_sample_id = "smp_sha256_" + canonical_sha256(
+        expected_id = "smp_sha256_" + canonical_sha256(
             {"instrument_id": instrument_id, "observation_id": observation_id, "label_spec_id": owner.label_spec_id}
         )
-        if sample_id != expected_sample_id or sample_id in observed_ids:
+        if sample_id != expected_id or sample_id in observed_ids:
             raise ValueError("Dataset sample identity is non-canonical or duplicated")
-        if role not in observations_by_role:
-            raise ValueError("Dataset sample split role is unsupported")
+        try:
+            split_role = DatasetSplitRole(split)
+        except ValueError as exc:
+            raise ValueError("Dataset sample split role is unsupported") from exc
         features = row["features"]
         if not isinstance(features, list) or len(features) != len(owner.feature_materialization_ids):
             raise ValueError("Dataset sample feature count differs from canonical feature order")
-        decoded_features = tuple(_strict_decimal(value, f"sample[{index}].feature") for value in features)
-        decoded_label = _strict_decimal(row["label"], f"sample[{index}].label")
-        rows.append({
-            "sample_id": sample_id,
-            "instrument_id": instrument_id,
-            "observation_id": observation_id,
-            "split": role,
-            "features": decoded_features,
-            "label": decoded_label,
-        })
+        decoded.append(
+            _DecodedDatasetSample(
+                sample_id=sample_id,
+                instrument_id=instrument_id,
+                observation_id=observation_id,
+                split=split_role,
+                features=tuple(_strict_decimal(feature, f"sample[{index}].feature") for feature in features),
+                label=_strict_decimal(row["label"], f"sample[{index}].label"),
+            )
+        )
         observed_ids.add(sample_id)
-        observations_by_role[role].add(observation_id)
+    return tuple(decoded)
 
-    role_ranges = {
-        DatasetSplitRole.TRAIN.value: (split_spec.train_start, split_spec.train_end),
-        DatasetSplitRole.VALIDATION.value: (split_spec.validation_start, split_spec.validation_end),
-        DatasetSplitRole.TEST.value: (split_spec.test_start, split_spec.test_end),
+
+def _project_observation_ordinals(
+    samples: tuple[_DecodedDatasetSample, ...],
+    split_spec: SplitSpec,
+) -> dict[tuple[DatasetSplitRole, str], int]:
+    split_ranges = {
+        DatasetSplitRole.TRAIN: (split_spec.train_start, split_spec.train_end),
+        DatasetSplitRole.VALIDATION: (split_spec.validation_start, split_spec.validation_end),
+        DatasetSplitRole.TEST: (split_spec.test_start, split_spec.test_end),
     }
-    ordinal_by_role_observation: dict[tuple[str, str], int] = {}
-    seen_observation_role: dict[str, str] = {}
-    for role, observation_ids in observations_by_role.items():
-        start, end = role_ranges[role]
-        ordered = sorted(observation_ids)
-        if len(ordered) > end - start + 1:
+    observation_sets = {role: set() for role in DatasetSplitRole}
+    for sample in samples:
+        observation_sets[sample.split].add(sample.observation_id)
+    projected: dict[tuple[DatasetSplitRole, str], int] = {}
+    seen_roles: dict[str, DatasetSplitRole] = {}
+    for role, observation_ids in observation_sets.items():
+        start, end = split_ranges[role]
+        ordered_ids = sorted(observation_ids)
+        if len(ordered_ids) > end - start + 1:
             raise ValueError("Dataset split contains more observation IDs than its SplitSpec range")
-        for offset, observation_id in enumerate(ordered):
-            other_role = seen_observation_role.setdefault(observation_id, role)
-            if other_role != role:
+        for offset, observation_id in enumerate(ordered_ids):
+            prior_role = seen_roles.setdefault(observation_id, role)
+            if prior_role is not role:
                 raise ValueError("one Dataset observation_id appears in multiple split roles")
-            ordinal_by_role_observation[(role, observation_id)] = start + offset
+            projected[(role, observation_id)] = start + offset
+    return projected
 
-    samples = tuple(
+
+def _model_samples(
+    rows: tuple[_DecodedDatasetSample, ...],
+    ordinals: Mapping[tuple[DatasetSplitRole, str], int],
+    knowledge_cutoff: datetime,
+) -> tuple[ModelSample, ...]:
+    return tuple(
         ModelSample(
-            sample_id=row["sample_id"],
-            instrument_id=row["instrument_id"],
-            observation_ordinal=ordinal_by_role_observation[(row["split"], row["observation_id"])],
+            sample_id=row.sample_id,
+            instrument_id=row.instrument_id,
+            observation_ordinal=ordinals[(row.split, row.observation_id)],
             event_time=knowledge_cutoff,
             decision_time=knowledge_cutoff,
-            features=row["features"],
-            label=row["label"],
+            features=row.features,
+            label=row.label,
         )
         for row in rows
     )
+
+
+def _runtime_dataset(owner: FormalDatasetVersion) -> ResolvedModelDatasetVersion:
     feature_projection_id = "mfs_sha256_" + canonical_sha256(
         {
             "formal_dataset_version_id": owner.dataset_version_id,
@@ -339,7 +376,7 @@ def materialize_model_samples(
             "dataset_schema_fingerprint": owner.dataset_schema_fingerprint,
         }
     )
-    runtime_dataset = ResolvedModelDatasetVersion(
+    return ResolvedModelDatasetVersion(
         dataset_version_id=owner.dataset_version_id,
         feature_set_version_id=feature_projection_id,
         factor_evaluation_ids=owner.feature_materialization_ids,
@@ -348,11 +385,25 @@ def materialize_model_samples(
         dataset_artifact_id=owner.dataset_descriptor.artifact_id,
         truth_admission=owner.truth_admission,
     )
+
+
+def materialize_model_samples(
+    *,
+    owner: FormalDatasetVersion,
+    payload: bytes,
+    receipt: PayloadResolutionReceipt,
+    split_spec: SplitSpec,
+) -> MaterializedModelDataset:
+    """Strictly decode P1-verified A1 Dataset bytes into deterministic ModelSample values."""
+    root, knowledge_cutoff = _decode_dataset_root(owner, payload, receipt, split_spec)
+    _verify_dataset_owner_fields(owner, root)
+    rows = _decode_dataset_samples(owner, root["samples"])
+    ordinals = _project_observation_ordinals(rows, split_spec)
     return MaterializedModelDataset(
         owner=owner,
         resolution_receipt=receipt,
-        runtime_dataset=runtime_dataset,
-        samples=samples,
+        runtime_dataset=_runtime_dataset(owner),
+        samples=_model_samples(rows, ordinals, knowledge_cutoff),
         knowledge_cutoff=knowledge_cutoff,
     )
 
@@ -370,23 +421,96 @@ def _samples_for_split(
     return tuple(value for value in materialized.samples if start <= value.observation_ordinal <= end)
 
 
+@dataclass(frozen=True, slots=True)
+class _ResolvedDatasetStage:
+    owner: FormalDatasetVersion
+    resolution: PayloadResolutionResult
+
+
+@dataclass(frozen=True, slots=True)
+class _MaterializedDatasetStage:
+    resolved: _ResolvedDatasetStage
+    split_spec: SplitSpec
+    materialized: MaterializedModelDataset
+    train_samples: tuple[ModelSample, ...]
+    validation_samples: tuple[ModelSample, ...]
+    prediction_samples: tuple[ModelSample, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TrainedModelStage:
+    dataset: _MaterializedDatasetStage
+    training_spec: TrainingSpecVersion
+    provenance_payload: dict[str, object]
+    provenance_artifact_id: str
+    trained: TrainedModelBundle
+
+
+@dataclass(frozen=True, slots=True)
+class _PublishedModelStage:
+    training: _TrainedModelStage
+    safe_model_descriptor: ArtifactDescriptor
+    training_descriptor: ArtifactDescriptor
+    model_version_descriptor: ArtifactDescriptor
+
+
+@dataclass(frozen=True, slots=True)
+class _PredictedModelStage:
+    publication: _PublishedModelStage
+    provenance_payload: dict[str, object]
+    provenance_artifact_id: str
+    predicted: PredictionBundle
+
+
+@dataclass(frozen=True, slots=True)
+class _FailureEvidence:
+    dataset: _MaterializedDatasetStage
+    trained: TrainedModelBundle | None = None
+    training_descriptor: ArtifactDescriptor | None = None
+    model_version_descriptor: ArtifactDescriptor | None = None
+    predicted: PredictionBundle | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ModelPipelineDependencies:
+    datasets: FormalDatasetRepository
+    split_specs: SplitSpecRepository
+    payload_resolver: CanonicalPayloadResolver
+    worker: IsolatedModelWorker
+    artifact_publisher: ModelPipelineArtifactPublisher
+
+
 class CanonicalDatasetModelPipelineService:
-    def __init__(
-        self,
-        *,
-        datasets: FormalDatasetRepository,
-        split_specs: SplitSpecRepository,
-        payload_resolver: CanonicalPayloadResolver,
-        worker: IsolatedModelWorker,
-        artifact_publisher: ModelPipelineArtifactPublisher,
-    ) -> None:
-        self._datasets = datasets
-        self._split_specs = split_specs
-        self._resolver = payload_resolver
-        self._worker = worker
-        self._publisher = artifact_publisher
+    def __init__(self, dependencies: ModelPipelineDependencies) -> None:
+        self._datasets = dependencies.datasets
+        self._split_specs = dependencies.split_specs
+        self._resolver = dependencies.payload_resolver
+        self._worker = dependencies.worker
+        self._publisher = dependencies.artifact_publisher
 
     def run(self, request: ModelPipelineRequest) -> ModelPipelineResult:
+        resolved = self._resolve_stage(request)
+        if isinstance(resolved, ModelPipelineResult):
+            return resolved
+        materialized = self._materialization_stage(request, resolved)
+        if isinstance(materialized, ModelPipelineResult):
+            return materialized
+        trained = self._training_stage(request, materialized)
+        if isinstance(trained, ModelPipelineResult):
+            return trained
+        publication = self._model_publication_stage(request, trained)
+        if isinstance(publication, ModelPipelineResult):
+            return publication
+        predicted = self._prediction_stage(request, publication)
+        if isinstance(predicted, ModelPipelineResult):
+            return predicted
+        prediction_descriptor = self._prediction_publication_stage(request, predicted)
+        if isinstance(prediction_descriptor, ModelPipelineResult):
+            return prediction_descriptor
+        return self._success(predicted, prediction_descriptor)
+
+    def _resolve_stage(self, request: ModelPipelineRequest) -> _ResolvedDatasetStage | ModelPipelineResult:
+        # Each stage is an explicit recovery boundary: adapter/engine errors become the required terminal stage status.
         try:
             owner = self._datasets.get_dataset(request.dataset_id)
             if owner is None:
@@ -403,15 +527,21 @@ class CanonicalDatasetModelPipelineService:
             )
         except Exception as exc:
             return ModelPipelineResult(ModelPipelineStatus.DATASET_RESOLUTION_FAILED, request.dataset_id, error=str(exc))
+        return _ResolvedDatasetStage(owner, resolution)
 
+    def _materialization_stage(
+        self,
+        request: ModelPipelineRequest,
+        resolved: _ResolvedDatasetStage,
+    ) -> _MaterializedDatasetStage | ModelPipelineResult:
         try:
-            split_spec = self._split_specs.get_split_spec(owner.split_spec_id)
+            split_spec = self._split_specs.get_split_spec(resolved.owner.split_spec_id)
             if split_spec is None:
                 raise ValueError("canonical Dataset SplitSpec owner not found")
             materialized = materialize_model_samples(
-                owner=owner,
-                payload=resolution.verified_payload.payload,
-                receipt=resolution.receipt,
+                owner=resolved.owner,
+                payload=resolved.resolution.verified_payload.payload,
+                receipt=resolved.resolution.receipt,
                 split_spec=split_spec,
             )
             train_samples = _samples_for_split(materialized, split_spec, DatasetSplitRole.TRAIN)
@@ -423,16 +553,29 @@ class CanonicalDatasetModelPipelineService:
             return ModelPipelineResult(
                 ModelPipelineStatus.SAMPLE_MATERIALIZATION_FAILED,
                 request.dataset_id,
-                dataset_artifact_id=owner.dataset_descriptor.artifact_id,
-                dataset_resolution_receipt_id=resolution.receipt.receipt_identity,
+                dataset_artifact_id=resolved.owner.dataset_descriptor.artifact_id,
+                dataset_resolution_receipt_id=resolved.resolution.receipt.receipt_identity,
                 error=str(exc),
             )
+        return _MaterializedDatasetStage(
+            resolved,
+            split_spec,
+            materialized,
+            train_samples,
+            validation_samples,
+            prediction_samples,
+        )
 
+    def _training_stage(
+        self,
+        request: ModelPipelineRequest,
+        dataset: _MaterializedDatasetStage,
+    ) -> _TrainedModelStage | ModelPipelineResult:
         try:
             runtime = self._worker.runtime
             training_spec = TrainingSpecVersion.create(
-                dataset=materialized.runtime_dataset,
-                feature_schema=tuple(FeatureColumn(value) for value in owner.feature_materialization_ids),
+                dataset=dataset.materialized.runtime_dataset,
+                feature_schema=tuple(FeatureColumn(value) for value in dataset.resolved.owner.feature_materialization_ids),
                 seed=request.seed,
                 environment_profile_id=request.environment_profile_id,
                 dependency_runtime_fingerprint=runtime.fingerprint,
@@ -442,67 +585,90 @@ class CanonicalDatasetModelPipelineService:
             provenance_payload = {
                 "schema_version": MODEL_PIPELINE_SCHEMA_VERSION,
                 "kind": "MODEL_TRAINING_PROVENANCE",
-                "dataset_version_id": owner.dataset_version_id,
-                "dataset_artifact_id": owner.dataset_descriptor.artifact_id,
-                "dataset_resolution_receipt_id": resolution.receipt.receipt_identity,
+                "dataset_version_id": dataset.resolved.owner.dataset_version_id,
+                "dataset_artifact_id": dataset.resolved.owner.dataset_descriptor.artifact_id,
+                "dataset_resolution_receipt_id": dataset.resolved.resolution.receipt.receipt_identity,
                 "training_spec_version_id": training_spec.training_spec_version_id,
                 "worker_runtime_fingerprint": runtime.fingerprint,
                 "code_version": request.code_version,
                 "truth": "PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE",
-                "ordinal_semantics": materialized.ordinal_semantics,
-                "timestamp_semantics": materialized.timestamp_semantics,
+                "ordinal_semantics": dataset.materialized.ordinal_semantics,
+                "timestamp_semantics": dataset.materialized.timestamp_semantics,
             }
             provenance_artifact_id = canonical_artifact_id(provenance_payload)
             trained = train_model(
                 worker=self._worker,
-                dataset=materialized.runtime_dataset,
-                split_spec=split_spec,
+                dataset=dataset.materialized.runtime_dataset,
+                split_spec=dataset.split_spec,
                 training_spec=training_spec,
-                samples=train_samples + validation_samples,
+                samples=dataset.train_samples + dataset.validation_samples,
                 code_version=request.code_version,
                 training_evidence_provenance_artifact_id=provenance_artifact_id,
                 model_provenance_artifact_id=provenance_artifact_id,
                 proposed_state=request.proposed_state,
             )
         except Exception as exc:
-            return self._failure_after_materialization(ModelPipelineStatus.TRAIN_FAILED, request, materialized, split_spec, str(exc))
+            return self._failure(ModelPipelineStatus.TRAIN_FAILED, request, _FailureEvidence(dataset), str(exc))
+        return _TrainedModelStage(dataset, training_spec, provenance_payload, provenance_artifact_id, trained)
 
+    def _model_publication_stage(
+        self,
+        request: ModelPipelineRequest,
+        training: _TrainedModelStage,
+    ) -> _PublishedModelStage | ModelPipelineResult:
         try:
             provenance_descriptor = self._publisher.publish_record(
-                provenance_payload,
-                provenance_entity_id=resolution.receipt.receipt_identity,
-                schema_fingerprint=MODEL_PIPELINE_SCHEMA_FINGERPRINT,
-                semantic_fingerprint=training_spec.training_spec_version_id,
+                training.provenance_payload,
+                ModelArtifactPublication(
+                    training.dataset.resolved.resolution.receipt.receipt_identity,
+                    MODEL_PIPELINE_SCHEMA_FINGERPRINT,
+                    training.training_spec.training_spec_version_id,
+                ),
             )
-            if provenance_descriptor.artifact_id != provenance_artifact_id:
+            if provenance_descriptor.artifact_id != training.provenance_artifact_id:
                 raise ValueError("training provenance publication identity drifted")
             safe_model_descriptor = self._publisher.publish_safe_model(
-                trained.artifact,
-                provenance_entity_id=trained.training_evidence.training_evidence_id,
-                schema_fingerprint=training_spec.feature_schema_fingerprint,
-                semantic_fingerprint=trained.model.model_version_id,
+                training.trained.artifact,
+                ModelArtifactPublication(
+                    training.trained.training_evidence.training_evidence_id,
+                    training.training_spec.feature_schema_fingerprint,
+                    training.trained.model.model_version_id,
+                ),
             )
             training_descriptor = self._publisher.publish_record(
-                self._training_record(trained),
-                provenance_entity_id=provenance_artifact_id,
-                schema_fingerprint=MODEL_PIPELINE_SCHEMA_FINGERPRINT,
-                semantic_fingerprint=trained.training_evidence.training_evidence_id,
+                self._training_record(training.trained),
+                ModelArtifactPublication(
+                    training.provenance_artifact_id,
+                    MODEL_PIPELINE_SCHEMA_FINGERPRINT,
+                    training.trained.training_evidence.training_evidence_id,
+                ),
             )
             model_version_descriptor = self._publisher.publish_record(
-                self._model_record(trained),
-                provenance_entity_id=provenance_artifact_id,
-                schema_fingerprint=MODEL_PIPELINE_SCHEMA_FINGERPRINT,
-                semantic_fingerprint=trained.model.model_version_id,
+                self._model_record(training.trained),
+                ModelArtifactPublication(
+                    training.provenance_artifact_id,
+                    MODEL_PIPELINE_SCHEMA_FINGERPRINT,
+                    training.trained.model.model_version_id,
+                ),
             )
         except Exception as exc:
-            return self._failure_after_materialization(ModelPipelineStatus.MODEL_PUBLICATION_FAILED, request, materialized, split_spec, str(exc), trained=trained)
+            evidence = _FailureEvidence(training.dataset, trained=training.trained)
+            return self._failure(ModelPipelineStatus.MODEL_PUBLICATION_FAILED, request, evidence, str(exc))
+        return _PublishedModelStage(training, safe_model_descriptor, training_descriptor, model_version_descriptor)
 
+    def _prediction_stage(
+        self,
+        request: ModelPipelineRequest,
+        publication: _PublishedModelStage,
+    ) -> _PredictedModelStage | ModelPipelineResult:
+        dataset = publication.training.dataset
+        trained = publication.training.trained
         try:
             prediction_provenance = {
                 "schema_version": MODEL_PIPELINE_SCHEMA_VERSION,
                 "kind": "MODEL_PREDICTION_PROVENANCE",
-                "dataset_version_id": owner.dataset_version_id,
-                "dataset_resolution_receipt_id": resolution.receipt.receipt_identity,
+                "dataset_version_id": dataset.resolved.owner.dataset_version_id,
+                "dataset_resolution_receipt_id": dataset.resolved.resolution.receipt.receipt_identity,
                 "model_version_id": trained.model.model_version_id,
                 "model_artifact_id": trained.artifact.artifact_id,
                 "prediction_split": request.prediction_split.value,
@@ -514,52 +680,85 @@ class CanonicalDatasetModelPipelineService:
                 worker=self._worker,
                 model=trained.model,
                 model_artifact=trained.artifact,
-                prediction_dataset=materialized.runtime_dataset,
-                training_spec=training_spec,
-                samples=prediction_samples,
-                prediction_timestamp=materialized.knowledge_cutoff,
+                prediction_dataset=dataset.materialized.runtime_dataset,
+                training_spec=publication.training.training_spec,
+                samples=dataset.prediction_samples,
+                prediction_timestamp=dataset.materialized.knowledge_cutoff,
                 target_semantics=request.target_semantics,
                 provenance_artifact_id=prediction_provenance_id,
                 proposed_state=request.proposed_state,
             )
         except Exception as exc:
-            return self._failure_after_materialization(ModelPipelineStatus.PREDICT_FAILED, request, materialized, split_spec, str(exc), trained=trained, training_descriptor=training_descriptor, model_version_descriptor=model_version_descriptor)
+            evidence = _FailureEvidence(
+                dataset,
+                trained=trained,
+                training_descriptor=publication.training_descriptor,
+                model_version_descriptor=publication.model_version_descriptor,
+            )
+            return self._failure(ModelPipelineStatus.PREDICT_FAILED, request, evidence, str(exc))
+        return _PredictedModelStage(publication, prediction_provenance, prediction_provenance_id, predicted)
 
+    def _prediction_publication_stage(
+        self,
+        request: ModelPipelineRequest,
+        prediction: _PredictedModelStage,
+    ) -> ArtifactDescriptor | ModelPipelineResult:
+        publication = prediction.publication
+        trained = publication.training.trained
         try:
             prediction_provenance_descriptor = self._publisher.publish_record(
-                prediction_provenance,
-                provenance_entity_id=trained.model.model_version_id,
-                schema_fingerprint=MODEL_PIPELINE_SCHEMA_FINGERPRINT,
-                semantic_fingerprint=predicted.request.model_prediction_request_id,
+                prediction.provenance_payload,
+                ModelArtifactPublication(
+                    trained.model.model_version_id,
+                    MODEL_PIPELINE_SCHEMA_FINGERPRINT,
+                    prediction.predicted.request.model_prediction_request_id,
+                ),
             )
-            if prediction_provenance_descriptor.artifact_id != prediction_provenance_id:
+            if prediction_provenance_descriptor.artifact_id != prediction.provenance_artifact_id:
                 raise ValueError("prediction provenance publication identity drifted")
             prediction_descriptor = self._publisher.publish_record(
-                self._prediction_record(predicted),
-                provenance_entity_id=prediction_provenance_id,
-                schema_fingerprint=MODEL_PIPELINE_SCHEMA_FINGERPRINT,
-                semantic_fingerprint=predicted.prediction.prediction_artifact_id,
+                self._prediction_record(prediction.predicted),
+                ModelArtifactPublication(
+                    prediction.provenance_artifact_id,
+                    MODEL_PIPELINE_SCHEMA_FINGERPRINT,
+                    prediction.predicted.prediction.prediction_artifact_id,
+                ),
             )
         except Exception as exc:
-            return self._failure_after_materialization(ModelPipelineStatus.PREDICTION_PUBLICATION_FAILED, request, materialized, split_spec, str(exc), trained=trained, predicted=predicted, training_descriptor=training_descriptor, model_version_descriptor=model_version_descriptor)
+            evidence = _FailureEvidence(
+                publication.training.dataset,
+                trained=trained,
+                training_descriptor=publication.training_descriptor,
+                model_version_descriptor=publication.model_version_descriptor,
+                predicted=prediction.predicted,
+            )
+            return self._failure(ModelPipelineStatus.PREDICTION_PUBLICATION_FAILED, request, evidence, str(exc))
+        return prediction_descriptor
 
+    @staticmethod
+    def _success(prediction: _PredictedModelStage, prediction_descriptor: ArtifactDescriptor) -> ModelPipelineResult:
+        publication = prediction.publication
+        training = publication.training
+        dataset = training.dataset
+        trained = training.trained
+        predicted = prediction.predicted
         return ModelPipelineResult(
             status=ModelPipelineStatus.SUCCESS,
-            dataset_id=owner.dataset_version_id,
-            dataset_artifact_id=owner.dataset_descriptor.artifact_id,
-            dataset_resolution_receipt_id=resolution.receipt.receipt_identity,
-            sample_count=len(materialized.samples),
-            train_sample_count=len(train_samples),
-            validation_sample_count=len(validation_samples),
-            prediction_sample_count=len(prediction_samples),
+            dataset_id=dataset.resolved.owner.dataset_version_id,
+            dataset_artifact_id=dataset.resolved.owner.dataset_descriptor.artifact_id,
+            dataset_resolution_receipt_id=dataset.resolved.resolution.receipt.receipt_identity,
+            sample_count=len(dataset.materialized.samples),
+            train_sample_count=len(dataset.train_samples),
+            validation_sample_count=len(dataset.validation_samples),
+            prediction_sample_count=len(dataset.prediction_samples),
             model_version_id=trained.model.model_version_id,
-            model_artifact_id=safe_model_descriptor.artifact_id,
-            training_artifact_id=training_descriptor.artifact_id,
-            model_version_artifact_id=model_version_descriptor.artifact_id,
+            model_artifact_id=publication.safe_model_descriptor.artifact_id,
+            training_artifact_id=publication.training_descriptor.artifact_id,
+            model_version_artifact_id=publication.model_version_descriptor.artifact_id,
             prediction_id=predicted.prediction.prediction_artifact_id,
             prediction_artifact_id=prediction_descriptor.artifact_id,
-            ordinal_semantics=materialized.ordinal_semantics,
-            timestamp_semantics=materialized.timestamp_semantics,
+            ordinal_semantics=dataset.materialized.ordinal_semantics,
+            timestamp_semantics=dataset.materialized.timestamp_semantics,
         )
 
     @staticmethod
@@ -629,34 +828,29 @@ class CanonicalDatasetModelPipelineService:
         }
 
     @staticmethod
-    def _failure_after_materialization(
+    def _failure(
         status: ModelPipelineStatus,
         request: ModelPipelineRequest,
-        materialized: MaterializedModelDataset,
-        split_spec: SplitSpec,
+        evidence: _FailureEvidence,
         error: str,
-        *,
-        trained: TrainedModelBundle | None = None,
-        predicted: PredictionBundle | None = None,
-        training_descriptor: ArtifactDescriptor | None = None,
-        model_version_descriptor: ArtifactDescriptor | None = None,
     ) -> ModelPipelineResult:
+        dataset = evidence.dataset
         return ModelPipelineResult(
             status=status,
             dataset_id=request.dataset_id,
-            dataset_artifact_id=materialized.owner.dataset_descriptor.artifact_id,
-            dataset_resolution_receipt_id=materialized.resolution_receipt.receipt_identity,
-            sample_count=len(materialized.samples),
-            train_sample_count=len(_samples_for_split(materialized, split_spec, DatasetSplitRole.TRAIN)),
-            validation_sample_count=len(_samples_for_split(materialized, split_spec, DatasetSplitRole.VALIDATION)),
-            prediction_sample_count=len(_samples_for_split(materialized, split_spec, request.prediction_split)),
-            model_version_id=trained.model.model_version_id if trained else None,
-            model_artifact_id=trained.artifact.artifact_id if trained else None,
-            training_artifact_id=training_descriptor.artifact_id if training_descriptor else None,
-            model_version_artifact_id=model_version_descriptor.artifact_id if model_version_descriptor else None,
-            prediction_id=predicted.prediction.prediction_artifact_id if predicted else None,
-            ordinal_semantics=materialized.ordinal_semantics,
-            timestamp_semantics=materialized.timestamp_semantics,
+            dataset_artifact_id=dataset.materialized.owner.dataset_descriptor.artifact_id,
+            dataset_resolution_receipt_id=dataset.materialized.resolution_receipt.receipt_identity,
+            sample_count=len(dataset.materialized.samples),
+            train_sample_count=len(dataset.train_samples),
+            validation_sample_count=len(dataset.validation_samples),
+            prediction_sample_count=len(dataset.prediction_samples),
+            model_version_id=evidence.trained.model.model_version_id if evidence.trained else None,
+            model_artifact_id=evidence.trained.artifact.artifact_id if evidence.trained else None,
+            training_artifact_id=evidence.training_descriptor.artifact_id if evidence.training_descriptor else None,
+            model_version_artifact_id=evidence.model_version_descriptor.artifact_id if evidence.model_version_descriptor else None,
+            prediction_id=evidence.predicted.prediction.prediction_artifact_id if evidence.predicted else None,
+            ordinal_semantics=dataset.materialized.ordinal_semantics,
+            timestamp_semantics=dataset.materialized.timestamp_semantics,
             error=error,
         )
 
@@ -666,6 +860,8 @@ __all__ = [
     "MODEL_PIPELINE_SCHEMA_FINGERPRINT",
     "MODEL_PIPELINE_SCHEMA_VERSION",
     "MaterializedModelDataset",
+    "ModelArtifactPublication",
+    "ModelPipelineDependencies",
     "ModelPipelineArtifactPublisher",
     "ModelPipelineRequest",
     "ModelPipelineResult",

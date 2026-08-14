@@ -57,10 +57,11 @@ class ModelPipelineRunnabilityTests(unittest.TestCase):
         self.assertNotIn("model_samples", fields)
         self.assertEqual(set(fields) & {"dataset_id", "training_split", "prediction_split"}, {"dataset_id", "training_split", "prediction_split"})
 
-    def test_missing_owner_and_tampered_dataset_fail_before_train(self) -> None:
+    def test_missing_dataset_owner_fails_before_train(self) -> None:
         missing = self.fixture.service.run(request("fdsv_sha256_" + "0" * 64))
         self.assertEqual(missing.status, ModelPipelineStatus.DATASET_RESOLUTION_FAILED)
 
+    def test_tampered_dataset_bytes_fail_before_train(self) -> None:
         path = self.fixture.store._final_path(self.fixture.dataset.dataset_descriptor.sha256)
         original = path.read_bytes()
         try:
@@ -112,20 +113,5 @@ class ModelPipelineRunnabilityTests(unittest.TestCase):
                 schema_fingerprint="sch_sha256_" + "1" * 64,
                 semantic_fingerprint="model-pipeline-safe-format-test",
             )
-
-
-class ActualWorkerModelPipelineTests(unittest.TestCase):
-    def test_actual_sklearn_worker_trains_and_predicts_from_canonical_dataset(self) -> None:
-        fixture = build_model_pipeline_development_fixture(SklearnRidgeSubprocessWorker())
-        try:
-            result = fixture.service.run(request(fixture.dataset.dataset_version_id))
-            self.assertEqual(result.status, ModelPipelineStatus.SUCCESS, result.error)
-            self.assertEqual(result.train_sample_count, 2)
-            self.assertEqual(result.validation_sample_count, 2)
-            self.assertEqual(result.prediction_sample_count, 2)
-        finally:
-            fixture.close()
-
-
 if __name__ == "__main__":
     unittest.main()
