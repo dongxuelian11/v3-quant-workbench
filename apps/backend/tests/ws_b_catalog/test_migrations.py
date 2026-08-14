@@ -23,9 +23,17 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog.sqlite3"
             result = apply_migrations(path, application_version="test")
-            self.assertEqual(result.applied, ("0001_control_catalog", "0002_data_truth"))
-            self.assertEqual(result.schema_report.table_count, 69)
-            self.assertEqual(result.schema_report.user_version, 2)
+            self.assertEqual(
+                result.applied,
+                (
+                    "0001_control_catalog",
+                    "0002_data_truth",
+                    "0003_portfolio_riskpolicy_owner",
+                    "0004_risk_application_publication",
+                ),
+            )
+            self.assertEqual(result.schema_report.table_count, 73)
+            self.assertEqual(result.schema_report.user_version, 4)
             connection = connect_catalog(path)
             try:
                 tables = {
@@ -95,7 +103,7 @@ class MigrationTests(unittest.TestCase):
             finally:
                 connection.close()
 
-    def test_existing_v1_catalog_requires_backup_before_data_truth_upgrade(self) -> None:
+    def test_existing_v1_catalog_requires_backup_before_each_upgrade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             v1_versions = root / "v1"
@@ -199,9 +207,16 @@ class MigrationTests(unittest.TestCase):
                 application_version="v2",
                 backup_dir=root / "backups",
             )
-            self.assertEqual(upgraded.applied, ("0002_data_truth",))
-            self.assertEqual(len(upgraded.backups), 1)
-            self.assertEqual(upgraded.schema_report.user_version, 2)
+            self.assertEqual(
+                upgraded.applied,
+                (
+                    "0002_data_truth",
+                    "0003_portfolio_riskpolicy_owner",
+                    "0004_risk_application_publication",
+                ),
+            )
+            self.assertEqual(len(upgraded.backups), 3)
+            self.assertEqual(upgraded.schema_report.user_version, 4)
             connection = connect_catalog(path)
             try:
                 self.assertIsNone(
@@ -214,3 +229,43 @@ class MigrationTests(unittest.TestCase):
                 )
             finally:
                 connection.close()
+
+    def test_upgrade_exact_version_3_database_to_version_4(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            versions = root / "versions"
+            versions.mkdir()
+            source = (
+                Path(__file__).parents[2]
+                / "src"
+                / "v3_backend"
+                / "migrations"
+                / "versions"
+            )
+            for name in (
+                "0001_control_catalog.sql",
+                "0002_data_truth.sql",
+                "0003_portfolio_riskpolicy_owner.sql",
+            ):
+                (versions / name).write_bytes((source / name).read_bytes())
+            path = root / "catalog.sqlite3"
+            connection = sqlite3.connect(path, isolation_level=None)
+            try:
+                connection.execute("PRAGMA foreign_keys = ON")
+                for migration in discover_migrations(versions):
+                    _apply_one(
+                        connection,
+                        migration,
+                        application_version="v3-prefix",
+                        backup=None,
+                    )
+            finally:
+                connection.close()
+            upgraded = apply_migrations(
+                path,
+                application_version="v4-risk-application",
+                backup_dir=root / "backups-v4",
+            )
+            self.assertEqual(upgraded.applied, ("0004_risk_application_publication",))
+            self.assertEqual(upgraded.schema_report.user_version, 4)
+            self.assertEqual(len(upgraded.backups), 1)
