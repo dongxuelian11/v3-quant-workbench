@@ -22,6 +22,13 @@ from .model import (
     vector_content_sha256,
 )
 from .runtime import RiskRuntimeResult, apply_risk
+from .application import (
+    CanonicalRiskApplicationOwnerPort,
+    CanonicalRiskApplicationPublication,
+    CanonicalRiskApplicationRequest,
+    CanonicalRiskApplicationService,
+    RiskApplicationAuthorityError,
+)
 from .authoring import (
     CanonicalRiskPolicyAuthoringService,
     CanonicalRiskPolicySetResult,
@@ -33,6 +40,10 @@ from .authoring import (
 )
 
 __all__ = [
+    "CanonicalRiskApplicationOwnerPort",
+    "CanonicalRiskApplicationPublication",
+    "CanonicalRiskApplicationRequest",
+    "CanonicalRiskApplicationService",
     "DecisionStatus",
     "CanonicalRiskPolicyAuthoringService",
     "CanonicalRiskPolicySetResult",
@@ -56,6 +67,7 @@ __all__ = [
     "RiskPolicySetOwnerPublication",
     "RiskRuntimeError",
     "RiskRuntimeResult",
+    "RiskApplicationAuthorityError",
     "RiskStageReport",
     "RiskStateInput",
     "RiskStateRequirement",

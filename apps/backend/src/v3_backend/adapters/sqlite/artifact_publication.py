@@ -19,6 +19,8 @@ _OWNER_TYPES = {
     "prj_": "Project",
     "res_": "Result",
     "twv_sha256_": "TargetWeightVector",
+    "rar_sha256_": "RiskApplicationReceipt",
+    "rawv_sha256_": "RiskAdjustedWeightVector",
     "rpsv_sha256_": "RiskPolicySetVersion",
 }
 

@@ -53,13 +53,15 @@ const suites = [
   "round3_w0_weight_seam",
   "track_h_portfolio_construction",
   "round3_track_i_risk_runtime",
+  "systemic_risk_application_publication",
   "track_j_a_share_backtest_core",
   "round3_integration_closure",
   "track_l_result_analytics",
   "track_m_generative_research_ui",
   "reviewer_integration",
   "round5_w0_agent_research_loop",
-  "round5_w0_factor_assets"
+  "round5_w0_factor_assets",
+  "round5_r_portfolio_risk_agent"
 ];
 
 for (const suite of suites) {

@@ -93,6 +93,20 @@ class SafeFormatPolicy:
                     "canonical RiskPolicySetVersion JSON is non-executable and identity-checked",
                 ),
                 FormatRule(
+                    "RISK_APPLICATION_RECEIPT",
+                    "application/json",
+                    ADMITTED,
+                    "canonical-json-v1",
+                    "canonical Risk receipt JSON is non-executable and identity-checked",
+                ),
+                FormatRule(
+                    "RISK_ADJUSTED_WEIGHT_VECTOR",
+                    "application/json",
+                    ADMITTED,
+                    "canonical-json-v1",
+                    "canonical Risk-adjusted weight JSON is non-executable and identity-checked",
+                ),
+                FormatRule(
                     "TEXT_REPORT",
                     "text/plain",
                     ADMITTED,
