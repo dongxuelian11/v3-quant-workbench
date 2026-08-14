@@ -107,6 +107,20 @@ class SafeFormatPolicy:
                     "canonical Risk-adjusted weight JSON is non-executable and identity-checked",
                 ),
                 FormatRule(
+                    "DATA_TRUTH_CAPABILITY_POLICY",
+                    "application/json",
+                    ADMITTED,
+                    "canonical-json-v1",
+                    "field capability policy JSON is non-executable and content-addressed",
+                ),
+                FormatRule(
+                    "DATA_TRUTH_SOURCE_AUTHORITY_EVIDENCE",
+                    "application/json",
+                    ADMITTED,
+                    "canonical-json-v1",
+                    "source authority evidence JSON is non-executable and content-addressed",
+                ),
+                FormatRule(
                     "TEXT_REPORT",
                     "text/plain",
                     ADMITTED,

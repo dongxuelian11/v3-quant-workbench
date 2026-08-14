@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
@@ -18,17 +18,19 @@ from ...contracts.common.truth_admission import (
     propagate_downstream_ceiling,
 )
 from ...provenance.canonical_hash import canonical_sha256
+from .capabilities import (
+    FieldCapabilityPolicy,
+    FieldCapabilityState,
+    MarketDataFieldCode,
+)
 from .pit import PitCapabilityUnavailable
-from .provider import RawCaptureSubmission
+from .provider import ProviderNeutralEodRow, RawCaptureSubmission
+from .resolution import FieldCandidate, FieldProvenance, FieldValueKind
 
 
 NORMALIZATION_VERSION = "v3-cn-a-share-eod-normalization-v0.1.0"
 SNAPSHOT_SCHEMA_VERSION = "v3-cn-a-share-eod-research-snapshot-v0"
-_RAW_SCHEMA_ID = "akshare-stock-zh-a-hist-raw-v1"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_REQUIRED_COLUMNS = frozenset(
-    {"日期", "股票代码", "开盘", "收盘", "最高", "最低", "成交量", "成交额"}
-)
 
 
 class NormalizationError(ValueError):
@@ -38,6 +40,7 @@ class NormalizationError(ValueError):
 class MissingValueReason(str, Enum):
     PROVIDER_NULL = "PROVIDER_NULL"
     PROVIDER_COLUMN_ABSENT = "PROVIDER_COLUMN_ABSENT"
+    PROVIDER_FIELD_UNAVAILABLE = "PROVIDER_FIELD_UNAVAILABLE"
 
 
 class PitEvidenceState(str, Enum):
@@ -64,11 +67,18 @@ class NormalizedEodObservation:
     close: Decimal | None
     volume: int | None
     amount: Decimal | None
+    trading_status: str | None
     available_time: datetime | None
     acquisition_time: datetime
     acquisition_id: str
     revision_id: str | None
     raw_capture_id: str
+    provider_id: str
+    connector_version_id: str
+    logical_dataset: str
+    artifact_id: str
+    content_hash: str
+    source_semantics: tuple[tuple[str, str], ...]
     missing_fields: tuple[MissingField, ...]
 
     def identity_wire(self) -> dict[str, object]:
@@ -84,11 +94,18 @@ class NormalizedEodObservation:
             "close": None if self.close is None else format(self.close, "f"),
             "volume": self.volume,
             "amount": None if self.amount is None else format(self.amount, "f"),
+            "trading_status": self.trading_status,
             "available_time": self.available_time,
             "acquisition_time": self.acquisition_time,
             "acquisition_id": self.acquisition_id,
             "revision_id": self.revision_id,
             "raw_capture_id": self.raw_capture_id,
+            "provider_id": self.provider_id,
+            "connector_version_id": self.connector_version_id,
+            "logical_dataset": self.logical_dataset,
+            "artifact_id": self.artifact_id,
+            "content_hash": self.content_hash,
+            "source_semantics": self.source_semantics,
             "missing_fields": tuple(
                 {"field": item.field, "reason": item.reason.value}
                 for item in self.missing_fields
@@ -127,6 +144,88 @@ class ResearchDataSnapshot:
         return self.records
 
 
+def field_candidates_from_eod(
+    record: NormalizedEodObservation,
+    policy: FieldCapabilityPolicy,
+) -> tuple[FieldCandidate, ...]:
+    """Project one normalized row into field candidates with exact raw provenance."""
+
+    if (
+        policy.provider_id != record.provider_id
+        or policy.connector_version_id != record.connector_version_id
+        or policy.logical_dataset != record.logical_dataset
+    ):
+        raise ValueError("field capability policy does not bind the normalized observation")
+    semantics = dict(record.source_semantics)
+    missing = {item.field: item.reason.value for item in record.missing_fields}
+    values: dict[MarketDataFieldCode, object | None] = {
+        MarketDataFieldCode.OHLC: (
+            None
+            if any(
+                item is None
+                for item in (record.open, record.high, record.low, record.close)
+            )
+            else (
+                format(record.open, "f"),
+                format(record.high, "f"),
+                format(record.low, "f"),
+                format(record.close, "f"),
+            )
+        ),
+        MarketDataFieldCode.VOLUME: record.volume,
+        MarketDataFieldCode.AMOUNT: (
+            None if record.amount is None else format(record.amount, "f")
+        ),
+        MarketDataFieldCode.TRADING_STATUS: record.trading_status,
+    }
+    source_names = {
+        MarketDataFieldCode.OHLC: "/".join(
+            semantics[name] for name in ("open", "high", "low", "close")
+        ),
+        MarketDataFieldCode.VOLUME: semantics["volume"],
+        MarketDataFieldCode.AMOUNT: semantics["amount"],
+        MarketDataFieldCode.TRADING_STATUS: "missing_reason:"
+        + missing.get("trading_status", "PROVIDER_FIELD_UNAVAILABLE"),
+    }
+    candidates: list[FieldCandidate] = []
+    for code, value in values.items():
+        capability = policy.capability(code)
+        if capability is None:
+            raise ValueError(f"field capability policy omits {code.value}")
+        kind = (
+            FieldValueKind.DIRECT
+            if value is not None
+            else (
+                FieldValueKind.UNAVAILABLE
+                if capability.state is FieldCapabilityState.UNAVAILABLE
+                else FieldValueKind.MISSING
+            )
+        )
+        candidates.append(
+            FieldCandidate(
+                field_code=code,
+                value=value,
+                capability_state=capability.state,
+                provenance=FieldProvenance(
+                    provider_id=record.provider_id,
+                    connector_version_id=record.connector_version_id,
+                    logical_dataset=record.logical_dataset,
+                    raw_capture_id=record.raw_capture_id,
+                    artifact_id=record.artifact_id,
+                    content_hash=record.content_hash,
+                    source_field_semantic=source_names[code],
+                    effective_time=record.event_time,
+                    available_time=record.available_time,
+                    revision_id=record.revision_id,
+                    revision_semantics=capability.revision_semantics,
+                    acquired_at=record.acquisition_time,
+                    value_kind=kind,
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
 def _null(value: object) -> bool:
     if value is None:
         return True
@@ -136,40 +235,36 @@ def _null(value: object) -> bool:
 
 
 def _decimal(
-    row: Mapping[str, object], source: str, target: str, missing: list[MissingField]
+    value: object, target: str, missing: list[MissingField]
 ) -> Decimal | None:
-    value = row.get(source)
     if _null(value):
         missing.append(MissingField(target, MissingValueReason.PROVIDER_NULL))
         return None
     try:
         parsed = Decimal(str(value))
     except (InvalidOperation, ValueError) as error:
-        raise NormalizationError(f"{source} must be a finite decimal") from error
+        raise NormalizationError(f"{target} must be a finite decimal") from error
     if not parsed.is_finite():
-        raise NormalizationError(f"{source} must be a finite decimal")
+        raise NormalizationError(f"{target} must be a finite decimal")
     return parsed
 
 
-def _volume(
-    row: Mapping[str, object], missing: list[MissingField]
-) -> int | None:
-    value = row.get("成交量")
+def _volume(value: object, missing: list[MissingField]) -> int | None:
     if _null(value):
         missing.append(MissingField("volume", MissingValueReason.PROVIDER_NULL))
         return None
     try:
         parsed = Decimal(str(value))
     except (InvalidOperation, ValueError) as error:
-        raise NormalizationError("成交量 must be an integer") from error
+        raise NormalizationError("volume must be an integer") from error
     if not parsed.is_finite() or parsed != parsed.to_integral_value() or parsed < 0:
-        raise NormalizationError("成交量 must be a non-negative integer")
+        raise NormalizationError("volume must be a non-negative integer")
     return int(parsed)
 
 
 def _exchange(symbol: str) -> str:
     if len(symbol) != 6 or not symbol.isascii() or not symbol.isdigit():
-        raise NormalizationError("股票代码 must be exactly six ASCII digits")
+        raise NormalizationError("provider symbol must be exactly six ASCII digits")
     if symbol.startswith(("4", "8", "92")):
         return "BSE"
     if symbol.startswith(("5", "6", "9")):
@@ -179,29 +274,19 @@ def _exchange(symbol: str) -> str:
     raise NormalizationError(f"unsupported A-share symbol prefix: {symbol}")
 
 
-def _records(submission: RawCaptureSubmission) -> tuple[Mapping[str, object], ...]:
+def _records(submission: RawCaptureSubmission) -> tuple[ProviderNeutralEodRow, ...]:
     metadata = submission.source_metadata
-    if metadata.get("schema_id") != _RAW_SCHEMA_ID:
-        raise NormalizationError("unsupported raw provider schema")
     payload = metadata.get("raw_payload")
     if not isinstance(payload, Mapping):
         raise NormalizationError("raw payload is unavailable")
     if canonical_sha256(payload) != submission.envelope.content_hash:
         raise NormalizationError("raw payload no longer matches immutable capture identity")
-    observed = payload.get("records")
-    if not isinstance(observed, Sequence) or isinstance(observed, (str, bytes, bytearray)):
-        raise NormalizationError("raw payload records must be a sequence")
-    rows: list[Mapping[str, object]] = []
-    for row in observed:
-        if not isinstance(row, Mapping):
-            raise NormalizationError("raw provider row must be a mapping")
-        absent = _REQUIRED_COLUMNS - set(row)
-        if absent:
-            raise NormalizationError(
-                f"provider schema is missing required columns: {','.join(sorted(absent))}"
-            )
-        rows.append(row)
-    return tuple(rows)
+    projected = payload.get("provider_neutral_observations")
+    if canonical_sha256(projected) != canonical_sha256(submission.observations.to_wire()):
+        raise NormalizationError(
+            "provider-neutral observations do not match immutable capture bytes"
+        )
+    return submission.observations.rows
 
 
 def _acquisition_provenance(
@@ -236,28 +321,29 @@ def _acquisition_provenance(
 
 
 def _normalize_row(
-    row: Mapping[str, object],
+    row: ProviderNeutralEodRow,
     submission: RawCaptureSubmission,
     *,
     acquisition_id: str,
     acquisition_time: datetime,
 ) -> NormalizedEodObservation:
-    symbol = str(row["股票代码"])
+    symbol = row.symbol
     exchange = _exchange(symbol)
-    try:
-        session_date = date.fromisoformat(str(row["日期"]))
-    except ValueError as error:
-        raise NormalizationError("日期 must use ISO calendar date") from error
+    session_date = row.session_date
     missing: list[MissingField] = []
-    open_price = _decimal(row, "开盘", "open", missing)
-    close_price = _decimal(row, "收盘", "close", missing)
-    high = _decimal(row, "最高", "high", missing)
-    low = _decimal(row, "最低", "low", missing)
-    volume = _volume(row, missing)
-    amount = _decimal(row, "成交额", "amount", missing)
-    missing.append(
-        MissingField("trading_status", MissingValueReason.PROVIDER_COLUMN_ABSENT)
-    )
+    open_price = _decimal(row.open, "open", missing)
+    close_price = _decimal(row.close, "close", missing)
+    high = _decimal(row.high, "high", missing)
+    low = _decimal(row.low, "low", missing)
+    volume = _volume(row.volume, missing)
+    amount = _decimal(row.amount, "amount", missing)
+    for field, reason in row.missing_reasons.items():
+        if field not in {item.field for item in missing}:
+            try:
+                typed_reason = MissingValueReason(reason)
+            except ValueError as error:
+                raise NormalizationError(f"unsupported missing reason: {reason}") from error
+            missing.append(MissingField(field, typed_reason))
     if all(value is not None for value in (open_price, close_price, high, low)):
         assert open_price is not None and close_price is not None
         assert high is not None and low is not None
@@ -277,11 +363,18 @@ def _normalize_row(
         close=close_price,
         volume=volume,
         amount=amount,
-        available_time=None,
+        trading_status=row.trading_status,
+        available_time=row.available_time,
         acquisition_time=acquisition_time,
         acquisition_id=acquisition_id,
-        revision_id=None,
+        revision_id=row.revision_id,
         raw_capture_id=submission.envelope.raw_capture_id,
+        provider_id=submission.envelope.provider_id,
+        connector_version_id=submission.envelope.connector_version_id,
+        logical_dataset=submission.observations.logical_dataset,
+        artifact_id=submission.envelope.artifact_id,
+        content_hash=submission.envelope.content_hash,
+        source_semantics=tuple(sorted(row.source_semantics.items())),
         missing_fields=tuple(sorted(missing, key=lambda item: item.field)),
     )
 
@@ -310,6 +403,20 @@ def normalize_a_share_eod(
         )
     )
     acquisition_ids = (acquisition_id,)
+    pit_evidence = (
+        PitEvidenceState.PROVIDER_ASSERTED
+        if records
+        and all(record.available_time is not None for record in records)
+        and submission.source_metadata.get("available_time_evidence") == "PROVIDER_ASSERTED"
+        else PitEvidenceState.UNKNOWN
+    )
+    revision_evidence = (
+        PitEvidenceState.PROVIDER_ASSERTED
+        if records
+        and all(record.revision_id is not None for record in records)
+        and submission.source_metadata.get("revision_evidence") == "PROVIDER_ASSERTED"
+        else PitEvidenceState.UNKNOWN
+    )
     ceiling = propagate_downstream_ceiling(
         proposed_state,
         (
@@ -326,8 +433,8 @@ def normalize_a_share_eod(
         "acquisition_ids": acquisition_ids,
         "records": tuple(record.identity_wire() for record in records),
         "truth_ceiling": ceiling,
-        "pit_evidence": PitEvidenceState.UNKNOWN,
-        "revision_evidence": PitEvidenceState.UNKNOWN,
+        "pit_evidence": pit_evidence,
+        "revision_evidence": revision_evidence,
     }
     snapshot_id = "snp_sha256_" + canonical_sha256(identity)
     instruments = tuple(sorted({record.instrument_id for record in records}))
@@ -350,12 +457,22 @@ def normalize_a_share_eod(
         acquisition_ids=acquisition_ids,
         records=records,
         truth_ceiling=ceiling,
-        pit_evidence=PitEvidenceState.UNKNOWN,
-        revision_evidence=PitEvidenceState.UNKNOWN,
-        reason_codes=(
-            "PROVIDER_AVAILABLE_TIME_UNKNOWN",
-            "PROVIDER_REVISION_UNKNOWN",
-            "PROVIDER_DATA_IS_NOT_CANONICAL_MARKET_TRUTH",
+        pit_evidence=pit_evidence,
+        revision_evidence=revision_evidence,
+        reason_codes=tuple(
+            code
+            for condition, code in (
+                (
+                    pit_evidence is PitEvidenceState.UNKNOWN,
+                    "PROVIDER_AVAILABLE_TIME_UNKNOWN",
+                ),
+                (
+                    revision_evidence is PitEvidenceState.UNKNOWN,
+                    "PROVIDER_REVISION_UNKNOWN",
+                ),
+                (True, "PROVIDER_DATA_IS_NOT_CANONICAL_MARKET_TRUTH"),
+            )
+            if condition
         ),
         research_universe_input=universe_input,
     )
