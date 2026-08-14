@@ -5,6 +5,7 @@ import unittest
 
 from apps.backend.tests.model_pipeline_runnability.helpers import (
     build_model_pipeline_development_fixture,
+    model_pipeline_request,
 )
 from v3_backend.adapters.artifact_store import FileSystemArtifactStore
 from v3_backend.adapters.model_workers import SklearnRidgeSubprocessWorker
@@ -16,19 +17,6 @@ from v3_backend.domain.models import (
     SafeLinearModelArtifact,
 )
 from v3_backend.provenance.canonical_hash import canonical_json_bytes
-
-
-def request(dataset_id: str) -> ModelPipelineRequest:
-    return ModelPipelineRequest(
-        dataset_id=dataset_id,
-        target_semantics="forward-return/1-observation",
-        code_version="v3.model-research-pipeline/1.0.0",
-        environment_profile_id="cpu-single-thread-research-v1",
-        seed=7,
-        alpha=1.0,
-    )
-
-
 class ModelPipelineRunnabilityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = build_model_pipeline_development_fixture(SklearnRidgeSubprocessWorker())
@@ -37,8 +25,8 @@ class ModelPipelineRunnabilityTests(unittest.TestCase):
         self.fixture.close()
 
     def test_dataset_actual_bytes_materialize_deterministically_and_run(self) -> None:
-        first = self.fixture.service.run(request(self.fixture.dataset.dataset_version_id))
-        second = self.fixture.service.run(request(self.fixture.dataset.dataset_version_id))
+        first = self.fixture.service.run(model_pipeline_request(self.fixture.dataset.dataset_version_id))
+        second = self.fixture.service.run(model_pipeline_request(self.fixture.dataset.dataset_version_id))
         self.assertEqual(first.status, ModelPipelineStatus.SUCCESS)
         self.assertEqual(first.to_wire(), second.to_wire())
         self.assertEqual(first.dataset_artifact_id, self.fixture.dataset.dataset_descriptor.artifact_id)
@@ -58,7 +46,7 @@ class ModelPipelineRunnabilityTests(unittest.TestCase):
         self.assertEqual(set(fields) & {"dataset_id", "training_split", "prediction_split"}, {"dataset_id", "training_split", "prediction_split"})
 
     def test_missing_dataset_owner_fails_before_train(self) -> None:
-        missing = self.fixture.service.run(request("fdsv_sha256_" + "0" * 64))
+        missing = self.fixture.service.run(model_pipeline_request("fdsv_sha256_" + "0" * 64))
         self.assertEqual(missing.status, ModelPipelineStatus.DATASET_RESOLUTION_FAILED)
 
     def test_tampered_dataset_bytes_fail_before_train(self) -> None:
@@ -66,14 +54,14 @@ class ModelPipelineRunnabilityTests(unittest.TestCase):
         original = path.read_bytes()
         try:
             path.write_bytes(original + b" ")
-            tampered = self.fixture.service.run(request(self.fixture.dataset.dataset_version_id))
+            tampered = self.fixture.service.run(model_pipeline_request(self.fixture.dataset.dataset_version_id))
             self.assertEqual(tampered.status, ModelPipelineStatus.DATASET_RESOLUTION_FAILED)
             self.assertIsNone(tampered.model_version_id)
         finally:
             path.write_bytes(original)
 
     def test_model_and_prediction_artifacts_reopen_from_existing_store(self) -> None:
-        result = self.fixture.service.run(request(self.fixture.dataset.dataset_version_id))
+        result = self.fixture.service.run(model_pipeline_request(self.fixture.dataset.dataset_version_id))
         self.assertEqual(result.status, ModelPipelineStatus.SUCCESS)
         reopened = FileSystemArtifactStore(self.fixture.store.root)
         safe_model = SafeLinearModelArtifact.from_bytes(
@@ -113,5 +101,7 @@ class ModelPipelineRunnabilityTests(unittest.TestCase):
                 schema_fingerprint="sch_sha256_" + "1" * 64,
                 semantic_fingerprint="model-pipeline-safe-format-test",
             )
+
+
 if __name__ == "__main__":
     unittest.main()

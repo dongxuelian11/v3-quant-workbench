@@ -21,6 +21,7 @@ from v3_backend.domain.factors import FormalFactorEvaluationRequest
 from v3_backend.domain.models import (
     CanonicalDatasetModelPipelineService,
     ModelPipelineDependencies,
+    ModelPipelineRequest,
 )
 from v3_backend.domain.payload_authority import CanonicalPayloadResolver
 
@@ -56,6 +57,17 @@ class ExtendedObservationA1Fixture(SQLiteCanonicalOwnerClosureTests):
                 "20", "21", "22", "23", "24", "25",
             ]
         return super()._publish_store(payload, schema=schema, semantic_role=semantic_role)
+
+
+def model_pipeline_request(dataset_id: str) -> ModelPipelineRequest:
+    return ModelPipelineRequest(
+        dataset_id=dataset_id,
+        target_semantics="forward-return/1-observation",
+        code_version="v3.model-research-pipeline/1.0.0",
+        environment_profile_id="cpu-single-thread-research-v1",
+        seed=7,
+        alpha=1.0,
+    )
 
 
 def build_model_pipeline_development_fixture(worker) -> ModelPipelineDevelopmentFixture:
@@ -142,4 +154,5 @@ def build_model_pipeline_development_fixture(worker) -> ModelPipelineDevelopment
 __all__ = [
     "ModelPipelineDevelopmentFixture",
     "build_model_pipeline_development_fixture",
+    "model_pipeline_request",
 ]
