@@ -24,12 +24,23 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 class CanonicalRiskApplicationRequest:
     """Untrusted identity-level intent; it deliberately contains no numeric payload."""
 
+    project_id: str
+    project_context_revision_id: str
     source_target_weight_vector_id: str
     risk_policy_set_version_id: str
     runtime_identity: RuntimeIdentity
     context_identity: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.project_id, str) or not self.project_id.startswith("prj_"):
+            raise RiskApplicationAuthorityError("project_id is not canonical")
+        if (
+            not isinstance(self.project_context_revision_id, str)
+            or not self.project_context_revision_id.startswith("pcr_")
+        ):
+            raise RiskApplicationAuthorityError(
+                "project_context_revision_id is not canonical"
+            )
         if not self.source_target_weight_vector_id.startswith("twv_sha256_"):
             raise RiskApplicationAuthorityError("source target identity is not canonical")
         if not self.risk_policy_set_version_id.startswith("rpsv_sha256_"):
@@ -55,13 +66,21 @@ class CanonicalRiskApplicationPublication:
 
 class CanonicalRiskApplicationOwnerPort(Protocol):
     def require_target_weight(
-        self, target_weight_vector_id: str, *, context_identity: str
+        self,
+        target_weight_vector_id: str,
+        *,
+        project_id: str,
+        project_context_revision_id: str,
+        context_identity: str,
     ) -> TargetWeightVector: ...
 
     def require_risk_policy_set(
         self,
         risk_policy_set_version_id: str,
         *,
+        project_id: str,
+        project_context_revision_id: str,
+        context_identity: str,
         runtime_identity: RuntimeIdentity,
     ) -> RiskPolicySetVersion: ...
 
@@ -99,10 +118,15 @@ class CanonicalRiskApplicationService:
 
         source_target = self._owner.require_target_weight(
             request.source_target_weight_vector_id,
+            project_id=request.project_id,
+            project_context_revision_id=request.project_context_revision_id,
             context_identity=request.context_identity,
         )
         policy_set = self._owner.require_risk_policy_set(
             request.risk_policy_set_version_id,
+            project_id=request.project_id,
+            project_context_revision_id=request.project_context_revision_id,
+            context_identity=request.context_identity,
             runtime_identity=request.runtime_identity,
         )
         runtime_keys = {

@@ -21,16 +21,29 @@ from v3_backend.domain.payload_authority import (
     PayloadResolutionRequest,
     PayloadBindingUnavailable,
 )
+from v3_backend.domain.portfolio_construction.owner import (
+    TARGET_WEIGHT_OWNER_NAMESPACE,
+    TARGET_WEIGHT_PAYLOAD_ROLE,
+    TARGET_WEIGHT_SERIALIZATION_VERSION,
+)
 from v3_backend.domain.risk_runtime.application import (
     CanonicalRiskApplicationPublication,
     CanonicalRiskApplicationRequest,
     RiskApplicationAuthorityError,
 )
 from v3_backend.domain.risk_runtime.codec import (
-    canonical_policy_set_bytes,
+    MAX_POLICY_SET_BYTES,
     risk_policy_set_from_bytes,
 )
-from v3_backend.domain.risk_runtime.model import RiskPolicySetVersion
+from v3_backend.domain.risk_runtime.authoring import (
+    RISK_POLICY_OWNER_NAMESPACE,
+    RISK_POLICY_PAYLOAD_ROLE,
+    RISK_POLICY_SERIALIZATION_VERSION,
+)
+from v3_backend.domain.risk_runtime.model import (
+    RiskModelRequirement,
+    RiskPolicySetVersion,
+)
 from v3_backend.domain.risk_runtime.runtime import apply_risk
 from v3_backend.domain.weights import (
     RiskAdjustedWeightVector,
@@ -50,17 +63,20 @@ from v3_backend.repositories.unit_of_work import TransactionMode
 
 from .artifact_publication import SQLiteArtifactPublicationPort
 from .connection import SQLiteConfig, connect_catalog
+from .portfolio_risk_owner import SQLitePortfolioRiskPolicyOwner
 from .repositories import SQLiteRepositoryRegistry
 from .unit_of_work import SQLiteUnitOfWork
 
 
 BINDING_VERSION = "v3.sqlite-risk-application-owner/1.0.0"
-TARGET_NAMESPACE = "v3.portfolio.target-weight-vector"
+TARGET_NAMESPACE = TARGET_WEIGHT_OWNER_NAMESPACE
 RECEIPT_NAMESPACE = "v3.risk.application-receipt"
 ADJUSTED_NAMESPACE = "v3.risk.adjusted-weight-vector"
-TARGET_ROLE = "TARGET_WEIGHT_VECTOR"
+TARGET_ROLE = TARGET_WEIGHT_PAYLOAD_ROLE
 RECEIPT_ROLE = "RISK_APPLICATION_RECEIPT"
 ADJUSTED_ROLE = "RISK_ADJUSTED_WEIGHT_VECTOR"
+RECEIPT_SERIALIZATION_VERSION = "v3.risk.application-receipt.canonical-json/1.0.0"
+ADJUSTED_SERIALIZATION_VERSION = "v3.risk.adjusted-weight-vector.canonical-json/1.0.0"
 
 
 def _wire_time(value: datetime) -> str:
@@ -91,6 +107,15 @@ def _truth_columns(value) -> dict[str, str]:
         "truth_state": value.truth.value,
         "admission_state": value.admission.value,
     }
+
+
+def _content_sha256(identity: str, prefix: str) -> str:
+    if not isinstance(identity, str) or not identity.startswith(prefix):
+        raise RiskApplicationAuthorityError("canonical content identity prefix mismatch")
+    digest = identity[len(prefix) :]
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise RiskApplicationAuthorityError("canonical content identity digest is invalid")
+    return digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +218,9 @@ class SQLiteRiskApplicationRepository:
     def __init__(self, database_path: str | Path, artifact_root: str | Path) -> None:
         self.database_path = Path(database_path).resolve()
         self.store = FileSystemArtifactStore(artifact_root)
+        self.upstream_owner = SQLitePortfolioRiskPolicyOwner(
+            self.database_path, artifact_root
+        )
 
     def _connection(self, *, read_only: bool = False) -> sqlite3.Connection:
         return connect_catalog(SQLiteConfig(self.database_path, read_only=read_only))
@@ -250,240 +278,92 @@ class SQLiteRiskApplicationRepository:
             }
         )
 
-    def publish_risk_policy_set(
-        self,
-        policy_set: RiskPolicySetVersion,
-        *,
-        runtime_identity: RuntimeIdentity,
-        published_at: datetime,
-    ) -> RiskPolicySetVersion:
-        policy_set.assert_canonical()
-        if not isinstance(runtime_identity, RuntimeIdentity):
-            raise TypeError("runtime_identity must be RuntimeIdentity")
-        wire_time = _wire_time(published_at)
-        payload = canonical_policy_set_bytes(policy_set)
-        first = policy_set.policies[0]
-        if (
-            runtime_identity.code_version != first.code_version
-            or runtime_identity.runtime_profile_id != first.runtime_profile_id
-        ):
-            raise RiskApplicationAuthorityError(
-                "Risk policy owner runtime does not match the canonical policy set"
-            )
-        connection = self._connection()
-        try:
-            with SQLiteUnitOfWork(connection, TransactionMode.WRITE_CONTROL) as uow:
-                registry = SQLiteRepositoryRegistry(uow)
-                table = registry.risk.table("risk_policy_set_publication")
-                existing = table.get(policy_set.risk_policy_set_version_id)
-                row = {
-                    "risk_policy_set_version_id": policy_set.risk_policy_set_version_id,
-                    "content_sha256": policy_set.content_sha256,
-                    "policy_json": payload.decode("utf-8"),
-                    "code_version": first.code_version,
-                    "runtime_profile_id": first.runtime_profile_id,
-                    "environment_fingerprint": runtime_identity.environment_fingerprint,
-                    "backend": first.backend,
-                    **_truth_columns(policy_set.truth_admission),
-                    "published_at": wire_time,
-                }
-                if existing is None:
-                    table.add_new(row)
-                elif any(existing[key] != value for key, value in row.items() if key != "published_at"):
-                    raise RiskApplicationAuthorityError("Risk policy owner identity conflicts")
-                entity_id = _provenance_id(
-                    "RiskPolicySetVersion",
-                    policy_set.risk_policy_set_version_id,
-                    policy_set.content_sha256,
-                )
-                self._record_entity(
-                    registry,
-                    entity_id=entity_id,
-                    subject_type="RiskPolicySetVersion",
-                    subject_id=policy_set.risk_policy_set_version_id,
-                    subject_version=policy_set.schema_version,
-                    digest=policy_set.content_sha256,
-                    code_version=first.code_version,
-                    environment_profile_id=runtime_identity.runtime_profile_id,
-                    actor="v3.risk-service/1.0.0",
-                    recorded_at=wire_time,
-                )
-        finally:
-            connection.close()
-        return self.require_risk_policy_set(
-            policy_set.risk_policy_set_version_id,
-            runtime_identity=runtime_identity,
-        )
-
-    def publish_target_weight(
-        self, target: TargetWeightVector, *, published_at: datetime
-    ) -> TargetWeightVector:
-        target.assert_canonical()
-        context_identity = target.source.source_reference_sha256
-        try:
-            existing = self.require_target_weight(
-                target.target_weight_vector_id, context_identity=context_identity
-            )
-        except PayloadBindingUnavailable:
-            pass
-        else:
-            if existing != target:
-                raise RiskApplicationAuthorityError("TargetWeight owner identity conflicts")
-            return existing
-
-        payload = canonical_weight_bytes(target)
-        entity_id = _provenance_id(
-            "TargetWeightVector", target.target_weight_vector_id, target.content_sha256
-        )
-        plan = _ArtifactPlan(
-            target.target_weight_vector_id,
-            TARGET_ROLE,
-            target.schema_version,
-            payload,
-            entity_id,
-        )
-        self._publish_target(plan, target, context_identity, published_at)
-        return self.require_target_weight(
-            target.target_weight_vector_id, context_identity=context_identity
-        )
-
-    def _publish_target(
-        self,
-        plan: _ArtifactPlan,
-        target: TargetWeightVector,
-        context_identity: str,
-        published_at: datetime,
-    ) -> None:
-        callbacks = _BatchPublishCallbacks(
-            store=self.store,
-            database_path=self.database_path,
-            plans=(plan,),
-            published_at=published_at,
-        )
-        connection = self._connection()
-        wire_time = _wire_time(published_at)
-        try:
-            with SQLiteUnitOfWork(
-                connection,
-                TransactionMode.PUBLISH,
-                publish_callbacks=callbacks,
-            ) as uow:
-                result = callbacks.results[0]
-                descriptor = result.descriptor
-                registry = SQLiteRepositoryRegistry(uow)
-                self._record_entity(
-                    registry,
-                    entity_id=plan.provenance_entity_id,
-                    subject_type="TargetWeightVector",
-                    subject_id=target.target_weight_vector_id,
-                    subject_version=target.schema_version,
-                    digest=target.content_sha256,
-                    code_version=target.runtime_identity.code_version,
-                    environment_profile_id=target.runtime_identity.runtime_profile_id,
-                    actor="v3.portfolio-service/1.0.0",
-                    recorded_at=wire_time,
-                )
-                reference = ArtifactReference(
-                    reference_id=_reference_id(target.target_weight_vector_id, TARGET_ROLE),
-                    owner_id=target.target_weight_vector_id,
-                    artifact_id=descriptor.artifact_id,
-                    role=TARGET_ROLE,
-                    created_at=descriptor.created_at,
-                )
-                SQLiteArtifactPublicationPort(uow).publish(
-                    ArtifactPublication(descriptor, (reference,))
-                )
-                row = {
-                    "target_weight_vector_id": target.target_weight_vector_id,
-                    "content_sha256": target.content_sha256,
-                    "artifact_id": descriptor.artifact_id,
-                    "artifact_reference_id": reference.reference_id,
-                    "artifact_sha256": descriptor.sha256,
-                    "byte_size": descriptor.byte_size,
-                    "schema_version": target.schema_version,
-                    "context_identity": context_identity,
-                    "portfolio_intent_id": target.source.portfolio_intent_id,
-                    "portfolio_intent_content_sha256": target.source.portfolio_intent_content_sha256,
-                    "construction_spec_id": target.construction_spec.source_id,
-                    "construction_spec_content_sha256": target.construction_spec.content_sha256,
-                    "universe_version_id": target.source.universe_version_id,
-                    "membership_artifact_ref": target.source.membership_artifact_id,
-                    "membership_sha256": target.source.membership_sha256,
-                    "as_of": target.to_wire()["as_of"],
-                    "decision_time": target.to_wire()["decision_time"],
-                    "rebalance_time": target.to_wire()["rebalance_time"],
-                    "valid_until": target.to_wire()["valid_until"],
-                    "code_version": target.runtime_identity.code_version,
-                    "runtime_profile_id": target.runtime_identity.runtime_profile_id,
-                    "environment_fingerprint": target.runtime_identity.environment_fingerprint,
-                    **_truth_columns(target.truth_admission),
-                    "published_at": wire_time,
-                }
-                registry.portfolio.table("target_weight_vector_publication").add_new(row)
-        finally:
-            connection.close()
-
     def require_risk_policy_set(
         self,
         risk_policy_set_version_id: str,
         *,
-        runtime_identity: RuntimeIdentity | None = None,
+        project_id: str,
+        project_context_revision_id: str,
+        context_identity: str,
+        runtime_identity: RuntimeIdentity,
     ) -> RiskPolicySetVersion:
-        connection = self._connection(read_only=True)
-        try:
-            row = connection.execute(
-                "SELECT * FROM risk_policy_set_publication WHERE risk_policy_set_version_id=?",
-                (risk_policy_set_version_id,),
-            ).fetchone()
-            if row is None:
-                raise RiskApplicationAuthorityError("canonical Risk policy owner is missing")
-            policy_set = risk_policy_set_from_bytes(str(row["policy_json"]).encode("utf-8"))
-            first = policy_set.policies[0]
-            expected = {
-                "content_sha256": policy_set.content_sha256,
-                "code_version": first.code_version,
-                "runtime_profile_id": first.runtime_profile_id,
-                "backend": first.backend,
-                **_truth_columns(policy_set.truth_admission),
-            }
-            if policy_set.risk_policy_set_version_id != risk_policy_set_version_id or any(
-                row[key] != value for key, value in expected.items()
-            ):
-                raise RiskApplicationAuthorityError("canonical Risk policy owner is inconsistent")
-            if runtime_identity is not None and (
-                runtime_identity.code_version != row["code_version"]
-                or runtime_identity.runtime_profile_id != row["runtime_profile_id"]
-                or runtime_identity.environment_fingerprint
-                != row["environment_fingerprint"]
-            ):
-                raise RiskApplicationAuthorityError(
-                    "request runtime identity does not match the canonical Risk policy owner"
-                )
-            return policy_set
-        finally:
-            connection.close()
+        if not isinstance(runtime_identity, RuntimeIdentity):
+            raise TypeError("runtime_identity must be RuntimeIdentity")
+        content_sha256 = _content_sha256(risk_policy_set_version_id, "rpsv_sha256_")
+        row = self._require_owner_row(
+            "risk_policy_set_publication",
+            "risk_policy_set_version_id",
+            risk_policy_set_version_id,
+        )
+        if (
+            row["project_id"] != project_id
+            or row["project_context_revision_id"] != project_context_revision_id
+            or row["context_identity"] != context_identity
+            or row["content_sha256"] != content_sha256
+            or row["serialization_version"] != RISK_POLICY_SERIALIZATION_VERSION
+            or row["risk_model_requirement"] != RiskModelRequirement.NOT_REQUIRED.value
+            or row["code_version"] != runtime_identity.code_version
+            or row["runtime_profile_id"] != runtime_identity.runtime_profile_id
+            or row["environment_fingerprint"]
+            != runtime_identity.environment_fingerprint
+        ):
+            raise RiskApplicationAuthorityError(
+                "canonical Risk policy owner project/context/runtime mismatch"
+            )
+        payload = self._payload(
+            PayloadResolutionRequest(
+                owner_namespace=RISK_POLICY_OWNER_NAMESPACE,
+                owner_id=risk_policy_set_version_id,
+                owner_version=content_sha256,
+                payload_role=RISK_POLICY_PAYLOAD_ROLE,
+                context_identity=context_identity,
+                max_bytes=MAX_POLICY_SET_BYTES,
+            )
+        )
+        policy_set = risk_policy_set_from_bytes(payload)
+        first = policy_set.policies[0]
+        if (
+            policy_set.risk_policy_set_version_id != risk_policy_set_version_id
+            or policy_set.content_sha256 != content_sha256
+            or policy_set.schema_version != row["schema_version"]
+            or first.code_version != row["code_version"]
+            or first.runtime_profile_id != row["runtime_profile_id"]
+            or first.backend != row["backend"]
+            or policy_set.truth_admission.truth.value != row["canonical_truth_state"]
+            or policy_set.truth_admission.admission.value
+            != row["canonical_admission_state"]
+            or any(
+                policy.risk_model_requirement is not RiskModelRequirement.NOT_REQUIRED
+                for policy in policy_set.policies
+            )
+        ):
+            raise RiskApplicationAuthorityError(
+                "canonical Risk policy actual bytes do not match owner identity"
+            )
+        return policy_set
 
     def resolve(self, request: PayloadResolutionRequest) -> CanonicalPayloadBinding | None:
+        upstream = self.upstream_owner.resolve(request)
+        if upstream is not None:
+            return upstream
         mapping = {
-            (TARGET_NAMESPACE, TARGET_ROLE, TargetWeightVector.schema_version): (
-                "target_weight_vector_publication",
-                "target_weight_vector_id",
-            ),
-            (RECEIPT_NAMESPACE, RECEIPT_ROLE, RiskApplicationReceipt.schema_version): (
+            (RECEIPT_NAMESPACE, RECEIPT_ROLE): (
                 "risk_application_receipt_publication",
                 "risk_application_receipt_id",
+                "RiskApplicationReceipt",
+                RECEIPT_SERIALIZATION_VERSION,
             ),
-            (ADJUSTED_NAMESPACE, ADJUSTED_ROLE, RiskAdjustedWeightVector.schema_version): (
+            (ADJUSTED_NAMESPACE, ADJUSTED_ROLE): (
                 "risk_adjusted_weight_vector_publication",
                 "risk_adjusted_weight_vector_id",
+                "RiskAdjustedWeightVector",
+                ADJUSTED_SERIALIZATION_VERSION,
             ),
         }
-        selected = mapping.get(
-            (request.owner_namespace, request.payload_role, request.owner_version)
-        )
+        selected = mapping.get((request.owner_namespace, request.payload_role))
         if selected is None:
             return None
-        table, id_column = selected
+        table, id_column, owner_type, serialization_version = selected
         connection = self._connection(read_only=True)
         try:
             row = connection.execute(
@@ -492,14 +372,21 @@ class SQLiteRiskApplicationRepository:
             ).fetchone()
             if row is None:
                 return None
+            if (
+                row["content_sha256"] != request.owner_version
+                or row["context_identity"] != request.context_identity
+                or row["serialization_version"] != serialization_version
+            ):
+                return None
             artifact = connection.execute(
                 "SELECT * FROM artifact WHERE artifact_id=? AND state='PUBLISHED'",
                 (row["artifact_id"],),
             ).fetchone()
             reference = connection.execute(
-                "SELECT * FROM artifact_reference WHERE artifact_reference_id=? AND owner_id=? AND role=? AND artifact_id=? AND state='ACTIVE'",
+                "SELECT * FROM artifact_reference WHERE artifact_reference_id=? AND owner_type=? AND owner_id=? AND role=? AND artifact_id=? AND state='ACTIVE'",
                 (
                     row["artifact_reference_id"],
+                    owner_type,
                     request.owner_id,
                     request.payload_role,
                     row["artifact_id"],
@@ -526,7 +413,7 @@ class SQLiteRiskApplicationRepository:
                 context_identity=row["context_identity"],
                 binding_version=BINDING_VERSION,
                 schema_fingerprint=row["schema_version"],
-                semantic_fingerprint=row["schema_version"],
+                semantic_fingerprint=row["content_sha256"],
                 provenance_reference_id=row["artifact_reference_id"],
             )
         finally:
@@ -539,30 +426,51 @@ class SQLiteRiskApplicationRepository:
         ).resolve(request).verified_payload.payload
 
     def require_target_weight(
-        self, target_weight_vector_id: str, *, context_identity: str
+        self,
+        target_weight_vector_id: str,
+        *,
+        project_id: str,
+        project_context_revision_id: str,
+        context_identity: str,
     ) -> TargetWeightVector:
-        payload = self._payload(
-            PayloadResolutionRequest(
-                owner_namespace=TARGET_NAMESPACE,
-                owner_id=target_weight_vector_id,
-                owner_version=TargetWeightVector.schema_version,
-                payload_role=TARGET_ROLE,
-                context_identity=context_identity,
-                max_bytes=MAX_WEIGHT_ARTIFACT_BYTES,
-            )
-        )
-        target = target_weight_vector_from_bytes(payload)
+        content_sha256 = _content_sha256(target_weight_vector_id, "twv_sha256_")
         row = self._require_owner_row(
             "target_weight_vector_publication",
             "target_weight_vector_id",
             target_weight_vector_id,
         )
         if (
-            target.target_weight_vector_id != target_weight_vector_id
-            or target.content_sha256 != row["content_sha256"]
-            or target.source.source_reference_sha256 != row["context_identity"]
+            row["project_id"] != project_id
+            or row["project_context_revision_id"] != project_context_revision_id
+            or row["context_identity"] != context_identity
+            or row["content_sha256"] != content_sha256
+            or row["serialization_version"] != TARGET_WEIGHT_SERIALIZATION_VERSION
         ):
-            raise RiskApplicationAuthorityError("TargetWeight reconstruction identity mismatch")
+            raise RiskApplicationAuthorityError(
+                "canonical TargetWeight owner project/context/content mismatch"
+            )
+        payload = self._payload(
+            PayloadResolutionRequest(
+                owner_namespace=TARGET_WEIGHT_OWNER_NAMESPACE,
+                owner_id=target_weight_vector_id,
+                owner_version=content_sha256,
+                payload_role=TARGET_WEIGHT_PAYLOAD_ROLE,
+                context_identity=context_identity,
+                max_bytes=MAX_WEIGHT_ARTIFACT_BYTES,
+            )
+        )
+        target = target_weight_vector_from_bytes(payload)
+        if (
+            target.target_weight_vector_id != target_weight_vector_id
+            or target.content_sha256 != content_sha256
+            or target.schema_version != row["schema_version"]
+            or target.truth_admission.truth.value != row["canonical_truth_state"]
+            or target.truth_admission.admission.value
+            != row["canonical_admission_state"]
+        ):
+            raise RiskApplicationAuthorityError(
+                "TargetWeight actual bytes do not match owner identity"
+            )
         return target
 
     def _require_owner_row(self, table: str, column: str, identity: str) -> sqlite3.Row:
@@ -586,11 +494,19 @@ class SQLiteRiskApplicationRepository:
             risk_application_receipt_id,
         )
         context = str(row["context_identity"])
+        project_id = str(row["project_id"])
+        project_context_revision_id = str(row["project_context_revision_id"])
         target = self.require_target_weight(
-            str(row["source_target_weight_vector_id"]), context_identity=context
+            str(row["source_target_weight_vector_id"]),
+            project_id=project_id,
+            project_context_revision_id=project_context_revision_id,
+            context_identity=context,
         )
         policy = self.require_risk_policy_set(
             str(row["risk_policy_set_version_id"]),
+            project_id=project_id,
+            project_context_revision_id=project_context_revision_id,
+            context_identity=context,
             runtime_identity=RuntimeIdentity(
                 code_version=str(row["code_version"]),
                 runtime_profile_id=str(row["runtime_profile_id"]),
@@ -601,7 +517,9 @@ class SQLiteRiskApplicationRepository:
             PayloadResolutionRequest(
                 owner_namespace=RECEIPT_NAMESPACE,
                 owner_id=risk_application_receipt_id,
-                owner_version=RiskApplicationReceipt.schema_version,
+                owner_version=_content_sha256(
+                    risk_application_receipt_id, "rar_sha256_"
+                ),
                 payload_role=RECEIPT_ROLE,
                 context_identity=context,
                 max_bytes=MAX_WEIGHT_ARTIFACT_BYTES,
@@ -615,6 +533,7 @@ class SQLiteRiskApplicationRepository:
             or receipt.risk_policy_set.content_sha256 != policy.content_sha256
             or receipt.source_target_content_sha256 != row["source_target_content_sha256"]
             or receipt.ordered_stage_evidence_sha256 != row["ordered_stage_evidence_sha256"]
+            or row["serialization_version"] != RECEIPT_SERIALIZATION_VERSION
         ):
             raise RiskApplicationAuthorityError("Risk receipt owner lineage mismatch")
         return receipt
@@ -628,8 +547,13 @@ class SQLiteRiskApplicationRepository:
             risk_adjusted_weight_vector_id,
         )
         context = str(row["context_identity"])
+        project_id = str(row["project_id"])
+        project_context_revision_id = str(row["project_context_revision_id"])
         target = self.require_target_weight(
-            str(row["source_target_weight_vector_id"]), context_identity=context
+            str(row["source_target_weight_vector_id"]),
+            project_id=project_id,
+            project_context_revision_id=project_context_revision_id,
+            context_identity=context,
         )
         receipt = self.require_risk_application_receipt(
             str(row["risk_application_receipt_id"])
@@ -638,7 +562,9 @@ class SQLiteRiskApplicationRepository:
             PayloadResolutionRequest(
                 owner_namespace=ADJUSTED_NAMESPACE,
                 owner_id=risk_adjusted_weight_vector_id,
-                owner_version=RiskAdjustedWeightVector.schema_version,
+                owner_version=_content_sha256(
+                    risk_adjusted_weight_vector_id, "rawv_sha256_"
+                ),
                 payload_role=ADJUSTED_ROLE,
                 context_identity=context,
                 max_bytes=MAX_WEIGHT_ARTIFACT_BYTES,
@@ -652,6 +578,7 @@ class SQLiteRiskApplicationRepository:
             or vector.content_sha256 != row["content_sha256"]
             or vector.risk_application.content_sha256
             != row["risk_application_content_sha256"]
+            or row["serialization_version"] != ADJUSTED_SERIALIZATION_VERSION
         ):
             raise RiskApplicationAuthorityError("adjusted-vector owner lineage mismatch")
         return vector
@@ -666,12 +593,15 @@ class SQLiteRiskApplicationRepository:
     ) -> CanonicalRiskApplicationPublication:
         target = self.require_target_weight(
             request.source_target_weight_vector_id,
+            project_id=request.project_id,
+            project_context_revision_id=request.project_context_revision_id,
             context_identity=request.context_identity,
         )
-        if target.source.source_reference_sha256 != request.context_identity:
-            raise RiskApplicationAuthorityError("target owner context mismatch")
         policy = self.require_risk_policy_set(
             request.risk_policy_set_version_id,
+            project_id=request.project_id,
+            project_context_revision_id=request.project_context_revision_id,
+            context_identity=request.context_identity,
             runtime_identity=request.runtime_identity,
         )
         result = apply_risk(
@@ -765,6 +695,31 @@ class SQLiteRiskApplicationRepository:
                 policy_entity = _provenance_id(
                     "RiskPolicySetVersion", policy.risk_policy_set_version_id, policy.content_sha256
                 )
+                first_policy = policy.policies[0]
+                self._record_entity(
+                    registry,
+                    entity_id=target_entity,
+                    subject_type="TargetWeightVector",
+                    subject_id=target.target_weight_vector_id,
+                    subject_version=target.schema_version,
+                    digest=target.content_sha256,
+                    code_version=target.runtime_identity.code_version,
+                    environment_profile_id=target.runtime_identity.runtime_profile_id,
+                    actor="v3.canonical-portfolio-owner-service/1.0.0",
+                    recorded_at=wire_time,
+                )
+                self._record_entity(
+                    registry,
+                    entity_id=policy_entity,
+                    subject_type="RiskPolicySetVersion",
+                    subject_id=policy.risk_policy_set_version_id,
+                    subject_version=policy.schema_version,
+                    digest=policy.content_sha256,
+                    code_version=first_policy.code_version,
+                    environment_profile_id=first_policy.runtime_profile_id,
+                    actor="v3.canonical-riskpolicy-authoring-service/1.0.0",
+                    recorded_at=wire_time,
+                )
                 entities = (
                     (
                         plans[0].provenance_entity_id,
@@ -841,6 +796,9 @@ class SQLiteRiskApplicationRepository:
                         "artifact_sha256": receipt_descriptor.sha256,
                         "byte_size": receipt_descriptor.byte_size,
                         "schema_version": receipt.schema_version,
+                        "serialization_version": RECEIPT_SERIALIZATION_VERSION,
+                        "project_id": request.project_id,
+                        "project_context_revision_id": request.project_context_revision_id,
                         "context_identity": request.context_identity,
                         "source_target_weight_vector_id": target.target_weight_vector_id,
                         "source_target_content_sha256": target.content_sha256,
@@ -866,6 +824,9 @@ class SQLiteRiskApplicationRepository:
                         "artifact_sha256": adjusted_descriptor.sha256,
                         "byte_size": adjusted_descriptor.byte_size,
                         "schema_version": adjusted.schema_version,
+                        "serialization_version": ADJUSTED_SERIALIZATION_VERSION,
+                        "project_id": request.project_id,
+                        "project_context_revision_id": request.project_context_revision_id,
                         "context_identity": request.context_identity,
                         "source_target_weight_vector_id": target.target_weight_vector_id,
                         "source_target_content_sha256": target.content_sha256,
@@ -920,7 +881,9 @@ class SQLiteRiskApplicationRepository:
         request = PayloadResolutionRequest(
             owner_namespace=ADJUSTED_NAMESPACE,
             owner_id=risk_adjusted_weight_vector_id,
-            owner_version=RiskAdjustedWeightVector.schema_version,
+            owner_version=_content_sha256(
+                risk_adjusted_weight_vector_id, "rawv_sha256_"
+            ),
             payload_role=ADJUSTED_ROLE,
             context_identity=str(row["context_identity"]),
             max_bytes=MAX_WEIGHT_ARTIFACT_BYTES,

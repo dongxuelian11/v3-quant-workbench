@@ -173,10 +173,10 @@ class OwnerFoundationFixture(unittest.TestCase):
 
 
 class MigrationOwnerFoundationTests(OwnerFoundationFixture):
-    def test_corrected_0003_has_only_owner_tables_and_reopens(self) -> None:
+    def test_0003_owns_only_upstream_and_0004_owns_only_downstream(self) -> None:
         connection = connect_catalog(self.database)
         try:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
             migrations = tuple(
                 row[0]
                 for row in connection.execute(
@@ -189,6 +189,7 @@ class MigrationOwnerFoundationTests(OwnerFoundationFixture):
                     "0001_control_catalog",
                     "0002_data_truth",
                     "0003_portfolio_riskpolicy_owner",
+                    "0004_risk_application_publication",
                 ),
             )
             tables = {
@@ -199,8 +200,8 @@ class MigrationOwnerFoundationTests(OwnerFoundationFixture):
             }
             self.assertIn("target_weight_vector_publication", tables)
             self.assertIn("risk_policy_set_publication", tables)
-            self.assertNotIn("risk_application_receipt_publication", tables)
-            self.assertNotIn("risk_adjusted_weight_vector_publication", tables)
+            self.assertIn("risk_application_receipt_publication", tables)
+            self.assertIn("risk_adjusted_weight_vector_publication", tables)
             self.assertEqual(tuple(connection.execute("PRAGMA foreign_key_check")), ())
         finally:
             connection.close()
@@ -210,6 +211,23 @@ class MigrationOwnerFoundationTests(OwnerFoundationFixture):
             ).applied,
             (),
         )
+        versions = (
+            Path(__file__).parents[2]
+            / "src"
+            / "v3_backend"
+            / "migrations"
+            / "versions"
+        )
+        owner_sql = (versions / "0003_portfolio_riskpolicy_owner.sql").read_text(
+            encoding="utf-8"
+        )
+        application_sql = (
+            versions / "0004_risk_application_publication.sql"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("CREATE TABLE risk_application_receipt_publication", owner_sql)
+        self.assertNotIn("CREATE TABLE risk_adjusted_weight_vector_publication", owner_sql)
+        self.assertNotIn("CREATE TABLE target_weight_vector_publication", application_sql)
+        self.assertNotIn("CREATE TABLE risk_policy_set_publication", application_sql)
 
     def test_0003_applies_after_exact_0001_0002_prefix(self) -> None:
         root = self.root / "prefix-upgrade"
@@ -237,14 +255,32 @@ class MigrationOwnerFoundationTests(OwnerFoundationFixture):
                 )
         finally:
             connection.close()
-        upgraded = apply_migrations(
-            path,
-            application_version="v3-owner-upgrade",
-            backup_dir=root / "backups",
-        )
-        self.assertEqual(upgraded.applied, ("0003_portfolio_riskpolicy_owner",))
-        self.assertEqual(upgraded.schema_report.user_version, 3)
-        self.assertEqual(len(upgraded.backups), 1)
+        connection = sqlite3.connect(path, isolation_level=None)
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            owner_migration = discover_migrations(source)[2]
+            self.assertEqual(
+                owner_migration.migration_id, "0003_portfolio_riskpolicy_owner"
+            )
+            _apply_one(
+                connection,
+                owner_migration,
+                application_version="v3-owner-upgrade",
+                backup=None,
+            )
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            self.assertIn("target_weight_vector_publication", tables)
+            self.assertIn("risk_policy_set_publication", tables)
+            self.assertNotIn("risk_application_receipt_publication", tables)
+            self.assertNotIn("risk_adjusted_weight_vector_publication", tables)
+        finally:
+            connection.close()
 
 
 class TargetWeightOwnerTests(OwnerFoundationFixture):

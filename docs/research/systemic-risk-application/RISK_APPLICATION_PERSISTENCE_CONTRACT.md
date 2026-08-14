@@ -1,146 +1,85 @@
 # Canonical Risk Application Persistence Contract
 
-Task: `V3-SYSTEMIC-RISK-APPLICATION-CANONICAL-PERSISTENCE-PUBLICATION-01`
+Task: `V3-SYSTEMIC-PR36-RISK-APPLICATION-OWNER-REANCHOR-20260814-01-V1.1`
 
-This document describes the bounded foundation implemented on the task branch.
-It is a candidate contract, not an A3, Backtest, product, or production
-availability claim.
+This contract describes the corrected PR #36 candidate. It does not claim that
+the PR is merged, exact-main verified, product-connected, or production-ready.
 
-## Authority chain
-
-The only formal Risk application entry point is identity-only:
+## Formal flow
 
 ```text
 CanonicalRiskApplicationRequest
+  project_id
+  project_context_revision_id
+  context_identity
   source_target_weight_vector_id
   risk_policy_set_version_id
   runtime_identity
-  context_identity
-        ↓
-SQLite canonical TargetWeight / Risk policy owners
-        ↓
-P1 owner-derived binding + verified Artifact bytes
-        ↓
-strict canonical reconstruction
-        ↓
-existing apply_risk()
-        ↓
-receipt + adjusted vector exact bytes
-        ↓
-existing Artifact Store + SQLite PUBLISH UoW
-        ↓
-append-only owner rows and active Artifact references
+        -> SQLitePortfolioRiskPolicyOwner exact persisted owners
+        -> PayloadResolutionRequest using ID-committed content hash
+        -> CanonicalPayloadResolver + FileSystemArtifactStore actual bytes
+        -> strict TargetWeightVector / RiskPolicySetVersion decode
+        -> exact project, context, runtime, identity and truth validation
+        -> existing deterministic apply_risk()
+        -> recomputed receipt + adjusted vector
+        -> existing Artifact Store + SQLite PUBLISH UoW
+        -> append-only 0004 downstream owner rows
 ```
 
-`CanonicalRiskApplicationRequest` has no numeric rows, state values, receipt,
-adjusted vector, `RiskRuntimeResult`, or caller-selected truth field. The service
-resolves the target and policy, checks the exact persisted runtime triple
-(`code_version`, `runtime_profile_id`, `environment_fingerprint`) and context, rejects
-policy sets requiring unavailable canonical `RiskStateInput` owners, and calls
-the existing deterministic engine. The persistence adapter independently
-re-resolves and recomputes before it writes. Expected output IDs are only a
-cross-check; they do not supply values or authority.
+The request has no weights, policy object, state values, result object, receipt,
+adjusted vector, Artifact descriptor, owner record, or caller-selected truth.
 
-Direct `apply_risk()` remains public and pure. Its return value creates no
-Artifact, owner row, reachability root, or downstream authority.
+## Upstream ownership
 
-## Canonical owners and storage
+TargetWeight and RiskPolicy publication remain exclusively owned by CURRENT
+main's `CanonicalPortfolioOwnerService`,
+`CanonicalRiskPolicyAuthoringService`, and
+`SQLitePortfolioRiskPolicyOwner`. The Risk Application repository only consumes
+their P1 bindings and actual bytes. Its public API cannot mint either upstream
+owner from caller-built objects.
 
-- Portfolio remains the semantic owner of `TargetWeightVector`. The additive
-  `target_weight_vector_publication` row is only its exact downstream
-  publication seam; Portfolio construction is unchanged.
-- The existing SQLite Risk repository boundary owns the exact
-  `RiskPolicySetVersion`, `RiskApplicationReceipt`, and
-  `RiskAdjustedWeightVector` records. No second registry exists.
-- Variable-length target/receipt/vector bytes live only in the existing
-  content-addressed Artifact Store. SQLite rows contain immutable identity,
-  Artifact binding, source lineage, runtime/context, timing, and truth metadata.
-- The bounded Risk policy wire is canonical control metadata stored in the
-  existing Risk repository table and reconstructed through current Risk V0
-  factories.
-- P1 remains unchanged and read-only. The repository derives each
-  `CanonicalPayloadBinding` from persisted owner state and P1 re-hashes the
-  actual bytes before reconstruction.
+`0003_portfolio_riskpolicy_owner.sql` is preserved without semantic or byte
+change. `0004_risk_application_publication.sql` depends on its tables and owns
+only the receipt and adjusted-vector publications.
 
-Same ID plus the exact same immutable state is idempotent. Same ID plus
-conflicting state, missing upstream owners, inactive/unpublished Artifacts,
-hash/size changes, context changes, or reconstruction mismatches fail closed.
+## Downstream publication and read side
 
-## Restart-safe downstream resolution
+Each 0004 owner row binds exact content identity, Project/ProjectContext,
+context identity, upstream IDs and content hashes, runtime identity, Artifact
+ID/SHA/size, active reference, schema/serialization identity, truth/admission,
+publication time, and receipt-to-adjusted lineage.
 
-After closing every repository and database connection, downstream can resolve:
+Downstream resolution starts from the receipt or adjusted-vector content ID,
+derives the committed content hash, resolves the persisted owner binding, reads
+and independently verifies actual bytes through P1, strictly decodes, and checks
+all upstream and cross-output relationships. Restart/reopen does not rely on
+in-memory owner objects.
 
-```text
-rawv_sha256_* ID
-→ risk_adjusted_weight_vector_publication
-→ source twv_sha256_* + receipt rar_sha256_*
-→ exact Artifact ID / SHA-256 / byte size / active reference
-→ P1 verified bytes
-→ reconstructed TargetWeightVector
-→ reconstructed RiskApplicationReceipt
-→ reconstructed RiskAdjustedWeightVector
-```
+## Fail-closed behavior
 
-The returned downstream view includes the adjusted vector, owner-derived P1
-binding, source target ID, and receipt ID. No in-memory owner is required. This
-is metadata readiness for a future A3 binding; it does not modify or resume A3.
+The formal path rejects missing or valid-looking unpersisted IDs, wrong Project
+or ProjectContext, wrong context identity, runtime mismatch, released Artifact
+references, missing or altered bytes, SHA/size mismatch, decoded identity
+mismatch, upstream lineage mismatch, and any policy whose RiskModel requirement
+is not `NOT_REQUIRED`.
 
-## Truth and state boundary
+Policies with non-empty `required_state_inputs` fail with unavailable canonical
+RiskState authority; no zero/false/default state is fabricated.
 
-Persisted truth is the existing W0/R meet of the resolved target, resolved policy
-set, supporting Risk evidence, and runtime semantics. Current unresolved W0/R
-inputs cap the chain at `NOT_FORMAL / PRE_ALPHA`. Publication integrity cannot
-promote that state.
+## Determinism, idempotency, and crash boundary
 
-Risk V0 policy sets declaring `RiskStateInput` requirements are rejected by the
-formal service because current main has no canonical generic Risk-state payload
-owner for this foundation. Caller state objects and raw values are never
-accepted as substitutes.
+The service and adapter independently recompute with `apply_risk()` before
+persistence. Exact replay converges to the same identities. Conflicting content
+or context fails closed. Existing PUBLISH callbacks stage and hash bytes before
+the SQLite transaction and remove only newly published, unreferenced bytes on a
+bounded failure. No distributed atomicity beyond those guarantees is claimed.
 
-## Atomicity and crash consistency
+## Truth and non-claims
 
-Filesystem and SQLite are not represented as one atomic resource. The existing
-PUBLISH UoW sequence is reused:
+Downstream truth is the meet of the resolved upstream owners. The accepted
+TargetWeight owner remains `PRE_ALPHA / UNRESOLVED_CALLER_ASSERTED`, so Risk
+Application remains `NOT_FORMAL / PRE_ALPHA`.
 
-```text
-stage and hash exact bytes
-→ safe-format verification
-→ same-volume content-addressed publish
-→ BEGIN IMMEDIATE
-→ Artifact descriptors/references + provenance + owner rows
-→ COMMIT
-```
-
-If SQLite begin/insert/commit fails, compensation removes only newly published,
-unreferenced content and never deletes deduplicated existing content. A process
-crash after the filesystem link but before SQLite commit may leave unreferenced
-content. It cannot leave an owner row claiming missing bytes; the residual bytes
-remain outside reachability and are recoverable by the existing GC model.
-Retry is deterministic and idempotent. Foreign keys and insert triggers prevent
-a receipt without its target/policy owner, an adjusted vector without its exact
-receipt/source lineage, or any owner row whose Artifact is not exact and
-`PUBLISHED`.
-
-## Vertical authority closure
-
-1. Portfolio owns target truth; exact target bytes and owner metadata are durable.
-2. Target is persisted and reachable by exact ID.
-3. Formal Risk requests cannot carry target objects or rows and must resolve the owner.
-4. The existing Risk repository boundary owns exact policy-set truth.
-5. The formal service re-resolves the policy owner.
-6. Existing `apply_risk()` produces the actual adjusted numbers.
-7. Receipt and adjusted bytes are content-addressed in the existing store.
-8. Append-only SQLite rows and active references survive restart.
-9. No formal API accepts a caller `RiskRuntimeResult`, receipt, or vector.
-10. Exact adjusted vectors resolve after restart through P1-verified bytes.
-11. Existing domain factories derive the truth ceiling from resolved upstreams.
-12. Owner namespace/version/role, Artifact ID/SHA/size, context and lineage are
-    present for a future A3 P1 binding.
-
-## Explicit non-claims
-
-- A3 and PR #35 remain unchanged and on hold.
-- Backtest integration is not established.
-- Required RiskState input publication remains `NOT_AVAILABLE` in this scope.
-- Product connection and production availability are not established.
-- No merge is authorized by this task.
+A3/PR #35, Data Truth Market, Model/B1, Experiment/Reward/B2, Strategy to
+Portfolio, Result Analytics, B3/B4, product connection, production availability,
+and PR #36 merge are outside this contract and `NOT_RUN`.
