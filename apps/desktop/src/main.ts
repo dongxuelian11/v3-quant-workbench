@@ -13,6 +13,7 @@ import {
 } from "./main/backendRuntime/index";
 import { WorkspaceStore, WorkspaceStoreError } from "./main/runtimePersistence/workspaceStore";
 import { resolveAgentEvidenceRuntime } from "./main/agentEvidenceRuntime";
+import { ProductBindingStore, ProductBridge, productBindingPath, registerProductRuntimeIpc } from "./main/productRuntime/index";
 
 let mainWindow: BrowserWindow | null = null;
 let store: WorkspaceStore;
@@ -29,8 +30,17 @@ const GRACEFUL_SHUTDOWN_DEADLINE_MS = 10_000;
 // integration fixture; LIVE product mode always uses the canonical bootstrap.
 const AGENT_EVIDENCE_RUNTIME = resolveAgentEvidenceRuntime(app.isPackaged, process.env.V3_AGENT_EVIDENCE_MODE);
 const AGENT_EVIDENCE_MODE = AGENT_EVIDENCE_RUNTIME.mode;
-const BACKEND_PROJECT_ID = "prj_01ARZ3NDEKTSV4RRFFQ69G5FAV";
-const BACKEND_PROJECT_CONTEXT_REVISION_ID = "pcr_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+// Product bindings are runtime-owned assumed-revalidatable refs, never user
+// truth and never renderer-controlled. Without a validated binding the normal
+// LIVE path boots unbound (NO_CANONICAL_PROJECT_BOUND) instead of fabricating
+// a hardcoded project identity. The development integration fixture keeps its
+// own bounded fixture project identity: it is the early bounded runtime's
+// fixture truth, never LIVE canonical truth.
+let productBindings: ProductBindingStore;
+let productBridge: ProductBridge;
+const FIXTURE_PROJECT_ID = "prj_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const FIXTURE_PROJECT_CONTEXT_REVISION_ID = "pcr_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
 function trusted(event: IpcMainInvokeEvent): void {
   if (!mainWindow || event.sender.id !== mainWindow.webContents.id) throw new Error("Rejected untrusted IPC sender");
@@ -39,6 +49,10 @@ function trusted(event: IpcMainInvokeEvent): void {
 async function loadState(): Promise<void> {
   storePath = join(app.getPath("userData"), "v3-workbench-state.json");
   store = new WorkspaceStore(storePath);
+  productBindings = new ProductBindingStore(productBindingPath(app.getPath("userData")));
+  // Runtime-owned binding recovery happens before backend launch: only refs
+  // previously validated by openProject can drive the bound-context startup.
+  await productBindings.load();
   const loaded = await store.load();
   if (loaded.quarantinedPath !== null) {
     console.error(JSON.stringify({
@@ -71,7 +85,9 @@ function registerIpc(): void {
       platform: process.platform,
       storePath,
       agentEvidenceMode: AGENT_EVIDENCE_MODE,
-      durableEventCursor: store.getProjectEventCursor(BACKEND_PROJECT_ID),
+      durableEventCursor: AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE"
+        ? store.getProjectEventCursor(FIXTURE_PROJECT_ID)
+        : productBindings.current !== null ? store.getProjectEventCursor(productBindings.current.projectId) : 0,
       persistenceRevision: store.persistenceRevision
     };
   });
@@ -92,15 +108,26 @@ function registerIpc(): void {
 
 function startBackendRuntime(): void {
   if (!mainWindow || backendSupervisor) return;
+  const binding = productBindings.current;
+  const fixtureMode = AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE";
+  const projectContext = fixtureMode
+    ? {
+        projectId: FIXTURE_PROJECT_ID,
+        projectContextRevisionId: FIXTURE_PROJECT_CONTEXT_REVISION_ID,
+        lastDurableProjectEventSequence: store.getProjectEventCursor(FIXTURE_PROJECT_ID)
+      }
+    : binding === null
+      ? undefined
+      : {
+          projectId: binding.projectId,
+          projectContextRevisionId: binding.projectContextRevisionId,
+          lastDurableProjectEventSequence: store.getProjectEventCursor(binding.projectId)
+        };
   backendSupervisor = new BackendSupervisor({
     pythonExecutable: process.env.V3_BACKEND_PYTHON ?? process.env.V3_PYTHON ?? (process.platform === "win32" ? "python" : "python3"),
     backendWorkingDirectory: process.env.V3_BACKEND_WORKING_DIRECTORY ?? join(process.cwd(), "apps", "backend", "src"),
     desktopVersion: "0.1.0-recovery.1",
-    projectContext: {
-      projectId: BACKEND_PROJECT_ID,
-      projectContextRevisionId: BACKEND_PROJECT_CONTEXT_REVISION_ID,
-      lastDurableProjectEventSequence: store.getProjectEventCursor(BACKEND_PROJECT_ID)
-    },
+    ...(projectContext === undefined ? {} : { projectContext }),
     cursorPort: {
       commit: (projectId, sequence) => store.commitProjectEventCursor(projectId, sequence)
     },
@@ -112,10 +139,48 @@ function startBackendRuntime(): void {
   backendRuntimeLifecycle = new BackendRuntimeLifecycle(backendSupervisor);
   backendSupervisor.on("diagnostic", (item) => console.error(JSON.stringify(item)));
   registerBackendRuntimeIpc(ipcMain, trusted, backendSupervisor, () => backendRelay?.evidenceSnapshot ?? null);
-  void backendSupervisor.start().catch((error: unknown) => {
-    const code = error !== null && typeof error === "object" && "code" in error ? String(error.code) : "BACKEND_START_FAILED";
-    console.error(JSON.stringify({ level: "ERROR", code, message: "canonical backendRuntime failed to start; no demo fallback" }));
-  });
+  productBridge = new ProductBridge(backendSupervisor, store, productBindings);
+  registerProductRuntimeIpc(ipcMain, trusted, productBridge);
+  void backendSupervisor.start()
+    .then(() => recoverProductSession())
+    .catch((error: unknown) => {
+      const code = error !== null && typeof error === "object" && "code" in error ? String(error.code) : "BACKEND_START_FAILED";
+      console.error(JSON.stringify({ level: "ERROR", code, message: "canonical backendRuntime failed to start; no demo fallback" }));
+    });
+}
+
+/**
+ * Canonical restart recovery: the durable binding refs were validated by
+ * openProject before they were persisted, so a restart re-queries canonical
+ * read state (restoreSession) instead of trusting UI event history. A stale
+ * binding (project removed from product storage) is demoted honestly, never
+ * silently replaced by a fake project.
+ */
+async function recoverProductSession(): Promise<void> {
+  if (!productBridge || AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE" || productBindings.current === null) {
+    productBridge?.recordBindingOutcome({ state: "NO_CANONICAL_PROJECT_BOUND" });
+    return;
+  }
+  try {
+    const restored = await productBridge.restoreSession();
+    productBridge.recordBindingOutcome({ state: "PROJECT_BOUND" });
+    console.error(JSON.stringify({
+      level: "INFO",
+      code: "PRODUCT_SESSION_RESTORED",
+      message: `canonical product session restored for project ${restored.projectId}`
+    }));
+  } catch (error) {
+    productBridge.recordBindingOutcome({
+      state: "BINDING_STALE",
+      code: error !== null && typeof error === "object" && "code" in error ? String(error.code) : "PRODUCT_RECOVERY_FAILED",
+      message: error instanceof Error ? error.message : String(error)
+    });
+    console.error(JSON.stringify({
+      level: "WARN",
+      code: "PRODUCT_BINDING_STALE",
+      message: "persisted product binding failed canonical re-validation; UI shows NOT_AVAILABLE until reconnected"
+    }));
+  }
 }
 
 function createWindow(): void {

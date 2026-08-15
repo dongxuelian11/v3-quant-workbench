@@ -176,3 +176,168 @@ export const DEMO_TRUTH = {
   provenance: "DeterministicFrontendDemoProvider/v1",
   wave3: "RECOVERED_FROM_PRODUCT_DESIGN_NOT_PRIOR_WAVE3_ACCEPTANCE"
 };
+
+// ---------------------------------------------------------------------------
+// Desktop product runtime bridge DTOs (runtime-owned canonical views).
+// These types mirror the frozen B3 read models that the Electron main process
+// admits through closed adapters; the renderer never sees raw backend payloads
+// or transport envelope fields.
+// ---------------------------------------------------------------------------
+
+export type ProductTruthState = "FORMAL" | "DEMO" | "UNAVAILABLE";
+
+export type ProductBackendState =
+  | "STOPPED" | "STARTING" | "HANDSHAKING" | "REPLAYING"
+  | "READY" | "DISCONNECTED" | "CRASH_LOOP" | "SHUTTING_DOWN";
+
+export type ProductBindingState =
+  | "NO_CANONICAL_PROJECT_BOUND"
+  | "PROJECT_BOUND"
+  | "BINDING_STALE";
+
+export interface ProductBindingRefs {
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly sessionId: string;
+}
+
+export interface ProductCapabilityView {
+  readonly code: string;
+  readonly truth_state: ProductTruthState;
+  readonly reason_code?: string;
+}
+
+export interface ProductStatusView {
+  readonly backendState: ProductBackendState;
+  readonly bindingState: ProductBindingState;
+  readonly boundProject: ProductBindingRefs | null;
+  readonly capabilities: readonly ProductCapabilityView[];
+}
+
+export interface ProductContextFieldsView {
+  readonly name?: string;
+  readonly description?: string;
+}
+
+export interface ProjectContextView {
+  readonly readModelVersion: "v3.project-context/1.0";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly revisionNo: number;
+  readonly canonicalHash: string;
+  readonly contextFields: ProductContextFieldsView;
+  readonly createdAt: string;
+  readonly createdBy: string;
+}
+
+export interface SessionRestoreView {
+  readonly readModelVersion: "v3.session-restore/1.0";
+  readonly sessionRowId: string;
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly state: string;
+  readonly openedAt: string;
+}
+
+export interface ProductTaskAttemptView {
+  readonly attemptId: string | null;
+  readonly ordinal: number;
+  readonly state: string;
+  readonly errorCategory: string | null;
+}
+
+export interface ProductTaskView {
+  readonly readModelVersion: "v3.task/1.0";
+  readonly taskId: string;
+  readonly projectId: string;
+  readonly operationId: string;
+  readonly state: string;
+  readonly stateVersion: number;
+  readonly runId: string;
+  readonly attempt: ProductTaskAttemptView;
+  readonly outputs: Readonly<Record<string, string>>;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly terminalAt: string | null;
+}
+
+export interface ProductTaskEventView {
+  readonly eventId: string;
+  readonly projectSequence: number;
+  readonly eventType: string;
+  readonly occurredAt: string;
+  /** Canonical result identity recorded by the durable TASK_SUCCEEDED event. */
+  readonly resultId: string | null;
+}
+
+export interface ProductTaskEventsView {
+  readonly items: readonly ProductTaskEventView[];
+  readonly highWatermark: number;
+}
+
+export interface ProductResultView {
+  readonly readModelVersion: "v3.result/1.0";
+  readonly resultId: string;
+  readonly projectId: string;
+  readonly backtestRunId: string;
+  readonly state: string;
+  readonly ledgerManifestArtifactId: string;
+  readonly reconciliationArtifactId: string | null;
+  readonly resultArtifact: ArtifactDescriptorView | null;
+}
+
+export interface ArtifactDescriptorView {
+  readonly artifactId: string;
+  readonly sha256: string;
+  readonly byteSize: number;
+  readonly mediaType: string;
+  readonly role: string;
+  readonly createdAt: string;
+}
+
+export interface ArtifactStreamTicketView {
+  readonly mode: "STREAM_TICKET";
+  readonly ticketId: string;
+  readonly artifactId: string;
+}
+
+export interface BacktestSubmitOutcomeView {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly acceptedState: "QUEUED";
+  readonly idempotentReplay: boolean;
+}
+
+export interface ProductBridgeErrorView {
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+  readonly operationId?: string;
+}
+
+export interface ConnectExistingProjectRequest {
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+}
+
+/**
+ * Narrow typed product bridge exposed to the renderer. There is deliberately
+ * no generic request(operationId, payload) member: every method maps to one
+ * admitted frozen operation and the Electron main process owns the transport
+ * envelope (request_id, project binding, idempotency intent).
+ */
+export interface V3ProductRuntimeBridge {
+  getProductStatus(): Promise<ProductStatusView>;
+  getCapabilities(): Promise<readonly ProductCapabilityView[]>;
+  getBoundProject(): Promise<ProductBindingRefs | null>;
+  getProjectContext(): Promise<ProjectContextView>;
+  restoreSession(): Promise<SessionRestoreView>;
+  connectExistingProject(request: ConnectExistingProjectRequest): Promise<ProjectContextView>;
+  listTasks(): Promise<readonly ProductTaskView[]>;
+  getTask(taskId: string): Promise<ProductTaskView>;
+  getTaskEvents(afterSequence: number, limit: number): Promise<ProductTaskEventsView>;
+  getResult(resultId: string): Promise<ProductResultView>;
+  getArtifactDescriptor(artifactId: string): Promise<ArtifactDescriptorView>;
+  openArtifactStream(artifactId: string): Promise<ArtifactStreamTicketView>;
+  submitExistingBacktestRunSpec(runSpecId: string): Promise<BacktestSubmitOutcomeView>;
+}

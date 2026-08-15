@@ -53,6 +53,11 @@ export function sanitizedBackendEnvironment(source: NodeJS.ProcessEnv = process.
     const value = source[name];
     if (typeof value === "string" && value.length > 0) result[name] = value;
   }
+  // V3_PRODUCT_STORAGE_ROOT is the documented product storage root override
+  // consumed by v3_backend.runtime.bootstrap; it stays inside the backend
+  // process environment and never crosses the context bridge.
+  const storageRoot = source.V3_PRODUCT_STORAGE_ROOT;
+  if (typeof storageRoot === "string" && storageRoot.length > 0) result.V3_PRODUCT_STORAGE_ROOT = storageRoot;
   result.PYTHONUTF8 = "1";
   result.PYTHONUNBUFFERED = "1";
   return Object.freeze(result);
