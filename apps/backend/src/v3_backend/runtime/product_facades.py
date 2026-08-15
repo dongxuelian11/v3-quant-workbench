@@ -330,7 +330,6 @@ class TaskFacade:
             "TaskService.v1.getEvents": self.get_events,
             "TaskService.v1.cancelTask": self.cancel_task,
             "TaskService.v1.retryTask": self.retry_task,
-            "TaskService.v1.resumeTask": self.resume_task,
         }
 
     def get_task(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -481,36 +480,6 @@ class TaskFacade:
             expected_state_version=expected_state_version,
         )
         return _response(request, _task_read_model(self.product, task_id))
-
-    def resume_task(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        task_id = str(request["task_id"])
-        checkpoint_artifact_id = str(request["checkpoint_artifact_id"])
-        expected_state_version = int(request["expected_state_version"])
-        task = self.product.task_persistence.read_task(task_id)
-        if task.project_id != str(request["project_id"]):
-            raise TruthPreconditionFailedError("task belongs to a different project")
-        if task.state_version != expected_state_version:
-            raise ConflictError("Task state version is stale")
-        connection = self.product._connection(read_only=True)
-        try:
-            row = connection.execute(
-                """
-                SELECT 1 FROM checkpoint c
-                JOIN task_attempt a ON a.attempt_id=c.attempt_id
-                JOIN run r ON r.run_id=a.run_id
-                WHERE r.task_id=? AND c.artifact_id=?
-                """,
-                (task_id, checkpoint_artifact_id),
-            ).fetchone()
-        finally:
-            connection.close()
-        if row is None:
-            raise NotFoundError("checkpoint does not belong to this Task's Run")
-        # The product inline executor does not yet produce checkpoints; a
-        # checkpoint produced by future worker infrastructure would resume here
-        # through the durable EXECUTION_CONTEXT.  Nothing mints fake checkpoints.
-        raise ConflictError("checkpoint resume requires worker infrastructure not yet admitted")
-
 
 def _latest_attempt_id(unit: Any, task_id: str) -> str:
     row = unit.connection.execute(

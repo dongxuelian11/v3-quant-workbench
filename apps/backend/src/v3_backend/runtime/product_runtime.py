@@ -1922,7 +1922,6 @@ class ProductRuntime:
 
         bound_services = {
             "ProjectSessionService",
-            "TaskService",
             "ArtifactService",
             "BacktestService",
         }
@@ -1930,7 +1929,7 @@ class ProductRuntime:
         for service in sorted(SERVICE_CONTRACTS):
             if service in bound_services:
                 capabilities.append(Capability(code=service, truth_state="FORMAL"))
-            elif service == "ResultService":
+            elif service in {"ResultService", "TaskService"}:
                 capabilities.append(
                     Capability(
                         code=service,

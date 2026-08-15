@@ -92,7 +92,6 @@ class NormalBootstrapTests(unittest.TestCase):
                 formal,
                 {
                     "ProjectSessionService",
-                    "TaskService",
                     "ArtifactService",
                     "BacktestService",
                 },
@@ -179,6 +178,23 @@ class CapabilityMatrixTests(_PortsCase):
         self.assertIn("ResultService.v1.getResult", self.ports.operation_handlers)
         self.assertNotIn(
             "ResultService.v1.reconcileLedger", self.ports.operation_handlers
+        )
+
+    def test_task_service_reports_incomplete_honestly(self) -> None:
+        capability = {
+            item.code: item for item in self.ports.capabilities
+        }["TaskService"]
+        self.assertEqual(capability.truth_state, "UNAVAILABLE")
+        self.assertEqual(capability.reason_code, "PRODUCT_OPERATION_SET_INCOMPLETE")
+        frozen_ops = {
+            operation.operation_id
+            for operation in SERVICE_CONTRACTS["TaskService"].operations
+        }
+        bound_ops = frozen_ops & set(self.ports.operation_handlers)
+        self.assertEqual(len(bound_ops), 5)
+        self.assertEqual(
+            frozen_ops - bound_ops,
+            {"TaskService.v1.resumeTask"},
         )
 
 
@@ -702,7 +718,7 @@ class TaskOperationTests(_PortsCase):
         )
         self.assert_error(response, ErrorCode.CONFLICT.value)
 
-    def test_resume_without_checkpoint_fails_closed(self) -> None:
+    def test_resume_task_is_capability_unavailable(self) -> None:
         submitted = self.route(
             "BacktestService.v1.submitBacktest",
             run_spec_id=self.setup.run_spec_id,
@@ -717,7 +733,7 @@ class TaskOperationTests(_PortsCase):
             checkpoint_artifact_id="art_sha256_" + "a" * 64,
             expected_state_version=task.state_version,
         )
-        self.assert_error(response, ErrorCode.NOT_FOUND.value)
+        self.assert_error(response, ErrorCode.CAPABILITY_UNAVAILABLE.value)
 
 
 if __name__ == "__main__":

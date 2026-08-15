@@ -166,13 +166,15 @@ check(hello.protocol === "v3.local/1.0", "protocol version");
 check(hello.capabilities.length === 17, "capability matrix lists 17 services");
 const caps = new Map(hello.capabilities.map((c) => [c.code, c]));
 for (const service of SERVICE_SET) check(caps.has(service), `capability present: ${service}`);
-for (const service of ["ProjectSessionService", "TaskService", "ArtifactService", "BacktestService"]) {
+for (const service of ["ProjectSessionService", "ArtifactService", "BacktestService"]) {
   check(caps.get(service).truth_state === "FORMAL", `${service} is FORMAL`);
 }
 for (const service of ["ResearchService", "ModelService", "DatasetService", "StrategyService"]) {
   check(caps.get(service).truth_state === "UNAVAILABLE", `${service} is UNAVAILABLE`);
 }
 check(caps.get("ResultService").reason_code === "PRODUCT_OPERATION_SET_INCOMPLETE", "ResultService honest reason");
+check(caps.get("TaskService").truth_state === "UNAVAILABLE", "TaskService is UNAVAILABLE");
+check(caps.get("TaskService").reason_code === "PRODUCT_OPERATION_SET_INCOMPLETE", "TaskService honest incomplete-operation reason");
 check(![...caps.values()].some((c) => c.truth_state === "DEMO"), "no DEMO capability on the normal path");
 
 const tokenProof = createHmac("sha256", token).update(hello.nonce, "ascii").digest("hex");
@@ -249,6 +251,13 @@ check(events.status === "OK", "task events query OK");
 const eventTypes = new Set(events.body.read_model.items.map((item) => item.event_type));
 check(eventTypes.has("TASK_QUEUED") && eventTypes.has("TASK_STARTED") && eventTypes.has("TASK_SUCCEEDED"), "canonical Task transition events durable");
 const lastEventSequence = events.body.read_model.high_watermark;
+
+const resumeUnavailable = await request("TaskService.v1.resumeTask", {
+  task_id: taskId,
+  checkpoint_artifact_id: `art_sha256_${"a".repeat(64)}`,
+  expected_state_version: task.body.read_model.state_version,
+});
+check(resumeUnavailable.status === "ERROR" && resumeUnavailable.error.code === "CAPABILITY_UNAVAILABLE", "resumeTask is not admitted and reports CAPABILITY_UNAVAILABLE");
 
 const descriptor = await request("ArtifactService.v1.getArtifactDescriptor", { artifact_id: resultArtifactId });
 check(descriptor.status === "OK", "artifact descriptor OK");
