@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { DEMO_TRUTH } from "../../../../../packages/contracts/src/index";
 import { useWorkbench } from "../store";
 import { Icon, MetricRail, TruthMark } from "./PresentationSystem";
+import { ProductRuntimePanel } from "./ProductRuntimePanel";
 
 const backtestTabs = ["Review", "Run Matrix", "Holdings", "Orders / Fills", "Attribution"] as const;
 
@@ -17,6 +18,8 @@ export function BacktestPanel() {
   const focusContext = useWorkbench((state) => state.focusContext);
   const updateQueue = (next: string) => { setQueue(next); setQueueNotice(`开发队列状态 · ${queueStateLabel(next)}`); };
   return <section className="panel-page backtest-workspace" data-testid="backtest-surface" data-primary-panel="backtest-review" data-major-panel>
+    <ProductRuntimePanel/>
+    <div className="section-head" aria-hidden="false"><div><small>以下为确定性开发演示数据 · DEMO / NOT FORMAL FINANCIAL OUTPUT</small></div></div>
     <header className="analysis-header"><div className="analysis-title"><small>回测实验 · BT-DEMO-021</small><h1>风险平价 · 执行复盘</h1><p><TruthStatus/><span>可用时间 2026-06-30 18:45 CST</span></p></div><div className="experiment-trail"><span><small>交接</small>demo-v8</span><Icon name="chevron" size={13}/><span><small>场景</small>每月 · 2023—2026</span><Icon name="chevron" size={13}/><span><small>队列</small><b className={queue === "running" ? "ok" : "warn"}>{queueStateLabel(queue)}</b></span></div><div className="analysis-actions"><button data-action="backtest-scenario" aria-pressed={scenarioOpen} onClick={() => setScenarioOpen(!scenarioOpen)}>场景设置</button><button className={queue === "running" ? "" : "primary"} onClick={() => updateQueue("running")} disabled={queue === "running"}><Icon name="pulse" size={14}/>{queue === "running" ? "运行中" : "运行开发回测"}</button></div></header>
     <div className="analysis-contextline"><span>基准 · 沪深300 · 开发数据</span><span>成本 · 8 bps</span><span>行业中性 · ±5%</span><span className="action-receipt" role="status" aria-live="polite">{queueNotice}</span></div>
     <div className="mini-tabs" role="tablist" aria-label="回测分析视图">{backtestTabs.map((item) => <button role="tab" aria-selected={tab === item} data-backtest-tab={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)} key={item}>{backtestTabLabel(item)}</button>)}</div>

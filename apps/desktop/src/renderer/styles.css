@@ -1250,3 +1250,21 @@ h1, h2, h3, strong, b { font-family: "Segoe UI Variable Display", "Segoe UI Vari
   .reviewer-panel, .artifact-viewer { border-top: 1px solid var(--v3-border); border-bottom: 1px solid var(--v3-border); }
   :where(button, input, select, textarea, summary, [tabindex]):focus-visible { outline-width: 3px; }
 }
+
+/* ---- LIVE B3 product runtime surface (capability-driven honest states) ---- */
+.product-runtime-panel { gap: 10px; }
+.product-runtime-panel .honest-note { color: var(--v3-fg-muted); font-size: 10px; line-height: 1.5; max-width: 760px; }
+.product-runtime-panel .honest-note.error { color: var(--v3-warning); }
+.product-runtime-panel .connection-badge.ok { color: var(--v3-accent, #4FC3F7); border-color: rgba(79, 195, 247, .4); }
+.product-runtime-panel .analysis-contextline { gap: 6px; flex-wrap: wrap; }
+.product-runtime-panel .analysis-contextline .connection-badge { margin-left: 0; }
+.product-connect, .product-run { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--v3-border-subtle); border-radius: 10px; }
+.product-connect label, .product-run label { display: flex; flex-direction: column; gap: 4px; font-size: 10px; color: var(--v3-fg-muted); max-width: 560px; }
+.product-connect input, .product-run input { background: var(--v3-surface, #10131c); border: 1px solid var(--v3-border); border-radius: 6px; color: inherit; padding: 6px 8px; font: 11px ui-monospace, monospace; }
+.product-connect input:focus-visible, .product-run input:focus-visible { outline: 2px solid var(--v3-focus, #4FC3F7); outline-offset: 1px; }
+.product-connect button, .product-run button { align-self: flex-start; }
+.product-readout { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 4px 10px; font-size: 11px; }
+.product-readout dt { color: var(--v3-fg-muted); }
+.product-readout dd { margin: 0; font-family: ui-monospace, monospace; word-break: break-all; }
+.product-status-chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid var(--v3-border-subtle); border-radius: 10px; font-size: 9px; color: var(--v3-fg-muted); white-space: nowrap; }
+.product-status-chip[data-bound="true"] { color: var(--v3-accent, #4FC3F7); border-color: rgba(79, 195, 247, .35); }

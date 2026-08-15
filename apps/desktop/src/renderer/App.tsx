@@ -7,6 +7,7 @@ import { Icon, StatusSurface, TruthMark, type IconName } from "./components/Pres
 import { AgentWorkspace } from "./components/AgentWorkspace";
 import { ResearchSessionNavigator } from "./components/ResearchSessionNavigator";
 import { WindowControls } from "./components/WindowControls";
+import { ProductRuntimeStatusChip } from "./components/ProductRuntimeStatusChip";
 import {
   applyRound3ConnectionState,
   applyRound3EvidenceEvent,
@@ -123,7 +124,7 @@ export function App() {
     <header className="context-bar" onDoubleClick={(event) => { if ((event.target as HTMLElement).closest("button")) return; void window.v3Desktop.windowControl("toggle-maximize"); }}>
       <div className="context-breadcrumb">{surface === "agent" ? <><span>智能体工作区</span><Icon name="chevron" size={13}/><b>{activeSession.title}</b><small>证据优先研究</small></> : <><span>{active.zh}实验室</span><Icon name="chevron" size={13}/><b>{context.object}</b><small>{context.phase}</small></>}</div>
       <button className="context-search" onClick={() => setPalette(true)} aria-haspopup="dialog" aria-expanded={palette}><Icon name="command" size={15}/><span>跳转、打开视图或执行命令</span><kbd>Ctrl K</kbd></button>
-      <div className="context-runtime">{surface === "agent" ? <span className="boundary-chip">{agentState.boundary.label}</span> : <TruthMark compact/>}<span><i/>{s.runtime}</span></div>
+      <div className="context-runtime">{surface === "agent" ? <span className="boundary-chip">{agentState.boundary.label}</span> : <TruthMark compact/>}<ProductRuntimeStatusChip/><span><i/>{s.runtime}</span></div>
       <WindowControls />
     </header>
 
