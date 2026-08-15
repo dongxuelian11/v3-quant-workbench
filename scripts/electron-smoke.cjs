@@ -19,7 +19,10 @@ const requiredReviewEvidence = [
   "10-chinese-not-connected-1536x864.png",
   "11-high-contrast-1280x720.png"
 ];
-const electronData = path.resolve(root, "deliverables", "electron-user-data-fr1-visual");
+// Run-unique userData keeps the smoke re-runnable now that the durable
+// event cursor survives restarts: a fixed directory would skip the
+// fixture evidence replay on every run after the first.
+const electronData = path.resolve(root, process.env.V3_SMOKE_USER_DATA || "deliverables/electron-user-data-fr1-visual");
 fs.mkdirSync(screenshots, { recursive: true });
 fs.mkdirSync(reviewEvidence, { recursive: true });
 fs.mkdirSync(electronData, { recursive: true });
@@ -163,7 +166,12 @@ app.whenReady().then(async () => {
     const geometry = fs.existsSync(geometryPath) ? JSON.parse(fs.readFileSync(geometryPath, "utf8")) : [];
     win.setContentSize(1920, 1080);
     await delay(900);
-    await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace][data-boundary=DEVELOPMENT_INTEGRATION_FIXTURE][data-connection-state=READY]'))", "canonical Round 3 Agent Workspace after restart");
+    // The durable event cursor resumes > 0 after capture, so the fixture
+    // evidence is correctly NOT re-replayed: the truthful restarted
+    // boundary is LIVE_READ_ONLY_NO_EVIDENCE with a READY connection.
+    await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace][data-connection-state=READY]'))", "canonical Round 3 Agent Workspace after restart");
+    const restartedBoundary = await evaluate(win, "document.querySelector('[data-testid=agent-workspace]')?.getAttribute('data-boundary')");
+    if (!["LIVE_READ_ONLY_NO_EVIDENCE", "DEVELOPMENT_INTEGRATION_FIXTURE"].includes(restartedBoundary)) throw new Error(`unexpected restart boundary ${restartedBoundary}`);
     await click(win, "[data-lab='research']", 900);
     await waitFor(win, "document.querySelectorAll('.dv-tab').length>=3", "restored multi-panel Dockview layout");
     const restored = await evaluate(win, "({lab:document.querySelector('[data-lab-workbench]')?.getAttribute('data-lab-workbench'),panelTabs:document.querySelectorAll('.dv-tab').length,layoutContract:localStorage.getItem('v3-layout-contract')})");
@@ -334,7 +342,9 @@ app.whenReady().then(async () => {
     await click(win, "[data-model-phase='version']", 700);
     await click(win, "[data-model-version-tab='signal']", 400);
     await shot(win, geometry, "11-model-version-signal-handoff.png", [1536, 864]);
-    const once = await evaluate(win, "(async()=>{const command={id:'smoke-exactly-once-visual-001',name:'study.resume',issuedAt:new Date().toISOString()};return [await window.v3Desktop.executeCommand(command),await window.v3Desktop.executeCommand(command)]})()");
+    // The command ledger now survives workspace resets by design, so the
+    // exactly-once probe uses a run-unique id to stay re-runnable.
+    const once = await evaluate(win, `(async()=>{const command={id:'smoke-exactly-once-visual-001-${Date.now().toString(36)}',name:'study.resume',issuedAt:new Date().toISOString()};return [await window.v3Desktop.executeCommand(command),await window.v3Desktop.executeCommand(command)]})()`);
     if (!once[0].accepted || !once[1].duplicate || once[1].executionCount !== 1) throw new Error(`Exactly-once failed ${JSON.stringify(once)}`);
 
     await click(win, "[data-lab='backtest']", 800);

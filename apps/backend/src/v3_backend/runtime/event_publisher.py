@@ -11,6 +11,9 @@ from .framed_stdio import ProtocolViolation
 class DurableEventReplayPort(Protocol):
     def replay(self, after_sequence: int, limit: int) -> Sequence[Mapping[str, Any]]: ...
 
+    def high_watermark(self) -> int:
+        """Current durable event source high watermark (highest durable sequence)."""
+
 
 class EventPublisher:
     """Validates sequence delivery without creating or persisting business events."""
@@ -24,6 +27,15 @@ class EventPublisher:
     @property
     def highest_acked(self) -> int:
         return self._highest_acked
+
+    def high_watermark(self) -> int:
+        """Durable event source high watermark; 0 when no durable source is bound."""
+        if self._source is None:
+            return 0
+        watermark = self._source.high_watermark()
+        if not isinstance(watermark, int) or isinstance(watermark, bool) or watermark < 0:
+            raise ProtocolViolation("durable event high watermark must be a non-negative integer")
+        return watermark
 
     def initialize_cursor(self, sequence: int) -> None:
         if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0:

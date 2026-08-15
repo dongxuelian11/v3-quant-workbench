@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 
 
-EXPECTED_USER_VERSION = 2
+EXPECTED_USER_VERSION = 4
 EXPECTED_TABLES = frozenset(
     {
         "artifact",
@@ -36,6 +36,7 @@ EXPECTED_TABLES = frozenset(
         "optimization_solution",
         "portfolio_construction_spec",
         "portfolio_version",
+        "target_weight_vector_publication",
         "prediction_signal_version",
         "project",
         "project_context_revision",
@@ -47,6 +48,9 @@ EXPECTED_TABLES = frozenset(
         "result_component",
         "risk_model_spec",
         "risk_model_version",
+        "risk_policy_set_publication",
+        "risk_application_receipt_publication",
+        "risk_adjusted_weight_vector_publication",
         "run",
         "schema_migration",
         "snapshot_partition",
@@ -211,7 +215,12 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
             "SELECT migration_id FROM schema_migration WHERE state='APPLIED' ORDER BY migration_id"
         )
     )
-    if applied != ("0001_control_catalog", "0002_data_truth"):
+    if applied != (
+        "0001_control_catalog",
+        "0002_data_truth",
+        "0003_portfolio_riskpolicy_owner",
+        "0004_risk_application_publication",
+    ):
         raise SchemaValidationError(f"unexpected applied migration sequence: {applied!r}")
 
     fk_violations = tuple(tuple(row) for row in connection.execute("PRAGMA foreign_key_check"))

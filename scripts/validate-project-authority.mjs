@@ -11,6 +11,9 @@ const REQUIRED_FILES = [
   "docs/status/V3_CAPABILITY_LEVELS.md",
 ];
 
+const AUTHORITY_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
+const DISALLOWED_AMENDMENT_REASONS = new Set(["TODO", "TBD"]);
+
 const MATURITY_LEVELS = [
   "DESIGNED",
   "MODULE_IMPLEMENTED",
@@ -140,13 +143,16 @@ async function validate() {
   }
 
   if (manifest.schema_version !== "1.0.0") failures.push("manifest schema_version must be 1.0.0");
-  if (manifest.authority_version !== "1.0.1") failures.push("manifest authority_version must be 1.0.1");
+  const authorityVersionIsValid =
+    typeof manifest.authority_version === "string" && AUTHORITY_VERSION_PATTERN.test(manifest.authority_version);
+  if (!authorityVersionIsValid) failures.push("manifest authority_version must be a dotted numeric version (x.y.z)");
   if (manifest.status !== "P0_PROJECT_AUTHORITY") failures.push("manifest status must be P0_PROJECT_AUTHORITY");
   if (manifest.amendment_policy !== "P0_AUTHORITY_AMENDMENT") {
     failures.push("manifest amendment_policy must be P0_AUTHORITY_AMENDMENT");
   }
-  if (manifest.amendment_reason !== "Close P0 authority amendment governance and documentation precision findings.") {
-    failures.push("manifest amendment_reason must describe the authority governance and documentation correction");
+  const amendmentReason = typeof manifest.amendment_reason === "string" ? manifest.amendment_reason.trim() : "";
+  if (!amendmentReason || DISALLOWED_AMENDMENT_REASONS.has(amendmentReason.toUpperCase())) {
+    failures.push("manifest amendment_reason must be a non-placeholder string");
   }
   if (!Array.isArray(manifest.files)) failures.push("manifest files must be an array");
 

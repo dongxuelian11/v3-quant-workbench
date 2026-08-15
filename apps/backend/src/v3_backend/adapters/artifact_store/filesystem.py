@@ -28,6 +28,7 @@ from v3_backend.domain.artifacts.identity import (
 )
 from v3_backend.domain.artifacts.model import ArtifactDescriptor
 from v3_backend.domain.artifacts.policy import SafeFormatPolicy
+from v3_backend.provenance.canonical_hash import canonical_json_bytes
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{32,128}")
@@ -74,6 +75,35 @@ def _require_regular_file(path: Path, label: str) -> None:
         raise IntegrityMismatch(f"{label} must be a regular file")
 
 
+def _validate_canonical_finite_json(path: Path) -> None:
+    if path.stat().st_size > _MAX_CANONICAL_JSON_BYTES:
+        raise FormatRejected("canonical JSON control artifacts must remain small")
+    try:
+        payload = path.read_bytes()
+        text = payload.decode("utf-8")
+
+        def closed_finite_object(pairs):
+            parsed_object = {}
+            for key, value in pairs:
+                if key in parsed_object:
+                    raise ValueError(f"duplicate JSON key: {key}")
+                parsed_object[key] = value
+            return parsed_object
+
+        parsed = json.loads(
+            text,
+            object_pairs_hook=closed_finite_object,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError("non-finite values are forbidden")
+            ),
+        )
+        canonical = canonical_json_bytes(parsed)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise FormatRejected("invalid canonical finite JSON artifact") from exc
+    if canonical != payload:
+        raise FormatRejected("JSON bytes are not in canonical form")
+
+
 def _validate_safe_payload(path: Path, safe_format_id: str | None) -> None:
     if safe_format_id == "utf8-text-v1":
         decoder = codecs.getincrementaldecoder("utf-8")("strict")
@@ -113,6 +143,9 @@ def _validate_safe_payload(path: Path, safe_format_id: str | None) -> None:
             raise FormatRejected("invalid canonical JSON control artifact") from exc
         if canonical != payload:
             raise FormatRejected("JSON bytes are not in canonical form")
+        return
+    if safe_format_id == "canonical-finite-json-v1":
+        _validate_canonical_finite_json(path)
         return
     if safe_format_id is None:
         raise FormatRejected("publishable payload lacks an admitted safe-format validator")

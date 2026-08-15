@@ -13,6 +13,7 @@ import type {
   BackendProcessFactory,
   CancelTaskInput,
   ConnectionState,
+  DurableEventCursorPort,
   OpenArtifactStreamInput,
   RequestOptions,
   ResumeTaskInput,
@@ -24,6 +25,34 @@ import type {
   SupervisorConfig,
   SupervisorProjectContext
 } from "./types";
+
+const REPLAY_PAGE_LIMIT = 1000;
+const DEFAULT_MAX_BUFFERED_EVENTS = 1000;
+const DEFAULT_MAX_EVENT_SEQUENCE_GAP = 10_000;
+const RECENT_EVENT_ID_CACHE_LIMIT = 2000;
+
+/** Marker for a durable cursor commit failure inside event delivery. */
+class DurableCursorCommitError extends Error {
+  override readonly cause: unknown;
+  constructor(message: string, cause: unknown) {
+    super(message);
+    this.name = "DurableCursorCommitError";
+    this.cause = cause;
+  }
+}
+
+/**
+ * Marker for a replay page that claims delivery beyond the contiguous
+ * cursor. This follows a delivery failure (the page's events were sent but
+ * not all committed), so the runtime must reconnect and replay rather than
+ * permanently reject the protocol.
+ */
+class ReplayContiguityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReplayContiguityError";
+  }
+}
 
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
@@ -66,9 +95,15 @@ export class BackendSupervisor extends EventEmitter {
   private readonly processFactory: BackendProcessFactory;
   private readonly tokenFactory: () => Uint8Array;
   private readonly crashGuard: CrashLoopGuard;
+  private readonly cursorPort: DurableEventCursorPort;
+  private readonly maxBufferedEvents: number;
+  private readonly maxEventSequenceGap: number;
   private readonly pending = new Map<string, PendingRequest>();
-  private readonly deliveredEventIds = new Set<string>();
+  private readonly recentEventIds = new Map<string, true>();
   private readonly bufferedEvents = new Map<number, RuntimeEvent>();
+  private deliveryChain: Promise<void> = Promise.resolve();
+  private deliveryScheduled = false;
+  private deliveryInFlight = 0;
   private process?: BackendProcess;
   private decoder = new FrameDecoder();
   private hello?: BackendHello;
@@ -80,6 +115,8 @@ export class BackendSupervisor extends EventEmitter {
   private restartTimer?: NodeJS.Timeout;
   private restartAttempt = 0;
   private projectContext?: SupervisorProjectContext;
+  private replayFrozenWatermark: number | null = null;
+  private lastReplayAfterSequence: number | null = null;
   private expectedExit = false;
   private protocolRejected = false;
   private stderrBuffer = "";
@@ -95,6 +132,9 @@ export class BackendSupervisor extends EventEmitter {
     this.processFactory = processFactory;
     this.tokenFactory = tokenFactory;
     this.projectContext = config.projectContext;
+    this.cursorPort = config.cursorPort ?? { commit: async () => {} };
+    this.maxBufferedEvents = config.maxBufferedEvents ?? DEFAULT_MAX_BUFFERED_EVENTS;
+    this.maxEventSequenceGap = config.maxEventSequenceGap ?? DEFAULT_MAX_EVENT_SEQUENCE_GAP;
     this.crashGuard = new CrashLoopGuard(config.crashLoopLimit ?? 5, config.crashLoopWindowMs ?? 60_000);
   }
 
@@ -209,6 +249,10 @@ export class BackendSupervisor extends EventEmitter {
       await this.withTimeout(this.shutdownReady.promise, deadlineMs, "backend prepare shutdown timed out");
       this.send({ kind: "runtime.commitShutdown" });
       await this.withTimeout(this.shutdownCommitted.promise, deadlineMs, "backend commit shutdown timed out");
+      // The backend cannot emit any more events after shutdownCommitted:
+      // drain accepted event deliveries (application emit, cursor commit,
+      // ack) before terminating so no committed-but-unacked event is lost.
+      await this.whenDeliveryIdle();
     } finally {
       this.process?.terminate();
       this.rejectAll(new BackendDisconnectedError("canonical backend shut down"));
@@ -231,6 +275,12 @@ export class BackendSupervisor extends EventEmitter {
     this.decoder = new FrameDecoder();
     this.stderrBuffer = "";
     this.hello = undefined;
+    this.replayFrozenWatermark = null;
+    this.lastReplayAfterSequence = null;
+    this.bufferedEvents.clear();
+    this.deliveryChain = Promise.resolve();
+    this.deliveryScheduled = false;
+    this.deliveryInFlight = 0;
     this.ready = deferred<void>();
     this.setState("STARTING");
     const token = this.tokenFactory();
@@ -282,7 +332,7 @@ export class BackendSupervisor extends EventEmitter {
       this.readyTimer = undefined;
       if (this.projectContext) {
         this.setState("REPLAYING");
-        this.send({ kind: "events.replay", after_sequence: this.projectContext.lastDurableProjectEventSequence, limit: 1000 });
+        this.sendReplay(this.projectContext.lastDurableProjectEventSequence);
       } else {
         this.becomeReady();
       }
@@ -318,57 +368,157 @@ export class BackendSupervisor extends EventEmitter {
   }
 
   private onEvent(event: RuntimeEvent): void {
-    if (this.deliveredEventIds.has(event.event_id)) return;
+    // Dedupe only against durably committed event ids. Uncommitted events
+    // must never enter this cache, otherwise a cursor-commit failure
+    // followed by a backend replay of the same event could be swallowed.
+    if (this.recentEventIds.has(event.event_id)) return;
     const context = this.projectContext;
     if (!context || event.project_id !== context.projectId) throw new TransportProtocolError("event project does not match the active context");
     const expected = context.lastDurableProjectEventSequence + 1;
     if (event.project_sequence < expected) return;
-    if (event.project_sequence > expected) {
+    const gap = event.project_sequence - expected;
+    if (gap > this.maxEventSequenceGap) {
+      this.bufferFailClosed("EVENT_SEQUENCE_GAP_ABSURD", `live event sequence gap ${gap} exceeds the bounded replay window`);
+      return;
+    }
+    if (gap > 0) {
+      if (this.bufferedEvents.size >= this.maxBufferedEvents) {
+        this.bufferFailClosed("EVENT_BUFFER_OVERFLOW", `buffered event count exceeded the hard limit of ${this.maxBufferedEvents}`);
+        return;
+      }
       this.bufferedEvents.set(event.project_sequence, event);
       if (this.stateValue !== "REPLAYING") {
         this.setState("REPLAYING");
-        this.send({ kind: "events.replay", after_sequence: context.lastDurableProjectEventSequence, limit: 1000 });
+        this.sendReplay(context.lastDurableProjectEventSequence);
       }
       return;
     }
-    this.deliverEvent(event);
-    this.flushBufferedEvents();
+    if (event.project_sequence === this.deliveryInFlight) return;
+    this.bufferedEvents.set(event.project_sequence, event);
+    this.maybeDeliver();
   }
 
-  private deliverEvent(event: RuntimeEvent): void {
-    this.deliveredEventIds.add(event.event_id);
+  private maybeDeliver(): void {
+    if (this.deliveryScheduled) return;
+    if (!["REPLAYING", "READY", "SHUTTING_DOWN"].includes(this.stateValue)) return;
+    this.deliveryScheduled = true;
+    this.deliveryChain = this.deliveryChain.then(async () => {
+      this.deliveryScheduled = false;
+      for (;;) {
+        const expected = (this.projectContext?.lastDurableProjectEventSequence ?? 0) + 1;
+        const event = this.bufferedEvents.get(expected);
+        if (!event) return;
+        this.bufferedEvents.delete(expected);
+        this.deliveryInFlight = expected;
+        try {
+          await this.deliverEvent(event);
+        } catch (error) {
+          this.deliveryInFlight = 0;
+          this.deliveryFailed(error);
+          return;
+        }
+        this.deliveryInFlight = 0;
+      }
+    });
+  }
+
+  private async deliverEvent(event: RuntimeEvent): Promise<void> {
+    // At-least-once / no-loss semantics: hand the event to the main-process
+    // application relay first. A crash between emit and the durable cursor
+    // commit re-delivers this event after reconnect (it was never acked),
+    // so the application may observe it twice but can never permanently
+    // lose it.
+    this.emit("event", contextBridgeSafe(event));
+    try {
+      await this.cursorPort.commit(event.project_id, event.project_sequence);
+    } catch (error) {
+      throw new DurableCursorCommitError("durable event cursor commit failed", error);
+    }
+    // Only a durably committed event may enter the id cache.
+    this.rememberEventId(event.event_id);
     this.projectContext = {
       projectId: this.projectContext!.projectId,
       projectContextRevisionId: this.projectContext!.projectContextRevisionId,
       lastDurableProjectEventSequence: event.project_sequence
     };
-    this.emit("event", contextBridgeSafe(event));
     this.send({ kind: "events.ack", project_sequence: event.project_sequence });
   }
 
-  private flushBufferedEvents(): void {
-    for (;;) {
-      const next = (this.projectContext?.lastDurableProjectEventSequence ?? 0) + 1;
-      const event = this.bufferedEvents.get(next);
-      if (!event) return;
-      this.bufferedEvents.delete(next);
-      this.deliverEvent(event);
-    }
-  }
-
   private onReplayComplete(message: Record<string, unknown>): void {
-    if (Object.keys(message).sort().join("|") !== "kind|last_sequence" || !Number.isInteger(message.last_sequence)) {
-      throw new TransportProtocolError("events.replayComplete shape is invalid");
-    }
-    this.flushBufferedEvents();
-    if (message.last_sequence !== (this.projectContext?.lastDurableProjectEventSequence ?? 0)) {
-      throw new TransportProtocolError("events.replayComplete sequence does not match contiguous delivery");
-    }
-    if (this.bufferedEvents.size > 0) {
-      this.send({ kind: "events.replay", after_sequence: this.projectContext?.lastDurableProjectEventSequence ?? 0, limit: 1000 });
+    if (this.stateValue !== "REPLAYING") {
+      this.rejectProtocol(new TransportProtocolError("unsolicited events.replayComplete"));
       return;
     }
+    const keys = Object.keys(message).sort().join("|");
+    if (keys !== "has_more|high_watermark|kind|last_sequence|next_after_sequence" ||
+        !Number.isInteger(message.last_sequence) || !Number.isInteger(message.next_after_sequence) ||
+        !Number.isInteger(message.high_watermark) || typeof message.has_more !== "boolean") {
+      this.rejectProtocol(new TransportProtocolError("events.replayComplete shape is invalid"));
+      return;
+    }
+    if (message.next_after_sequence !== message.last_sequence) {
+      this.rejectProtocol(new TransportProtocolError("events.replayComplete next_after_sequence must equal the page last_sequence"));
+      return;
+    }
+    const lastSequence = Number(message.last_sequence);
+    const highWatermark = Number(message.high_watermark);
+    const hasMore = message.has_more === true;
+    // Completion handling is serialized behind in-flight deliveries so the
+    // contiguous cursor check observes the final durable cursor of the page.
+    this.deliveryChain = this.deliveryChain.then(() => {
+      this.handleReplayComplete(lastSequence, highWatermark, hasMore);
+    }).catch((error: unknown) => {
+      if (error instanceof ReplayContiguityError) {
+        // A delivery failure interrupted the page: reconnect and replay
+        // rather than permanently rejecting the protocol.
+        this.emit("diagnostic", { level: "ERROR", code: "REPLAY_CONTIGUITY_FAILED", message: error.message });
+        this.process?.terminate();
+        return;
+      }
+      this.rejectProtocol(error instanceof Error ? error : new TransportProtocolError(String(error)));
+    });
+  }
+
+  private handleReplayComplete(lastSequence: number, highWatermark: number, hasMore: boolean): void {
+    if (this.replayFrozenWatermark === null) {
+      // The first page freezes this replay round's historical high watermark.
+      // Live events above H must not extend the historical catch-up window.
+      this.replayFrozenWatermark = highWatermark;
+    } else if (highWatermark < this.replayFrozenWatermark) {
+      throw new TransportProtocolError("events.replayComplete high watermark moved backwards");
+    }
+    const cursor = this.projectContext?.lastDurableProjectEventSequence ?? 0;
+    if (lastSequence > cursor) {
+      // The page claims delivery beyond the contiguous cursor: events are
+      // missing from durable delivery (a commit failure interrupted the
+      // page). Reconnect and replay is the recovery, so this is a
+      // contiguity failure, not a permanent protocol rejection.
+      throw new ReplayContiguityError("events.replayComplete sequence does not match contiguous delivery");
+    }
+    if (lastSequence === cursor && lastSequence === this.lastReplayAfterSequence && hasMore) {
+      // An empty page that still claims more history would loop forever.
+      throw new TransportProtocolError("events.replayComplete page made no progress while claiming more history");
+    }
+    if (cursor < this.replayFrozenWatermark) {
+      if (!hasMore) {
+        throw new TransportProtocolError("events.replayComplete reports no more pages before the frozen high watermark");
+      }
+      this.sendReplay(cursor);
+      return;
+    }
+    // Contiguous durable cursor has reached the frozen high watermark:
+    // historical catch-up is complete. Events above H are the live tail and
+    // are delivered through normal contiguous event delivery, never by
+    // chasing a moving watermark with more replay pages.
+    this.replayFrozenWatermark = null;
+    this.lastReplayAfterSequence = null;
     this.becomeReady();
+    this.maybeDeliver();
+  }
+
+  private sendReplay(afterSequence: number): void {
+    this.lastReplayAfterSequence = afterSequence;
+    this.send({ kind: "events.replay", after_sequence: afterSequence, limit: REPLAY_PAGE_LIMIT });
   }
 
   private onHealth(message: Record<string, unknown>): void {
@@ -381,6 +531,30 @@ export class BackendSupervisor extends EventEmitter {
     this.setState("READY");
     this.ready?.resolve();
     this.ready = undefined;
+  }
+
+  private deliveryFailed(error: unknown): void {
+    const code = error instanceof DurableCursorCommitError ? "CURSOR_COMMIT_FAILED" : "EVENT_APPLICATION_DELIVERY_FAILED";
+    const message = error instanceof Error ? error.message : String(error);
+    this.emit("diagnostic", { level: "ERROR", code, message });
+    this.process?.terminate();
+  }
+
+  private bufferFailClosed(code: string, message: string): void {
+    this.emit("diagnostic", { level: "ERROR", code, message });
+    this.process?.terminate();
+  }
+
+  private whenDeliveryIdle(): Promise<void> {
+    return this.deliveryChain.then(() => undefined, () => undefined);
+  }
+
+  private rememberEventId(eventId: string): void {
+    this.recentEventIds.set(eventId, true);
+    if (this.recentEventIds.size > RECENT_EVENT_ID_CACHE_LIMIT) {
+      const oldest = this.recentEventIds.keys().next().value as string | undefined;
+      if (oldest !== undefined) this.recentEventIds.delete(oldest);
+    }
   }
 
   private onStderr(chunk: Uint8Array): void {

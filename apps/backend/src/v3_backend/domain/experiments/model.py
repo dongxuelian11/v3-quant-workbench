@@ -13,7 +13,7 @@ from v3_backend.contracts.common.truth_admission import (
     UpstreamRequirement,
     propagate_downstream_ceiling,
 )
-from v3_backend.domain.datasets import DatasetVersion
+from v3_backend.domain.datasets import DatasetVersion, FormalDatasetVersion
 from v3_backend.domain.factors import FactorEvaluation
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
@@ -104,7 +104,7 @@ class ExperimentRun:
         cls,
         *,
         experiment: ExperimentVersion,
-        dataset: DatasetVersion,
+        dataset: DatasetVersion | FormalDatasetVersion,
         factor_evaluation: FactorEvaluation,
         code_version: str,
         environment_fingerprint: str,
@@ -114,14 +114,23 @@ class ExperimentRun:
     ) -> ExperimentRun:
         _require_text(code_version, "code_version")
         _require_text(environment_fingerprint, "environment_fingerprint")
-        if environment_fingerprint != dataset.binding.environment_fingerprint:
-            raise ValueError("ExperimentRun environment must match DatasetVersion")
         if factor_evaluation.context.environment_fingerprint != environment_fingerprint:
             raise ValueError("ExperimentRun environment must match FactorEvaluation")
-        if factor_evaluation.factor_evaluation_id not in dataset.factor_evaluation_ids:
-            raise ValueError(
-                "ExperimentRun FactorEvaluation must belong to the exact DatasetVersion"
-            )
+        if isinstance(dataset, FormalDatasetVersion):
+            if (
+                factor_evaluation.context.snapshot_id != dataset.snapshot_id
+                or factor_evaluation.context.universe_version_id != dataset.universe_version_id
+            ):
+                raise ValueError("ExperimentRun FactorEvaluation must match formal Dataset context")
+            if dataset.dataset_descriptor.artifact_id not in input_artifact_ids:
+                raise ValueError("ExperimentRun requires the formal Dataset actual-payload Artifact")
+        else:
+            if environment_fingerprint != dataset.binding.environment_fingerprint:
+                raise ValueError("ExperimentRun environment must match DatasetVersion")
+            if factor_evaluation.factor_evaluation_id not in dataset.factor_evaluation_ids:
+                raise ValueError(
+                    "ExperimentRun FactorEvaluation must belong to the exact DatasetVersion"
+                )
         if not input_artifact_ids:
             raise ValueError("ExperimentRun requires immutable input Artifact linkage")
         ordered_artifacts = tuple(sorted(input_artifact_ids))

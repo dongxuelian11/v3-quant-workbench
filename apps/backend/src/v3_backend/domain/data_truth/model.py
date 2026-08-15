@@ -106,14 +106,22 @@ class ConnectorDataCapability:
     logical_dataset: str
     frequency: str
     revision_semantics: RevisionSemantics
+    provenance_required: bool
+    policy_artifact_id: str
 
     def __post_init__(self) -> None:
         if not self.connector_version_id.startswith("cov_"):
             raise ValueError("capability must identify an exact ConnectorVersion")
+        if not self.provider_id.startswith("pvd_"):
+            raise ValueError("capability must identify an exact provider descriptor")
         if not isinstance(self.revision_semantics, RevisionSemantics):
             object.__setattr__(
                 self, "revision_semantics", RevisionSemantics(self.revision_semantics)
             )
+        if self.provenance_required is not True:
+            raise ValueError("Data Truth capability policy requires provenance")
+        if not self.policy_artifact_id.startswith("art_sha256_"):
+            raise ValueError("Data Truth capability must bind a policy Artifact")
 
 
 @dataclass(frozen=True)

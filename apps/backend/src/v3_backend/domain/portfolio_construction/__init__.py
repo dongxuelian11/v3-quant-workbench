@@ -19,9 +19,17 @@ from .model import (
     TimingValidationStatus,
 )
 from .runtime import DeterministicPortfolioConstruction
+from .owner import (
+    CanonicalPortfolioOwnerService,
+    CanonicalTargetWeightResult,
+    TargetWeightOwnerAuthorityError,
+    TargetWeightOwnerPublication,
+)
 
 __all__ = [
     "ConstructionMethod",
+    "CanonicalPortfolioOwnerService",
+    "CanonicalTargetWeightResult",
     "ConstructionRejectionReason",
     "ConstraintCheck",
     "ConstraintCheckStatus",
@@ -40,4 +48,6 @@ __all__ = [
     "PortfolioConstructionSpecVersion",
     "SelectionTransform",
     "TimingValidationStatus",
+    "TargetWeightOwnerAuthorityError",
+    "TargetWeightOwnerPublication",
 ]

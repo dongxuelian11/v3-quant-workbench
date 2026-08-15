@@ -1,27 +1,34 @@
 import { app, BrowserWindow, ipcMain, Menu, type IpcMainInvokeEvent } from "electron";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
-  DEFAULT_WORKSPACE,
-  applyCommandExactlyOnce,
   type CommandReceipt,
   type DesktopCommandEnvelope,
   type PersistedWorkspace
 } from "../../../packages/contracts/src/index";
 import {
   BackendRuntimeEventRelay,
+  BackendRuntimeLifecycle,
   BackendSupervisor,
   registerBackendRuntimeIpc
 } from "./main/backendRuntime/index";
+import { WorkspaceStore, WorkspaceStoreError } from "./main/runtimePersistence/workspaceStore";
 import { resolveAgentEvidenceRuntime } from "./main/agentEvidenceRuntime";
 
 let mainWindow: BrowserWindow | null = null;
-let state: PersistedWorkspace = structuredClone(DEFAULT_WORKSPACE);
+let store: WorkspaceStore;
 let storePath = "";
 let backendSupervisor: BackendSupervisor | null = null;
 let backendRelay: BackendRuntimeEventRelay | null = null;
+let backendRuntimeLifecycle: BackendRuntimeLifecycle | null = null;
+let quitting = false;
+let shutdownComplete = false;
 
+const GRACEFUL_SHUTDOWN_DEADLINE_MS = 10_000;
+
+// PR #29 production boundary: a packaged build hard-denies the development
+// integration fixture; LIVE product mode always uses the canonical bootstrap.
 const AGENT_EVIDENCE_RUNTIME = resolveAgentEvidenceRuntime(app.isPackaged, process.env.V3_AGENT_EVIDENCE_MODE);
+const AGENT_EVIDENCE_MODE = AGENT_EVIDENCE_RUNTIME.mode;
 const BACKEND_PROJECT_ID = "prj_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const BACKEND_PROJECT_CONTEXT_REVISION_ID = "pcr_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
@@ -31,45 +38,43 @@ function trusted(event: IpcMainInvokeEvent): void {
 
 async function loadState(): Promise<void> {
   storePath = join(app.getPath("userData"), "v3-workbench-state.json");
-  try {
-    const parsed = JSON.parse(await readFile(storePath, "utf8")) as PersistedWorkspace;
-    state = { ...structuredClone(DEFAULT_WORKSPACE), ...parsed };
-  } catch {
-    state = structuredClone(DEFAULT_WORKSPACE);
-    await persist();
+  store = new WorkspaceStore(storePath);
+  const loaded = await store.load();
+  if (loaded.quarantinedPath !== null) {
+    console.error(JSON.stringify({
+      level: "WARN",
+      code: "WORKSPACE_STORE_CORRUPT_QUARANTINED",
+      message: "workspace store was malformed or schema-invalid; original file was quarantined and defaults were initialized",
+      quarantine_file: loaded.quarantinedPath
+    }));
   }
 }
 
-async function persist(): Promise<PersistedWorkspace> {
-  state.savedAt = new Date().toISOString();
-  await mkdir(dirname(storePath), { recursive: true });
-  const temporary = `${storePath}.tmp`;
-  await writeFile(temporary, JSON.stringify(state, null, 2), "utf8");
-  await rename(temporary, storePath);
-  return structuredClone(state);
-}
-
 function registerIpc(): void {
-  ipcMain.handle("workspace:load", (event) => { trusted(event); return structuredClone(state); });
-  ipcMain.handle("workspace:save", async (event, next: PersistedWorkspace) => {
+  ipcMain.handle("workspace:load", (event) => { trusted(event); return store.snapshot(); });
+  ipcMain.handle("workspace:save", (event, next: PersistedWorkspace) => {
     trusted(event);
-    state = structuredClone(next);
-    return persist();
+    return store.saveUserState(next);
   });
-  ipcMain.handle("workspace:reset", async (event) => {
+  ipcMain.handle("workspace:reset", (event) => {
     trusted(event);
-    state = structuredClone(DEFAULT_WORKSPACE);
-    return persist();
+    return store.resetUserState();
   });
-  ipcMain.handle("command:execute", async (event, command: DesktopCommandEnvelope): Promise<CommandReceipt> => {
+  ipcMain.handle("command:execute", (event, command: DesktopCommandEnvelope): Promise<CommandReceipt> => {
     trusted(event);
-    const applied = applyCommandExactlyOnce(state, command);
-    if (applied.receipt.duplicate) return applied.receipt;
-    state = applied.state;
-    await persist();
-    return applied.receipt;
+    return store.executeCommand(command);
   });
-  ipcMain.handle("runtime:info", (event) => { trusted(event); return { electron: process.versions.electron, platform: process.platform, storePath, agentEvidenceMode: AGENT_EVIDENCE_RUNTIME.mode }; });
+  ipcMain.handle("runtime:info", (event) => {
+    trusted(event);
+    return {
+      electron: process.versions.electron,
+      platform: process.platform,
+      storePath,
+      agentEvidenceMode: AGENT_EVIDENCE_MODE,
+      durableEventCursor: store.getProjectEventCursor(BACKEND_PROJECT_ID),
+      persistenceRevision: store.persistenceRevision
+    };
+  });
   ipcMain.handle("window:state", (event) => {
     trusted(event);
     return { maximized: mainWindow?.isMaximized() ?? false };
@@ -94,13 +99,17 @@ function startBackendRuntime(): void {
     projectContext: {
       projectId: BACKEND_PROJECT_ID,
       projectContextRevisionId: BACKEND_PROJECT_CONTEXT_REVISION_ID,
-      lastDurableProjectEventSequence: 0
+      lastDurableProjectEventSequence: store.getProjectEventCursor(BACKEND_PROJECT_ID)
+    },
+    cursorPort: {
+      commit: (projectId, sequence) => store.commitProjectEventCursor(projectId, sequence)
     },
     backendModule: AGENT_EVIDENCE_RUNTIME.backendModule,
     autoReconnect: false
   });
   backendRelay = new BackendRuntimeEventRelay(backendSupervisor, mainWindow.webContents);
   backendRelay.start();
+  backendRuntimeLifecycle = new BackendRuntimeLifecycle(backendSupervisor);
   backendSupervisor.on("diagnostic", (item) => console.error(JSON.stringify(item)));
   registerBackendRuntimeIpc(ipcMain, trusted, backendSupervisor, () => backendRelay?.evidenceSnapshot ?? null);
   void backendSupervisor.start().catch((error: unknown) => {
@@ -139,17 +148,72 @@ function createWindow(): void {
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
-app.whenReady().then(async () => {
-  Menu.setApplicationMenu(null);
-  await loadState();
-  registerIpc();
-  createWindow();
-  startBackendRuntime();
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-}).catch((error) => { console.error(error); app.exit(1); });
+// Electron single-instance guarantee: the workspace store is a process-local
+// serialized queue over one shared state file, so a second V3 instance must
+// never read or modify it. This decision happens before any WorkspaceStore
+// access (loadState runs inside whenReady below).
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.exit(0);
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
 
-app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-app.on("before-quit", () => {
-  backendRelay?.stop();
-  backendSupervisor?.stopNow();
-});
+  app.whenReady().then(async () => {
+    Menu.setApplicationMenu(null);
+    await loadState();
+    registerIpc();
+    createWindow();
+    startBackendRuntime();
+    app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  }).catch((error: unknown) => {
+    const code = error instanceof WorkspaceStoreError ? error.code : "APP_STARTUP_FAILED";
+    console.error(JSON.stringify({ level: "ERROR", code, message: error instanceof Error ? error.message : String(error) }));
+    app.exit(1);
+  });
+
+async function gracefulShutdown(): Promise<void> {
+  try {
+    // Reject new durable user mutations first, then drain pre-quit user
+    // work, then shut the backend down gracefully while the relay and the
+    // store stay alive, then perform the final cursor/state flush. Only
+    // then may the store be closed and the relay stopped.
+    store.beginQuiesce();
+    await store.flush();
+    if (backendRuntimeLifecycle && backendSupervisor) {
+      await backendRuntimeLifecycle.onExplicitQuit(GRACEFUL_SHUTDOWN_DEADLINE_MS);
+    }
+    await store.flush();
+    store.beginShutdown();
+    backendRelay?.stop();
+    console.error(JSON.stringify({
+      level: "INFO",
+      code: "GRACEFUL_SHUTDOWN_SUCCESS",
+      message: "runtime prepare/commit shutdown handshake completed and persistence queue drained"
+    }));
+  } catch (error) {
+    console.error(JSON.stringify({
+      level: "ERROR",
+      code: "FORCED_SHUTDOWN_FALLBACK",
+      message: error instanceof Error ? error.message : String(error)
+    }));
+    backendSupervisor?.stopNow();
+  } finally {
+    shutdownComplete = true;
+    app.quit();
+  }
+}
+
+  app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+  app.on("before-quit", (event) => {
+    if (shutdownComplete) return;
+    if (quitting) { event.preventDefault(); return; }
+    quitting = true;
+    event.preventDefault();
+    void gracefulShutdown();
+  });
+}

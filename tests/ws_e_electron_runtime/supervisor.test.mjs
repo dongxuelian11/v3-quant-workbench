@@ -91,7 +91,7 @@ class MockBackend {
         occurred_at: "2026-08-09T00:00:00Z",
         body: { state: sequence === 1 ? "RUNNING" : "SUCCEEDED" }
       });
-      this.send({ kind: "events.replayComplete", last_sequence: sequence });
+      this.send({ kind: "events.replayComplete", last_sequence: sequence, next_after_sequence: sequence, high_watermark: sequence, has_more: false });
     } else if (message.kind === "request") {
       if (this.requestMode === "silent") return;
       if (this.requestMode === "error") {
