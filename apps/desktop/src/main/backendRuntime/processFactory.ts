@@ -48,8 +48,11 @@ export function sanitizedBackendEnvironment(source: NodeJS.ProcessEnv = process.
   const result: Record<string, string> = {};
   // APPDATA lets a Windows CPython installation locate its standard per-user
   // site-packages (notably the IANA tzdata required by canonical BacktestRunSpec).
+  // LOCALAPPDATA is the documented Windows base directory that
+  // resolve_product_storage_root() (v3_backend.runtime.product_runtime) uses for
+  // the normal product storage root (%LOCALAPPDATA%/v3-quant-workbench/product).
   // No package-specific, project, token, or raw storage path is admitted.
-  for (const name of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "APPDATA"]) {
+  for (const name of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "APPDATA", "LOCALAPPDATA"]) {
     const value = source[name];
     if (typeof value === "string" && value.length > 0) result[name] = value;
   }

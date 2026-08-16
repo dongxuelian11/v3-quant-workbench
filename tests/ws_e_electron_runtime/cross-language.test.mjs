@@ -1,47 +1,95 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
+import { sanitizedBackendEnvironment } from "../../dist/apps/desktop/src/main/backendRuntime/processFactory.js";
 import { BackendSupervisor } from "../../dist/apps/desktop/src/main/backendRuntime/supervisor.js";
 import { parseRound3ResearchEvidenceBundle } from "../../dist/packages/contracts/src/round3Evidence.js";
 import { applyRound3ConnectionState, applyRound3EvidenceEvent, initialRound3AgentWorkspaceState } from "../../dist/apps/desktop/src/renderer/round3Evidence.js";
 import { PERMISSION_SURFACE } from "../../dist/apps/desktop/src/renderer/agentWorkspace.js";
 
+test("sanitized backend environment forwards the Windows product storage base and strips secrets and home paths", () => {
+  const source = {
+    PATH: "/usr/bin:/bin",
+    SystemRoot: "C:\\Windows",
+    WINDIR: "C:\\Windows",
+    TEMP: "C:\\Users\\dev\\AppData\\Local\\Temp",
+    TMP: "C:\\Users\\dev\\AppData\\Local\\Temp",
+    APPDATA: "C:\\Users\\dev\\AppData\\Roaming",
+    LOCALAPPDATA: "C:\\Users\\dev\\AppData\\Local",
+    V3_PRODUCT_STORAGE_ROOT: "D:\\isolated-product-storage",
+    SECRET_TOKEN: "do-not-forward",
+    USERPROFILE: "C:\\Users\\dev",
+    HOMEDRIVE: "C:",
+    HOMEPATH: "\\Users\\dev",
+    UNRELATED_V3_SECRET: "v3-do-not-forward"
+  };
+  const env = sanitizedBackendEnvironment(source);
+  // Allowed exactly: OS/python basics, APPDATA (CPython per-user site/tzdata),
+  // LOCALAPPDATA (B3 normal product storage base on win32), the explicit
+  // V3_PRODUCT_STORAGE_ROOT override, and forced UTF-8/unbuffered CPython.
+  assert.deepEqual({ ...env }, {
+    PATH: source.PATH,
+    SystemRoot: source.SystemRoot,
+    WINDIR: source.WINDIR,
+    TEMP: source.TEMP,
+    TMP: source.TMP,
+    APPDATA: source.APPDATA,
+    LOCALAPPDATA: source.LOCALAPPDATA,
+    V3_PRODUCT_STORAGE_ROOT: source.V3_PRODUCT_STORAGE_ROOT,
+    PYTHONUTF8: "1",
+    PYTHONUNBUFFERED: "1"
+  });
+});
+
 test("real Python bootstrap completes framed authenticated handshake and graceful shutdown", { timeout: 15_000 }, async () => {
   const root = resolve(import.meta.dirname, "../..");
-  const supervisor = new BackendSupervisor({
-    pythonExecutable: process.env.V3_TEST_PYTHON ?? "python",
-    backendWorkingDirectory: resolve(root, "apps/backend/src"),
-    desktopVersion: "0.1.0-test",
-    handshakeTimeoutMs: 10_000,
-    requestTimeoutMs: 2_000,
-    autoReconnect: false
-  });
-  const diagnostics = [];
-  supervisor.on("diagnostic", (item) => diagnostics.push(item));
-  await supervisor.start();
-  assert.equal(supervisor.state, "READY");
-  assert.equal(supervisor.capabilities.length, 17);
-  // B3: the normal production bootstrap binds the real product composition.
-  // Only fully bound services are FORMAL; partial TaskService and every other
-  // incomplete service stay honestly UNAVAILABLE on the normal path.
-  assert.deepEqual(
-    supervisor.capabilities.filter((item) => item.truth_state === "FORMAL").map((item) => item.code).sort(),
-    ["ArtifactService", "BacktestService", "ProjectSessionService"]
-  );
-  const taskCapability = supervisor.capabilities.find((item) => item.code === "TaskService");
-  assert.equal(taskCapability?.truth_state, "UNAVAILABLE");
-  assert.equal(taskCapability?.reason_code, "PRODUCT_OPERATION_SET_INCOMPLETE");
-  assert.equal(supervisor.capabilities.some((item) => item.truth_state === "DEMO"), false);
-  assert.equal(
-    supervisor.capabilities.every((item) => item.truth_state === "FORMAL" || item.truth_state === "UNAVAILABLE"),
-    true
-  );
-  const health = await supervisor.getHealth();
-  assert.equal(health.state, "READY");
-  await supervisor.shutdown(5_000);
-  assert.equal(supervisor.state, "STOPPED");
-  assert.deepEqual(diagnostics, []);
+  // Isolate the real product storage: the normal product bootstrap must never
+  // read or create the developer's real %LOCALAPPDATA%/v3-quant-workbench/product.
+  const priorStorageRoot = process.env.V3_PRODUCT_STORAGE_ROOT;
+  const storageRoot = await mkdtemp(join(tmpdir(), "v3-product-runtime-test-"));
+  process.env.V3_PRODUCT_STORAGE_ROOT = storageRoot;
+  try {
+    const supervisor = new BackendSupervisor({
+      pythonExecutable: process.env.V3_TEST_PYTHON ?? "python",
+      backendWorkingDirectory: resolve(root, "apps/backend/src"),
+      desktopVersion: "0.1.0-test",
+      handshakeTimeoutMs: 10_000,
+      requestTimeoutMs: 2_000,
+      autoReconnect: false
+    });
+    const diagnostics = [];
+    supervisor.on("diagnostic", (item) => diagnostics.push(item));
+    await supervisor.start();
+    assert.equal(supervisor.state, "READY");
+    assert.equal(supervisor.capabilities.length, 17);
+    // B3: the normal production bootstrap binds the real product composition.
+    // Only fully bound services are FORMAL; partial TaskService and every other
+    // incomplete service stay honestly UNAVAILABLE on the normal path.
+    assert.deepEqual(
+      supervisor.capabilities.filter((item) => item.truth_state === "FORMAL").map((item) => item.code).sort(),
+      ["ArtifactService", "BacktestService", "ProjectSessionService"]
+    );
+    const taskCapability = supervisor.capabilities.find((item) => item.code === "TaskService");
+    assert.equal(taskCapability?.truth_state, "UNAVAILABLE");
+    assert.equal(taskCapability?.reason_code, "PRODUCT_OPERATION_SET_INCOMPLETE");
+    assert.equal(supervisor.capabilities.some((item) => item.truth_state === "DEMO"), false);
+    assert.equal(
+      supervisor.capabilities.every((item) => item.truth_state === "FORMAL" || item.truth_state === "UNAVAILABLE"),
+      true
+    );
+    const health = await supervisor.getHealth();
+    assert.equal(health.state, "READY");
+    await supervisor.shutdown(5_000);
+    assert.equal(supervisor.state, "STOPPED");
+    assert.deepEqual(diagnostics, []);
+  } finally {
+    if (priorStorageRoot === undefined) delete process.env.V3_PRODUCT_STORAGE_ROOT;
+    else process.env.V3_PRODUCT_STORAGE_ROOT = priorStorageRoot;
+    await rm(storageRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
 });
 
 test("real canonical two-rebalance H/I/J graph crosses Python backend, WS-E transport, parser, and Agent Workspace", { timeout: 15_000 }, async () => {
