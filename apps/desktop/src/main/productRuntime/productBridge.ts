@@ -85,10 +85,21 @@ export class ProductBridge {
     return { projectId: persisted.projectId, projectContextRevisionId: persisted.projectContextRevisionId, sessionId: persisted.sessionId };
   }
 
-  bindingRefs(): ProductBindingRefs | null {
+  /**
+   * Raw persisted refs. These are assumed-revalidatable pointers only: after
+   * a failed canonical re-validation they remain as a reconnect hint but are
+   * NOT an admitted canonical binding and must never reach the renderer as
+   * bound product truth.
+   */
+  private storedBindingRefs(): ProductBindingRefs | null {
     const persisted = this.bindings.current;
     if (persisted === null) return null;
     return { projectId: persisted.projectId, projectContextRevisionId: persisted.projectContextRevisionId, sessionId: persisted.sessionId };
+  }
+
+  /** Admitted refs: only a PROJECT_BOUND outcome admits canonical product truth. */
+  private admittedBindingRefs(): ProductBindingRefs | null {
+    return this.bindingOutcome.state === "PROJECT_BOUND" ? this.storedBindingRefs() : null;
   }
 
   recordBindingOutcome(outcome: ProductBindingOutcome): void {
@@ -96,10 +107,19 @@ export class ProductBridge {
   }
 
   async getProductStatus(): Promise<ProductStatusView> {
-    const bound = this.bindingRefs();
+    // The recorded binding outcome - not the mere existence of persisted
+    // refs - is the renderer-facing binding authority. A stale binding
+    // (canonical re-validation failed) reports BINDING_STALE with no bound
+    // project instead of pretending PROJECT_BOUND.
+    const bound = this.admittedBindingRefs();
+    const bindingState = this.bindingOutcome.state === "PROJECT_BOUND"
+      ? "PROJECT_BOUND" as const
+      : this.bindingOutcome.state === "BINDING_STALE"
+        ? "BINDING_STALE" as const
+        : "NO_CANONICAL_PROJECT_BOUND" as const;
     return Object.freeze({
       backendState: this.supervisor.state,
-      bindingState: bound === null ? "NO_CANONICAL_PROJECT_BOUND" as const : "PROJECT_BOUND" as const,
+      bindingState,
       boundProject: bound,
       capabilities: await this.getCapabilities()
     });
@@ -110,16 +130,17 @@ export class ProductBridge {
   }
 
   async getBoundProject(): Promise<ProductBindingRefs | null> {
-    return this.bindingRefs();
+    return this.admittedBindingRefs();
   }
 
   async getProjectContext(): Promise<ProjectContextView> {
+    this.requireBinding();
     const response = await this.supervisor.request("ProjectSessionService.v1.getProjectContext", {});
     return adaptProjectContext(response);
   }
 
   async restoreSession(): Promise<SessionRestoreView> {
-    const refs = this.requireBinding();
+    const refs = this.requireBindingOrPendingRevalidation();
     const response = await this.supervisor.request("ProjectSessionService.v1.restoreSession", { session_id: refs.sessionId });
     return adaptSessionRestore(response);
   }
@@ -135,7 +156,7 @@ export class ProductBridge {
     assertCanonicalId(candidate.projectId, "projectId");
     assertCanonicalId(candidate.projectContextRevisionId, "projectContextRevisionId");
     const sessionId = uuidV4();
-    const priorContext = this.bindingRefs();
+    const priorContext = this.storedBindingRefs();
     const cursor = this.store.getProjectEventCursor(candidate.projectId);
     this.supervisor.setProjectContext({
       projectId: candidate.projectId,
@@ -174,17 +195,20 @@ export class ProductBridge {
   }
 
   async listTasks(): Promise<readonly ProductTaskView[]> {
+    this.requireBinding();
     const response = await this.supervisor.request("TaskService.v1.listTasks", { filter: {}, page_size: 50 });
     return adaptTaskList(response);
   }
 
   async getTask(taskId: string): Promise<ProductTaskView> {
+    this.requireBinding();
     assertCanonicalId(taskId, "taskId");
     const response = await this.supervisor.request("TaskService.v1.getTask", { task_id: taskId });
     return adaptTask(response);
   }
 
   async getTaskEvents(afterSequence: number, limit: number): Promise<ProductTaskEventsView> {
+    this.requireBinding();
     if (!Number.isInteger(afterSequence) || afterSequence < 0) throw new ProductAdapterError("INVALID_ARGUMENT", "afterSequence must be a non-negative integer");
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new ProductAdapterError("INVALID_ARGUMENT", "limit must be an integer in [1, 500]");
     const response = await this.supervisor.request("TaskService.v1.getEvents", { after_sequence: afterSequence, limit });
@@ -192,12 +216,14 @@ export class ProductBridge {
   }
 
   async getResult(resultId: string): Promise<ProductResultView> {
+    this.requireBinding();
     assertCanonicalId(resultId, "resultId");
     const response = await this.supervisor.request("ResultService.v1.getResult", { result_id: resultId, section: "summary", page: {} });
     return adaptResult(response);
   }
 
   async getArtifactDescriptor(artifactId: string): Promise<ArtifactDescriptorView> {
+    this.requireBinding();
     assertCanonicalId(artifactId, "artifactId");
     const response = await this.supervisor.request("ArtifactService.v1.getArtifactDescriptor", { artifact_id: artifactId });
     const body = response as { read_model?: unknown };
@@ -205,6 +231,7 @@ export class ProductBridge {
   }
 
   async openArtifactStream(artifactId: string): Promise<ArtifactStreamTicketView> {
+    this.requireBinding();
     assertCanonicalId(artifactId, "artifactId");
     const response = await this.supervisor.request("ArtifactService.v1.openArtifactStream", { artifact_id: artifactId });
     return adaptStreamTicket(response);
@@ -219,6 +246,7 @@ export class ProductBridge {
    * bridge never claims live progress, cancel, or resume.
    */
   async submitExistingBacktestRunSpec(runSpecId: string): Promise<BacktestSubmitOutcomeView> {
+    this.requireBinding();
     if (typeof runSpecId !== "string" || !RUN_SPEC_ID_PATTERN.test(runSpecId)) {
       throw new ProductAdapterError("INVALID_ARGUMENT", "runSpecId must be a canonical btrs_sha256_ identifier");
     }
@@ -243,8 +271,33 @@ export class ProductBridge {
     return requestPromise;
   }
 
+  /**
+   * Unified project-bound operation guard. Only an admitted PROJECT_BOUND
+   * outcome allows product operations; a stale binding fails closed BEFORE
+   * any supervisor request so old context can never serve product truth.
+   */
+  /**
+   * restoreSession is the canonical start-up re-validation channel: before
+   * the binding outcome has been adjudicated, persisted refs may drive the
+   * validation read. Once adjudicated BINDING_STALE it fails closed like
+   * every other product operation.
+   */
+  private requireBindingOrPendingRevalidation(): ProductBindingRefs {
+    if (this.bindingOutcome.state === "BINDING_STALE") {
+      throw new ProductAdapterError("BINDING_STALE", "canonical project binding requires reconnect and re-validation before product operations");
+    }
+    const admitted = this.admittedBindingRefs();
+    if (admitted !== null) return admitted;
+    const stored = this.storedBindingRefs();
+    if (stored !== null) return stored;
+    throw new ProductAdapterError("NO_CANONICAL_PROJECT_BOUND", "no canonical project is bound");
+  }
+
   private requireBinding(): ProductBindingRefs {
-    const refs = this.bindingRefs();
+    if (this.bindingOutcome.state === "BINDING_STALE") {
+      throw new ProductAdapterError("BINDING_STALE", "canonical project binding requires reconnect and re-validation before product operations");
+    }
+    const refs = this.admittedBindingRefs();
     if (refs === null) throw new ProductAdapterError("NO_CANONICAL_PROJECT_BOUND", "no canonical project is bound");
     return refs;
   }

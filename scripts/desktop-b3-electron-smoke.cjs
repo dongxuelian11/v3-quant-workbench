@@ -77,7 +77,7 @@ app.whenReady().then(async () => {
         throw new Error(`clean storage must start unbound: ${JSON.stringify(statusBefore)}`);
       }
       // Invalid refs must fail closed and must not be persisted.
-      const invalid = await evaluate(win, `window.v3ProductRuntime.connectExistingProject({projectId: ${JSON.stringify(projectId)}, projectContextRevisionId: "pcr_${"0".repeat(30)}"}).then(()=>({ok:true}), (error)=>({ok:false, view: error.view ?? null}))`);
+      const invalid = await evaluate(win, `window.v3ProductRuntime.connectExistingProject({projectId: ${JSON.stringify(projectId)}, projectContextRevisionId: "pcr_${"0".repeat(30)}"}).then(()=>({ok:true}), (error)=>({ok:false, code:(error&&error.code)||null,message:(error&&error.message)||String(error)}))`);
       if (invalid.ok) throw new Error("invalid context revision was accepted");
       const stillUnbound = await evaluate(win, "window.v3ProductRuntime.getBoundProject()");
       if (stillUnbound !== null) throw new Error("invalid binding was persisted");
@@ -111,17 +111,62 @@ app.whenReady().then(async () => {
 
       // Numeric caller bypass must be impossible: the typed bridge only takes
       // the canonical run spec id; malformed identities fail closed.
-      const bypass = await evaluate(win, "window.v3ProductRuntime.submitExistingBacktestRunSpec('not-a-canonical-spec').then(()=>({ok:true}),(error)=>({ok:false, view: error.view ?? null}))");
+      const bypass = await evaluate(win, "window.v3ProductRuntime.submitExistingBacktestRunSpec('not-a-canonical-spec').then(()=>({ok:true}),(error)=>({ok:false, code:(error&&error.code)||null,message:(error&&error.message)||String(error)}))");
       if (bypass.ok) throw new Error("non-canonical run spec was accepted");
 
       fs.writeFileSync(markerPath, JSON.stringify({ taskId: submitted.taskId, runId: submitted.runId, resultId, resultArtifactId, sha256: descriptor.sha256, byteSize: descriptor.byteSize }, null, 2));
       console.log(`[desktop-b3-smoke] capture: golden path PASS (task=${submitted.taskId} result=${resultId} sha=${descriptor.sha256.slice(0, 12)}…)`);
+    } else if (phase === "stale-restart") {
+      // T5: canonical re-validation fails on restart -> BINDING_STALE must
+      // fail closed everywhere; structured codes must survive the preload.
+      console.log("[desktop-b3-smoke] stale-restart: waiting for stale re-validation");
+      await waitFor(win,
+        "window.v3ProductRuntime.getProductStatus().then((s)=>s.bindingState==='BINDING_STALE'&&s.boundProject===null).catch(()=>false)",
+        "BINDING_STALE status after failed canonical re-validation", 200);
+      const staleStatus = await evaluate(win, "window.v3ProductRuntime.getProductStatus()");
+      if (staleStatus.backendState !== "READY") throw new Error(`stale phase backend not READY: ${JSON.stringify(staleStatus)}`);
+      if (staleStatus.bindingState !== "BINDING_STALE" || staleStatus.boundProject !== null) {
+        throw new Error(`stale status must fail closed: ${JSON.stringify(staleStatus)}`);
+      }
+      if ((await evaluate(win, "window.v3ProductRuntime.getBoundProject()")) !== null) {
+        throw new Error("stale refs leaked through getBoundProject as admitted truth");
+      }
+      const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+      const blockedTask = await evaluate(win, `window.v3ProductRuntime.getTask(${JSON.stringify(marker.taskId)}).then(()=>({ok:true}),(error)=>({ok:false, code:(error&&error.code)||null,message:(error&&error.message)||String(error)}))`);
+      if (blockedTask.ok || blockedTask.code !== "BINDING_STALE") {
+        throw new Error(`stale getTask must fail closed with BINDING_STALE: ${JSON.stringify(blockedTask)}`);
+      }
+      const blockedSubmit = await evaluate(win, `window.v3ProductRuntime.submitExistingBacktestRunSpec(${JSON.stringify(runSpecId)}).then(()=>({ok:true}),(error)=>({ok:false, code:(error&&error.code)||null,message:(error&&error.message)||String(error)}))`);
+      if (blockedSubmit.ok || blockedSubmit.code !== "BINDING_STALE") {
+        throw new Error(`stale submit must fail closed with BINDING_STALE: ${JSON.stringify(blockedSubmit)}`);
+      }
+      // T6 (real transport): a valid structured backend error (frozen-pattern
+      // rejection) must survive the preload verbatim, not degrade to generic.
+      const invalidPcr = await evaluate(win, `window.v3ProductRuntime.connectExistingProject({projectId: ${JSON.stringify(projectId)}, projectContextRevisionId: "pcr_${"0".repeat(26)}"}).then(()=>({ok:true}),(error)=>({ok:false, code:(error&&error.code)||null,message:(error&&error.message)||String(error)}))`);
+      if (invalidPcr.ok || typeof invalidPcr.code !== "string" || invalidPcr.code === "PRODUCT_BRIDGE_ERROR" || invalidPcr.code === "PRODUCT_BRIDGE_ERROR") {
+        throw new Error(`structured backend error degraded in preload: ${JSON.stringify(invalidPcr)}`);
+      }
+      // Reconnect restores the admitted binding from the same canonical refs.
+      const rebound = await evaluate(win, `window.v3ProductRuntime.connectExistingProject({projectId: ${JSON.stringify(projectId)}, projectContextRevisionId: ${JSON.stringify(pcrId)}})`);
+      if (rebound.projectId !== projectId) throw new Error(`reconnect failed: ${JSON.stringify(rebound)}`);
+      const afterReconnect = await evaluate(win, "window.v3ProductRuntime.getProductStatus()");
+      if (afterReconnect.bindingState !== "PROJECT_BOUND" || afterReconnect.boundProject === null) {
+        throw new Error(`reconnect did not restore PROJECT_BOUND: ${JSON.stringify(afterReconnect)}`);
+      }
+      console.log("[desktop-b3-smoke] stale-restart: BINDING_STALE fail-closed, structured errors preserved, reconnect restored binding PASS");
     } else {
       // Restart recovery: binding restored from canonical read state, no UI
       // event history involved.
-      const status = await evaluate(win, "window.v3ProductRuntime.getProductStatus()");
+      let attempts = 0;
+      let status = await evaluate(win, "window.v3ProductRuntime.getProductStatus()");
+      while (status.bindingState === "NO_CANONICAL_PROJECT_BOUND" && attempts < 50) {
+        await delay(100);
+        status = await evaluate(win, "window.v3ProductRuntime.getProductStatus()");
+        attempts += 1;
+      }
       if (status.bindingState !== "PROJECT_BOUND" || status.boundProject?.projectId !== projectId) {
-        throw new Error(`restart did not restore canonical binding: ${JSON.stringify(status)}`);
+        const probe = await evaluate(win, "(async()=>{try{const s=await window.v3ProductRuntime.restoreSession();return {ok:true,state:s.state}}catch(e){return {ok:false,code:(e&&e.code)||null,message:(e&&e.message)||String(e)}}})()");
+        throw new Error(`restart did not restore canonical binding: ${JSON.stringify(status)} restoreSessionProbe=${JSON.stringify(probe)}`);
       }
       const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
       const restored = await evaluate(win, "window.v3ProductRuntime.restoreSession()");

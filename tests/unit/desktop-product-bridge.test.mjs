@@ -86,3 +86,94 @@ test("LIVE fixture boundary remains explicit opt-in with packaged hard-deny", as
   assert.match(factory, /V3_PRODUCT_STORAGE_ROOT/);
   assert.doesNotMatch(factory, /V3_BACKEND_TOKEN|SECRET|PASSWORD/i);
 });
+
+
+// ---- T4: renderer surface derivation honors bindingState over refs -------
+const { deriveSurface } = await import("../../apps/desktop/src/renderer/productRuntimeStore.ts");
+
+const baseState = { inflight: false, result: null, task: null, runSpecId: `btrs_sha256_${"d".repeat(64)}` };
+
+test("T4: BINDING_STALE wins over any defensively non-null boundProject", () => {
+  const status = {
+    backendState: "READY",
+    bindingState: "BINDING_STALE",
+    boundProject: { projectId: "prj_x", projectContextRevisionId: "pcr_x", sessionId: "ses_x" },
+    capabilities: []
+  };
+  const surface = deriveSurface({ ...baseState, status, result: { resultId: "res_x" }, task: { taskId: "tsk_x" } });
+  assert.notEqual(surface, "PROJECT_BOUND");
+  assert.notEqual(surface, "CANONICAL_RUN_SPEC_REQUIRED");
+  assert.notEqual(surface, "TASK_AVAILABLE");
+  assert.notEqual(surface, "RESULT_AVAILABLE");
+  assert.equal(surface, "CAPABILITY_UNAVAILABLE");
+});
+
+test("T4b: healthy states still derive exactly", () => {
+  assert.equal(deriveSurface({ ...baseState, status: null }), "BACKEND_STARTING");
+  assert.equal(deriveSurface({ ...baseState, status: { backendState: "READY", bindingState: "NO_CANONICAL_PROJECT_BOUND", boundProject: null, capabilities: [] } }), "NO_CANONICAL_PROJECT_BOUND");
+  const bound = { backendState: "READY", bindingState: "PROJECT_BOUND", boundProject: { projectId: "p", projectContextRevisionId: "c", sessionId: "s" }, capabilities: [] };
+  assert.equal(deriveSurface({ ...baseState, status: bound, runSpecId: "short" }), "CANONICAL_RUN_SPEC_REQUIRED");
+  assert.equal(deriveSurface({ ...baseState, status: bound }), "PROJECT_BOUND");
+});
+
+// ---- T6/T7: preload structured error parser (literal production source) --
+const preloadSource = await readFile(new URL("../../apps/desktop/src/preload.ts", import.meta.url), "utf8");
+const parserMatch = preloadSource.match(/function parseProductBridgeErrorView[\s\S]*?\n}/);
+assert.ok(parserMatch, "parseProductBridgeErrorView must exist in preload.ts");
+// Re-materialize the literal production function as a strip-loadable .ts
+// module so the tested body is byte-identical to the preload source.
+const { writeFile } = await import("node:fs/promises");
+const parserModulePath = `/tmp/v3-preload-parser-${process.pid}.ts`;
+await writeFile(parserModulePath, `export ${parserMatch[0]}\n`);
+const { parseProductBridgeErrorView } = await import(`file://${parserModulePath}`);
+
+test("T6: valid structured error views survive with exact fields", () => {
+  const view = parseProductBridgeErrorView(JSON.stringify({
+    code: "CAPABILITY_UNAVAILABLE",
+    message: "operation is unavailable",
+    retryable: false,
+    operationId: "TaskService.v1.resumeTask"
+  }));
+  assert.equal(view.code, "CAPABILITY_UNAVAILABLE");
+  assert.equal(view.message, "operation is unavailable");
+  assert.equal(view.retryable, false);
+  assert.equal(view.operationId, "TaskService.v1.resumeTask");
+  const stale = parseProductBridgeErrorView(JSON.stringify({ code: "BINDING_STALE", message: "reconnect required", retryable: false }));
+  assert.equal(stale.code, "BINDING_STALE");
+  assert.equal(stale.operationId, undefined);
+  // Electron wraps ipc rejections with a channel prefix; the structured view
+  // embedded in the wrapped message must still survive verbatim.
+  const wrapped = parseProductBridgeErrorView(`Error invoking remote method 'productRuntime:getTask': Error: ${JSON.stringify({ code: "BINDING_STALE", message: "reconnect required", retryable: false })}`);
+  assert.equal(wrapped.code, "BINDING_STALE");
+  assert.equal(wrapped.message, "reconnect required");
+  assert.equal(wrapped.retryable, false);
+});
+
+test("T7: malformed payloads degrade to the safe generic fallback", () => {
+  for (const malformed of [
+    "not json at all",
+    "prefix with no JSON brace at all",
+    JSON.stringify(["array"]),
+    JSON.stringify({ code: "X" }),
+    JSON.stringify({ code: "", message: "m", retryable: false }),
+    JSON.stringify({ code: "X", message: 42, retryable: false }),
+    JSON.stringify({ code: "X", message: "m", retryable: "yes" }),
+    JSON.stringify({ code: "X", message: "m", retryable: false, operationId: 7 }),
+    JSON.stringify({ code: "X", message: "m", retryable: false, extraArbitraryField: { deep: "object" } }),
+    JSON.stringify("plain string"),
+    JSON.stringify(null)
+  ]) {
+    const view = parseProductBridgeErrorView(malformed);
+    assert.equal(view.code, "PRODUCT_BRIDGE_ERROR", `fallback expected for ${malformed}`);
+    assert.equal(view.retryable, false);
+    assert.equal(view.operationId, undefined);
+    assert.equal(typeof view.message, "string");
+  }
+});
+
+test("T6b: preload rejects exactly once, outside the parse guard, with the plain view", () => {
+  const invokeSection = preloadSource.slice(preloadSource.indexOf("const invokeProduct"));
+  assert.match(invokeSection, /throw parseProductBridgeErrorView\(message\);/);
+  const body = invokeSection.slice(0, invokeSection.indexOf("};"));
+  assert.doesNotMatch(body, /try\s*\{[\s\S]*?throw[\s\S]*?\}\s*catch/);
+});

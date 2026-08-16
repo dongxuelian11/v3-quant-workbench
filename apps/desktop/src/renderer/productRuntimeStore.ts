@@ -53,7 +53,8 @@ function capabilityOf(capabilities: readonly ProductCapabilityView[], code: stri
   return capabilities.find((capability) => capability.code === code);
 }
 
-function deriveSurface(state: {
+/** Exported for focused tests: the binding-state authority derivation. */
+export function deriveSurface(state: {
   status: ProductStatusView | null;
   inflight: boolean;
   result: ProductResultView | null;
@@ -61,6 +62,12 @@ function deriveSurface(state: {
   runSpecId: string;
 }): ProductSurfaceState {
   const backendState = state.status?.backendState ?? "STARTING";
+  // The binding state from the canonical product status is the authority:
+  // even if a defensively inconsistent status carries a non-null boundProject,
+  // BINDING_STALE must never surface as PROJECT_BOUND, TASK_AVAILABLE,
+  // RESULT_AVAILABLE, or CANONICAL_RUN_SPEC_REQUIRED.
+  const bindingState = state.status?.bindingState ?? "NO_CANONICAL_PROJECT_BOUND";
+  if (bindingState === "BINDING_STALE") return "CAPABILITY_UNAVAILABLE";
   if (backendState !== "READY") {
     if (backendState === "DISCONNECTED" || backendState === "CRASH_LOOP") return "BACKEND_DISCONNECTED";
     return "BACKEND_STARTING";
@@ -92,12 +99,22 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
     try {
       const status = await bridge.getProductStatus();
       const capabilities = status.capabilities;
+      const stale = status.bindingState === "BINDING_STALE";
       set((state) => ({
         status,
         capabilities,
         boundProject: status.boundProject,
         surface: deriveSurface({ ...state, status }),
-        errorMessage: null
+        // A stale binding must not keep presenting previously-read canonical
+        // task/result/artifact state as currently valid product truth.
+        ...(stale ? {
+          task: null,
+          result: null,
+          artifactDescriptor: null,
+          lastSubmit: null,
+          inflight: false,
+          errorMessage: "项目绑定已失效 · BINDING_STALE - 需要重新验证并重新绑定 canonical 项目"
+        } : { errorMessage: null })
       }));
     } catch (error) {
       set((state) => ({ surface: "BACKEND_DISCONNECTED", errorMessage: describeError(error) ?? state.errorMessage }));
@@ -166,9 +183,13 @@ async function discoverResultId(taskId: string): Promise<string | null> {
 }
 
 export function describeError(error: unknown): string | null {
-  const view = (error as { view?: { code?: string; message?: string } })?.view;
-  if (view && typeof view.message === "string") {
-    return `${view.code ? view.code + " · " : ""}${view.message}`;
+  // The product bridge rejects with the closed structured view object itself
+  // (context-bridge-safe structured clone). A legacy { view } envelope or a
+  // plain Error is still described honestly without stack details.
+  const candidate = (error as { view?: { code?: unknown; message?: unknown } })?.view ?? (error as { code?: unknown; message?: unknown } | null);
+  if (candidate !== null && typeof candidate === "object" && typeof (candidate as { message?: unknown }).message === "string") {
+    const code = (candidate as { code?: unknown }).code;
+    return `${typeof code === "string" && code.length > 0 ? code + " · " : ""}${(candidate as { message: unknown }).message}`;
   }
   if (error instanceof Error) return error.message;
   return null;

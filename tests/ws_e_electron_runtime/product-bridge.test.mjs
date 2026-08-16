@@ -84,12 +84,12 @@ test("typed bridge binds only after canonical validation and restarts under the 
   try {
     const supervisor = stubSupervisor();
     const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
-    assert.equal(bridge.bindingRefs(), null);
+    assert.equal(await bridge.getBoundProject(), null);
     const context = await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
     assert.equal(context.projectId, REFS.projectId);
     assert.equal(supervisor.shutdowns, 1);
     assert.equal(supervisor.starts, 1);
-    assert.equal(bridge.bindingRefs().projectId, REFS.projectId);
+    assert.equal((await bridge.getBoundProject()).projectId, REFS.projectId);
     const status = await bridge.getProductStatus();
     assert.equal(status.bindingState, "PROJECT_BOUND");
     assert.equal(status.backendState, "READY");
@@ -109,7 +109,7 @@ test("typed bridge never persists invalid refs and restores prior context on fai
       () => bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId }),
       (error) => error.code === "NOT_FOUND"
     );
-    assert.equal(bridge.bindingRefs(), null);
+    assert.equal(await bridge.getBoundProject(), null);
     assert.equal(supervisor.context, undefined, "failed bind must clear the candidate context");
     await assert.rejects(() => bridge.connectExistingProject({ projectId: "not canonical!", projectContextRevisionId: REFS.projectContextRevisionId }));
   } finally {
@@ -122,8 +122,9 @@ test("submitExistingBacktestRunSpec admits canonical specs only, collapses dupli
   try {
     const supervisor = stubSupervisor();
     const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
-    await assert.rejects(() => bridge.submitExistingBacktestRunSpec("btrs_sha256_short"));
-    await assert.rejects(() => bridge.submitExistingBacktestRunSpec(42));
+    await assert.rejects(() => bridge.submitExistingBacktestRunSpec("btrs_sha256_short"), (error) => error.code === "NO_CANONICAL_PROJECT_BOUND");
+    await assert.rejects(() => bridge.submitExistingBacktestRunSpec(42), (error) => error.code === "NO_CANONICAL_PROJECT_BOUND");
+    await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
     const [first, second] = await Promise.all([
       bridge.submitExistingBacktestRunSpec(RUN_SPEC_ID),
       bridge.submitExistingBacktestRunSpec(RUN_SPEC_ID)
@@ -159,4 +160,86 @@ test("errorToView keeps structured codes without leaking stack details", () => {
   assert.equal(view.code, "TRUTH_PRECONDITION_FAILED");
   assert.equal(view.retryable, false);
   assert.doesNotMatch(JSON.stringify(view), /at .*productBridge/);
+});
+
+
+// ---- T1/T2/T3: stale canonical binding fails closed -----------------------
+test("T1: persisted refs + BINDING_STALE outcome reports stale truth with no admitted project", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-stale-"));
+  try {
+    const supervisor = stubSupervisor();
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
+    bridge.recordBindingOutcome({ state: "BINDING_STALE", code: "NOT_FOUND", message: "session row removed" });
+    const status = await bridge.getProductStatus();
+    assert.equal(status.bindingState, "BINDING_STALE");
+    assert.equal(status.boundProject, null);
+    assert.equal(await bridge.getBoundProject(), null);
+    const fs = await import("node:fs/promises");
+    const persisted = JSON.parse(await fs.readFile(productBindingPath(dir), "utf8"));
+    assert.equal(persisted.projectId, REFS.projectId);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("T2: stale binding blocks product operations BEFORE any supervisor request", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-stale-"));
+  try {
+    const supervisor = stubSupervisor();
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
+    bridge.recordBindingOutcome({ state: "BINDING_STALE", code: "NOT_FOUND", message: "stale" });
+    const callsBefore = supervisor.calls.length;
+    for (const blocked of [
+      () => bridge.getProjectContext(),
+      () => bridge.restoreSession(),
+      () => bridge.listTasks(),
+      () => bridge.getTask("tsk_bridge01"),
+      () => bridge.getTaskEvents(0, 10),
+      () => bridge.getResult("res_x"),
+      () => bridge.getArtifactDescriptor(`art_sha256_${"e".repeat(64)}`),
+      () => bridge.openArtifactStream(`art_sha256_${"e".repeat(64)}`),
+      () => bridge.submitExistingBacktestRunSpec(RUN_SPEC_ID)
+    ]) {
+      await assert.rejects(blocked, (error) => error.code === "BINDING_STALE");
+    }
+    assert.equal(supervisor.calls.length, callsBefore, "no supervisor request may leave the bridge while stale");
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("T3: PROJECT_BOUND flow unchanged after the stale fail-closed fix", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-valid-"));
+  try {
+    const supervisor = stubSupervisor();
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    const context = await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
+    assert.equal(context.projectId, REFS.projectId);
+    const status = await bridge.getProductStatus();
+    assert.equal(status.bindingState, "PROJECT_BOUND");
+    assert.equal(status.boundProject.projectId, REFS.projectId);
+    assert.equal((await bridge.getBoundProject()).projectId, REFS.projectId);
+    const task = await bridge.getTask("tsk_bridge01");
+    assert.equal(task.state, "SUCCEEDED");
+    const submitted = await bridge.submitExistingBacktestRunSpec(RUN_SPEC_ID);
+    assert.equal(submitted.taskId, "tsk_bridge01");
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("T2b: unbound bridge still reports NO_CANONICAL_PROJECT_BOUND before requests", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-unbound-"));
+  try {
+    const supervisor = stubSupervisor();
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await assert.rejects(() => bridge.getProjectContext(), (error) => error.code === "NO_CANONICAL_PROJECT_BOUND");
+    await assert.rejects(() => bridge.getTask("tsk_x"), (error) => error.code === "NO_CANONICAL_PROJECT_BOUND");
+    await assert.rejects(() => bridge.submitExistingBacktestRunSpec(RUN_SPEC_ID), (error) => error.code === "NO_CANONICAL_PROJECT_BOUND");
+    assert.equal(supervisor.calls.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
 });

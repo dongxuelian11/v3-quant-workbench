@@ -54,19 +54,54 @@ contextBridge.exposeInMainWorld("v3BackendRuntime", backendRuntimeBridge);
 // Narrow typed product bridge: each member maps to one admitted frozen
 // operation handled by the Electron main process. There is no generic
 // request(operationId, payload) exposure and no arbitrary channel access.
+/**
+ * Parse a rejected product IPC message into a closed structured error view.
+ * Malformed JSON or a wrong shape degrades to the safe generic
+ * PRODUCT_BRIDGE_ERROR; a valid structured view (CAPABILITY_UNAVAILABLE,
+ * NOT_FOUND, BINDING_STALE, ...) is preserved exactly. Arbitrary backend
+ * objects never cross the renderer boundary.
+ */
+function parseProductBridgeErrorView(message: string): { code: string; message: string; retryable: boolean; operationId?: string } {
+  const fallback = { code: "PRODUCT_BRIDGE_ERROR", message, retryable: false as const };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(message);
+  } catch {
+    // Electron wraps rejected ipcMain handlers as
+    // "Error invoking remote method '<channel>': Error: <handler message>".
+    // Recover the embedded structured JSON instead of degrading it.
+    const brace = message.indexOf("{");
+    if (brace <= 0) return fallback;
+    try {
+      parsed = JSON.parse(message.slice(brace));
+    } catch {
+      return fallback;
+    }
+  }
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") return fallback;
+  const record = parsed as Record<string, unknown>;
+  const allowed = new Set(["code", "message", "retryable", "operationId"]);
+  if (Object.keys(record).some((key) => !allowed.has(key))) return fallback;
+  if (typeof record.code !== "string" || record.code.length === 0) return fallback;
+  if (typeof record.message !== "string") return fallback;
+  if (typeof record.retryable !== "boolean") return fallback;
+  if (record.operationId !== undefined && typeof record.operationId !== "string") return fallback;
+  return record.operationId === undefined
+    ? { code: record.code, message: record.message, retryable: record.retryable }
+    : { code: record.code, message: record.message, retryable: record.retryable, operationId: record.operationId };
+}
+
 const invokeProduct = <T>(channel: string, payload?: unknown): Promise<T> => {
   const request: Promise<unknown> = payload === undefined
     ? ipcRenderer.invoke(channel)
     : ipcRenderer.invoke(channel, payload);
   return request.then((value) => structuredClone(value) as T, (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    try {
-      throw Object.assign(new Error("product runtime request failed"), { view: JSON.parse(message) });
-    } catch {
-      throw Object.assign(new Error("product runtime request failed"), {
-        view: { code: "PRODUCT_BRIDGE_ERROR", message, retryable: false }
-      });
-    }
+    // Reject exactly once, outside the parse guard above, with the closed
+    // plain view object itself: the context bridge strips custom properties
+    // from rejected Errors, so the structured code/message/retryable must
+    // travel as structured-cloneable data to survive into the renderer.
+    throw parseProductBridgeErrorView(message);
   });
 };
 

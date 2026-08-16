@@ -50,7 +50,18 @@ console.log(`desktop-b3 smoke seed: project=${seed.project_id} run_spec=${seed.r
 const runId = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1296).toString(36)}`;
 const userDataRel = `deliverables/electron-user-data-desktop-b3-${runId}`;
 const records = [];
-for (const phase of ["capture", "restart"]) {
+// Stale-binding preparation (T5): with a valid persisted binding in place,
+// remove the canonical desktop session row so the next restart fails
+// canonical re-validation (restoreSession NOT_FOUND) and must record
+// BINDING_STALE instead of surfacing PROJECT_BOUND.
+function dropDesktopSessions() {
+  const drop = spawnSync(backendPython, ["-c",
+    "import sqlite3,sys\nc=sqlite3.connect(sys.argv[1])\nc.execute('DELETE FROM desktop_session')\nc.commit()\nc.close()\n",
+    `${storageRoot}/catalog.sqlite3`], { encoding: "utf8" });
+  if (drop.status !== 0) throw new Error(`failed to drop desktop_session rows: ${drop.stderr}`);
+}
+for (const phase of ["capture", "restart", "stale-restart"]) {
+  if (phase === "stale-restart") dropDesktopSessions();
   if (process.platform !== "win32") {
     const userDataDir = resolve(root, userDataRel);
     for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
