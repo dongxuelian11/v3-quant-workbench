@@ -4,7 +4,7 @@ import type { EvidenceIntegrityStatus } from "./evidence_explorer/model";
 
 export const AGENT_WORKSPACE_BOUNDARY = Object.freeze({
   mode: "LIVE_READ_ONLY" as const,
-  label: "LIVE READ-ONLY",
+  label: "实时只读 · LIVE_READ_ONLY",
   source: "CURRENT_MAIN_CANONICAL_PROJECTION" as const,
   transport: "WS_E_READ_ONLY_CONNECTED" as const,
   authority: "READ_ONLY_VIEW_MODEL" as const
@@ -12,7 +12,7 @@ export const AGENT_WORKSPACE_BOUNDARY = Object.freeze({
 
 export const DEVELOPMENT_INTEGRATION_BOUNDARY = Object.freeze({
   mode: "DEVELOPMENT_INTEGRATION_FIXTURE" as const,
-  label: "DEVELOPMENT / INTEGRATION FIXTURE",
+  label: "开发集成夹具 · DEVELOPMENT_INTEGRATION_FIXTURE",
   source: "ACTUAL_CANONICAL_H_I_J_TEST_CHAIN" as const,
   transport: "WS_E_READ_ONLY_CONNECTED" as const,
   authority: "READ_ONLY_VIEW_MODEL" as const
@@ -33,10 +33,10 @@ export interface AgentWorkspaceBoundary {
 }
 
 export const PERMISSION_SURFACE = Object.freeze([
-  { level: "L0_READ", allowed: true, label: "Read evidence" },
-  { level: "L1_DRAFT", allowed: true, label: "Create non-canonical draft" },
-  { level: "L2_EXECUTE", allowed: false, label: "Execute unavailable" },
-  { level: "L3_PUBLISH", allowed: false, label: "Publish unavailable" }
+  { level: "L0_READ", allowed: true, label: "读取证据" },
+  { level: "L1_DRAFT", allowed: true, label: "创建非 canonical 草案" },
+  { level: "L2_EXECUTE", allowed: false, label: "执行不可用" },
+  { level: "L3_PUBLISH", allowed: false, label: "发布不可用" }
 ] as const);
 
 export type AgentRole = "RESEARCH" | "DATA" | "REVIEWER";
@@ -237,12 +237,12 @@ function assertUnique(values: readonly string[], label: string) {
 }
 
 export const ARTIFACT_RENDERER_REGISTRY = Object.freeze({
-  table: { availability: "AVAILABLE", label: "Table" },
-  metric: { availability: "AVAILABLE", label: "Metrics" },
-  text: { availability: "AVAILABLE", label: "Text" },
-  details: { availability: "AVAILABLE", label: "Structured details" },
-  chart: { availability: "FUTURE_SLOT", label: "Chart" },
-  "backtest-result": { availability: "AVAILABLE", label: "Backtest / Result" }
+  table: { availability: "AVAILABLE", label: "表格" },
+  metric: { availability: "AVAILABLE", label: "指标" },
+  text: { availability: "AVAILABLE", label: "文本" },
+  details: { availability: "AVAILABLE", label: "结构化详情" },
+  chart: { availability: "FUTURE_SLOT", label: "图表" },
+  "backtest-result": { availability: "AVAILABLE", label: "回测 / 结果" }
 } as const);
 
 export function getRendererDefinition(renderer: string) {

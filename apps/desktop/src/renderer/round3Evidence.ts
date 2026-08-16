@@ -29,12 +29,12 @@ declare global {
 const EMPTY_SESSION_VIEW_ID = "session-view-round3-live-read-only";
 
 const TITLES: Record<Round3EvidenceKind, string> = {
-  PortfolioIntent: "Canonical portfolio intent",
-  TargetWeightVector: "Canonical target weights",
-  RiskAdjustedWeightVector: "Canonical risk-adjusted weights",
-  RiskDecisionReport: "Canonical risk decision report",
-  BacktestRunSpec: "Canonical backtest run specification",
-  BacktestRunResult: "Canonical backtest run result"
+  PortfolioIntent: "Canonical 组合意图 · PortfolioIntent",
+  TargetWeightVector: "Canonical 目标权重 · TargetWeightVector",
+  RiskAdjustedWeightVector: "Canonical 风险调整权重 · RiskAdjustedWeightVector",
+  RiskDecisionReport: "Canonical 风险决策报告 · RiskDecisionReport",
+  BacktestRunSpec: "Canonical 回测运行规范 · BacktestRunSpec",
+  BacktestRunResult: "Canonical 回测运行结果 · BacktestRunResult"
 };
 
 const LABS: Record<Round3EvidenceKind, EvidenceView["openInLab"]> = {
@@ -57,8 +57,8 @@ function emptyData(): AgentWorkspaceData {
   return {
     sessions: [{
       sessionViewId: EMPTY_SESSION_VIEW_ID,
-      title: "Round 3 canonical evidence",
-      goal: "Waiting for read-only canonical Portfolio → Risk → Backtest evidence.",
+      title: "Round 3 canonical 证据",
+      goal: "等待只读 canonical 组合 → 风险 → 回测证据。",
       status: "PENDING",
       linkedExperimentRunId: null,
       linkedTaskId: null,
@@ -75,7 +75,7 @@ function emptyData(): AgentWorkspaceData {
 function disconnectedBoundary(connectionState: RuntimeConnectionState): AgentWorkspaceBoundary {
   return {
     mode: connectionState === "READY" ? "LIVE_READ_ONLY_NO_EVIDENCE" : "BACKEND_DISCONNECTED",
-    label: connectionState === "READY" ? "LIVE READ-ONLY · NO EVIDENCE" : "BACKEND DISCONNECTED",
+    label: connectionState === "READY" ? "实时只读 · 无证据 · LIVE_READ_ONLY" : "后端未连接 · BACKEND_DISCONNECTED",
     source: connectionState === "READY" ? "NO_CANONICAL_EVIDENCE_AVAILABLE" : "BACKEND_RUNTIME_UNAVAILABLE",
     transport: connectionState === "READY" ? "WS_E_READ_ONLY_CONNECTED" : `WS_E_${connectionState}`,
     authority: "READ_ONLY_VIEW_MODEL"
@@ -139,8 +139,8 @@ function fromBundle(bundle: Round3ResearchEvidenceBundleV1, occurredAt: string):
   return {
     sessions: [{
       sessionViewId: bundle.session_view_id,
-      title: "Round 3 canonical evidence chain",
-      goal: "Inspect exact read-only Portfolio → Risk → Backtest lineage without execution or publication authority.",
+      title: "Round 3 canonical 证据链",
+      goal: "检查精确只读的组合 → 风险 → 回测来源链，不包含执行或发布权威。",
       status: "PENDING",
       linkedExperimentRunId: null,
       linkedTaskId: null,
@@ -176,7 +176,7 @@ function fromBundle(bundle: Round3ResearchEvidenceBundleV1, occurredAt: string):
       sessionViewId: bundle.session_view_id,
       authority: "EVIDENCE",
       state: timelineState(projection),
-      title: `${projection.source_artifact_type} evidence available`,
+      title: `${projection.source_artifact_type} 证据可用`,
       detail: summary(projection),
       objectId: projection.source_object_id,
       at: occurredAt

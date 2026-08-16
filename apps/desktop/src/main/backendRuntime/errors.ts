@@ -1,13 +1,20 @@
 import type { RuntimeResponseError } from "./types";
 
 export class BackendRuntimeError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+  readonly details: Readonly<Record<string, unknown>>;
+
   constructor(
     message: string,
-    readonly code: string,
-    readonly retryable = false,
-    readonly details: Readonly<Record<string, unknown>> = {}
+    code: string,
+    retryable = false,
+    details: Readonly<Record<string, unknown>> = {}
   ) {
     super(message);
+    this.code = code;
+    this.retryable = retryable;
+    this.details = details;
     this.name = "BackendRuntimeError";
   }
 

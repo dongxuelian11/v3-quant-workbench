@@ -24,22 +24,24 @@ if (!backendPython && process.platform === "win32") {
 backendPython ||= process.platform === "win32" ? "python" : "python3";
 const records = [];
 const runId = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1296).toString(36)}`;
-for (const phase of ["capture", "restart"]) {
+for (const phase of ["capture", "restart", "production-boundary"]) {
+  const environment = {
+    ...process.env,
+    V3_SMOKE_PHASE: phase,
+    V3_SMOKE_USER_DATA: `deliverables/electron-user-data-fr1-visual-${runId}`,
+    V3_BACKEND_PYTHON: backendPython
+  };
+  if (phase !== "production-boundary") environment.V3_AGENT_EVIDENCE_MODE = "DEVELOPMENT_INTEGRATION_FIXTURE";
+  else delete environment.V3_AGENT_EVIDENCE_MODE;
   const result = spawnSync(electron, ["--no-sandbox", "--no-zygote", resolve(root, "scripts", "electron-smoke.cjs")], {
     cwd: root,
     encoding: "utf8",
     shell: process.platform === "win32",
-    env: {
-      ...process.env,
-      V3_SMOKE_PHASE: phase,
-      V3_SMOKE_USER_DATA: `deliverables/electron-user-data-fr1-visual-${runId}`,
-      V3_AGENT_EVIDENCE_MODE: "DEVELOPMENT_INTEGRATION_FIXTURE",
-      V3_BACKEND_PYTHON: backendPython
-    }
+    env: environment
   });
   records.push({ phase, exitCode: result.status, stdout: result.stdout, stderr: result.stderr });
   if (result.stdout) process.stdout.write(result.stdout); if (result.stderr) process.stderr.write(result.stderr);
   if (result.status !== 0) { await writeFile(resolve(root, "deliverables", "raw", "electron-smoke.json"), JSON.stringify(records, null, 2)); process.exit(result.status ?? 1); }
 }
 await writeFile(resolve(root, "deliverables", "raw", "electron-smoke.json"), JSON.stringify(records, null, 2));
-console.log("Electron canonical Round 3 integration smoke and restart persistence PASS");
+console.log("Electron canonical Round 3 integration smoke, restart persistence, and Round 5 T production boundary PASS");

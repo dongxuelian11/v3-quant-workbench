@@ -54,8 +54,8 @@ test("production default is connected-empty and development fixture requires exp
   assert.equal(RESULT_ANALYTICS_PRODUCTION_DEFAULT.analytics, null);
   assert.equal(RESULT_ANALYTICS_DEVELOPMENT_STATE.boundary, "DEVELOPMENT_INTEGRATION_FIXTURE");
   assert.match(panel, /resultAnalyticsFixture/);
-  assert.match(panel, /DEVELOPMENT \/ INTEGRATION FIXTURE/);
-  assert.match(panel, /Development fixtures are never substituted silently/);
+  assert.match(panel, /开发集成数据 · DEVELOPMENT_INTEGRATION_FIXTURE/);
+  assert.match(panel, /绝不静默替换开发数据/);
 });
 
 test("view validator distinguishes frozen and explicit policy profiles and validates truth lattice", () => {
@@ -117,8 +117,8 @@ test("Result Lab remains dense, supplied-view ECharts presentation", async () =>
   const panel = await readFile(panelPath, "utf8");
   assert.match(panel, /echarts\.init/);
   assert.match(panel, /ResultAnalyticsChart analytics=\{a\}/);
-  assert.match(panel, /BENCHMARK NOT AVAILABLE/);
-  assert.match(panel, /NO NEGATIVE DRAWDOWN EPISODE/);
+  assert.match(panel, /基准不可用 · BENCHMARK_NOT_AVAILABLE/);
+  assert.match(panel, /没有负回撤区间/);
   assert.match(panel, /episode\.recoveryStatus/);
 });
 

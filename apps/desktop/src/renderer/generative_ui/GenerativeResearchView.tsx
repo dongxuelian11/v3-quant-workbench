@@ -25,25 +25,25 @@ export function GenerativeResearchView({ spec, sessionViewId, evidence, onSelect
   return <section className="generative-research-view" aria-labelledby="generative-research-title" data-testid="generative-research-view" data-status={parsed.status} data-session-id={sessionViewId}>
     <header className="generative-research-head">
       <div>
-        <small>GENERATIVE RESEARCH UI · L1_DRAFT</small>
+        <small>生成式研究界面 · L1_DRAFT</small>
         <b id="generative-research-title">{parsed.title}</b>
       </div>
       <div className="generative-boundary">
-        <span>DETERMINISTIC INTEGRATION FIXTURE</span>
-        <code>NO LIVE AGENT STRUCTURED OUTPUT CLAIM</code>
+        <span>确定性集成夹具 · FIXTURE</span>
+        <code>不声明实时智能体结构化输出</code>
       </div>
     </header>
     {parsed.error && <div className="generative-invalid-view" role="status" data-testid="invalid-research-view">
-      <strong>INVALID STRUCTURED VIEW</strong>
+      <strong>结构化视图无效</strong>
       <span>{parsed.error}</span>
-      <small>Text draft remains available; no renderer payload executed.</small>
+      <small>文本草案仍可用；未执行任何渲染 payload。</small>
     </div>}
     <div className="generative-block-grid">
       {parsed.blocks.map((block) => <ResearchBlock key={block.blockId} block={block} evidenceById={evidenceById} onSelectEvidence={onSelectEvidence} onOpenLab={onOpenLab}/>)}
       {parsed.invalidBlocks.map((block) => <article className="generative-block invalid" key={block.blockId} role="status" data-testid="unsupported-research-renderer">
-        <header><small>UNSUPPORTED / INVALID BLOCK</small><b>{block.blockId}</b></header>
+        <header><small>不支持 / 无效区块</small><b>{block.blockId}</b></header>
         <p>{block.reason}</p>
-        <span>Fail-closed; remaining valid blocks stay available.</span>
+        <span>保持 fail-closed；其余有效区块继续可用。</span>
       </article>)}
     </div>
   </section>;
@@ -59,7 +59,7 @@ function ResearchBlock({ block, evidenceById, onSelectEvidence, onOpenLab }: {
   return <article className={`generative-block type-${block.type.toLowerCase()}`} data-block-type={block.type} data-authority={block.dataAuthority}>
     <header>
       <div><small>{renderer.label.toUpperCase()} · {block.dataAuthority}</small><b>{block.title}</b></div>
-      <span className={block.dataAuthority === "CANONICAL_EVIDENCE" ? "canonical" : "draft"}>{block.dataAuthority === "CANONICAL_EVIDENCE" ? "CANONICAL SOURCE" : "NON_CANONICAL / DRAFT"}</span>
+      <span className={block.dataAuthority === "CANONICAL_EVIDENCE" ? "canonical" : "draft"}>{block.dataAuthority === "CANONICAL_EVIDENCE" ? "CANONICAL 来源" : "非 CANONICAL / 草案"}</span>
     </header>
     <div className="generative-block-body">{renderBlockBody(block, onSelectEvidence, onOpenLab)}</div>
     <EvidenceBindings evidenceIds={block.evidenceIds} evidenceById={evidenceById} onSelectEvidence={onSelectEvidence} onOpenLab={onOpenLab}/>
@@ -74,7 +74,7 @@ function renderBlockBody(block: ResolvedResearchViewBlock, onSelectEvidence: (ev
   if (block.type === "TimeSeriesChart" || block.type === "BarChart") return <ClosedChart block={block}/>;
   return <div className="generative-evidence-list">{block.items.map((item) => <section key={item.evidenceId}>
     <div>{item.values.map((entry) => <span key={entry.key}><small>{entry.label}</small><b>{entry.value}</b></span>)}</div>
-    <div className="generative-inline-actions"><button type="button" onClick={() => onSelectEvidence(item.evidenceId)}>Select evidence</button><button type="button" onClick={() => onOpenLab(item.openInLab)}>Open {item.openInLab} Lab</button><CopyIdButton evidenceId={item.evidenceId}/></div>
+    <div className="generative-inline-actions"><button type="button" onClick={() => onSelectEvidence(item.evidenceId)}>选择证据</button><button type="button" onClick={() => onOpenLab(item.openInLab)}>打开{labLabel(item.openInLab)}实验室</button><CopyIdButton evidenceId={item.evidenceId}/></div>
   </section>)}</div>;
 }
 
@@ -85,17 +85,21 @@ function EvidenceBindings({ evidenceIds, evidenceById, onSelectEvidence, onOpenL
   onOpenLab: (lab: LabId) => void;
 }) {
   return <details className="generative-bindings">
-    <summary>{evidenceIds.length} bound evidence source{evidenceIds.length === 1 ? "" : "s"}</summary>
+    <summary>已绑定 {evidenceIds.length} 个证据来源</summary>
     <div>{evidenceIds.map((evidenceId) => {
       const source = evidenceById.get(evidenceId);
-      return <section key={evidenceId}><code title={evidenceId}>{compactId(evidenceId)}</code><span>{source?.title ?? "Unavailable source"}</span><div><button type="button" onClick={() => onSelectEvidence(evidenceId)}>Select</button>{source && <button type="button" onClick={() => onOpenLab(source.openInLab)}>Open Lab</button>}<CopyIdButton evidenceId={evidenceId}/></div></section>;
+      return <section key={evidenceId}><code title={evidenceId}>{compactId(evidenceId)}</code><span>{source?.title ?? "来源不可用"}</span><div><button type="button" onClick={() => onSelectEvidence(evidenceId)}>选择</button>{source && <button type="button" onClick={() => onOpenLab(source.openInLab)}>打开实验室</button>}<CopyIdButton evidenceId={evidenceId}/></div></section>;
     })}</div>
   </details>;
 }
 
 function CopyIdButton({ evidenceId }: { evidenceId: string }) {
   const copy = () => { void navigator.clipboard?.writeText(evidenceId).catch(() => undefined); };
-  return <button type="button" onClick={copy} aria-label={`Copy evidence ID ${evidenceId}`}>Copy ID</button>;
+  return <button type="button" onClick={copy} aria-label={`复制证据 ID ${evidenceId}`}>复制 ID</button>;
+}
+
+function labLabel(lab: LabId) {
+  return lab === "research" ? "研究" : lab === "strategy" ? "策略" : lab === "model" ? "模型" : lab === "backtest" ? "回测" : "结果";
 }
 
 function compactId(value: string): string {

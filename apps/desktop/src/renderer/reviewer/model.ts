@@ -10,8 +10,8 @@ export const REVIEWER_RULE_SET = Object.freeze({
 });
 
 export const REVIEWER_AGENT_CAPABILITIES = Object.freeze([
-  { permission: "L0_READ", label: "Read Layer A and exact evidence" },
-  { permission: "L1_DRAFT", label: "Draft summary, risk ordering, and research suggestions" }
+  { permission: "L0_READ", label: "读取 A 层结果与精确证据" },
+  { permission: "L1_DRAFT", label: "起草摘要、风险排序与研究建议" }
 ] as const);
 
 export const REVIEWER_FORBIDDEN_ACTIONS = Object.freeze([
@@ -78,21 +78,21 @@ export interface ReviewerReportView {
 }
 
 const RULES = Object.freeze([
-  ["O-001", true, "Research Session scope"],
-  ["O-002", true, "Exact ID/hash and lineage"],
-  ["O-003", true, "Canonical validation state"],
-  ["O-004", true, "Truth / Admission ceiling"],
-  ["O-010", true, "Split, purge, and embargo"],
-  ["O-011", true, "Dataset membership"],
-  ["O-012", true, "Experiment Run / Attempt"],
-  ["O-020", true, "Model training chain"],
-  ["O-021", true, "Prediction chain"],
-  ["O-030", true, "Strategy period / cutoff"],
-  ["O-031", true, "Portfolio policy / target timing"],
-  ["O-032", true, "Risk target binding"],
-  ["O-040", true, "Backtest RunSpec / Result"],
-  ["O-050", true, "PIT / leakage evidence"],
-  ["O-060", false, "Overfitting / robustness boundary"]
+  ["O-001", true, "研究会话范围"],
+  ["O-002", true, "精确 ID / hash 与来源链"],
+  ["O-003", true, "Canonical 验证状态"],
+  ["O-004", true, "真值 / 准入上限"],
+  ["O-010", true, "切分、purge 与 embargo"],
+  ["O-011", true, "数据集成员关系"],
+  ["O-012", true, "实验运行 / 尝试"],
+  ["O-020", true, "模型训练链"],
+  ["O-021", true, "预测链"],
+  ["O-030", true, "策略周期 / 截止时间"],
+  ["O-031", true, "组合策略 / 目标时点"],
+  ["O-032", true, "风险目标绑定"],
+  ["O-040", true, "回测 RunSpec / Result"],
+  ["O-050", true, "PIT / 泄漏证据"],
+  ["O-060", false, "过拟合 / 稳健性边界"]
 ] as const);
 
 export function deriveReviewerReportView(
@@ -110,7 +110,7 @@ export function deriveReviewerReportView(
     required,
     outcome: "NOT_RUN",
     title,
-    detail: "The exact backend ReviewReport for this rule is not loaded in the current read-only workspace projection.",
+    detail: "当前只读工作区投影尚未载入此规则对应的精确后端 ReviewReport。",
     evidenceObjectIds: []
   }));
   const replaceCheck = (ruleId: string, value: Omit<ReviewCheckView, "ruleId" | "layer" | "required" | "title">) => {
@@ -119,29 +119,29 @@ export function deriveReviewerReportView(
   };
 
   replaceCheck("O-001", missingIds.length
-    ? { outcome: "BLOCKED", detail: `The session declares ${missingIds.length} evidence object(s) that are not loaded.`, evidenceObjectIds: exactIds.map((item) => item.objectId) }
-    : { outcome: "PASS", detail: "Every loaded evidence object is explicitly linked by this Research Session.", evidenceObjectIds: scoped.map((item) => item.objectId) });
+    ? { outcome: "BLOCKED", detail: `会话声明的 ${missingIds.length} 个证据对象尚未载入。`, evidenceObjectIds: exactIds.map((item) => item.objectId) }
+    : { outcome: "PASS", detail: "每个已载入证据对象都由当前研究会话显式链接。", evidenceObjectIds: scoped.map((item) => item.objectId) });
 
   replaceCheck("O-002", exactIds.length !== scoped.length
-    ? { outcome: "FINDING", detail: "At least one loaded object lacks a content-addressed ID.", evidenceObjectIds: scoped.filter((item) => !exactIds.includes(item)).map((item) => item.objectId) }
-    : { outcome: "NOT_RUN", detail: "Object IDs are content-addressed, but separate source content hashes and complete lineage edges are not loaded in this UI projection.", evidenceObjectIds: exactIds.map((item) => item.objectId) });
+    ? { outcome: "FINDING", detail: "至少一个已载入对象缺少内容寻址 ID。", evidenceObjectIds: scoped.filter((item) => !exactIds.includes(item)).map((item) => item.objectId) }
+    : { outcome: "NOT_RUN", detail: "对象 ID 已内容寻址，但此 UI 投影尚未载入独立来源内容 hash 与完整来源链边。", evidenceObjectIds: exactIds.map((item) => item.objectId) });
 
   const failed = scoped.filter((item) => item.validationState === "FAILED");
   const notRun = scoped.filter((item) => item.validationState === "NOT_RUN");
   replaceCheck("O-003", failed.length
-    ? { outcome: "FINDING", detail: "Canonical validation failures are present.", evidenceObjectIds: failed.map((item) => item.objectId) }
+    ? { outcome: "FINDING", detail: "存在 canonical 验证失败。", evidenceObjectIds: failed.map((item) => item.objectId) }
     : notRun.length
-      ? { outcome: "NOT_RUN", detail: "Canonical validation remains NOT_RUN; the Reviewer does not promote it to PASS.", evidenceObjectIds: notRun.map((item) => item.objectId) }
+      ? { outcome: "NOT_RUN", detail: "Canonical 验证保持 NOT_RUN；Reviewer 不会将其提升为 PASS。", evidenceObjectIds: notRun.map((item) => item.objectId) }
       : scoped.length
-        ? { outcome: "PASS", detail: "All loaded evidence has canonical validation_state=PASSED.", evidenceObjectIds: scoped.map((item) => item.objectId) }
-        : { outcome: "NOT_RUN", detail: "No validation-bearing evidence is loaded.", evidenceObjectIds: [] });
+        ? { outcome: "PASS", detail: "全部已载入证据均为 canonical validation_state=PASSED。", evidenceObjectIds: scoped.map((item) => item.objectId) }
+        : { outcome: "NOT_RUN", detail: "尚未载入带有验证状态的证据。", evidenceObjectIds: [] });
 
   const insufficient = scoped.filter((item) => item.canonicalTruthState !== "FORMAL" || item.canonicalAdmissionState !== "FORMAL_ADMITTED");
   replaceCheck("O-004", !scoped.length
-    ? { outcome: "NOT_RUN", detail: "No canonical Truth / Admission state is loaded.", evidenceObjectIds: [] }
+    ? { outcome: "NOT_RUN", detail: "尚未载入 canonical 真值 / 准入状态。", evidenceObjectIds: [] }
     : insufficient.length
-      ? { outcome: "FINDING", detail: "Source evidence is below FORMAL / FORMAL_ADMITTED. Reviewer output cannot elevate it.", evidenceObjectIds: insufficient.map((item) => item.objectId) }
-      : { outcome: "PASS", detail: "Loaded sources are FORMAL / FORMAL_ADMITTED; Reviewer still grants no admission.", evidenceObjectIds: scoped.map((item) => item.objectId) });
+      ? { outcome: "FINDING", detail: "来源证据低于 FORMAL / FORMAL_ADMITTED；Reviewer 输出不能提升它。", evidenceObjectIds: insufficient.map((item) => item.objectId) }
+      : { outcome: "PASS", detail: "已载入来源为 FORMAL / FORMAL_ADMITTED；Reviewer 仍不授予准入。", evidenceObjectIds: scoped.map((item) => item.objectId) });
 
   const findings: ReviewerFindingView[] = checks
     .filter((item): item is ReviewCheckView & { outcome: "FINDING" | "BLOCKED" } => item.outcome === "FINDING" || item.outcome === "BLOCKED")
@@ -153,7 +153,7 @@ export function deriveReviewerReportView(
       outcome: item.outcome,
       title: item.title,
       explanation: item.detail,
-      remediationSuggestion: "Produce new canonical evidence and load the immutable backend ReviewReport; do not mutate or waive history.",
+      remediationSuggestion: "生成新的 canonical 证据并载入不可变后端 ReviewReport；不得篡改或豁免历史。",
       evidenceObjectIds: item.evidenceObjectIds,
       lifecycleLinks: []
     }));

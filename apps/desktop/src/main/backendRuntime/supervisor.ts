@@ -141,6 +141,16 @@ export class BackendSupervisor extends EventEmitter {
   get state(): ConnectionState { return this.stateValue; }
   get capabilities(): readonly BackendCapability[] { return structuredClone(this.capabilitiesValue); }
 
+  /**
+   * Product-bridge unbind seam: drop any bound project context so the next
+   * launch handshakes with a null project identity (backend connected,
+   * NO_CANONICAL_PROJECT_BOUND). Requests are refused until a real context is
+   * bound again.
+   */
+  clearProjectContext(): void {
+    this.projectContext = undefined;
+  }
+
   setProjectContext(context: SupervisorProjectContext): void {
     if (context.lastDurableProjectEventSequence < 0 || !Number.isInteger(context.lastDurableProjectEventSequence)) {
       throw new RangeError("last durable project sequence must be a non-negative integer");

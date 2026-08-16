@@ -15,33 +15,33 @@ export function createGenerativeResearchViewFixture(
     {
       type: "Narrative",
       block_id: "track-m-fixture-narrative",
-      title: "Evidence-bound research view",
+      title: "证据绑定研究视图",
       data_authority: "AGENT_DRAFT_DERIVED",
       evidence_ids: [primaryId],
-      text: "This deterministic integration fixture demonstrates a typed L1 proposal. Interpretations remain NON_CANONICAL / DRAFT and do not change evidence authority."
+      text: "此确定性集成 fixture 演示类型化 L1 提案；解释保持 NON_CANONICAL / DRAFT，不改变证据权威。"
     },
     {
       type: "MetricGroup",
       block_id: "track-m-fixture-metrics",
-      title: "Current-session authority states",
+      title: "当前会话权威状态",
       data_authority: "CANONICAL_EVIDENCE",
       evidence_ids: [primaryId],
       metrics: [
-        { label: "Admission", evidence_id: primaryId, selector: { kind: "EVIDENCE_FIELD", field: "canonicalAdmissionState", normalization: "NONE" } },
-        { label: "Validation", evidence_id: primaryId, selector: { kind: "EVIDENCE_FIELD", field: "validationState", normalization: "NONE" } }
+        { label: "准入", evidence_id: primaryId, selector: { kind: "EVIDENCE_FIELD", field: "canonicalAdmissionState", normalization: "NONE" } },
+        { label: "验证", evidence_id: primaryId, selector: { kind: "EVIDENCE_FIELD", field: "validationState", normalization: "NONE" } }
       ]
     },
     {
       type: "DataTable",
       block_id: "track-m-fixture-table",
-      title: "Bound evidence projection",
+      title: "已绑定证据投影",
       data_authority: "CANONICAL_EVIDENCE",
       evidence_ids: evidenceIds,
       columns: [
-        { key: "kind", header: "Kind", selector: { kind: "EVIDENCE_FIELD", field: "kind", normalization: "NONE" } },
-        { key: "title", header: "Evidence", selector: { kind: "EVIDENCE_FIELD", field: "title", normalization: "NONE" } },
-        { key: "admission", header: "Admission", selector: { kind: "EVIDENCE_FIELD", field: "canonicalAdmissionState", normalization: "NONE" } },
-        { key: "validation", header: "Validation", selector: { kind: "EVIDENCE_FIELD", field: "validationState", normalization: "NONE" } }
+        { key: "kind", header: "类型", selector: { kind: "EVIDENCE_FIELD", field: "kind", normalization: "NONE" } },
+        { key: "title", header: "证据", selector: { kind: "EVIDENCE_FIELD", field: "title", normalization: "NONE" } },
+        { key: "admission", header: "准入", selector: { kind: "EVIDENCE_FIELD", field: "canonicalAdmissionState", normalization: "NONE" } },
+        { key: "validation", header: "验证", selector: { kind: "EVIDENCE_FIELD", field: "validationState", normalization: "NONE" } }
       ],
       rows: evidenceIds.map((evidence_id) => ({ evidence_id })),
       sort: null,
@@ -50,23 +50,23 @@ export function createGenerativeResearchViewFixture(
     {
       type: "EvidenceList",
       block_id: "track-m-fixture-evidence",
-      title: "Exact source evidence",
+      title: "精确来源证据",
       data_authority: "CANONICAL_EVIDENCE",
       evidence_ids: evidenceIds.slice(0, 6),
       fields: [
-        { key: "title", label: "Evidence", selector: { kind: "EVIDENCE_FIELD", field: "title", normalization: "NONE" } },
-        { key: "truth", label: "Truth", selector: { kind: "EVIDENCE_FIELD", field: "canonicalTruthState", normalization: "NONE" } },
-        { key: "admission", label: "Admission", selector: { kind: "EVIDENCE_FIELD", field: "canonicalAdmissionState", normalization: "NONE" } }
+        { key: "title", label: "证据", selector: { kind: "EVIDENCE_FIELD", field: "title", normalization: "NONE" } },
+        { key: "truth", label: "真值", selector: { kind: "EVIDENCE_FIELD", field: "canonicalTruthState", normalization: "NONE" } },
+        { key: "admission", label: "准入", selector: { kind: "EVIDENCE_FIELD", field: "canonicalAdmissionState", normalization: "NONE" } }
       ]
     },
     {
       type: "Callout",
       block_id: "track-m-fixture-boundary",
-      title: "Fixture boundary",
+      title: "Fixture 边界",
       data_authority: "AGENT_DRAFT_DERIVED",
       evidence_ids: [primaryId],
       tone: "WARNING",
-      text: "No live production Agent structured-output connection is claimed. Execute, rerun, mutate, approve, and publish actions are absent."
+      text: "不声明已连接生产智能体结构化输出；执行、重跑、修改、批准与发布操作均不存在。"
     }
   ];
   const numericEvidence = scopedEvidence.find((item) => item.facts.some((fact) => finiteNumber(fact.value) !== null));
@@ -75,10 +75,10 @@ export function createGenerativeResearchViewFixture(
     blocks.splice(3, 0, {
       type: "BarChart",
       block_id: "track-m-fixture-chart",
-      title: `${numericFact.label} from bound evidence`,
+      title: `${numericFact.label} · 来自已绑定证据`,
       data_authority: "CANONICAL_EVIDENCE",
       evidence_ids: [numericEvidence.objectId],
-      category_label: "Evidence",
+      category_label: "证据",
       value_label: numericFact.label,
       bars: [{
         evidence_id: numericEvidence.objectId,
@@ -95,7 +95,7 @@ export function createGenerativeResearchViewFixture(
     session_view_id: sessionViewId,
     permission: "L1_DRAFT",
     authority: "AGENT_DRAFT_PROPOSAL",
-    title: "Generative Research UI",
+    title: "生成式研究界面",
     blocks
   };
 }

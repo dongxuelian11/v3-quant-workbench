@@ -76,6 +76,11 @@ assertSourceContract(mainSource, /will-navigate["']\s*,\s*\(event\)\s*=>\s*event
 
 const preloadSource = await readRequired("apps/desktop/src/preload.ts", 200);
 assertSourceContract(preloadSource, /contextBridge\.exposeInMainWorld\(["']v3Desktop["']/, "Preload bridge exposure is missing");
+const factorWorkbenchSource = await readRequired("apps/desktop/src/renderer/components/FactorWorkbench.tsx", 1000);
+assertSourceContract(factorWorkbenchSource, /fixtureMode\s*\?\s*W0_FACTORS\s*:\s*\[\]/, "Factor fixtures must be gated from production mode");
+assertSourceContract(factorWorkbenchSource, /尚未接入 · NOT_CONNECTED/, "Production Factor UI must expose its disconnected truth");
+assertSourceContract(factorWorkbenchSource, /当前 main 没有桌面只读目录路由；未注入任何演示因子。/, "Production Factor Library must not silently fall back to fixture data");
+assertSourceContract(factorWorkbenchSource, /if \(!fixtureMode\).*NOT_CONNECTED/, "TDX analysis must fail closed without the explicit development fixture mode");
 
 assert.deepEqual([...LAB_IDS], ["research", "strategy", "model", "backtest", "result"]);
 const appSource = await readRequired("apps/desktop/src/renderer/App.tsx", 500);

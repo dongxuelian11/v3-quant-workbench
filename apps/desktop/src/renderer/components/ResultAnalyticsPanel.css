@@ -79,3 +79,44 @@
   .result-trading-ledger { grid-template-columns: 1fr; }
   .result-trading-ledger > section, .result-identity-grid > section, .result-ledger-table { border-right: 0; border-bottom: 1px solid var(--v3-border-strong); }
 }
+
+/* A4 low-chrome result hierarchy: analytical planes, not nested dashboard cards. */
+.result-empty-state {
+  border: 0;
+  border-left: 2px solid var(--v3-warning);
+  background: transparent;
+}
+.result-empty-detail { border: 0; border-left: 2px solid var(--v3-warning); background: transparent; }
+.result-kpi-strip { min-height: 72px; background: transparent; }
+.result-kpi-strip > div { padding-inline: 16px; border-right-color: rgba(91,105,128,.24); }
+.result-analysis-plane { grid-template-columns: minmax(0,1fr) 268px; }
+.result-facts { padding: 20px 18px; background: transparent; border-left-color: rgba(91,105,128,.28); }
+.result-ledger-table > header,
+.result-trading-ledger section > header,
+.result-benchmark > header,
+.result-identity-grid section > header { min-height: 70px; background: transparent; }
+.result-table-head { background: rgba(255,255,255,.018); }
+.result-warning { padding-inline: 12px; background: transparent; }
+.result-policy-code { padding: 9px 0; border: 0; border-bottom: 1px solid var(--v3-border-subtle); background: transparent; }
+.result-benchmark-kpis span { border-right-color: rgba(91,105,128,.24); }
+.result-source-boundary,
+.result-analytics-header .result-boundary,
+.result-available,
+.result-unavailable { background: transparent; }
+.result-identity-list dd { padding-bottom: 10px; }
+
+@media (max-width: 1280px) {
+  .result-analysis-plane { grid-template-columns: minmax(0,1fr) 232px; }
+  .result-kpi-strip > div { padding-inline: 10px; }
+  .result-analytics-header .analysis-title { min-width: 280px; }
+}
+
+@media (prefers-contrast: more) {
+  .result-empty-state,
+  .result-empty-detail,
+  .result-warning { border-left-width: 3px; }
+  .result-kpi-strip,
+  .result-facts,
+  .result-table-head,
+  .result-table-row { border-color: var(--v3-border); }
+}

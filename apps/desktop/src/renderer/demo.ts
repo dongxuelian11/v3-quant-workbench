@@ -7,7 +7,7 @@ export const universeModes: { id: UniverseMode; name: string; detail: string }[]
   { id: "concept", name: "概念", detail: "高股息 + AI 基础设施" },
   { id: "custom-symbols", name: "自定义代码", detail: "逐项解析与校验" },
   { id: "nested-condition", name: "嵌套条件", detail: "AND / OR 条件树" },
-  { id: "factor-top-bottom", name: "因子 Top/Bottom N", detail: "Momentum Top 50" },
+  { id: "factor-top-bottom", name: "因子头部 / 尾部 N", detail: "动量前 50" },
   { id: "saved-reference", name: "已保存引用 / 版本", detail: "UniverseVersion/demo-v12" },
   { id: "csv-tsv-import", name: "CSV/TSV 导入", detail: "预览未解析代码" }
 ];
