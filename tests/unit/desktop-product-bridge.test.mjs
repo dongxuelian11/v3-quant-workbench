@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { ProductBindingStore, parsePersistedBinding, productBindingPath } from "../../apps/desktop/src/main/productRuntime/bindingStore.ts";
 import { adaptCapabilities, adaptTask, ProductAdapterError } from "../../apps/desktop/src/main/productRuntime/adapters.ts";
 
@@ -122,10 +123,15 @@ const parserMatch = preloadSource.match(/function parseProductBridgeErrorView[\s
 assert.ok(parserMatch, "parseProductBridgeErrorView must exist in preload.ts");
 // Re-materialize the literal production function as a strip-loadable .ts
 // module so the tested body is byte-identical to the preload source.
-const { writeFile } = await import("node:fs/promises");
-const parserModulePath = `/tmp/v3-preload-parser-${process.pid}.ts`;
-await writeFile(parserModulePath, `export ${parserMatch[0]}\n`);
-const { parseProductBridgeErrorView } = await import(`file://${parserModulePath}`);
+const parserDir = await mkdtemp(join(tmpdir(), "v3-preload-parser-"));
+const parserModulePath = join(parserDir, "parser.ts");
+let parseProductBridgeErrorView;
+try {
+  await writeFile(parserModulePath, `export ${parserMatch[0]}\n`);
+  ({ parseProductBridgeErrorView } = await import(pathToFileURL(parserModulePath).href));
+} finally {
+  await rm(parserDir, { recursive: true, force: true }).catch(() => undefined);
+}
 
 test("T6: valid structured error views survive with exact fields", () => {
   const view = parseProductBridgeErrorView(JSON.stringify({
