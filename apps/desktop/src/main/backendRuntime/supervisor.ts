@@ -112,6 +112,7 @@ export class BackendSupervisor extends EventEmitter {
   private shutdownReady?: Deferred<void>;
   private shutdownCommitted?: Deferred<void>;
   private healthReply?: Deferred<Readonly<Record<string, unknown>>>;
+  private productEntryReply?: Deferred<Readonly<Record<string, unknown>>>;
   private restartTimer?: NodeJS.Timeout;
   private restartAttempt = 0;
   private projectContext?: SupervisorProjectContext;
@@ -247,6 +248,21 @@ export class BackendSupervisor extends EventEmitter {
     return this.withTimeout(wait.promise, timeoutMs, "backend health response timed out").finally(() => { this.healthReply = undefined; });
   }
 
+  /**
+   * Projectless Product Entry bootstrap control frame (productEntry.*).
+   * Works BEFORE any canonical project is bound: the whole point is creating
+   * the first project. The frame payload is main-process owned; the closed
+   * reply/error frames map onto the same structured error surface as ASL.
+   */
+  async productEntryControl(frame: Record<string, unknown>, timeoutMs = 30_000): Promise<Readonly<Record<string, unknown>>> {
+    if (this.stateValue !== "READY") throw new BackendDisconnectedError();
+    if (this.productEntryReply) throw new BackendRuntimeError("product entry control already pending", "CONFLICT");
+    const wait = deferred<Readonly<Record<string, unknown>>>();
+    this.productEntryReply = wait;
+    this.send(frame);
+    return this.withTimeout(wait.promise, timeoutMs, "product entry control timed out").finally(() => { this.productEntryReply = undefined; });
+  }
+
   async shutdown(deadlineMs = 10_000): Promise<void> {
     if (["STOPPED", "DISCONNECTED"].includes(this.stateValue)) return;
     this.setState("SHUTTING_DOWN");
@@ -353,6 +369,9 @@ export class BackendSupervisor extends EventEmitter {
       case "event": this.onEvent(validateEvent(message)); break;
       case "events.replayComplete": this.onReplayComplete(message); break;
       case "runtime.health": this.onHealth(message); break;
+      case "productEntry.projectCreated":
+      case "productEntry.projectsListed": this.onProductEntryReply(message); break;
+      case "productEntry.error": this.onProductEntryError(message); break;
       case "runtime.shutdownReady": this.shutdownReady?.resolve(); break;
       case "runtime.shutdownCommitted": this.shutdownCommitted?.resolve(); break;
       default: throw new TransportProtocolError(`unexpected backend frame: ${String(message.kind)}`);
@@ -536,6 +555,18 @@ export class BackendSupervisor extends EventEmitter {
     this.healthReply.resolve(contextBridgeSafe(message));
   }
 
+  private onProductEntryReply(message: Record<string, unknown>): void {
+    if (!this.productEntryReply) throw new TransportProtocolError(`unsolicited ${String(message.kind)} response`);
+    this.productEntryReply.resolve(contextBridgeSafe(message));
+  }
+
+  private onProductEntryError(message: Record<string, unknown>): void {
+    if (!this.productEntryReply) throw new TransportProtocolError("unsolicited productEntry.error response");
+    const code = typeof message.code === "string" && message.code.length > 0 ? message.code : "PRODUCT_ENTRY_ERROR";
+    const text = typeof message.message === "string" ? message.message : "product entry control failed";
+    this.productEntryReply.reject(new BackendRuntimeError(text, code));
+  }
+
   private becomeReady(): void {
     this.restartAttempt = 0;
     this.setState("READY");
@@ -634,6 +665,10 @@ export class BackendSupervisor extends EventEmitter {
       pending.reject(error);
     }
     this.pending.clear();
+    this.healthReply?.reject(error);
+    this.healthReply = undefined;
+    this.productEntryReply?.reject(error);
+    this.productEntryReply = undefined;
   }
 
   private send(message: Readonly<Record<string, unknown>>): void {

@@ -24,7 +24,11 @@ export const PRODUCT_RUNTIME_CHANNELS = Object.freeze({
   getResult: "productRuntime:getResult",
   getArtifactDescriptor: "productRuntime:getArtifactDescriptor",
   openArtifactStream: "productRuntime:openArtifactStream",
-  submitExistingBacktestRunSpec: "productRuntime:submitExistingBacktestRunSpec"
+  submitExistingBacktestRunSpec: "productRuntime:submitExistingBacktestRunSpec",
+  createProject: "productRuntime:createProject",
+  listProjects: "productRuntime:listProjects",
+  listBacktestRunSpecs: "productRuntime:listBacktestRunSpecs",
+  importResearchPackage: "productRuntime:importResearchPackage"
 } as const);
 
 function assertObject(value: unknown, allowed: readonly string[]): Record<string, unknown> {
@@ -108,6 +112,18 @@ export function registerProductRuntimeIpc(
     const item = assertObject(value, ["runSpecId"]);
     return bridge.submitExistingBacktestRunSpec(requiredString(item, "runSpecId"));
   });
+  handle(PRODUCT_RUNTIME_CHANNELS.createProject, (value) => {
+    const item = assertObject(value, ["displayName", "notes"]);
+    const displayName = requiredString(item, "displayName");
+    const notes = item.notes;
+    if (notes !== undefined && (typeof notes !== "string" || notes.length > 2048)) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "notes must be a bounded string");
+    }
+    return bridge.createProject({ displayName, ...(notes === undefined ? {} : { notes }) });
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.listProjects, () => bridge.listProjects());
+  handle(PRODUCT_RUNTIME_CHANNELS.listBacktestRunSpecs, () => bridge.listBacktestRunSpecs());
+  handle(PRODUCT_RUNTIME_CHANNELS.importResearchPackage, () => bridge.importResearchPackage());
   return () => {
     for (const channel of Object.values(PRODUCT_RUNTIME_CHANNELS)) ipcMain.removeHandler(channel);
   };

@@ -8,6 +8,7 @@ import { AgentWorkspace } from "./components/AgentWorkspace";
 import { ResearchSessionNavigator } from "./components/ResearchSessionNavigator";
 import { WindowControls } from "./components/WindowControls";
 import { ProductRuntimeStatusChip } from "./components/ProductRuntimeStatusChip";
+import { useProductRuntime } from "./productRuntimeStore";
 import {
   applyRound3ConnectionState,
   applyRound3EvidenceEvent,
@@ -31,6 +32,39 @@ const labContext: Record<LabId, { object: string; phase: string }> = {
   backtest: { object: "BT-DEMO-021", phase: "执行复盘" },
   result: { object: "回测结果分析 · BacktestResultAnalytics / PRE_ALPHA", phase: "确定性绩效分析" }
 };
+
+/** Live canonical project identity for the sidebar (no hardcoded demo name). */
+function ProductSidebarProject() {
+  const status = useProductRuntime((state) => state.status);
+  const projects = useProductRuntime((state) => state.projects);
+  const bound = status?.boundProject ?? null;
+  if (bound === null) {
+    return <div><small>当前项目</small><b>未绑定 canonical 项目</b><span>产品运行时 · 无演示项目</span></div>;
+  }
+  const listing = projects?.projects.find((item) => item.projectId === bound.projectId);
+  return (
+    <div>
+      <small>当前项目</small>
+      <b>{listing?.displayName ?? "Canonical 项目"}</b>
+      <span title={bound.projectId}>{bound.projectId}</span>
+    </div>
+  );
+}
+
+/** Live session/recovery truth for the operations drawer. */
+function ProductSessionTruth() {
+  const status = useProductRuntime((state) => state.status);
+  const backend = status?.backendState ?? "UNKNOWN";
+  const binding = status?.bindingState ?? "NO_CANONICAL_PROJECT_BOUND";
+  const restored = backend === "READY" && binding === "PROJECT_BOUND";
+  return (
+    <div>
+      <small>会话</small>
+      <b>{backend === "READY" ? "后端已连接" : `后端 ${backend}`}</b>
+      <span>{restored ? "项目上下文 · 已恢复 canonical 绑定" : `绑定状态 · ${binding}`}</span>
+    </div>
+  );
+}
 
 export function App() {
   const s = useWorkbench();
@@ -132,7 +166,7 @@ export function App() {
       {surface === "agent" ? <ResearchSessionNavigator sessions={agentState.data.sessions} boundary={agentState.boundary} activeSessionId={activeSessionId} onSelect={setActiveSessionId}/> : <>
         <div className="sidebar-project">
           <span className="sidebar-icon"><Icon name="project"/></span>
-          <div><small>当前项目</small><b>动量研究</b><span>2026 Q2 · 本地 · LOCAL</span></div>
+          <ProductSidebarProject/>
           <button aria-label="项目操作"><Icon name="more" size={16}/></button>
         </div>
         <div className="sidebar-section-head"><span>工作对象</span><button aria-label="新增资产" onClick={() => s.select("新增资产 · BACKEND_UNWIRED")}><Icon name="add" size={15}/></button></div>
@@ -157,9 +191,9 @@ export function App() {
     {surface !== "agent" && <section className={`operations ${s.bottomOpen ? "open" : "closed"}`} aria-label="任务、日志与输出">
       <header><div><Icon name="operations" size={16}/><span>任务与日志</span><small>仅在需要时显示</small></div><button data-action="operations-toggle" onClick={s.toggleBottom} aria-label="关闭任务与日志" aria-expanded={s.bottomOpen} aria-controls="operations-drawer"><Icon name="close" size={15}/></button></header>
       {s.bottomOpen && <div id="operations-drawer" className="operations-drawer" data-major-panel>
-        <div><small>会话</small><b>工作区已就绪</b><span>项目上下文 · ProjectContext 已恢复</span></div>
+        <ProductSessionTruth/>
         <div><small>布局</small><b>停靠布局持久化</b><span>{s.savedAt ? `保存于 ${new Date(s.savedAt).toLocaleTimeString("zh-CN")}` : "等待保存"}</span></div>
-        <div><small>真值边界</small><b>演示数据 · 后端尚未接线</b><span>不构成投资或交易建议</span></div>
+        <div><small>真值边界</small><b>产品运行时 LIVE · Canonical</b><span>实验室图表 DEMO / NOT FORMAL FINANCIAL OUTPUT</span></div>
       </div>}
     </section>}
 

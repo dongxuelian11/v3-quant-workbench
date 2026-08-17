@@ -56,8 +56,10 @@ test("renderer-facing bridge contract stays free of generic transport members", 
   assert.match(ipc, /productRuntime:submitExistingBacktestRunSpec/);
   // Every registration uses one of the frozen typed channels; no dynamic
   // channel or renderer-supplied operation id reaches ipcMain.handle.
+  // Product Entry adds createProject / listProjects / listBacktestRunSpecs /
+  // importResearchPackage (typed, no generic transport surface).
   const registrations = [...ipc.matchAll(/handle\((PRODUCT_RUNTIME_CHANNELS\.[A-Za-z]+)/g)].map((match) => match[1]);
-  assert.equal(registrations.length, 13);
+  assert.equal(registrations.length, 17);
   assert.doesNotMatch(ipc, /operation_?[Ii]d/);
   assert.match(ipc, /trusted\(event\)/);
 });
