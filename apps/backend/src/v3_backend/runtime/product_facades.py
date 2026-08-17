@@ -918,6 +918,73 @@ class ResultFacade:
         )
 
 
+class ProductEntryFacade:
+    """Product Entry ASL operations over the canonical project/run-spec owners.
+
+    createProject / listProjects intentionally live OUTSIDE this ASL facade as
+    narrow projectless control frames; every ASL operation here remains fully
+    project-bound.
+    """
+
+    SERVICE = "ProductEntryService"
+
+    def __init__(self, product: ProductRuntime) -> None:
+        self.product = product
+
+    def handlers(self) -> dict[str, Any]:
+        return {
+            "ProductEntryService.v1.listBacktestRunSpecs": self.list_backtest_run_specs,
+            "ProductEntryService.v1.importResearchPackage": self.import_research_package,
+        }
+
+    def list_backtest_run_specs(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        page = request.get("page") or {}
+        listing = _product_entry().list_backtest_run_specs(
+            self.product,
+            project_id=str(request["project_id"]),
+            project_context_revision_id=str(request["project_context_revision_id"]),
+            limit=int(page.get("limit", 50)),
+            after_run_spec_id=page.get("after_run_spec_id"),
+        )
+        return _response(
+            request,
+            {
+                "read_model_version": "v3.product-entry/1.0",
+                "specs": listing["specs"],
+                "has_more": listing["has_more"],
+            },
+        )
+
+    def import_research_package(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        outcome = _product_entry().import_research_package(
+            self.product,
+            project_id=str(request["project_id"]),
+            project_context_revision_id=str(request["project_context_revision_id"]),
+            manifest_wire=request["manifest"],
+            files_wire=request["files"],
+            idempotency_key=str(request["idempotency_key"]),
+        )
+        return _response(
+            request,
+            {"read_model_version": "v3.product-entry/1.0", **outcome},
+        )
+
+
+def _product_entry():
+    from .product_entry import (
+        import_research_package as _import,
+        list_backtest_run_specs as _list,
+    )
+
+    return _PRODUCT_ENTRY_API(import_research_package=_import, list_backtest_run_specs=_list)
+
+
+class _PRODUCT_ENTRY_API:
+    def __init__(self, *, import_research_package, list_backtest_run_specs) -> None:
+        self.import_research_package = import_research_package
+        self.list_backtest_run_specs = list_backtest_run_specs
+
+
 def build_product_facades(product: ProductRuntime) -> tuple[Any, ...]:
     return (
         ProjectSessionFacade(product),
@@ -925,12 +992,14 @@ def build_product_facades(product: ProductRuntime) -> tuple[Any, ...]:
         ArtifactFacade(product),
         BacktestFacade(product),
         ResultFacade(product),
+        ProductEntryFacade(product),
     )
 
 
 __all__ = [
     "ArtifactFacade",
     "BacktestFacade",
+    "ProductEntryFacade",
     "ProjectSessionFacade",
     "ResultFacade",
     "TaskFacade",
