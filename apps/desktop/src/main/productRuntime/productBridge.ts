@@ -1,8 +1,11 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import type {
   ArtifactDescriptorView,
   ArtifactStreamTicketView,
   BacktestSubmitOutcomeView,
+  ImportResearchPackageOutcomeView,
   ProductBindingRefs,
   ProductCapabilityView,
   ProductResultView,
@@ -10,6 +13,10 @@ import type {
   ProductTaskEventsView,
   ProductTaskView,
   ProjectContextView,
+  ProjectCreatedView,
+  ProjectsListView,
+  RunSpecEntryView,
+  RunSpecsListView,
   SessionRestoreView
 } from "../../../../../packages/contracts/src/index";
 import type { BackendSupervisor } from "../backendRuntime/supervisor";
@@ -42,6 +49,14 @@ const ADMITTED_EXECUTION_ADAPTER_VERSION_ID = "v3.a_share_daily_eod_engine/0.2.0
 const RUN_SPEC_ID_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
 const CANONICAL_ID_PATTERN = /^[A-Za-z0-9_\-]{1,200}$/;
 const PROJECT_LOCATOR_PREFIX = "v3:";
+const PRODUCT_ENTRY_PROTOCOL_VERSION = "v3.product-entry/1.0.0";
+const PACKAGE_MANIFEST_FILENAME = "manifest.v3.json";
+const MAX_PACKAGE_FILE_BYTES = 262_144;
+const MAX_PACKAGE_FILE_COUNT = 64;
+const PACKAGE_PATH_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/** Main-process owned research package directory chooser (Electron dialog). */
+export type ResearchPackageChooser = () => Promise<string | null>;
 
 export type ProductBindingOutcome =
   | { readonly state: "PROJECT_BOUND" }
@@ -69,11 +84,19 @@ export class ProductBridge {
   private readonly store: WorkspaceStore;
   private readonly bindings: ProductBindingStore;
 
-  constructor(supervisor: BackendSupervisor, store: WorkspaceStore, bindings: ProductBindingStore) {
+  constructor(
+    supervisor: BackendSupervisor,
+    store: WorkspaceStore,
+    bindings: ProductBindingStore,
+    chooseResearchPackage: ResearchPackageChooser = async () => null
+  ) {
     this.supervisor = supervisor;
     this.store = store;
     this.bindings = bindings;
+    this.chooseResearchPackage = chooseResearchPackage;
   }
+
+  private readonly chooseResearchPackage: ResearchPackageChooser;
 
   /** Restore a persisted binding before backend launch; invalid refs are dropped. */
   async restorePersistedBinding(): Promise<ProductBindingRefs | null> {
@@ -271,6 +294,120 @@ export class ProductBridge {
     return requestPromise;
   }
 
+  // -- Product Entry ---------------------------------------------------------
+
+  /**
+   * Clean-start project creation through the projectless productEntry control
+   * protocol. The backend mints every canonical identity; the renderer can
+   * only supply bounded display intent. The idempotency key is main-owned.
+   */
+  async createProject(request: { displayName: string; notes?: string }): Promise<ProjectCreatedView> {
+    const displayName = request.displayName.trim();
+    if (displayName.length < 1 || displayName.length > 200) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "displayName must be 1..200 characters");
+    }
+    const notes = request.notes === undefined ? null : request.notes;
+    if (notes !== null && (typeof notes !== "string" || notes.length > 2048)) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "notes must be a bounded string");
+    }
+    const response = await this.supervisor.productEntryControl({
+      kind: "productEntry.createProject",
+      protocol_version: PRODUCT_ENTRY_PROTOCOL_VERSION,
+      display_name: displayName,
+      notes,
+      idempotency_key: `v3-desktop:${uuidV4()}`
+    });
+    const record = response as Record<string, unknown>;
+    const projectId = typeof record.project_id === "string" ? record.project_id : "";
+    const revisionId = typeof record.project_context_revision_id === "string" ? record.project_context_revision_id : "";
+    if (!/^prj_[0-9A-HJKMNP-TV-Z]{26}$/.test(projectId) || !/^pcr_[0-9A-HJKMNP-TV-Z]{26}$/.test(revisionId)) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "backend did not return canonical project identities");
+    }
+    return Object.freeze({
+      projectId,
+      projectContextRevisionId: revisionId,
+      displayName,
+      createdAt: typeof record.created_at === "string" ? record.created_at : ""
+    });
+  }
+
+  /** Durable project discovery (works before any project is bound). */
+  async listProjects(): Promise<ProjectsListView> {
+    const response = await this.supervisor.productEntryControl({
+      kind: "productEntry.listProjects",
+      protocol_version: PRODUCT_ENTRY_PROTOCOL_VERSION,
+      limit: 50,
+      after_project_id: null
+    });
+    const record = response as { projects?: unknown; has_more?: unknown };
+    const projects = Array.isArray(record.projects)
+      ? record.projects.map((item) => {
+          const row = item as Record<string, unknown>;
+          return {
+            projectId: String(row.project_id ?? ""),
+            projectContextRevisionId: String(row.project_context_revision_id ?? ""),
+            displayName: String(row.display_name ?? ""),
+            createdAt: String(row.created_at ?? "")
+          };
+        })
+      : [];
+    return Object.freeze({ projects, hasMore: record.has_more === true });
+  }
+
+  /** Durable run-spec discovery with actual-artifact verification. */
+  async listBacktestRunSpecs(): Promise<RunSpecsListView> {
+    this.requireBinding();
+    const response = await this.supervisor.request("ProductEntryService.v1.listBacktestRunSpecs", {
+      page: { limit: 50 }
+    });
+    const readModel = (response as { read_model?: { specs?: unknown; has_more?: unknown } }).read_model ?? {};
+    const specs = Array.isArray(readModel.specs)
+      ? readModel.specs.map((item): RunSpecEntryView => {
+          const row = item as Record<string, unknown>;
+          return {
+            runSpecId: String(row.run_spec_id ?? ""),
+            artifactId: String(row.artifact_id ?? ""),
+            contentSha256: String(row.content_sha256 ?? ""),
+            projectContextRevisionId: String(row.project_context_revision_id ?? ""),
+            engineVersion: String(row.engine_version ?? ""),
+            createdAt: String(row.created_at ?? ""),
+            executionAdapterVersionId: String(row.execution_adapter_version_id ?? ""),
+            status: row.status === "EXECUTABLE" ? "EXECUTABLE" as const : "UNAVAILABLE" as const,
+            diagnostic: typeof row.diagnostic === "string" ? row.diagnostic : null
+          };
+        })
+      : [];
+    return Object.freeze({ specs, hasMore: readModel.has_more === true });
+  }
+
+  /**
+   * Package-mode research entry. The Electron main process owns the native
+   * directory chooser and reads the actual package bytes; the renderer never
+   * sees a filesystem path. Returns null when the user cancels the chooser.
+   * Every byte/hash/identity is re-verified by the backend before anything is
+   * registered - the declared manifest alone is never trusted.
+   */
+  async importResearchPackage(): Promise<ImportResearchPackageOutcomeView | null> {
+    this.requireBinding();
+    const directory = await this.chooseResearchPackage();
+    if (directory === null) return null;
+    const { manifest, files } = await readResearchPackageDirectory(directory);
+    const response = await this.supervisor.request(
+      "ProductEntryService.v1.importResearchPackage",
+      { manifest, files, idempotency_key: `v3-desktop:${uuidV4()}` },
+      { timeoutMs: 120_000 }
+    );
+    const readModel = (response as { read_model?: Record<string, unknown> }).read_model ?? {};
+    return Object.freeze({
+      runSpecId: String(readModel.run_spec_id ?? ""),
+      runSpecArtifactId: String(readModel.run_spec_artifact_id ?? ""),
+      contextArtifactId: String(readModel.context_artifact_id ?? ""),
+      alreadyImported: readModel.already_imported === true,
+      sourceProjectId: String(readModel.source_project_id ?? ""),
+      importedAt: String(readModel.imported_at ?? "")
+    });
+  }
+
   /**
    * Unified project-bound operation guard. Only an admitted PROJECT_BOUND
    * outcome allows product operations; a stale binding fails closed BEFORE
@@ -326,6 +463,77 @@ export class ProductBridge {
       /* honest degradation: bound project stays valid; UI re-queries state */
     }
   }
+}
+
+/**
+ * Read a V3 research package directory (closed layout): manifest.v3.json plus
+ * the exact payload files the manifest declares. Actual bytes are hashed
+ * here only for transport; the backend independently re-verifies every byte
+ * against the manifest before registration. Unknown extra files are rejected.
+ */
+export async function readResearchPackageDirectory(
+  directory: string
+): Promise<{ manifest: Record<string, unknown>; files: ReadonlyArray<Record<string, unknown>> }> {
+  const manifestPath = join(directory, PACKAGE_MANIFEST_FILENAME);
+  const manifestBytes = await readFile(manifestPath).catch(() => {
+    throw new ProductAdapterError("INVALID_ARGUMENT", `研究包缺少 ${PACKAGE_MANIFEST_FILENAME}`);
+  });
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(manifestBytes.toString("utf8")) as Record<string, unknown>;
+  } catch {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "研究包 manifest 不是有效 JSON");
+  }
+  const declared = new Set<string>();
+  const descriptorNames: unknown[] = [
+    (manifest.run_spec_artifact as Record<string, unknown> | undefined)?.name,
+    (manifest.execution_context_artifact as Record<string, unknown> | undefined)?.name
+  ];
+  for (const entry of Array.isArray(manifest.artifacts) ? (manifest.artifacts as unknown[]) : []) {
+    descriptorNames.push((entry as Record<string, unknown> | null)?.name);
+  }
+  for (const name of descriptorNames) {
+    if (typeof name !== "string") continue;
+    if (!PACKAGE_PATH_PATTERN.test(name)) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", `研究包声明了非法的文件名: ${name}`);
+    }
+    declared.add(name);
+  }
+  declared.delete(PACKAGE_MANIFEST_FILENAME);
+  if (declared.size === 0) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "研究包 manifest 未声明任何 payload 文件");
+  }
+  if (declared.size > MAX_PACKAGE_FILE_COUNT) {
+    throw new ProductAdapterError("UNBOUNDED", "研究包 payload 文件数超出上限");
+  }
+  const present = new Set((await readdir(directory)).filter((name) => name !== PACKAGE_MANIFEST_FILENAME));
+  const missing = [...declared].filter((name) => !present.has(name));
+  const extra = [...present].filter((name) => !declared.has(name));
+  if (missing.length > 0 || extra.length > 0) {
+    throw new ProductAdapterError(
+      "INVALID_ARGUMENT",
+      `研究包文件集合与 manifest 不一致 (缺失: ${missing.join(", ") || "无"}; 多余: ${extra.join(", ") || "无"})`
+    );
+  }
+  const files: Record<string, unknown>[] = [];
+  let total = 0;
+  for (const name of [...declared].sort()) {
+    const payload = await readFile(join(directory, name));
+    if (payload.byteLength < 1 || payload.byteLength > MAX_PACKAGE_FILE_BYTES) {
+      throw new ProductAdapterError("UNBOUNDED", `研究包文件大小越界: ${name}`);
+    }
+    total += payload.byteLength;
+    if (total > 786_432) {
+      throw new ProductAdapterError("UNBOUNDED", "研究包总大小超出上限");
+    }
+    files.push({
+      name,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      byte_size: payload.byteLength,
+      payload_base64: payload.toString("base64")
+    });
+  }
+  return { manifest, files };
 }
 
 export function errorToView(error: unknown): { code: string; message: string; retryable: boolean; operationId?: string } {

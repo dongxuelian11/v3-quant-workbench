@@ -35,6 +35,10 @@ export function ProductRuntimePanel() {
   const surface = useProductRuntime((state) => state.surface);
   const status = useProductRuntime((state) => state.status);
   const boundProject = useProductRuntime((state) => state.boundProject);
+  const projects = useProductRuntime((state) => state.projects);
+  const runSpecs = useProductRuntime((state) => state.runSpecs);
+  const entryBusy = useProductRuntime((state) => state.entryBusy);
+  const lastImport = useProductRuntime((state) => state.lastImport);
   const runSpecId = useProductRuntime((state) => state.runSpecId);
   const inflight = useProductRuntime((state) => state.inflight);
   const task = useProductRuntime((state) => state.task);
@@ -44,8 +48,12 @@ export function ProductRuntimePanel() {
   const refresh = useProductRuntime((state) => state.refresh);
   const setRunSpecId = useProductRuntime((state) => state.setRunSpecId);
   const submitRunSpec = useProductRuntime((state) => state.submitRunSpec);
+  const createProjectAndBind = useProductRuntime((state) => state.createProjectAndBind);
+  const importResearchPackage = useProductRuntime((state) => state.importResearchPackage);
   const [projectIdInput, setProjectIdInput] = useState("");
   const [revisionInput, setRevisionInput] = useState("");
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectNotes, setNewProjectNotes] = useState("");
 
   useEffect(() => {
     void refresh();
@@ -55,7 +63,9 @@ export function ProductRuntimePanel() {
 
   const backendReady = status?.backendState === "READY";
   const bound = boundProject !== null;
-  const canSubmit = backendReady && bound && /^btrs_sha256_[0-9a-f]{64}$/.test(runSpecId.trim()) && !inflight;
+  const selectedEntry = runSpecs?.specs.find((item) => item.runSpecId === runSpecId.trim()) ?? null;
+  const selectedExecutable = selectedEntry?.status === "EXECUTABLE";
+  const canSubmit = backendReady && bound && selectedExecutable && !inflight;
 
   return <section className="panel-page product-runtime-panel" data-testid="product-runtime-panel" data-product-surface={surface}>
     <header className="analysis-header">
@@ -74,25 +84,63 @@ export function ProductRuntimePanel() {
       <CapabilityBadge label="项目会话" code="ProjectSessionService"/>
       <CapabilityBadge label="回测" code="BacktestService"/>
       <CapabilityBadge label="Artifact" code="ArtifactService"/>
+      <CapabilityBadge label="Product Entry" code="ProductEntryService"/>
       <CapabilityBadge label="任务" code="TaskService"/>
       <CapabilityBadge label="结果" code="ResultService"/>
     </div>
 
     {!bound && backendReady && <div className="product-connect" data-testid="product-connect">
-      <div className="section-head"><div><small>绑定已存在的 canonical 项目</small><h2>项目创建入口尚未产品化 · PROJECT_AUTHORING = NOT_AVAILABLE</h2></div></div>
-      <p className="honest-note">当前 frozen ASL 不提供 createProject / importProject。只能绑定产品存储中已存在的 canonical 项目；无效引用不会被持久化。</p>
-      <label>Project ID<input value={projectIdInput} onChange={(event) => setProjectIdInput(event.target.value)} placeholder="prj_…" aria-label="canonical project id"/></label>
-      <label>Context Revision ID<input value={revisionInput} onChange={(event) => setRevisionInput(event.target.value)} placeholder="pcr_…" aria-label="canonical project context revision id"/></label>
-      <button className="primary" disabled={!projectIdInput.trim() || !revisionInput.trim()} onClick={() => void useProductRuntime.getState().connect(projectIdInput.trim(), revisionInput.trim())}>验证并绑定</button>
+      <div className="section-head"><div><small>Clean-start 研究入口</small><h2>创建研究项目</h2></div></div>
+      <p className="honest-note">canonical 项目 ID 与首个 ProjectContext 修订全部由后端铸造；本界面只提交有界的研究意图（名称/备注），不接受任何数值金融真值。</p>
+      <label>项目名称<input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="例如：A 股动量研究" aria-label="新项目名称" disabled={entryBusy}/></label>
+      <label>备注（可选）<input value={newProjectNotes} onChange={(event) => setNewProjectNotes(event.target.value)} placeholder="非金融元数据 · context_fields.notes" aria-label="新项目备注" disabled={entryBusy}/></label>
+      <button className="primary" data-action="create-project" disabled={entryBusy || newProjectName.trim().length < 1} onClick={() => void createProjectAndBind(newProjectName.trim(), newProjectNotes.trim() === "" ? undefined : newProjectNotes.trim())}>
+        {entryBusy ? "创建中…" : "创建研究项目"}
+      </button>
+
+      {(projects?.projects.length ?? 0) > 0 && <div className="section-head" style={{marginTop: 16}}><div><small>产品存储中的 canonical 项目</small><h2>绑定已有项目</h2></div></div>}
+      {projects?.projects.map((item) => <div key={item.projectId} className="honest-note" style={{display: "flex", alignItems: "center", gap: 8}}>
+        <span style={{flex: 1}} title={item.projectId}>{item.displayName} · {item.projectId.slice(0, 12)}…</span>
+        <button disabled={entryBusy} onClick={() => void useProductRuntime.getState().connect(item.projectId, item.projectContextRevisionId)}>验证并绑定</button>
+      </div>)}
+
+      <details style={{marginTop: 12}}>
+        <summary className="honest-note">高级：按 canonical ID 绑定</summary>
+        <label>Project ID<input value={projectIdInput} onChange={(event) => setProjectIdInput(event.target.value)} placeholder="prj_…" aria-label="canonical project id"/></label>
+        <label>Context Revision ID<input value={revisionInput} onChange={(event) => setRevisionInput(event.target.value)} placeholder="pcr_…" aria-label="canonical project context revision id"/></label>
+        <button disabled={!projectIdInput.trim() || !revisionInput.trim()} onClick={() => void useProductRuntime.getState().connect(projectIdInput.trim(), revisionInput.trim())}>验证并绑定</button>
+      </details>
     </div>}
 
     {bound && <div className="product-run" data-testid="product-run">
-      <div className="section-head"><div><small>既有 canonical RunSpec 执行</small><h2>RunSpec 创作入口尚未产品化 · RUN_SPEC_AUTHORING = NOT_AVAILABLE</h2></div></div>
-      <p className="honest-note">仅接受已存在的 canonical run_spec_id（btrs_sha256_…）；不接受任何数值观测/收益/权重输入。当前执行为受限同步进程内执行：无并发 worker、不可实时取消、无断点续跑。</p>
-      <label>Canonical Run Spec ID<input value={runSpecId} onChange={(event) => setRunSpecId(event.target.value)} placeholder="btrs_sha256_…" aria-label="canonical run spec id" disabled={inflight}/></label>
+      <div className="section-head"><div><small>可运行研究配置 · Canonical RunSpec</small><h2>研究配置</h2></div></div>
+      {runSpecs === null && <p className="honest-note">正在从 canonical 项目引用读取可运行研究配置…</p>}
+      {runSpecs?.specs.length === 0 && <div data-testid="empty-run-specs">
+        <p className="honest-note">本项目尚无可运行的研究配置 · 空状态为真：不显示 fixture 运行，提交按钮禁用。</p>
+        <button data-action="import-research-package" disabled={entryBusy} onClick={() => void importResearchPackage()}>
+          {entryBusy ? "验证导入中…" : "导入 V3 研究包"}
+        </button>
+        <p className="honest-note">将验证内容哈希与 canonical 引用 · 逐字节校验后原子注册，失败不会留下半注册状态。</p>
+      </div>}
+      {runSpecs !== null && runSpecs.specs.length > 0 && <ul style={{listStyle: "none", padding: 0}} data-testid="runspec-list">
+        {runSpecs.specs.map((entry) => <li key={entry.runSpecId} style={{display: "flex", alignItems: "center", gap: 8, padding: "4px 0"}}>
+          <input type="radio" name="runspec" checked={runSpecId.trim() === entry.runSpecId} onChange={() => setRunSpecId(entry.runSpecId)} aria-label={`选择 ${entry.runSpecId}`}/>
+          <span style={{flex: 1}} title={`${entry.runSpecId} · ${entry.contentSha256}`}>
+            {entry.runSpecId.slice(0, 22)}… · {entry.engineVersion}
+          </span>
+          <span className={`connection-badge ${entry.status === "EXECUTABLE" ? "ok" : "unavailable"}`}>
+            {entry.status === "EXECUTABLE" ? "EXECUTABLE" : `UNAVAILABLE · ${entry.diagnostic ?? ""}`}
+          </span>
+          {entry.status !== "EXECUTABLE" && <button disabled={entryBusy} onClick={() => void importResearchPackage()}>导入 V3 研究包</button>}
+        </li>)}
+        <li><button data-action="import-research-package" disabled={entryBusy} onClick={() => void importResearchPackage()}>{entryBusy ? "验证导入中…" : "导入 V3 研究包"}</button>
+        <span className="honest-note"> 将验证内容哈希与 canonical 引用</span></li>
+      </ul>}
+      {lastImport && <p className="honest-note">最近导入：{lastImport.runSpecId.slice(0, 22)}… {lastImport.alreadyImported ? "（幂等重放）" : ""}</p>}
       <button className="primary" disabled={!canSubmit} onClick={() => void submitRunSpec()} data-action="submit-existing-runspec">
         {inflight ? "请求执行中 · REQUEST_IN_FLIGHT" : "执行既有 RunSpec"}
       </button>
+      {!selectedExecutable && runSpecs !== null && runSpecs.specs.length > 0 && <p className="honest-note">提交需要先选择一个 EXECUTABLE 的 canonical RunSpec（经实际字节校验）。</p>}
       {task && <dl className="product-readout" data-testid="product-task-readout">
         <dt>Task</dt><dd>{task.taskId} · {task.state} · v{task.stateVersion}</dd>
         <dt>Run</dt><dd>{task.runId}</dd>
