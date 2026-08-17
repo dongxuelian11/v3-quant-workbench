@@ -4,10 +4,10 @@
   "batch_id": "V3-OSS-REBUILD-BR1-FOUNDATION-BATCH-01",
   "branch": "rebuild/br1-ws-a-contracts-v1",
   "source_anchor": "97ce15b7548df56312b785a5ce10b0fadb87d81a",
-  "service_count": 17,
-  "operation_count": 64,
+  "service_count": 18,
+  "operation_count": 66,
   "contract_digest_algorithm": "sha256(path\\0sha256(file)\\n), domain-separated WS-A-CONTRACT-SEED-V1\\0",
-  "contract_digest": "99476cfd4d6768397c5ee2df2f2cdadaee4b499244a31213d179a9755f009f80",
+  "contract_digest": "e04277cc6b0c0e725bb80c3d4d8be80bf6df43ded907fb1b987fb0c367438c7e",
   "files": [
     "apps/backend/src/v3_backend/contracts/__init__.py",
     "apps/backend/src/v3_backend/contracts/artifact.py",
@@ -28,6 +28,7 @@
     "apps/backend/src/v3_backend/contracts/model.py",
     "apps/backend/src/v3_backend/contracts/optimization.py",
     "apps/backend/src/v3_backend/contracts/portfolio.py",
+    "apps/backend/src/v3_backend/contracts/product_entry.py",
     "apps/backend/src/v3_backend/contracts/project_session.py",
     "apps/backend/src/v3_backend/contracts/registry.py",
     "apps/backend/src/v3_backend/contracts/research.py",
@@ -65,5 +66,6 @@
     "apps/backend/tests/ws_a_contracts/fixtures/asl/task.contract.json",
     "apps/backend/tests/ws_a_contracts/fixtures/asl/universe.contract.json",
     "apps/backend/tests/ws_a_contracts/fixtures/conformance_manifest.json"
-  ]
+  ],
+  "expansion_note": "2026-08-17 task-authorized bounded Product Entry expansion (V3-PRODUCT-ENTRY-V1-CLEAN-START-20260816-01): +ProductEntryService (2 project-scoped operations); original 17/64 frozen v1 set preserved exactly."
 }

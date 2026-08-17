@@ -94,6 +94,7 @@ class NormalBootstrapTests(unittest.TestCase):
                     "ProjectSessionService",
                     "ArtifactService",
                     "BacktestService",
+                    "ProductEntryService",
                 },
             )
 
@@ -131,9 +132,10 @@ class RegistryRouterTests(_PortsCase):
 
 
 class CapabilityMatrixTests(_PortsCase):
-    def test_17_service_capabilities_are_honest(self) -> None:
+    def test_service_capabilities_are_honest(self) -> None:
         capabilities = {item.code: item for item in self.ports.capabilities}
-        self.assertEqual(len(capabilities), 17)
+        # Product Entry expansion (task-authorized): 17 -> 18 services.
+        self.assertEqual(len(capabilities), 18)
         self.assertEqual(set(capabilities), set(SERVICE_CONTRACTS))
         bound_services = {
             operation.split(".v1.")[0]
