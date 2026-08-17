@@ -30,14 +30,35 @@ class ContractSeedConformanceTests(unittest.TestCase):
             data = (FIXTURES / entry["path"]).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), entry["sha256"], entry["path"])
 
-    def test_seventeen_services_and_sixty_four_operations_match_authority(self) -> None:
-        self.assertEqual(len(SERVICE_CONTRACTS), 17)
-        self.assertEqual(OPERATION_COUNT, 64)
+    def test_registry_counts_and_frozen_seventeen_service_subset(self) -> None:
+        # Product Entry expansion (task-authorized, non-P0): 17->18 services,
+        # 64->66 operations.  The original frozen v1 registry must remain an
+        # EXACT subset: every pre-expansion service keeps its contract identity
+        # and ordered operation set, and no new operation ID may collide.
+        legacy_services = [
+            item for item in self.index["services"] if item["service"] != "ProductEntryService"
+        ]
+        self.assertEqual(len(legacy_services), 17)
+        self.assertEqual(len(SERVICE_CONTRACTS), 18)
+        self.assertEqual(OPERATION_COUNT, 66)
         self.assertEqual(len(OPERATIONS), len(set(OPERATIONS)))
-        for item in self.index["services"]:
+        for item in legacy_services:
             contract = SERVICE_CONTRACTS[item["service"]]
             self.assertEqual(contract.contract_id, item["contract_id"])
             self.assertEqual(tuple(op.operation_id for op in contract.operations), tuple(item["method_operation_ids"]))
+        product_entry = SERVICE_CONTRACTS["ProductEntryService"]
+        self.assertEqual(len(product_entry.operations), 2)
+        legacy_operation_ids = {
+            operation_id
+            for item in legacy_services
+            for operation_id in item["method_operation_ids"]
+        }
+        self.assertEqual(len(legacy_operation_ids), 64)
+        self.assertEqual(
+            set(op.operation_id for op in product_entry.operations) & legacy_operation_ids,
+            set(),
+            "Product Entry operation IDs must not collide with frozen IDs",
+        )
 
     def test_explicit_dto_classes_and_schemas_match_every_contract(self) -> None:
         for index_item in self.index["services"]:

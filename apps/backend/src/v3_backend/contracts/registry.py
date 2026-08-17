@@ -15,6 +15,7 @@ from . import backtest
 from . import result
 from . import task
 from . import artifact
+from . import product_entry
 
 from types import MappingProxyType
 
@@ -36,6 +37,7 @@ _CONTRACTS = (
     result.CONTRACT,
     task.CONTRACT,
     artifact.CONTRACT,
+    product_entry.CONTRACT,
 )
 SERVICE_CONTRACTS = MappingProxyType({item.service: item for item in _CONTRACTS})
 OPERATIONS = MappingProxyType({
@@ -45,7 +47,10 @@ OPERATIONS = MappingProxyType({
 })
 SERVICE_COUNT = len(SERVICE_CONTRACTS)
 OPERATION_COUNT = len(OPERATIONS)
-if SERVICE_COUNT != 17 or OPERATION_COUNT != 64:
+# Bounded non-P0 Product Entry expansion (task-authorized): the original
+# frozen v1 registry (17 services / 64 operations) must remain an exact
+# subset; only the ProductEntryService addition may change the totals.
+if SERVICE_COUNT != 18 or OPERATION_COUNT != 66:
     raise RuntimeError(f'frozen registry mismatch: services={SERVICE_COUNT}, operations={OPERATION_COUNT}')
 
 def get_operation(operation_id: str):
