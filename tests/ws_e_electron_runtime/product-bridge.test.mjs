@@ -27,7 +27,7 @@ function projectContextReadModel(projectId, pcrId) {
   };
 }
 
-function stubSupervisor({ failOpen = false } = {}) {
+function stubSupervisor({ failOpen = false, runSpecRows = null } = {}) {
   const calls = [];
   return {
     calls,
@@ -46,6 +46,17 @@ function stubSupervisor({ failOpen = false } = {}) {
     async start() { this.starts += 1; this.state = "READY"; },
     async request(operationId, payload) {
       calls.push({ operationId, payload });
+      if (operationId === "ProductEntryService.v1.listBacktestRunSpecs" && runSpecRows !== null) {
+        const after = payload.page.after_artifact_id;
+        const start = after === undefined ? 0 : runSpecRows.findIndex((row) => row.artifact_id === after) + 1;
+        const specs = runSpecRows.slice(start, start + 50);
+        const hasMore = start + specs.length < runSpecRows.length;
+        return { read_model: {
+          specs,
+          has_more: hasMore,
+          next_after_artifact_id: hasMore ? specs.at(-1).artifact_id : null
+        } };
+      }
       if (operationId === "ProjectSessionService.v1.openProject") {
         if (failOpen) throw new BackendRuntimeError("canonical project not found", "NOT_FOUND");
         return { read_model: projectContextReadModel(this.context.projectId, this.context.projectContextRevisionId) };
@@ -148,10 +159,41 @@ test("submitExistingBacktestRunSpec admits canonical specs only, collapses dupli
   }
 });
 
+test("run-spec discovery reads page two without missing or duplicate artifacts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-run-spec-pages-"));
+  try {
+    const runSpecRows = Array.from({ length: 51 }, (_, index) => ({
+      run_spec_id: `btrs_sha256_${(index + 1).toString(16).padStart(64, "0")}`,
+      artifact_id: `art_sha256_${(index + 1).toString(16).padStart(64, "0")}`,
+      content_sha256: (index + 1).toString(16).padStart(64, "0"),
+      project_context_revision_id: REFS.projectContextRevisionId,
+      engine_version: "v3.a_share_daily_eod_engine/0.2.0",
+      created_at: "2026-08-18T00:00:00Z",
+      execution_adapter_version_id: "v3.a_share_daily_eod_engine/0.2.0",
+      status: "EXECUTABLE"
+    }));
+    const supervisor = stubSupervisor({ runSpecRows });
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
+
+    const listing = await bridge.listBacktestRunSpecs();
+    assert.deepEqual(listing.specs.map((spec) => spec.artifactId), runSpecRows.map((row) => row.artifact_id));
+    assert.equal(new Set(listing.specs.map((spec) => spec.artifactId)).size, 51);
+    assert.equal(listing.hasMore, false);
+    assert.equal(listing.nextAfterArtifactId, null);
+    const requests = supervisor.calls.filter((call) => call.operationId === "ProductEntryService.v1.listBacktestRunSpecs");
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].payload.page.after_artifact_id, undefined);
+    assert.equal(requests[1].payload.page.after_artifact_id, runSpecRows[49].artifact_id);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
 test("product IPC channel set is closed and typed", () => {
   const channels = Object.values(PRODUCT_RUNTIME_CHANNELS);
-  assert.equal(channels.length, 13);
-  assert.ok(new Set(channels).size === 13);
+  assert.equal(channels.length, 17);
+  assert.ok(new Set(channels).size === 17);
   for (const channel of channels) assert.ok(channel.startsWith("productRuntime:"));
 });
 

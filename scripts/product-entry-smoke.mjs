@@ -2,43 +2,53 @@
 // production backend process + the production typed Desktop bridge.
 //
 // Flow (task section 12):
-//   empty storage -> create Project (backend-minted ids) -> verified
-//   research-package import -> durable discovery -> submit -> Task/Result/
+//   target-owned source authority -> create Project (backend-minted ids) ->
+//   target-authorized research-package import -> durable discovery -> submit -> Task/Result/
 //   Artifact -> graceful shutdown -> restart same storage -> all canonical
 //   state recovered.  The package is prepared ONLY as test setup through
-//   accepted canonical owners; the LIVE import consumes it through exactly
-//   the same verification path as a real user package.  No fixture backend,
-//   no hidden seed, no caller numeric truth.
+//   accepted canonical owners in the exact target storage. The LIVE import
+//   independently resolves those target rows/bytes before registration. No
+//   fixture backend, package-bootstrapped authority, or caller numeric truth.
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const backendPython = process.env.V3_TEST_PYTHON ?? process.env.V3_PYTHON ?? "python3";
+const storageRoot = await mkdtemp(join(tmpdir(), "v3-product-entry-storage-"));
+const userDataDir = await mkdtemp(join(tmpdir(), "v3-product-entry-userdata-"));
+process.env.V3_PRODUCT_STORAGE_ROOT = storageRoot;
 
 // ---- test-setup boundary: prepare a canonical research package ------------
-const packageBuild = spawnSync(backendPython, [resolve(root, "scripts/product_entry_smoke_python.py")], {
+const packageBuild = spawnSync(backendPython, [resolve(root, "scripts/product_entry_smoke_python.py"), storageRoot], {
   cwd: root,
   encoding: "utf8",
-  env: { ...process.env, PYTHONPATH: `${root}${resolve(root, "apps/backend/src")}` }
+  env: {
+    ...process.env,
+    PYTHONPATH: [root, resolve(root, "apps/backend/src"), process.env.PYTHONPATH]
+      .filter(Boolean)
+      .join(delimiter)
+  }
 });
 if (packageBuild.status !== 0) {
   console.error(`product-entry smoke package build failed:\n${packageBuild.stderr}`);
   process.exit(1);
 }
-const { package_dir: packageDir, run_spec_id: runSpecId } = JSON.parse(packageBuild.stdout.trim());
+const {
+  package_dir: packageDir,
+  run_spec_id: runSpecId,
+  source_project_id: sourceProjectId,
+  source_project_context_revision_id: sourcePcr,
+  source_run_spec_count: sourceRunSpecCount
+} = JSON.parse(packageBuild.stdout.trim());
 
 const { BackendSupervisor } = await import("../dist/apps/desktop/src/main/backendRuntime/supervisor.js");
 const { ProductBridge } = await import("../dist/apps/desktop/src/main/productRuntime/productBridge.js");
 const { WorkspaceStore } = await import("../dist/apps/desktop/src/main/runtimePersistence/workspaceStore.js");
 const { ProductBindingStore } = await import("../dist/apps/desktop/src/main/productRuntime/bindingStore.js");
-
-const storageRoot = await mkdtemp(join(tmpdir(), "v3-product-entry-storage-"));
-const userDataDir = await mkdtemp(join(tmpdir(), "v3-product-entry-userdata-"));
-process.env.V3_PRODUCT_STORAGE_ROOT = storageRoot;
 
 const supervisorConfig = {
   pythonExecutable: backendPython,
@@ -59,7 +69,7 @@ async function shutdownSupervisor(supervisor) {
 }
 
 try {
-  // ---- phase 1: clean storage -> create Project -> import -> run ----------
+  // ---- phase 1: target authority -> create Project -> import -> run -------
   const supervisor = new BackendSupervisor(supervisorConfig);
   activeSupervisor = supervisor;
   shutdownDone = false;
@@ -68,20 +78,28 @@ try {
   const bridge = new ProductBridge(supervisor, store, bindings, async () => packageDir);
 
   await supervisor.start();
-  console.log("[1] backend ready (clean storage)");
+  console.log("[1] backend ready (target canonical source authority present)");
 
   const before = await bridge.listProjects();
-  assert.equal(before.projects.length, 0, "clean storage must not invent projects");
+  assert.equal(before.projects.length, 1, "only the explicit target source-authority project may pre-exist");
+  assert.equal(before.projects[0].projectId, sourceProjectId, "pre-existing project must be the declared target authority");
+
+  await bridge.connectExistingProject({ projectId: sourceProjectId, projectContextRevisionId: sourcePcr });
+  const sourceListing = await bridge.listBacktestRunSpecs();
+  assert.equal(sourceListing.specs.length, sourceRunSpecCount, "Desktop must fetch page 2 and list all 51 target-owned specs");
+  assert.equal(new Set(sourceListing.specs.map((item) => item.artifactId)).size, sourceRunSpecCount, "Desktop pagination must not duplicate specs");
+  assert.equal(sourceListing.hasMore, false, "bounded Desktop auto-pagination must exhaust 51 specs");
+  console.log("[2] artifact-cursor pagination -> 51 specs across page 1 + page 2");
 
   const created = await bridge.createProject({ displayName: "冒烟研究项目", notes: "clean-start smoke" });
   assert.match(created.projectId, /^prj_[0-9A-HJKMNP-TV-Z]{26}$/, "backend must mint prj_ id");
   assert.match(created.projectContextRevisionId, /^pcr_[0-9A-HJKMNP-TV-Z]{26}$/, "backend must mint pcr_ id");
-  console.log(`[2] createProject -> ${created.projectId}`);
+  console.log(`[3] createProject -> ${created.projectId}`);
 
   await bridge.connectExistingProject({ projectId: created.projectId, projectContextRevisionId: created.projectContextRevisionId });
   const context = await bridge.getProjectContext();
   assert.equal(context.projectId, created.projectId, "bound project must match created project");
-  console.log("[3] project bound + persisted");
+  console.log("[4] project bound + persisted");
 
   const emptySpecs = await bridge.listBacktestRunSpecs();
   assert.equal(emptySpecs.specs.length, 0, "no hidden/fixture run specs on empty project");
@@ -91,7 +109,7 @@ try {
   assert.equal(imported.runSpecId, runSpecId, "imported run spec identity must equal the packaged identity");
   const replay = await bridge.importResearchPackage();
   assert.equal(replay?.alreadyImported, true, "same package re-import must be idempotent");
-  console.log(`[4] verified package import -> ${imported.runSpecId.slice(0, 24)}…`);
+  console.log(`[5] target-authorized package import -> ${imported.runSpecId.slice(0, 24)}…`);
 
   const listing = await bridge.listBacktestRunSpecs();
   assert.equal(listing.specs.length, 1, "discovery must find the imported spec");
@@ -111,7 +129,7 @@ try {
     task = await bridge.getTask(outcome.taskId);
   }
   assert.equal(task.state, "SUCCEEDED", "canonical backtest task must succeed");
-  console.log(`[5] submit -> Task ${outcome.taskId.slice(0, 16)} SUCCEEDED`);
+  console.log(`[6] submit -> Task ${outcome.taskId.slice(0, 16)} SUCCEEDED`);
 
   const events = await bridge.getTaskEvents(0, 500);
   const successEvent = [...events.items].reverse().find((item) => item.eventType === "TASK_SUCCEEDED" && item.resultId !== null);
@@ -121,11 +139,11 @@ try {
   const artifactId = result.resultArtifact.artifactId;
   const descriptor = await bridge.getArtifactDescriptor(artifactId);
   assert.match(descriptor.artifactId, /^art_sha256_/, "result artifact must be content-addressed");
-  console.log(`[6] Result ${result.resultId.slice(0, 16)} + Artifact ${artifactId.slice(0, 20)}…`);
+  console.log(`[7] Result ${result.resultId.slice(0, 16)} + Artifact ${artifactId.slice(0, 20)}…`);
 
   // ---- graceful shutdown ----------------------------------------------------
   await shutdownSupervisor(supervisor);
-  console.log("[7] graceful shutdown");
+  console.log("[8] graceful shutdown");
 
   // ---- phase 2: restart same storage; all canonical state recovered --------
   const supervisor2 = new BackendSupervisor(supervisorConfig);
@@ -141,7 +159,7 @@ try {
     projectId: persisted.projectId,
     projectContextRevisionId: persisted.projectContextRevisionId
   });
-  console.log("[8] restart: binding restored");
+  console.log("[9] restart: binding restored");
 
   const projectsAfter = await bridge2.listProjects();
   assert.ok(projectsAfter.projects.some((item) => item.projectId === created.projectId), "listProjects stable after restart");
@@ -152,9 +170,9 @@ try {
   const resultAfter = await bridge2.getResult(successEvent.resultId);
   assert.equal(resultAfter.resultArtifact?.artifactId, artifactId, "result artifact stable after restart");
   await supervisor2.shutdown(20_000);
-  console.log("[9] restart: Task/Result/Artifact recovered");
+  console.log("[10] restart: Task/Result/Artifact recovered");
 
-  console.log("\nsmoke:product-entry PASS — clean storage -> Project -> RunSpec -> Backtest -> Task/Result/Artifact -> shutdown -> restart recovery (no fixture, no hidden seed)");
+  console.log("\nsmoke:product-entry PASS — target owner match -> Project -> RunSpec -> Backtest -> Task/Result/Artifact -> shutdown -> restart recovery");
 } catch (error) {
   await activeSupervisor?.shutdown(5_000).catch(() => {});
   console.error("\nsmoke:product-entry FAIL:", error);

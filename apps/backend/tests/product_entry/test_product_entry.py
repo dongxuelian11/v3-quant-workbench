@@ -15,10 +15,13 @@ path as a real user package.
 from __future__ import annotations
 
 import copy
+import base64
+import hashlib
 import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -28,24 +31,37 @@ for entry in (str(SRC), str(ROOT)):
         sys.path.insert(0, entry)
 
 from v3_backend.adapters.sqlite.connection import connect_catalog
+from v3_backend.domain.backtest_runtime.model import BacktestRunSpec
 from v3_backend.errors.exceptions import (
     IdempotencyConflictError,
     InvalidArgumentError,
     NotFoundError,
+    TruthPreconditionFailedError,
 )
+from v3_backend.provenance.canonical_hash import canonical_json_bytes, canonical_sha256
 from v3_backend.runtime.product_entry import (
     PACKAGE_SCHEMA_VERSION,
     PRODUCT_ENTRY_PROTOCOL_VERSION,
+    _decode_files,
+    _find_artifact_entry,
+    _parse_canonical_json,
+    _require_descriptor_matches,
+    _verify_closed_file_set,
+    _verify_context_wire,
+    _verify_owner_rows,
+    _verify_spec_wire,
     build_research_package,
     create_project,
     handle_product_entry_control,
     import_research_package,
     list_backtest_run_specs,
     list_projects,
+    parse_package_manifest,
 )
 from v3_backend.runtime.product_runtime import (
     ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
     ProductRuntime,
+    mint_v3_id,
 )
 
 from apps.backend.tests.product_runtime.helpers import build_product_golden_project
@@ -59,14 +75,252 @@ def _build_source_package(source_root: Path) -> tuple[dict, list[dict], str]:
     return manifest, files, setup.run_spec_id
 
 
+def _decode_file(files: list[dict], name: str) -> dict:
+    item = next(entry for entry in files if entry["name"] == name)
+    return json.loads(base64.b64decode(item["payload_base64"]).decode("utf-8"))
+
+
+def _replace_file(manifest: dict, files: list[dict], name: str, wire: dict) -> tuple[str, str]:
+    payload = canonical_json_bytes(wire)
+    digest = hashlib.sha256(payload).hexdigest()
+    artifact_id = "art_sha256_" + digest
+    item = next(entry for entry in files if entry["name"] == name)
+    item.update(
+        sha256=digest,
+        byte_size=len(payload),
+        payload_base64=base64.b64encode(payload).decode("ascii"),
+    )
+    artifact = next(entry for entry in manifest["artifacts"] if entry["name"] == name)
+    artifact["row"].update(
+        artifact_id=artifact_id,
+        sha256=digest,
+        byte_size=len(payload),
+        storage_key=f"sha256/{digest[:2]}/{digest[2:4]}/{digest}",
+    )
+    for descriptor_name in ("run_spec_artifact", "execution_context_artifact"):
+        descriptor = manifest[descriptor_name]
+        if descriptor["name"] == name:
+            descriptor.update(
+                artifact_id=artifact_id,
+                sha256=digest,
+                byte_size=len(payload),
+            )
+    return artifact_id, digest
+
+
+def _recompute_run_spec(manifest: dict, files: list[dict], spec: dict) -> None:
+    payload = {
+        key: value
+        for key, value in spec.items()
+        if key not in {"artifact_type", "run_spec_id", "content_sha256"}
+    }
+    content_sha = canonical_sha256(payload)
+    run_spec_id = "btrs_sha256_" + content_sha
+    spec["content_sha256"] = content_sha
+    spec["run_spec_id"] = run_spec_id
+    manifest["run_spec_id"] = run_spec_id
+    _replace_file(manifest, files, "spec.json", spec)
+    context = _decode_file(files, "context.json")
+    context["run_spec_id"] = run_spec_id
+    context["run_spec_content_sha256"] = content_sha
+    _replace_file(manifest, files, "context.json", context)
+
+
+def _assert_package_internal_integrity(manifest_wire: dict, files_wire: list[dict]) -> None:
+    manifest = parse_package_manifest(manifest_wire)
+    files = _decode_files(files_wire)
+    _verify_closed_file_set(manifest, files)
+    spec_file = files[manifest["run_spec_artifact"]["name"]]
+    context_file = files[manifest["execution_context_artifact"]["name"]]
+    _require_descriptor_matches(manifest["run_spec_artifact"], spec_file, "run_spec_artifact")
+    _require_descriptor_matches(
+        manifest["execution_context_artifact"], context_file, "execution_context_artifact"
+    )
+    spec = _parse_canonical_json(spec_file.payload, "run spec")
+    context = _parse_canonical_json(context_file.payload, "execution context")
+    _verify_spec_wire(spec, manifest)
+    _verify_context_wire(context, manifest, spec)
+    for table, row in manifest["owner_publications"].items():
+        descriptor = _find_artifact_entry(manifest, str(row["artifact_id"]), table)
+        _require_descriptor_matches(descriptor, files[descriptor["name"]], table)
+    _verify_owner_rows(manifest, files)
+
+
+def _fully_consistent_market_forgery(manifest: dict, files: list[dict]) -> tuple[dict, list[dict]]:
+    forged_manifest = copy.deepcopy(manifest)
+    forged_files = copy.deepcopy(files)
+    spec = _decode_file(forged_files, "spec.json")
+    spec["sessions"][0]["states"][0]["raw_open"] = "99.25"
+    market_digest = canonical_sha256(spec["sessions"])
+    for reference in spec["exact_references"]:
+        if reference["reference_kind"] in {"MARKET_DATA", "SNAPSHOT"}:
+            prefix = "research_market_sha256_" if reference["reference_kind"] == "MARKET_DATA" else "research_snapshot_sha256_"
+            reference["content_sha256"] = market_digest
+            reference["source_id"] = prefix + market_digest
+    _recompute_run_spec(forged_manifest, forged_files, spec)
+    _assert_package_internal_integrity(forged_manifest, forged_files)
+    return forged_manifest, forged_files
+
+
+def _rebind_owner_artifact(
+    manifest: dict,
+    *,
+    table: str,
+    identity_column: str,
+    identity: str,
+    content_sha: str,
+    file_name: str,
+    artifact_id: str,
+    artifact_sha: str,
+    byte_size: int,
+) -> None:
+    row = manifest["owner_publications"][table]
+    old_reference_id = row["artifact_reference_id"]
+    new_reference_id = mint_v3_id("arf_")
+    row.update(
+        {
+            identity_column: identity,
+            "content_sha256": content_sha,
+            "artifact_id": artifact_id,
+            "artifact_reference_id": new_reference_id,
+            "artifact_sha256": artifact_sha,
+            "byte_size": byte_size,
+        }
+    )
+    reference = next(
+        item for item in manifest["artifact_references"]
+        if item["artifact_reference_id"] == old_reference_id
+    )
+    reference.update(
+        artifact_reference_id=new_reference_id,
+        owner_id=identity,
+        artifact_id=artifact_id,
+    )
+    assert next(entry for entry in manifest["artifacts"] if entry["name"] == file_name)
+
+
+def _fully_consistent_weight_forgery(manifest: dict, files: list[dict]) -> tuple[dict, list[dict]]:
+    forged_manifest = copy.deepcopy(manifest)
+    forged_files = copy.deepcopy(files)
+
+    target = _decode_file(forged_files, "target.json")
+    target["rows"][0]["target_weight"] = "0.44"
+    target["rows"][1]["target_weight"] = "0.44"
+    target["cash_weight"] = "0.12"
+    target_payload = {
+        key: value for key, value in target.items()
+        if key not in {"artifact_type", "target_weight_vector_id", "content_sha256"}
+    }
+    target_sha = canonical_sha256(target_payload)
+    target_id = "twv_sha256_" + target_sha
+    target.update(target_weight_vector_id=target_id, content_sha256=target_sha)
+    target_artifact_id, target_artifact_sha = _replace_file(
+        forged_manifest, forged_files, "target.json", target
+    )
+    _rebind_owner_artifact(
+        forged_manifest,
+        table="target_weight_vector_publication",
+        identity_column="target_weight_vector_id",
+        identity=target_id,
+        content_sha=target_sha,
+        file_name="target.json",
+        artifact_id=target_artifact_id,
+        artifact_sha=target_artifact_sha,
+        byte_size=len(canonical_json_bytes(target)),
+    )
+
+    receipt = _decode_file(forged_files, "receipt.json")
+    receipt.update(
+        source_target_weight_vector_id=target_id,
+        source_target_content_sha256=target_sha,
+    )
+    receipt_payload = {
+        key: value for key, value in receipt.items()
+        if key not in {"artifact_type", "risk_application_receipt_id", "content_sha256"}
+    }
+    receipt_sha = canonical_sha256(receipt_payload)
+    receipt_id = "rar_sha256_" + receipt_sha
+    receipt.update(risk_application_receipt_id=receipt_id, content_sha256=receipt_sha)
+    receipt_artifact_id, receipt_artifact_sha = _replace_file(
+        forged_manifest, forged_files, "receipt.json", receipt
+    )
+    _rebind_owner_artifact(
+        forged_manifest,
+        table="risk_application_receipt_publication",
+        identity_column="risk_application_receipt_id",
+        identity=receipt_id,
+        content_sha=receipt_sha,
+        file_name="receipt.json",
+        artifact_id=receipt_artifact_id,
+        artifact_sha=receipt_artifact_sha,
+        byte_size=len(canonical_json_bytes(receipt)),
+    )
+    receipt_row = forged_manifest["owner_publications"]["risk_application_receipt_publication"]
+    receipt_row.update(
+        source_target_weight_vector_id=target_id,
+        source_target_content_sha256=target_sha,
+    )
+
+    adjusted = _decode_file(forged_files, "adjusted.json")
+    adjusted.update(
+        source_target_weight_vector_id=target_id,
+        source_target_content_sha256=target_sha,
+        risk_application_receipt_id=receipt_id,
+        risk_application_content_sha256=receipt_sha,
+        rows=copy.deepcopy(target["rows"]),
+        cash_weight=target["cash_weight"],
+    )
+    adjusted_payload = {
+        key: value for key, value in adjusted.items()
+        if key not in {"artifact_type", "risk_adjusted_weight_vector_id", "content_sha256"}
+    }
+    adjusted_sha = canonical_sha256(adjusted_payload)
+    adjusted_id = "rawv_sha256_" + adjusted_sha
+    adjusted.update(risk_adjusted_weight_vector_id=adjusted_id, content_sha256=adjusted_sha)
+    adjusted_artifact_id, adjusted_artifact_sha = _replace_file(
+        forged_manifest, forged_files, "adjusted.json", adjusted
+    )
+    _rebind_owner_artifact(
+        forged_manifest,
+        table="risk_adjusted_weight_vector_publication",
+        identity_column="risk_adjusted_weight_vector_id",
+        identity=adjusted_id,
+        content_sha=adjusted_sha,
+        file_name="adjusted.json",
+        artifact_id=adjusted_artifact_id,
+        artifact_sha=adjusted_artifact_sha,
+        byte_size=len(canonical_json_bytes(adjusted)),
+    )
+    adjusted_row = forged_manifest["owner_publications"]["risk_adjusted_weight_vector_publication"]
+    adjusted_row.update(
+        source_target_weight_vector_id=target_id,
+        source_target_content_sha256=target_sha,
+        risk_application_receipt_id=receipt_id,
+        risk_application_content_sha256=receipt_sha,
+    )
+
+    spec = _decode_file(forged_files, "spec.json")
+    spec["schedule"][0].update(
+        risk_adjusted_weight_vector_id=adjusted_id,
+        content_sha256=adjusted_sha,
+    )
+    _recompute_run_spec(forged_manifest, forged_files, spec)
+    _assert_package_internal_integrity(forged_manifest, forged_files)
+    return forged_manifest, forged_files
+
+
 class _CleanStorageCase(unittest.TestCase):
     def setUp(self) -> None:
-        self._source_tmp = tempfile.TemporaryDirectory()
         self._target_tmp = tempfile.TemporaryDirectory()
-        self.source_root = Path(self._source_tmp.name)
         self.target_root = Path(self._target_tmp.name)
-        self.manifest, self.files, self.run_spec_id = _build_source_package(self.source_root)
-        self.product = ProductRuntime(self.target_root)
+        source = build_product_golden_project(self.target_root)
+        self.product = source.product
+        self.manifest, self.files = build_research_package(
+            self.product,
+            source_project_id=source.project_id,
+            run_spec_id=source.run_spec_id,
+        )
+        self.run_spec_id = source.run_spec_id
         created = create_project(
             self.product, display_name="导入研究", idempotency_key="case-setup"
         )
@@ -74,7 +328,6 @@ class _CleanStorageCase(unittest.TestCase):
         self.pcr = created["project_context_revision_id"]
 
     def tearDown(self) -> None:
-        self._source_tmp.cleanup()
         self._target_tmp.cleanup()
 
     def _import(self, manifest=None, files=None, key="import-key"):
@@ -176,13 +429,24 @@ class CleanStartFlowTests(_CleanStorageCase):
         task_after = restarted.task_persistence.read_task(execution.task_id)
         self.assertEqual(task_after.state.value, "SUCCEEDED")
 
-    def test_reimport_same_package_is_idempotent(self) -> None:
-        first = self._import(key="same")
-        second = self._import(key="same")
+    def test_response_lost_reimport_with_new_transport_key_is_idempotent(self) -> None:
+        first = self._import(key="transport-response-lost-1")
+        second = self._import(key="transport-response-lost-2")
         self.assertTrue(second["already_imported"])
         self.assertEqual(second["run_spec_id"], first["run_spec_id"])
         self.assertEqual(second["context_artifact_id"], first["context_artifact_id"])
         self.assertEqual(len(self._active_spec_refs()), 1)
+        connection = connect_catalog(self.product.database_path, read_only=True)
+        try:
+            for table in (
+                "target_weight_vector_publication",
+                "risk_policy_set_publication",
+                "risk_application_receipt_publication",
+                "risk_adjusted_weight_vector_publication",
+            ):
+                self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 1)
+        finally:
+            connection.close()
 
     def test_import_under_second_project_keeps_stable_identity(self) -> None:
         self._import(key="p1")
@@ -272,6 +536,73 @@ class ProjectBootstrapTests(_CleanStorageCase):
 
 
 class ImportNegativeTests(_CleanStorageCase):
+    def test_target_owner_absent_rejects_before_any_authority_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as external_source, tempfile.TemporaryDirectory() as empty_target:
+            manifest, files, _ = _build_source_package(Path(external_source))
+            target = ProductRuntime(Path(empty_target))
+            created = create_project(target, display_name="无来源权威", idempotency_key="target")
+            with self.assertRaisesRegex(
+                TruthPreconditionFailedError, "SOURCE_AUTHORITY_NOT_VERIFIED"
+            ):
+                import_research_package(
+                    target,
+                    project_id=created["project_id"],
+                    project_context_revision_id=created["project_context_revision_id"],
+                    manifest_wire=manifest,
+                    files_wire=files,
+                    idempotency_key="absent-anchor",
+                )
+            connection = connect_catalog(target.database_path, read_only=True)
+            try:
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT 1 FROM project WHERE project_id=?",
+                        (manifest["source_project"]["project_id"],),
+                    ).fetchone()
+                )
+                for table, id_column in (
+                    ("target_weight_vector_publication", "target_weight_vector_id"),
+                    ("risk_policy_set_publication", "risk_policy_set_version_id"),
+                    ("risk_application_receipt_publication", "risk_application_receipt_id"),
+                    ("risk_adjusted_weight_vector_publication", "risk_adjusted_weight_vector_id"),
+                ):
+                    identity = manifest["owner_publications"][table][id_column]
+                    self.assertIsNone(
+                        connection.execute(
+                            f"SELECT 1 FROM {table} WHERE {id_column}=?", (identity,)
+                        ).fetchone()
+                    )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM artifact_reference WHERE owner_id=? AND role='RESEARCH_RUN_SPEC' AND state='ACTIVE'",
+                        (created["project_id"],),
+                    ).fetchone()[0],
+                    0,
+                )
+            finally:
+                connection.close()
+
+    def test_exact_target_owner_and_actual_bytes_match_accepts(self) -> None:
+        outcome = self._import(key="target-owner-match")
+        self.assertEqual(outcome["run_spec_id"], self.run_spec_id)
+        self.assertFalse(outcome["already_imported"])
+
+    def test_fully_self_consistent_forged_market_payload_is_rejected(self) -> None:
+        manifest, files = _fully_consistent_market_forgery(self.manifest, self.files)
+        with self.assertRaisesRegex(
+            TruthPreconditionFailedError, "SOURCE_AUTHORITY_NOT_VERIFIED"
+        ):
+            self._import(manifest=manifest, files=files, key="forged-market")
+        self.assertEqual(self._active_spec_refs(), [])
+
+    def test_fully_self_consistent_forged_weight_chain_is_rejected(self) -> None:
+        manifest, files = _fully_consistent_weight_forgery(self.manifest, self.files)
+        with self.assertRaisesRegex(
+            TruthPreconditionFailedError, "SOURCE_AUTHORITY_NOT_VERIFIED"
+        ):
+            self._import(manifest=manifest, files=files, key="forged-weights")
+        self.assertEqual(self._active_spec_refs(), [])
+
     def test_tampered_payload_byte_fails_and_registers_nothing(self) -> None:
         files = copy.deepcopy(self.files)
         spec_file = next(item for item in files if item["name"] == "spec.json")
@@ -360,7 +691,19 @@ class ImportNegativeTests(_CleanStorageCase):
     def test_same_key_different_package_conflicts(self) -> None:
         self._import(key="dup")
         manifest = copy.deepcopy(self.manifest)
-        manifest["source_project"]["display_name"] = "被替换的名称"
+        manifest["source_project"]["display_name"] = "合法更新后的来源项目"
+        connection = connect_catalog(self.product.database_path)
+        try:
+            connection.execute(
+                "UPDATE project SET display_name=? WHERE project_id=?",
+                (
+                    manifest["source_project"]["display_name"],
+                    manifest["source_project"]["project_id"],
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
         with self.assertRaises(IdempotencyConflictError):
             self._import(manifest=manifest, key="dup")
 
@@ -421,6 +764,146 @@ class DiscoveryNegativeTests(_CleanStorageCase):
                 execution_adapter_version_id=ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
                 idempotency_key="cross",
             )
+
+
+class RunSpecPaginationTests(unittest.TestCase):
+    @staticmethod
+    def _collect_all(
+        product: ProductRuntime, project_id: str, pcr: str
+    ) -> tuple[list[str], list[str]]:
+        artifact_ids: list[str] = []
+        cursors: list[str] = []
+        cursor = None
+        while True:
+            page = list_backtest_run_specs(
+                product,
+                project_id=project_id,
+                project_context_revision_id=pcr,
+                limit=50,
+                after_artifact_id=cursor,
+            )
+            page_ids = [item["artifact_id"] for item in page["specs"]]
+            artifact_ids.extend(page_ids)
+            if not page["has_more"]:
+                self_next = page["next_after_artifact_id"]
+                if self_next is not None:
+                    raise AssertionError("terminal page must not return a cursor")
+                break
+            next_cursor = page["next_after_artifact_id"]
+            if next_cursor is None or next_cursor == cursor:
+                raise AssertionError("pagination cursor did not advance")
+            if not page_ids or next_cursor != page_ids[-1]:
+                raise AssertionError("cursor must be the last returned artifact identity")
+            cursors.append(next_cursor)
+            cursor = next_cursor
+        return artifact_ids, cursors
+
+    @staticmethod
+    def _release_to_count(
+        product: ProductRuntime, project_id: str, count: int
+    ) -> None:
+        connection = connect_catalog(product.database_path)
+        try:
+            active_specs = connection.execute(
+                "SELECT artifact_reference_id, artifact_id FROM artifact_reference "
+                "WHERE owner_id=? AND role='RESEARCH_RUN_SPEC' AND state='ACTIVE' "
+                "ORDER BY artifact_id",
+                (project_id,),
+            ).fetchall()
+            for spec_ref in active_specs[count:]:
+                spec_wire = json.loads(
+                    product.read_verified_bytes(str(spec_ref["artifact_id"])).decode("utf-8")
+                )
+                run_spec_id = str(spec_wire["run_spec_id"])
+                context_refs = connection.execute(
+                    "SELECT artifact_reference_id, artifact_id FROM artifact_reference "
+                    "WHERE owner_id=? AND role='RESEARCH_RUN_CONTEXT' AND state='ACTIVE'",
+                    (project_id,),
+                ).fetchall()
+                for context_ref in context_refs:
+                    context_wire = json.loads(
+                        product.read_verified_bytes(str(context_ref["artifact_id"])).decode("utf-8")
+                    )
+                    if str(context_wire.get("run_spec_id")) == run_spec_id:
+                        connection.execute(
+                            "UPDATE artifact_reference SET state='RELEASED', released_at=? "
+                            "WHERE artifact_reference_id=? AND state='ACTIVE'",
+                            (
+                                "2026-01-08T00:00:00Z",
+                                str(context_ref["artifact_reference_id"]),
+                            ),
+                        )
+                connection.execute(
+                    "UPDATE artifact_reference SET state='RELEASED', released_at=? "
+                    "WHERE artifact_reference_id=? AND state='ACTIVE'",
+                    (
+                        "2026-01-08T00:00:00Z",
+                        str(spec_ref["artifact_reference_id"]),
+                    ),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_zero_one_fifty_fifty_one_101_and_251_are_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as storage:
+            root = Path(storage)
+            setup = build_product_golden_project(root)
+            product = setup.product
+            pcr = str(product.current_revision(setup.project_id)["project_context_revision_id"])
+            base, _ = product.spec_codec.reconstruct(
+                project_id=setup.project_id, run_spec_id=setup.run_spec_id
+            )
+            published_at = datetime(2026, 1, 5, 15, 31, tzinfo=timezone.utc)
+            for ordinal in range(1, 251):
+                variant = BacktestRunSpec.create(
+                    initial_cash=str(100_000 + ordinal),
+                    initial_holdings=base.initial_holdings,
+                    instruments=base.instruments,
+                    sessions=base.sessions,
+                    schedule=base.schedule,
+                    rule_profile=base.rule_profile,
+                    cost_policy=base.cost_policy,
+                    execution_timing_profile=base.execution_timing_profile,
+                    exact_references=base.exact_references,
+                    runtime_identity=base.runtime_identity,
+                    engine_version=base.engine_version,
+                )
+                product.spec_codec.persist(
+                    spec=variant,
+                    rule_profile=variant.rule_profile,
+                    cost_policy=variant.cost_policy,
+                    timing_profile=variant.execution_timing_profile,
+                    project_id=setup.project_id,
+                    project_context_revision_id=pcr,
+                    published_at=published_at,
+                )
+
+            for expected_count in (251, 101, 51, 50, 1, 0):
+                with self.subTest(run_specs=expected_count):
+                    self._release_to_count(product, setup.project_id, expected_count)
+                    artifact_ids, cursors = self._collect_all(
+                        product, setup.project_id, pcr
+                    )
+                    self.assertEqual(len(artifact_ids), expected_count)
+                    self.assertEqual(len(artifact_ids), len(set(artifact_ids)))
+                    self.assertEqual(artifact_ids, sorted(artifact_ids))
+                    self.assertEqual(len(cursors), max(0, (expected_count - 1) // 50))
+                    restarted = ProductRuntime(root)
+                    restarted_ids, restarted_cursors = self._collect_all(
+                        restarted, setup.project_id, pcr
+                    )
+                    self.assertEqual(restarted_ids, artifact_ids)
+                    self.assertEqual(restarted_cursors, cursors)
+                    product = restarted
+
+            with self.assertRaises(InvalidArgumentError):
+                list_backtest_run_specs(
+                    product,
+                    project_id=setup.project_id,
+                    project_context_revision_id=pcr,
+                    after_artifact_id="btrs_sha256_" + "0" * 64,
+                )
 
 
 class PackageSchemaSanityTests(unittest.TestCase):

@@ -102,9 +102,9 @@
                   "minimum": 1,
                   "maximum": 100
                 },
-                "after_run_spec_id": {
+                "after_artifact_id": {
                   "type": "string",
-                  "pattern": "^btrs_sha256_[0-9a-f]{64}$"
+                  "pattern": "^art_sha256_[0-9a-f]{64}$"
                 }
               }
             }
@@ -142,7 +142,8 @@
               "required": [
                 "read_model_version",
                 "specs",
-                "has_more"
+                "has_more",
+                "next_after_artifact_id"
               ],
               "properties": {
                 "read_model_version": {
@@ -212,6 +213,13 @@
                 },
                 "has_more": {
                   "type": "boolean"
+                },
+                "next_after_artifact_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^art_sha256_[0-9a-f]{64}$"
                 }
               }
             }
@@ -245,7 +253,8 @@
       "truth_pit_preconditions": [
         "ProjectContextRevision exists, belongs to the request project, and is current",
         "Every package payload byte/hash/identity is verified before any registration",
-        "Imported canonical owner rows keep their original immutable identities and project provenance"
+        "Every source/owner row and actual payload byte already exists in target canonical state and matches exactly",
+        "Package-provided source/owner rows are comparison material only and are never inserted as authority"
       ],
       "errors": [
         "INVALID_ARGUMENT",

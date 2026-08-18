@@ -360,6 +360,7 @@ export interface RunSpecEntryView {
 export interface RunSpecsListView {
   readonly specs: readonly RunSpecEntryView[];
   readonly hasMore: boolean;
+  readonly nextAfterArtifactId: string | null;
 }
 
 /** Verified canonical research package import outcome (package mode entry). */

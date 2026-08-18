@@ -6,16 +6,17 @@ This module owns the V1 Product Entry surface:
   runtime control protocol - the backend canonical project owner mints every
   project/context identity in one atomic transaction; callers supply bounded
   display intent only;
-* verified import of ``v3.research-package/1.0.0`` research packages: closed
-  manifest parsing, actual-byte hashing, canonical identity and owner-binding
-  verification, atomic all-or-nothing registration, and post-import
-  reconstruction proof through the existing ``ResearchRunSpecCodec``;
+* target-authorized import of ``v3.research-package/1.0.0`` research packages:
+  closed manifest parsing and actual-byte hashing are followed by an
+  independent match against owner rows and bytes that already exist in the
+  target canonical catalog/Artifact Store; only then may a project reference
+  be registered and reconstructed through ``ResearchRunSpecCodec``;
 * durable run-spec discovery from project-owned canonical artifact references.
 
-Numeric financial truth is never authored here: imported owner rows keep their
-immutable content-addressed identities and original project provenance, and
-the only new artifacts minted by import are product binding records (the new
-project's execution context) over already-verified bytes.
+Numeric financial truth is never authored or transferred here. Package rows
+are comparison material only: they cannot create their own trust anchor. The
+only new artifact minted by import is the target project's execution-context
+binding over bytes independently resolved from target-owned state.
 """
 
 from __future__ import annotations
@@ -30,13 +31,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from v3_backend.adapters.artifact_store.filesystem import FileSystemArtifactStore
 from v3_backend.adapters.sqlite.connection import connect_catalog
-from v3_backend.adapters.sqlite.repositories import SQLiteRepositoryRegistry
 from v3_backend.adapters.sqlite.unit_of_work import SQLiteUnitOfWork
+from v3_backend.domain.artifacts.exceptions import ArtifactError
 from v3_backend.domain.artifacts.identity import artifact_id_for_bytes
 from v3_backend.errors.exceptions import (
-    ConflictError,
     IdempotencyConflictError,
     InvalidArgumentError,
     NotFoundError,
@@ -70,12 +69,12 @@ IMPORT_OPERATION = "ProductEntryService.v1.importResearchPackage"
 MAX_DISPLAY_NAME_LENGTH = 200
 MAX_NOTES_LENGTH = 2048
 MAX_PROJECT_PAGE_SIZE = 100
+MAX_RUN_SPEC_PAGE_SIZE = 100
 MAX_PACKAGE_TOTAL_BYTES = 786_432
 
-# Closed set of durable owner tables carried by a research package.  The rows
-# are transferred verbatim and re-verified against the actual payload bytes
-# before registration; identities are immutable and stay bound to their
-# original source project (numeric truth provenance is never rewritten).
+# Closed set of durable owner tables described by a research package. These
+# rows are never imported as authority. Each must already exist, byte-for-byte,
+# in the target canonical catalog before the package may become executable.
 PACKAGE_OWNER_TABLES = (
     "target_weight_vector_publication",
     "risk_policy_set_publication",
@@ -93,12 +92,6 @@ _OWNER_ID_PREFIX = {
     "risk_policy_set_publication": ("risk_policy_set_version_id", "rpsv_sha256_"),
     "risk_application_receipt_publication": ("risk_application_receipt_id", "rar_sha256_"),
     "risk_adjusted_weight_vector_publication": ("risk_adjusted_weight_vector_id", "rawv_sha256_"),
-}
-_PAYLOAD_ROLES = {
-    "target_weight_vector_publication": "TARGET_WEIGHT_VECTOR",
-    "risk_policy_set_publication": "RISK_POLICY_SET",
-    "risk_application_receipt_publication": "RISK_APPLICATION_RECEIPT",
-    "risk_adjusted_weight_vector_publication": "RISK_ADJUSTED_WEIGHT_VECTOR",
 }
 _PACKAGE_FILE_PATTERN_PREFIXES = ("spec", "context", "target", "policy", "receipt", "adjusted")
 
@@ -480,37 +473,98 @@ def _decode_files(files_wire: Any) -> dict[str, PackageFile]:
     return decoded
 
 
-def _require_table_columns(connection: sqlite3.Connection, table: str, row: Mapping[str, Any]) -> None:
-    columns = {
-        str(item[1])
-        for item in connection.execute(f'PRAGMA table_info("{table}")').fetchall()
-    }
-    if not columns:
-        raise V3ContractError(f"unknown catalog table for import: {table}")
-    if set(row) != columns:
-        raise InvalidArgumentError(
-            f"imported {table} row does not match the catalog schema shape"
+def _require_exact_target_row(
+    connection: sqlite3.Connection,
+    *,
+    table: str,
+    id_column: str,
+    expected: Mapping[str, Any],
+) -> None:
+    """Require an exact row from target-owned durable state.
+
+    The package can name the expected identity and bytes, but it cannot insert
+    or repair the row. Absence and any metadata drift are both source-authority
+    failures, not invitations to copy package claims into canonical tables.
+    """
+    identity = expected.get(id_column)
+    row = connection.execute(
+        f'SELECT * FROM "{table}" WHERE "{id_column}"=?', (identity,)
+    ).fetchone()
+    if row is None:
+        raise TruthPreconditionFailedError(
+            f"SOURCE_AUTHORITY_NOT_VERIFIED: target lacks {table} row {identity}"
+        )
+    actual = {key: row[key] for key in row.keys()}
+    if actual != dict(expected):
+        raise TruthPreconditionFailedError(
+            f"SOURCE_AUTHORITY_NOT_VERIFIED: target {table} row does not exactly match {identity}"
         )
 
 
-def _insert_verbatim_row(
-    connection: sqlite3.Connection, *, table: str, row: Mapping[str, Any], id_column: str
+def _require_target_catalog_match(
+    connection: sqlite3.Connection, manifest: Mapping[str, Any]
 ) -> None:
-    _require_table_columns(connection, table, row)
-    identity = row[id_column]
-    existing = connection.execute(
-        f'SELECT * FROM "{table}" WHERE "{id_column}"=?', (identity,)
-    ).fetchone()
-    if existing is not None:
-        existing_row = {key: existing[key] for key in existing.keys()}
-        if existing_row != dict(row):
-            raise ConflictError(f"imported {table} row conflicts with an existing record: {identity}")
-        return
-    names = ", ".join(f'"{name}"' for name in row)
-    placeholders = ", ".join("?" for _ in row)
-    connection.execute(
-        f'INSERT INTO "{table}"({names}) VALUES({placeholders})', tuple(row.values())
+    _require_exact_target_row(
+        connection,
+        table="project",
+        id_column="project_id",
+        expected=manifest["source_project"],
     )
+    _require_exact_target_row(
+        connection,
+        table="project_context_revision",
+        id_column="project_context_revision_id",
+        expected=manifest["source_project_context_revision"],
+    )
+    for entry in manifest["artifacts"]:
+        _require_exact_target_row(
+            connection,
+            table="artifact",
+            id_column="artifact_id",
+            expected=entry["row"],
+        )
+    for reference in manifest["artifact_references"]:
+        _require_exact_target_row(
+            connection,
+            table="artifact_reference",
+            id_column="artifact_reference_id",
+            expected=reference,
+        )
+    for table in PACKAGE_OWNER_TABLES:
+        _require_exact_target_row(
+            connection,
+            table=table,
+            id_column=_OWNER_ID_COLUMN[table],
+            expected=manifest["owner_publications"][table],
+        )
+
+
+def _require_target_canonical_owner_match(
+    product: ProductRuntime,
+    manifest: Mapping[str, Any],
+    files: Mapping[str, PackageFile],
+) -> None:
+    """Resolve trust exclusively from target catalog rows and target bytes."""
+    connection = connect_catalog(product.database_path, read_only=True)
+    try:
+        _require_target_catalog_match(connection, manifest)
+    finally:
+        connection.close()
+    for entry in manifest["artifacts"]:
+        name = entry["name"]
+        if name is None:
+            continue
+        artifact_id = str(entry["row"]["artifact_id"])
+        try:
+            target_payload = product.read_verified_bytes(artifact_id)
+        except (ArtifactError, OSError) as error:
+            raise TruthPreconditionFailedError(
+                f"SOURCE_AUTHORITY_NOT_VERIFIED: target cannot resolve verified bytes for {artifact_id}"
+            ) from error
+        if target_payload != files[str(name)].payload:
+            raise TruthPreconditionFailedError(
+                f"SOURCE_AUTHORITY_NOT_VERIFIED: package bytes differ from target authority for {artifact_id}"
+            )
 
 
 def import_research_package(
@@ -554,16 +608,18 @@ def import_research_package(
     _verify_spec_wire(spec_wire, manifest)
     _verify_context_wire(context_wire, manifest, spec_wire)
 
-    owner_payloads: dict[str, PackageFile] = {}
     for table in PACKAGE_OWNER_TABLES:
         row = manifest["owner_publications"][table]
         artifact_id = str(row["artifact_id"])
         descriptor = _find_artifact_entry(manifest, artifact_id, table)
         payload_file = files[descriptor["name"]]
         _require_descriptor_matches(descriptor, payload_file, table)
-        owner_payloads[table] = payload_file
 
     _verify_owner_rows(manifest, files)
+
+    # Integrity is not authenticity. Only target rows and target-resolved
+    # bytes that pre-date this import can authorize execution.
+    _require_target_canonical_owner_match(product, manifest, files)
 
     semantic_request = {
         "manifest_sha256": canonical_sha256(_manifest_freeze(manifest_wire)),
@@ -602,21 +658,9 @@ def import_research_package(
     new_context_payload = _build_bound_context_payload(
         context_wire, project_id, project_context_revision_id, imported_at
     )
-    source_project = manifest["source_project"]
-    source_revision = manifest["source_project_context_revision"]
-
-    # Stage all bytes up front: weight payloads through the baseline-policy
-    # store (their owner roles), spec/context through the product store.
-    weight_store = FileSystemArtifactStore(product.artifact_root)
-    weight_plans = tuple(
-        (
-            "prv_imported_owner_payload_" + owner_payloads[table].sha256,
-            owner_payloads[table].payload,
-            _PAYLOAD_ROLES[table],
-            str(manifest["owner_publications"][table]["schema_version"]),
-        )
-        for table in PACKAGE_OWNER_TABLES
-    )
+    # Spec bytes are staged only after exact target byte resolution and are a
+    # content-addressed no-op against the existing target Artifact. The only
+    # new payload is this target project's execution-context binding.
     spec_plan = (
         "prv_imported_run_spec_" + spec_file.sha256,
         spec_file.payload,
@@ -629,11 +673,9 @@ def import_research_package(
         PRODUCT_EXECUTION_CONTEXT_ROLE,
         EXECUTION_CONTEXT_SCHEMA_VERSION,
     )
-    batch = _SplitStoreBatch(
-        product_store=product.artifact_store,
-        weight_store=weight_store,
-        product_payloads=(spec_plan, new_context_plan),
-        weight_payloads=weight_plans,
+    batch = ProductArtifactBatch(
+        store=product.artifact_store,
+        payloads=(spec_plan, new_context_plan),
         published_at=imported_at,
     )
 
@@ -641,41 +683,9 @@ def import_research_package(
     uow = SQLiteUnitOfWork(connection, TransactionMode.PUBLISH, publish_callbacks=batch)
     try:
         uow.begin()
-        _insert_verbatim_row(
-            connection,
-            table="project",
-            row=source_project,
-            id_column="project_id",
-        )
-        _insert_verbatim_row(
-            connection,
-            table="project_context_revision",
-            row=_revision_row_with_append_fields(source_revision),
-            id_column="project_context_revision_id",
-        )
-        for entry in manifest["artifacts"]:
-            _insert_verbatim_row(
-                connection, table="artifact", row=entry["row"], id_column="artifact_id"
-            )
-        for reference in manifest["artifact_references"]:
-            _insert_verbatim_row(
-                connection,
-                table="artifact_reference",
-                row=reference,
-                id_column="artifact_reference_id",
-            )
-        for table in (
-            "target_weight_vector_publication",
-            "risk_policy_set_publication",
-            "risk_application_receipt_publication",
-            "risk_adjusted_weight_vector_publication",
-        ):
-            _insert_verbatim_row(
-                connection,
-                table=table,
-                row=manifest["owner_publications"][table],
-                id_column=_OWNER_ID_COLUMN[table],
-            )
+        # Recheck under the write transaction. Package rows still have no
+        # registration path; authority must remain independently present.
+        _require_target_catalog_match(connection, manifest)
         # New project-owned canonical references: immutable spec bytes plus a
         # freshly bound execution context for THIS project's current revision.
         # Catalog registration goes through the canonical publication port so
@@ -689,12 +699,12 @@ def import_research_package(
         now = wire_time(imported_at)
         port.publish(
             ArtifactPublication(
-                descriptor=batch.spec_result.descriptor,
+                descriptor=batch.results[0].descriptor,
                 active_references=(
                     ArtifactReference(
                         reference_id=mint_v3_id("arf_"),
                         owner_id=project_id,
-                        artifact_id=batch.spec_result.descriptor.artifact_id,
+                        artifact_id=batch.results[0].descriptor.artifact_id,
                         role=PROJECT_SPEC_REFERENCE_ROLE,
                         created_at=imported_at,
                         state="ACTIVE",
@@ -704,12 +714,12 @@ def import_research_package(
         )
         port.publish(
             ArtifactPublication(
-                descriptor=batch.context_result.descriptor,
+                descriptor=batch.results[1].descriptor,
                 active_references=(
                     ArtifactReference(
                         reference_id=mint_v3_id("arf_"),
                         owner_id=project_id,
-                        artifact_id=batch.context_result.descriptor.artifact_id,
+                        artifact_id=batch.results[1].descriptor.artifact_id,
                         role=PROJECT_SPEC_CONTEXT_REFERENCE_ROLE,
                         created_at=imported_at,
                         state="ACTIVE",
@@ -717,11 +727,10 @@ def import_research_package(
                 ),
             )
         )
-        _verify_imported_closure(connection, manifest, project_id)
         outcome = {
             "run_spec_id": manifest["run_spec_id"],
-            "run_spec_artifact_id": batch.spec_result.descriptor.artifact_id,
-            "context_artifact_id": batch.context_result.descriptor.artifact_id,
+            "run_spec_artifact_id": batch.results[0].descriptor.artifact_id,
+            "context_artifact_id": batch.results[1].descriptor.artifact_id,
             "already_imported": False,
             "source_project_id": source_project_id,
             "imported_at": now,
@@ -757,58 +766,6 @@ def import_research_package(
     if spec.run_spec_id != manifest["run_spec_id"] or context_artifact_id != outcome["context_artifact_id"]:
         raise TruthPreconditionFailedError("imported run spec failed the post-commit reconstruction proof")
     return outcome
-
-
-class _SplitStoreBatch:
-    """PUBLISH UoW callbacks that stage one batch across two stores.
-
-    Owner weight payloads are admitted by the baseline artifact policy; the
-    product spec/context artifacts by the product publication policy.  Both
-    stores share the same content-addressed artifact root, so registration is
-    still one logical batch with one compensating cleanup.
-    """
-
-    def __init__(
-        self,
-        *,
-        product_store: FileSystemArtifactStore,
-        weight_store: FileSystemArtifactStore,
-        product_payloads: tuple[tuple[str, bytes, str, str], ...],
-        weight_payloads: tuple[tuple[str, bytes, str, str], ...],
-        published_at: datetime,
-    ) -> None:
-        self._batches = (
-            ProductArtifactBatch(store=product_store, payloads=product_payloads, published_at=published_at),
-            ProductArtifactBatch(store=weight_store, payloads=weight_payloads, published_at=published_at),
-        )
-        self.spec_result: Any = None
-        self.context_result: Any = None
-
-    def verify_staged(self) -> None:
-        for batch in self._batches:
-            batch.verify_staged()
-
-    def publish_staged(self) -> None:
-        product_batch = self._batches[0]
-        product_batch.publish_staged()
-        self.spec_result = product_batch.results[0]
-        self.context_result = product_batch.results[1]
-        self._batches[1].publish_staged()
-
-    def compensate_unreferenced_staging(self) -> None:
-        for batch in self._batches:
-            batch.compensate_unreferenced_staging()
-
-    def notify_committed(self) -> None:
-        for batch in self._batches:
-            batch.notify_committed()
-
-
-def _revision_row_with_append_fields(revision: Mapping[str, Any]) -> dict[str, Any]:
-    row = dict(revision)
-    if "revision_no" not in row or "parent_revision_id" not in row:
-        raise InvalidArgumentError("source revision record is missing append-only fields")
-    return row
 
 
 def _lookup_existing_import(
@@ -1016,34 +973,6 @@ def _verify_owner_rows(manifest: Mapping[str, Any], files: Mapping[str, PackageF
             raise InvalidArgumentError("imported artifact row does not match the actual payload bytes")
 
 
-def _verify_imported_closure(
-    connection: sqlite3.Connection, manifest: Mapping[str, Any], target_project_id: str
-) -> None:
-    """Re-verify the imported owner chain against the just-inserted rows."""
-    adjusted_id = _OWNER_ID_COLUMN["risk_adjusted_weight_vector_publication"]
-    identity = str(manifest["owner_publications"]["risk_adjusted_weight_vector_publication"][adjusted_id])
-    row = connection.execute(
-        "SELECT * FROM risk_adjusted_weight_vector_publication WHERE risk_adjusted_weight_vector_id=?",
-        (identity,),
-    ).fetchone()
-    if row is None or str(row["project_id"]) == target_project_id:
-        raise V3ContractError("imported adjusted weight vector is missing or misbound")
-    receipt = connection.execute(
-        "SELECT risk_policy_set_version_id FROM risk_application_receipt_publication WHERE risk_application_receipt_id=?",
-        (str(row["risk_application_receipt_id"]),),
-    ).fetchone()
-    target = connection.execute(
-        "SELECT 1 FROM target_weight_vector_publication WHERE target_weight_vector_id=?",
-        (str(row["source_target_weight_vector_id"]),),
-    ).fetchone()
-    policy = connection.execute(
-        "SELECT 1 FROM risk_policy_set_publication WHERE risk_policy_set_version_id=?",
-        (str(receipt["risk_policy_set_version_id"]) if receipt is not None else "",),
-    ).fetchone()
-    if receipt is None or target is None or policy is None:
-        raise V3ContractError("imported owner chain is incomplete")
-
-
 def _build_bound_context_payload(
     original_context: Mapping[str, Any],
     project_id: str,
@@ -1081,60 +1010,119 @@ def _manifest_freeze(manifest_wire: Mapping[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _validate_run_spec_page(limit: int, after_artifact_id: str | None) -> None:
+    if (
+        not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or limit < 1
+        or limit > MAX_RUN_SPEC_PAGE_SIZE
+    ):
+        raise InvalidArgumentError(
+            f"limit must be an integer in [1, {MAX_RUN_SPEC_PAGE_SIZE}]"
+        )
+    if after_artifact_id is not None:
+        if not isinstance(after_artifact_id, str) or not after_artifact_id.startswith(
+            "art_sha256_"
+        ):
+            raise InvalidArgumentError(
+                "after_artifact_id must be a canonical art_sha256_ cursor"
+            )
+        _require_hex64(
+            after_artifact_id.removeprefix("art_sha256_"),
+            "after_artifact_id",
+        )
+
+
+def _index_project_contexts(
+    product: ProductRuntime, project_id: str
+) -> dict[str, tuple[dict[str, Any], str]]:
+    contexts: dict[str, tuple[dict[str, Any], str]] = {}
+    for context_row in product.references(
+        project_id, PROJECT_SPEC_CONTEXT_REFERENCE_ROLE
+    ):
+        context_artifact_id = str(context_row["artifact_id"])
+        try:
+            payload = product.read_verified_bytes(context_artifact_id)
+        except (ArtifactError, OSError):
+            continue
+        try:
+            context_wire = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(context_wire, dict):
+            continue
+        if context_wire.get("context_kind") != RESEARCH_RUN_CONTEXT_KIND:
+            continue
+        contexts.setdefault(
+            str(context_wire.get("run_spec_id")),
+            (context_wire, context_artifact_id),
+        )
+    return contexts
+
+
 def list_backtest_run_specs(
     product: ProductRuntime,
     *,
     project_id: str,
     project_context_revision_id: str,
     limit: int = 50,
-    after_run_spec_id: str | None = None,
+    after_artifact_id: str | None = None,
 ) -> dict[str, Any]:
     """Discover project-owned canonical run specs through verified artifacts."""
+    _validate_run_spec_page(limit, after_artifact_id)
     product.require_project_context_ownership(project_id, project_context_revision_id)
     connection = connect_catalog(product.database_path, read_only=True)
     try:
         rows = connection.execute(
             """
-            SELECT artifact_id FROM artifact_reference
+            SELECT DISTINCT artifact_id FROM artifact_reference
             WHERE owner_id=? AND role=? AND state='ACTIVE'
               AND (? IS NULL OR artifact_id > ?)
             ORDER BY artifact_id LIMIT ?
             """,
-            (project_id, PROJECT_SPEC_REFERENCE_ROLE, after_run_spec_id, after_run_spec_id, limit + 1),
+            (
+                project_id,
+                PROJECT_SPEC_REFERENCE_ROLE,
+                after_artifact_id,
+                after_artifact_id,
+                limit + 1,
+            ),
         ).fetchall()
     finally:
         connection.close()
     has_more = len(rows) > limit
+    context_by_run_spec_id = _index_project_contexts(product, project_id)
     specs: list[dict[str, Any]] = []
     for row in rows[:limit]:
         artifact_id = str(row["artifact_id"])
-        entry = _discover_single_spec(product, project_id, artifact_id)
+        entry = _discover_single_spec(
+            product, artifact_id, context_by_run_spec_id
+        )
         specs.append(entry)
-    return {"specs": specs, "has_more": has_more}
+    next_after_artifact_id = (
+        str(rows[limit - 1]["artifact_id"]) if has_more else None
+    )
+    return {
+        "specs": specs,
+        "has_more": has_more,
+        "next_after_artifact_id": next_after_artifact_id,
+    }
 
 
 def _discover_single_spec(
-    product: ProductRuntime, project_id: str, artifact_id: str
+    product: ProductRuntime,
+    artifact_id: str,
+    context_by_run_spec_id: Mapping[str, tuple[Mapping[str, Any], str]],
 ) -> dict[str, Any]:
     try:
         payload = product.read_verified_bytes(artifact_id)
         wire = json.loads(payload.decode("utf-8"))
         run_spec_id = str(wire["run_spec_id"])
-        context_rows = product.references(project_id, PROJECT_SPEC_CONTEXT_REFERENCE_ROLE)
-        context_wire = None
-        for context_row in context_rows:
-            candidate = json.loads(
-                product.read_verified_bytes(str(context_row["artifact_id"])).decode("utf-8")
-            )
-            if (
-                candidate.get("context_kind") == RESEARCH_RUN_CONTEXT_KIND
-                and candidate.get("run_spec_id") == run_spec_id
-            ):
-                context_wire = candidate
-                break
-        if context_wire is None:
+        context_entry = context_by_run_spec_id.get(run_spec_id)
+        if context_entry is None:
             raise NotFoundError("no durable execution context for run spec")
-        spec, _ = product.spec_codec.reconstruct(project_id=project_id, run_spec_id=run_spec_id)
+        context_wire, _ = context_entry
+        spec = product.spec_codec._rebuild(wire, context_wire)
         if spec.run_spec_id != run_spec_id:
             raise TruthPreconditionFailedError("reconstructed run spec identity mismatch")
         return {
@@ -1147,16 +1135,18 @@ def _discover_single_spec(
             "execution_adapter_version_id": str(context_wire["engine_version"]),
             "status": "EXECUTABLE",
         }
-    except Exception as error:  # honest degradation: never list unverifiable specs
+    except (
+        ArtifactError,
+        V3ContractError,
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:  # honest degradation: never list unverifiable specs
         diagnostic = f"{type(error).__name__}: {error}"[:500]
-        try:
-            payload = product.read_verified_bytes(artifact_id)
-            wire = json.loads(payload.decode("utf-8"))
-            run_spec_id = str(wire.get("run_spec_id", "btrs_sha256_unknown"))
-            content_sha256 = str(wire.get("content_sha256", ""))
-        except Exception:
-            run_spec_id = "btrs_sha256_unknown"
-            content_sha256 = ""
+        run_spec_id, content_sha256 = _unavailable_spec_identity(product, artifact_id)
         return {
             "run_spec_id": run_spec_id,
             "artifact_id": artifact_id,
@@ -1168,6 +1158,27 @@ def _discover_single_spec(
             "status": "UNAVAILABLE",
             "diagnostic": diagnostic,
         }
+
+
+def _unavailable_spec_identity(
+    product: ProductRuntime, artifact_id: str
+) -> tuple[str, str]:
+    try:
+        payload = product.read_verified_bytes(artifact_id)
+        wire = json.loads(payload.decode("utf-8"))
+    except (
+        ArtifactError,
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        return "btrs_sha256_unknown", ""
+    if not isinstance(wire, dict):
+        return "btrs_sha256_unknown", ""
+    return (
+        str(wire.get("run_spec_id", "btrs_sha256_unknown")),
+        str(wire.get("content_sha256", "")),
+    )
 
 
 # ---------------------------------------------------------------------------

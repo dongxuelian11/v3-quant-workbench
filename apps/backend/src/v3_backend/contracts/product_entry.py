@@ -11,11 +11,9 @@ listBacktestRunSpecs discovers durable, project-owned canonical BacktestRunSpec
 references and verifies actual artifact bytes before listing them executable.
 
 importResearchPackage imports an explicitly user-selected V3 research package
-(closed manifest + actual payload bytes) after full hash/identity/owner-binding
-verification.  The request carries the manifest and bounded payload files; the
-caller can never inject numeric financial truth (prices/returns/weights/NAV)
-that the backend would trust - every numeric payload inside the package is
-re-verified against canonical owners exactly as a locally authored one.
+(closed manifest + actual payload bytes) only after every source/owner row and
+payload independently matches canonical state that already exists in the
+target runtime. Package-provided rows cannot bootstrap authority.
 """
 
 from __future__ import annotations
@@ -61,7 +59,7 @@ METHOD_SPECS = {
                         'additionalProperties': False,
                         'properties': {
                             'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100},
-                            'after_run_spec_id': {'type': 'string', 'pattern': _BTRS},
+                            'after_artifact_id': {'type': 'string', 'pattern': _ART},
                         },
                     },
                 },
@@ -79,7 +77,10 @@ METHOD_SPECS = {
                     'read_model': {
                         'type': 'object',
                         'additionalProperties': False,
-                        'required': ['read_model_version', 'specs', 'has_more'],
+                        'required': [
+                            'read_model_version', 'specs', 'has_more',
+                            'next_after_artifact_id',
+                        ],
                         'properties': {
                             'read_model_version': {'type': 'string', 'const': 'v3.product-entry/1.0'},
                             'specs': {
@@ -107,6 +108,10 @@ METHOD_SPECS = {
                                 },
                             },
                             'has_more': {'type': 'boolean'},
+                            'next_after_artifact_id': {
+                                'type': ['string', 'null'],
+                                'pattern': _ART,
+                            },
                         },
                     },
                 },

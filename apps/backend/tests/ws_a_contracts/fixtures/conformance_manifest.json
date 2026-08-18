@@ -111,8 +111,8 @@
     },
     {
       "path": "asl/product_entry.contract.json",
-      "bytes": 14384,
-      "sha256": "1c68f930ed2d59c348f4b032b4e2973858d6ffc6a8e0ae600f9c05c1a74f9923"
+      "bytes": 14776,
+      "sha256": "b9af3cb4d320eb2e417cb996398ab4f3fbd15e2d86cf13e91f26c133a4def79c"
     }
   ]
 }

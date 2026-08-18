@@ -155,7 +155,7 @@ const SERVICE_SET = [
   "ProjectSessionService", "DataSourceService", "InstrumentService", "DataSnapshotService",
   "UniverseService", "ResearchService", "DatasetService", "StrategyService", "ModelService",
   "StudyService", "PortfolioService", "RiskService", "OptimizationService", "BacktestService",
-  "ResultService", "TaskService", "ArtifactService",
+  "ResultService", "TaskService", "ArtifactService", "ProductEntryService",
 ];
 
 // Phase A: first backend process.
@@ -163,10 +163,10 @@ const backend = spawnBackend(storageRoot, token);
 const hello = await backend.nextFrame();
 check(hello.kind === "backend.hello", "handshake hello received");
 check(hello.protocol === "v3.local/1.0", "protocol version");
-check(hello.capabilities.length === 17, "capability matrix lists 17 services");
+check(hello.capabilities.length === 18, "capability matrix lists 18 services");
 const caps = new Map(hello.capabilities.map((c) => [c.code, c]));
 for (const service of SERVICE_SET) check(caps.has(service), `capability present: ${service}`);
-for (const service of ["ProjectSessionService", "ArtifactService", "BacktestService"]) {
+for (const service of ["ProjectSessionService", "ArtifactService", "BacktestService", "ProductEntryService"]) {
   check(caps.get(service).truth_state === "FORMAL", `${service} is FORMAL`);
 }
 for (const service of ["ResearchService", "ModelService", "DatasetService", "StrategyService"]) {

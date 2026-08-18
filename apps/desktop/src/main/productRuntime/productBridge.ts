@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type {
   ArtifactDescriptorView,
   ArtifactStreamTicketView,
@@ -35,6 +35,11 @@ import {
   ProductAdapterError
 } from "./adapters";
 import type { ProductBindingStore } from "./bindingStore";
+import {
+  CreateProjectIntentStore,
+  createProjectIntentPath,
+  runCreateProjectIntent,
+} from "./createProjectIntentStore";
 
 /**
  * Typed B3 product bridge owned by the Electron main process.
@@ -47,13 +52,77 @@ import type { ProductBindingStore } from "./bindingStore";
 
 const ADMITTED_EXECUTION_ADAPTER_VERSION_ID = "v3.a_share_daily_eod_engine/0.2.0";
 const RUN_SPEC_ID_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
+const ARTIFACT_ID_PATTERN = /^art_sha256_[0-9a-f]{64}$/;
 const CANONICAL_ID_PATTERN = /^[A-Za-z0-9_\-]{1,200}$/;
 const PROJECT_LOCATOR_PREFIX = "v3:";
 const PRODUCT_ENTRY_PROTOCOL_VERSION = "v3.product-entry/1.0.0";
 const PACKAGE_MANIFEST_FILENAME = "manifest.v3.json";
 const MAX_PACKAGE_FILE_BYTES = 262_144;
 const MAX_PACKAGE_FILE_COUNT = 64;
+const MAX_RUN_SPEC_AUTO_PAGES = 20;
 const PACKAGE_PATH_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+interface RunSpecPageView {
+  readonly specs: RunSpecEntryView[];
+  readonly hasMore: boolean;
+  readonly nextAfterArtifactId: string | null;
+}
+
+function adaptRunSpecEntry(rawEntry: unknown, seenArtifacts: Set<string>): RunSpecEntryView {
+  const row = rawEntry as Record<string, unknown>;
+  const artifactId = String(row.artifact_id ?? "");
+  if (!ARTIFACT_ID_PATTERN.test(artifactId)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "run-spec discovery returned a malformed artifact identity");
+  }
+  if (seenArtifacts.has(artifactId)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "run-spec pagination returned a duplicate artifact");
+  }
+  seenArtifacts.add(artifactId);
+  return {
+    runSpecId: String(row.run_spec_id ?? ""),
+    artifactId,
+    contentSha256: String(row.content_sha256 ?? ""),
+    projectContextRevisionId: String(row.project_context_revision_id ?? ""),
+    engineVersion: String(row.engine_version ?? ""),
+    createdAt: String(row.created_at ?? ""),
+    executionAdapterVersionId: String(row.execution_adapter_version_id ?? ""),
+    status: row.status === "EXECUTABLE" ? "EXECUTABLE" : "UNAVAILABLE",
+    diagnostic: typeof row.diagnostic === "string" ? row.diagnostic : null
+  };
+}
+
+function adaptRunSpecPage(
+  response: unknown,
+  seenArtifacts: Set<string>,
+  priorCursor: string | null
+): RunSpecPageView {
+  const readModel = (response as {
+    read_model?: { specs?: unknown; has_more?: unknown; next_after_artifact_id?: unknown };
+  }).read_model ?? {};
+  const specs = Array.isArray(readModel.specs)
+    ? readModel.specs.map((entry) => adaptRunSpecEntry(entry, seenArtifacts))
+    : [];
+  const hasMore = readModel.has_more === true;
+  const nextCursor = readModel.next_after_artifact_id;
+  if (!hasMore) {
+    if (nextCursor !== null) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "terminal run-spec page returned a non-null cursor");
+    }
+    return { specs, hasMore, nextAfterArtifactId: null };
+  }
+  if (
+    typeof nextCursor !== "string"
+    || !ARTIFACT_ID_PATTERN.test(nextCursor)
+    || nextCursor === priorCursor
+    || specs.at(-1)?.artifactId !== nextCursor
+  ) {
+    throw new ProductAdapterError(
+      "PRODUCT_BRIDGE_ERROR",
+      "run-spec pagination cursor did not advance at the last returned artifact"
+    );
+  }
+  return { specs, hasMore, nextAfterArtifactId: nextCursor };
+}
 
 /** Main-process owned research package directory chooser (Electron dialog). */
 export type ResearchPackageChooser = () => Promise<string | null>;
@@ -83,17 +152,22 @@ export class ProductBridge {
   private readonly supervisor: BackendSupervisor;
   private readonly store: WorkspaceStore;
   private readonly bindings: ProductBindingStore;
+  private readonly createProjectIntents: CreateProjectIntentStore;
 
   constructor(
     supervisor: BackendSupervisor,
     store: WorkspaceStore,
     bindings: ProductBindingStore,
-    chooseResearchPackage: ResearchPackageChooser = async () => null
+    chooseResearchPackage: ResearchPackageChooser = async () => null,
+    createProjectIntents: CreateProjectIntentStore = new CreateProjectIntentStore(
+      createProjectIntentPath(dirname(bindings.path))
+    )
   ) {
     this.supervisor = supervisor;
     this.store = store;
     this.bindings = bindings;
     this.chooseResearchPackage = chooseResearchPackage;
+    this.createProjectIntents = createProjectIntents;
   }
 
   private readonly chooseResearchPackage: ResearchPackageChooser;
@@ -310,25 +384,31 @@ export class ProductBridge {
     if (notes !== null && (typeof notes !== "string" || notes.length > 2048)) {
       throw new ProductAdapterError("INVALID_ARGUMENT", "notes must be a bounded string");
     }
-    const response = await this.supervisor.productEntryControl({
-      kind: "productEntry.createProject",
-      protocol_version: PRODUCT_ENTRY_PROTOCOL_VERSION,
-      display_name: displayName,
-      notes,
-      idempotency_key: `v3-desktop:${uuidV4()}`
-    });
-    const record = response as Record<string, unknown>;
-    const projectId = typeof record.project_id === "string" ? record.project_id : "";
-    const revisionId = typeof record.project_context_revision_id === "string" ? record.project_context_revision_id : "";
-    if (!/^prj_[0-9A-HJKMNP-TV-Z]{26}$/.test(projectId) || !/^pcr_[0-9A-HJKMNP-TV-Z]{26}$/.test(revisionId)) {
-      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "backend did not return canonical project identities");
-    }
-    return Object.freeze({
-      projectId,
-      projectContextRevisionId: revisionId,
-      displayName,
-      createdAt: typeof record.created_at === "string" ? record.created_at : ""
-    });
+    return runCreateProjectIntent(
+      this.createProjectIntents,
+      { displayName, notes },
+      (idempotencyKey) => this.supervisor.productEntryControl({
+        kind: "productEntry.createProject",
+        protocol_version: PRODUCT_ENTRY_PROTOCOL_VERSION,
+        display_name: displayName,
+        notes,
+        idempotency_key: idempotencyKey
+      }),
+      (response) => {
+        const record = response as Record<string, unknown>;
+        const projectId = typeof record.project_id === "string" ? record.project_id : "";
+        const revisionId = typeof record.project_context_revision_id === "string" ? record.project_context_revision_id : "";
+        if (!/^prj_[0-9A-HJKMNP-TV-Z]{26}$/.test(projectId) || !/^pcr_[0-9A-HJKMNP-TV-Z]{26}$/.test(revisionId)) {
+          throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "backend did not return canonical project identities");
+        }
+        return Object.freeze({
+          projectId,
+          projectContextRevisionId: revisionId,
+          displayName,
+          createdAt: typeof record.created_at === "string" ? record.created_at : ""
+        });
+      },
+    );
   }
 
   /** Durable project discovery (works before any project is bound). */
@@ -357,27 +437,27 @@ export class ProductBridge {
   /** Durable run-spec discovery with actual-artifact verification. */
   async listBacktestRunSpecs(): Promise<RunSpecsListView> {
     this.requireBinding();
-    const response = await this.supervisor.request("ProductEntryService.v1.listBacktestRunSpecs", {
-      page: { limit: 50 }
+    const specs: RunSpecEntryView[] = [];
+    const seenArtifacts = new Set<string>();
+    let afterArtifactId: string | null = null;
+    for (let pageNumber = 0; pageNumber < MAX_RUN_SPEC_AUTO_PAGES; pageNumber += 1) {
+      const response = await this.supervisor.request("ProductEntryService.v1.listBacktestRunSpecs", {
+        page: afterArtifactId === null
+          ? { limit: 50 }
+          : { limit: 50, after_artifact_id: afterArtifactId }
+      });
+      const page = adaptRunSpecPage(response, seenArtifacts, afterArtifactId);
+      specs.push(...page.specs);
+      if (!page.hasMore) {
+        return Object.freeze({ specs, hasMore: false, nextAfterArtifactId: null });
+      }
+      afterArtifactId = page.nextAfterArtifactId;
+    }
+    return Object.freeze({
+      specs,
+      hasMore: true,
+      nextAfterArtifactId: afterArtifactId,
     });
-    const readModel = (response as { read_model?: { specs?: unknown; has_more?: unknown } }).read_model ?? {};
-    const specs = Array.isArray(readModel.specs)
-      ? readModel.specs.map((item): RunSpecEntryView => {
-          const row = item as Record<string, unknown>;
-          return {
-            runSpecId: String(row.run_spec_id ?? ""),
-            artifactId: String(row.artifact_id ?? ""),
-            contentSha256: String(row.content_sha256 ?? ""),
-            projectContextRevisionId: String(row.project_context_revision_id ?? ""),
-            engineVersion: String(row.engine_version ?? ""),
-            createdAt: String(row.created_at ?? ""),
-            executionAdapterVersionId: String(row.execution_adapter_version_id ?? ""),
-            status: row.status === "EXECUTABLE" ? "EXECUTABLE" as const : "UNAVAILABLE" as const,
-            diagnostic: typeof row.diagnostic === "string" ? row.diagnostic : null
-          };
-        })
-      : [];
-    return Object.freeze({ specs, hasMore: readModel.has_more === true });
   }
 
   /**

@@ -944,7 +944,7 @@ class ProductEntryFacade:
             project_id=str(request["project_id"]),
             project_context_revision_id=str(request["project_context_revision_id"]),
             limit=int(page.get("limit", 50)),
-            after_run_spec_id=page.get("after_run_spec_id"),
+            after_artifact_id=page.get("after_artifact_id"),
         )
         return _response(
             request,
@@ -952,6 +952,7 @@ class ProductEntryFacade:
                 "read_model_version": "v3.product-entry/1.0",
                 "specs": listing["specs"],
                 "has_more": listing["has_more"],
+                "next_after_artifact_id": listing["next_after_artifact_id"],
             },
         )
 
