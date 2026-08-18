@@ -33,6 +33,9 @@ class RuntimePorts:
     startup_reconcile: Callable[[AcceptedSupervisor], None] = lambda _accepted: None
     prepare_shutdown: Callable[[str | None], None] = lambda _deadline: None
     commit_shutdown: Callable[[], None] = lambda: None
+    # Narrow, versioned projectless Product Entry bootstrap seam.  None keeps
+    # productEntry.* control frames fail-closed (unknown control frame).
+    product_entry_control: Callable[[str, Mapping[str, Any]], dict[str, Any]] | None = None
 
 
 class RuntimeSession:
@@ -99,6 +102,8 @@ class RuntimeSession:
                 if set(message) != {"kind"}:
                     raise ProtocolViolation("runtime.health request has unknown fields")
                 write_frame(sink, self.health.snapshot())
+            elif str(message.get("kind", "")).startswith("productEntry."):
+                self._handle_product_entry(message, sink)
             elif message.get("kind") == "runtime.prepareShutdown":
                 self._prepare_shutdown(message, sink)
             elif message.get("kind") == "runtime.commitShutdown":
@@ -135,6 +140,44 @@ class RuntimeSession:
         self.health.accepting_requests = False
         self.ports.prepare_shutdown(deadline)
         write_frame(sink, {"kind": "runtime.shutdownReady", "deadline_at": deadline})
+
+    def _handle_product_entry(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
+        """Projectless Product Entry bootstrap control protocol.
+
+        A closed, versioned control seam (like runtime.health/shutdown) used
+        only for createProject/listProjects before any canonical project
+        exists.  Every ASL operation stays project-bound; this seam never
+        becomes a generic request bypass.
+        """
+        from v3_backend.errors.mapping import map_exception
+
+        if self.ports.product_entry_control is None:
+            raise ProtocolViolation("product entry control frames are not bound in this runtime")
+        if not self.health.accepting_requests:
+            write_frame(
+                sink,
+                {
+                    "kind": "productEntry.error",
+                    "code": "RESOURCE_REJECTED",
+                    "message": "runtime is draining and rejects new commands",
+                    "retryable": False,
+                },
+            )
+            return
+        kind = str(message["kind"])
+        try:
+            write_frame(sink, self.ports.product_entry_control(kind, message))
+        except Exception as exc:
+            error = map_exception(exc)
+            write_frame(
+                sink,
+                {
+                    "kind": "productEntry.error",
+                    "code": error.code.value,
+                    "message": error.message,
+                    "retryable": error.retryable,
+                },
+            )
 
 
 def default_capabilities() -> tuple[Capability, ...]:

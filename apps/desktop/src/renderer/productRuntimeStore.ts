@@ -2,11 +2,14 @@ import { create } from "zustand";
 import type {
   ArtifactDescriptorView,
   BacktestSubmitOutcomeView,
+  ImportResearchPackageOutcomeView,
   ProductBindingRefs,
   ProductCapabilityView,
   ProductResultView,
   ProductStatusView,
-  ProductTaskView
+  ProductTaskView,
+  ProjectsListView,
+  RunSpecsListView
 } from "../../../../packages/contracts/src/index";
 
 declare global {
@@ -34,9 +37,13 @@ interface ProductRuntimeState {
   status: ProductStatusView | null;
   capabilities: readonly ProductCapabilityView[];
   boundProject: ProductBindingRefs | null;
+  projects: ProjectsListView | null;
+  runSpecs: RunSpecsListView | null;
+  entryBusy: boolean;
   runSpecId: string;
   inflight: boolean;
   lastSubmit: BacktestSubmitOutcomeView | null;
+  lastImport: ImportResearchPackageOutcomeView | null;
   task: ProductTaskView | null;
   result: ProductResultView | null;
   artifactDescriptor: ArtifactDescriptorView | null;
@@ -45,9 +52,21 @@ interface ProductRuntimeState {
   setRunSpecId(value: string): void;
   connect(projectId: string, projectContextRevisionId: string): Promise<void>;
   submitRunSpec(): Promise<void>;
+  createProjectAndBind(displayName: string, notes?: string): Promise<void>;
+  importResearchPackage(): Promise<void>;
 }
 
 const RUN_SPEC_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
+
+export function executableRunSpecSelection(
+  specs: RunSpecsListView | null,
+  value: string,
+): string | null {
+  const candidate = value.trim();
+  if (!RUN_SPEC_PATTERN.test(candidate)) return null;
+  const entry = specs?.specs.find((item) => item.runSpecId === candidate);
+  return entry?.status === "EXECUTABLE" ? candidate : null;
+}
 
 function capabilityOf(capabilities: readonly ProductCapabilityView[], code: string): ProductCapabilityView | undefined {
   return capabilities.find((capability) => capability.code === code);
@@ -85,9 +104,13 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
   status: null,
   capabilities: [],
   boundProject: null,
+  projects: null,
+  runSpecs: null,
+  entryBusy: false,
   runSpecId: "",
   inflight: false,
   lastSubmit: null,
+  lastImport: null,
   task: null,
   result: null,
   artifactDescriptor: null,
@@ -100,10 +123,18 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       const status = await bridge.getProductStatus();
       const capabilities = status.capabilities;
       const stale = status.bindingState === "BINDING_STALE";
+      // Durable entry discovery alongside the status read: projects always,
+      // run specs only through the bound project's canonical references.
+      const projects = await bridge.listProjects().catch(() => null);
+      const runSpecs = status.boundProject !== null
+        ? await bridge.listBacktestRunSpecs().catch(() => null)
+        : null;
       set((state) => ({
         status,
         capabilities,
         boundProject: status.boundProject,
+        projects,
+        runSpecs,
         surface: deriveSurface({ ...state, status }),
         // A stale binding must not keep presenting previously-read canonical
         // task/result/artifact state as currently valid product truth.
@@ -121,7 +152,10 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
     }
   },
 
-  setRunSpecId: (value) => set((state) => ({ runSpecId: value, surface: deriveSurface({ ...state, runSpecId: value }) })),
+  setRunSpecId: (value) => set((state) => {
+    const runSpecId = executableRunSpecSelection(state.runSpecs, value) ?? "";
+    return { runSpecId, surface: deriveSurface({ ...state, runSpecId }) };
+  }),
 
   connect: async (projectId, projectContextRevisionId) => {
     const bridge = window.v3ProductRuntime;
@@ -136,8 +170,8 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
 
   submitRunSpec: async () => {
     const bridge = window.v3ProductRuntime;
-    const runSpecId = get().runSpecId.trim();
-    if (!bridge || !RUN_SPEC_PATTERN.test(runSpecId)) return;
+    const runSpecId = executableRunSpecSelection(get().runSpecs, get().runSpecId);
+    if (!bridge || runSpecId === null) return;
     set((state) => ({ ...state, inflight: true, surface: "REQUEST_IN_FLIGHT", errorMessage: null, task: null, result: null, artifactDescriptor: null, lastSubmit: null }));
     try {
       // submitBacktest is a bounded synchronous in-process executor behind a
@@ -166,6 +200,53 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       }));
     } catch (error) {
       set({ inflight: false, surface: "ERROR", errorMessage: describeError(error) ?? "执行 canonical 回测失败" });
+    }
+  },
+
+  createProjectAndBind: async (displayName, notes) => {
+    const bridge = window.v3ProductRuntime;
+    if (!bridge) return;
+    set((state) => ({ ...state, entryBusy: true, errorMessage: null }));
+    try {
+      // Backend mints every canonical identity; the renderer only supplies
+      // bounded display intent. Immediately bind + persist the new project.
+      const created = await bridge.createProject({ displayName, ...(notes === undefined ? {} : { notes }) });
+      await bridge.connectExistingProject({
+        projectId: created.projectId,
+        projectContextRevisionId: created.projectContextRevisionId
+      });
+      await get().refresh();
+    } catch (error) {
+      set((state) => ({ ...state, surface: "ERROR", errorMessage: describeError(error) ?? "创建 canonical 项目失败" }));
+    } finally {
+      set((state) => ({ ...state, entryBusy: false }));
+    }
+  },
+
+  importResearchPackage: async () => {
+    const bridge = window.v3ProductRuntime;
+    if (!bridge) return;
+    set((state) => ({ ...state, entryBusy: true, errorMessage: null }));
+    try {
+      const outcome = await bridge.importResearchPackage();
+      if (outcome === null) {
+        set((state) => ({ ...state, entryBusy: false }));
+        return;
+      }
+      set((state) => ({ ...state, lastImport: outcome, runSpecId: outcome.runSpecId }));
+      await get().refresh();
+    } catch (error) {
+      const detail = describeError(error);
+      const sourceAuthorityMissing = detail?.includes("SOURCE_AUTHORITY_NOT_VERIFIED") === true;
+      set((state) => ({
+        ...state,
+        surface: "ERROR",
+        errorMessage: sourceAuthorityMissing
+          ? "SOURCE_AUTHORITY_NOT_VERIFIED · 研究包完整性可验证，但目标端缺少可信来源权威，不能作为可执行研究配置"
+          : detail ?? "绑定已验证研究包失败（已拒绝注册）"
+      }));
+    } finally {
+      set((state) => ({ ...state, entryBusy: false }));
     }
   }
 }));

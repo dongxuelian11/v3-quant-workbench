@@ -64,13 +64,13 @@ test("real Python bootstrap completes framed authenticated handshake and gracefu
     supervisor.on("diagnostic", (item) => diagnostics.push(item));
     await supervisor.start();
     assert.equal(supervisor.state, "READY");
-    assert.equal(supervisor.capabilities.length, 17);
+    assert.equal(supervisor.capabilities.length, 18);
     // B3: the normal production bootstrap binds the real product composition.
     // Only fully bound services are FORMAL; partial TaskService and every other
     // incomplete service stay honestly UNAVAILABLE on the normal path.
     assert.deepEqual(
       supervisor.capabilities.filter((item) => item.truth_state === "FORMAL").map((item) => item.code).sort(),
-      ["ArtifactService", "BacktestService", "ProjectSessionService"]
+      ["ArtifactService", "BacktestService", "ProductEntryService", "ProjectSessionService"]
     );
     const taskCapability = supervisor.capabilities.find((item) => item.code === "TaskService");
     assert.equal(taskCapability?.truth_state, "UNAVAILABLE");

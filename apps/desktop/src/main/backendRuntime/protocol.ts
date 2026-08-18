@@ -7,7 +7,7 @@ export const ASL_SERVICES = Object.freeze([
   "ProjectSessionService", "DataSourceService", "InstrumentService", "DataSnapshotService",
   "UniverseService", "ResearchService", "DatasetService", "StrategyService", "ModelService",
   "StudyService", "PortfolioService", "RiskService", "OptimizationService", "BacktestService",
-  "ResultService", "TaskService", "ArtifactService"
+  "ResultService", "TaskService", "ArtifactService", "ProductEntryService"
 ] as const);
 
 const HELLO_KEYS = Object.freeze([

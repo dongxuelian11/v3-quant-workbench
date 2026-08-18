@@ -4,8 +4,10 @@ import type {
   ArtifactStreamTicketView,
   BacktestSubmitOutcomeView,
   ConnectExistingProjectRequest,
+  CreateProjectRequest,
   DesktopBridge,
   DesktopCommandEnvelope,
+  ImportResearchPackageOutcomeView,
   PersistedWorkspace,
   ProductBindingRefs,
   ProductCapabilityView,
@@ -14,6 +16,9 @@ import type {
   ProductTaskEventsView,
   ProductTaskView,
   ProjectContextView,
+  ProjectCreatedView,
+  ProjectsListView,
+  RunSpecsListView,
   SessionRestoreView,
   V3ProductRuntimeBridge
 } from "../../../packages/contracts/src/index";
@@ -121,7 +126,14 @@ const productRuntimeBridge: V3ProductRuntimeBridge = Object.freeze({
   getResult: (resultId: string) => invokeProduct<ProductResultView>("productRuntime:getResult", { resultId }),
   getArtifactDescriptor: (artifactId: string) => invokeProduct<ArtifactDescriptorView>("productRuntime:getArtifactDescriptor", { artifactId }),
   openArtifactStream: (artifactId: string) => invokeProduct<ArtifactStreamTicketView>("productRuntime:openArtifactStream", { artifactId }),
-  submitExistingBacktestRunSpec: (runSpecId: string) => invokeProduct<BacktestSubmitOutcomeView>("productRuntime:submitExistingBacktestRunSpec", { runSpecId })
+  submitExistingBacktestRunSpec: (runSpecId: string) => invokeProduct<BacktestSubmitOutcomeView>("productRuntime:submitExistingBacktestRunSpec", { runSpecId }),
+  createProject: (request: CreateProjectRequest) => invokeProduct<ProjectCreatedView>("productRuntime:createProject", {
+    displayName: request.displayName,
+    ...(request.notes === undefined ? {} : { notes: request.notes })
+  }),
+  listProjects: () => invokeProduct<ProjectsListView>("productRuntime:listProjects"),
+  listBacktestRunSpecs: () => invokeProduct<RunSpecsListView>("productRuntime:listBacktestRunSpecs"),
+  importResearchPackage: () => invokeProduct<ImportResearchPackageOutcomeView | null>("productRuntime:importResearchPackage")
 });
 
 contextBridge.exposeInMainWorld("v3ProductRuntime", productRuntimeBridge);

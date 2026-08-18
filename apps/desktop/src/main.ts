@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, type IpcMainInvokeEvent } from "electron";
 import { join } from "node:path";
 import {
   type CommandReceipt,
@@ -139,7 +139,23 @@ function startBackendRuntime(): void {
   backendRuntimeLifecycle = new BackendRuntimeLifecycle(backendSupervisor);
   backendSupervisor.on("diagnostic", (item) => console.error(JSON.stringify(item)));
   registerBackendRuntimeIpc(ipcMain, trusted, backendSupervisor, () => backendRelay?.evidenceSnapshot ?? null);
-  productBridge = new ProductBridge(backendSupervisor, store, productBindings);
+  // Main-process owned research package chooser: the renderer never sees a
+  // filesystem path; it only asks the product bridge to bind a package whose
+  // source authority must already exist and verify in the target runtime.
+  const chooseResearchPackage = async (): Promise<string | null> => {
+    const window = mainWindow !== null ? (BrowserWindow.fromWebContents(mainWindow.webContents) ?? mainWindow) : null;
+    const options = {
+      title: "绑定已验证研究包（需要本机 canonical 来源权威）",
+      properties: ["openDirectory"] as Array<"openDirectory">,
+      buttonLabel: "验证来源并绑定"
+    };
+    const selection = window !== null
+      ? await dialog.showOpenDialog(window, options)
+      : await dialog.showOpenDialog(options);
+    if (selection.canceled || selection.filePaths.length !== 1) return null;
+    return selection.filePaths[0] ?? null;
+  };
+  productBridge = new ProductBridge(backendSupervisor, store, productBindings, chooseResearchPackage);
   registerProductRuntimeIpc(ipcMain, trusted, productBridge);
   void backendSupervisor.start()
     .then(() => recoverProductSession())

@@ -6,6 +6,11 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { ProductBindingStore, parsePersistedBinding, productBindingPath } from "../../apps/desktop/src/main/productRuntime/bindingStore.ts";
 import { adaptCapabilities, adaptTask, ProductAdapterError } from "../../apps/desktop/src/main/productRuntime/adapters.ts";
+import {
+  CreateProjectIntentStore,
+  createProjectIntentPath,
+  runCreateProjectIntent,
+} from "../../apps/desktop/src/main/productRuntime/createProjectIntentStore.ts";
 
 const REFS = { projectId: "prj_test01", projectContextRevisionId: "pcr_test01", sessionId: "11111111-2222-7333-8444-555555555555" };
 
@@ -25,6 +30,147 @@ test("binding store rejects invalid persisted shapes and accepts canonical refs"
     assert.equal(loaded.projectId, REFS.projectId);
     assert.equal(loaded.sessionId, REFS.sessionId);
     await assert.rejects(() => store.persist({ projectId: "a".repeat(4000), projectContextRevisionId: "c", sessionId: "s" }), TypeError);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+function canonicalProjectOutcome(ordinal) {
+  const suffix = String(ordinal).padStart(2, "0");
+  return {
+    project_id: `prj_${"A".repeat(24)}${suffix}`,
+    project_context_revision_id: `pcr_${"B".repeat(24)}${suffix}`,
+    display_name: "重试项目",
+    created_at: "2026-08-18T00:00:00Z",
+  };
+}
+
+function durableCreateBackend({ loseResponses = 0 } = {}) {
+  const calls = [];
+  const projects = new Map();
+  return {
+    calls,
+    projects,
+    async productEntryControl(frame) {
+      calls.push(structuredClone(frame));
+      let outcome = projects.get(frame.idempotency_key);
+      if (outcome === undefined) {
+        outcome = canonicalProjectOutcome(projects.size + 1);
+        projects.set(frame.idempotency_key, outcome);
+      }
+      if (loseResponses > 0) {
+        loseResponses -= 1;
+        throw new Error("backend committed but transport response was lost");
+      }
+      return outcome;
+    },
+  };
+}
+
+function createIntentRunner(supervisor, dir) {
+  const intents = new CreateProjectIntentStore(createProjectIntentPath(dir));
+  return (request) => runCreateProjectIntent(
+    intents,
+    {
+      displayName: request.displayName.trim(),
+      notes: request.notes === undefined ? null : request.notes,
+    },
+    (idempotencyKey) => supervisor.productEntryControl({
+      display_name: request.displayName.trim(),
+      notes: request.notes === undefined ? null : request.notes,
+      idempotency_key: idempotencyKey,
+    }),
+    (response) => ({
+      projectId: response.project_id,
+      projectContextRevisionId: response.project_context_revision_id,
+    }),
+  );
+}
+
+test("createProject response-loss retry reuses one durable idempotency key", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-create-intent-response-loss-"));
+  try {
+    const backend = durableCreateBackend({ loseResponses: 1 });
+    const createProject = createIntentRunner(backend, dir);
+    await assert.rejects(() => createProject({ displayName: "重试项目", notes: "same" }));
+    const recovered = await createProject({ displayName: "重试项目", notes: "same" });
+    assert.equal(backend.calls.length, 2);
+    assert.equal(backend.calls[0].idempotency_key, backend.calls[1].idempotency_key);
+    assert.equal(backend.projects.size, 1);
+    assert.equal(recovered.projectId, [...backend.projects.values()][0].project_id);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("createProject restart retry reloads the unresolved key", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-create-intent-restart-"));
+  try {
+    const backend = durableCreateBackend({ loseResponses: 1 });
+    const createProject1 = createIntentRunner(backend, dir);
+    await assert.rejects(() => createProject1({ displayName: "重试项目", notes: "restart" }));
+    const persisted = await new CreateProjectIntentStore(createProjectIntentPath(dir)).load();
+    assert.equal(persisted.idempotencyKey, backend.calls[0].idempotency_key);
+    const createProject2 = createIntentRunner(backend, dir);
+    const recovered = await createProject2({ displayName: "重试项目", notes: "restart" });
+    assert.equal(backend.calls[1].idempotency_key, backend.calls[0].idempotency_key);
+    assert.equal(backend.projects.size, 1);
+    assert.equal(recovered.projectId, [...backend.projects.values()][0].project_id);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("createProject different intent gets a new key while unknown outcomes stay pending", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-create-intent-different-"));
+  try {
+    const calls = [];
+    const backend = {
+      async productEntryControl(frame) {
+        calls.push(structuredClone(frame));
+        throw new Error("unknown transport outcome");
+      },
+    };
+    const createProject = createIntentRunner(backend, dir);
+    await assert.rejects(() => createProject({ displayName: "A", notes: "one" }));
+    await assert.rejects(() => createProject({ displayName: "B", notes: "two" }));
+    assert.notEqual(calls[0].idempotency_key, calls[1].idempotency_key);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("createProject success clears pending so a later same-name create gets a new key", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-create-intent-clear-"));
+  try {
+    const backend = durableCreateBackend();
+    const createProject = createIntentRunner(backend, dir);
+    const first = await createProject({ displayName: "重试项目", notes: "repeatable" });
+    assert.equal(await new CreateProjectIntentStore(createProjectIntentPath(dir)).load(), null);
+    const second = await createProject({ displayName: "重试项目", notes: "repeatable" });
+    assert.notEqual(backend.calls[0].idempotency_key, backend.calls[1].idempotency_key);
+    assert.notEqual(first.projectId, second.projectId);
+    assert.equal(backend.projects.size, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("definitive create validation rejection clears the key", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-create-intent-validation-"));
+  try {
+    const calls = [];
+    const backend = {
+      async productEntryControl(frame) {
+        calls.push(structuredClone(frame));
+        if (calls.length === 1) throw Object.assign(new Error("invalid"), { code: "INVALID_ARGUMENT" });
+        return canonicalProjectOutcome(1);
+      },
+    };
+    const createProject = createIntentRunner(backend, dir);
+    await assert.rejects(() => createProject({ displayName: "重试项目" }));
+    await createProject({ displayName: "重试项目" });
+    assert.notEqual(calls[0].idempotency_key, calls[1].idempotency_key);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -56,8 +202,10 @@ test("renderer-facing bridge contract stays free of generic transport members", 
   assert.match(ipc, /productRuntime:submitExistingBacktestRunSpec/);
   // Every registration uses one of the frozen typed channels; no dynamic
   // channel or renderer-supplied operation id reaches ipcMain.handle.
+  // Product Entry adds createProject / listProjects / listBacktestRunSpecs /
+  // importResearchPackage (typed, no generic transport surface).
   const registrations = [...ipc.matchAll(/handle\((PRODUCT_RUNTIME_CHANNELS\.[A-Za-z]+)/g)].map((match) => match[1]);
-  assert.equal(registrations.length, 13);
+  assert.equal(registrations.length, 17);
   assert.doesNotMatch(ipc, /operation_?[Ii]d/);
   assert.match(ipc, /trusted\(event\)/);
 });
@@ -90,7 +238,7 @@ test("LIVE fixture boundary remains explicit opt-in with packaged hard-deny", as
 
 
 // ---- T4: renderer surface derivation honors bindingState over refs -------
-const { deriveSurface } = await import("../../apps/desktop/src/renderer/productRuntimeStore.ts");
+const { deriveSurface, executableRunSpecSelection, useProductRuntime } = await import("../../apps/desktop/src/renderer/productRuntimeStore.ts");
 
 const baseState = { inflight: false, result: null, task: null, runSpecId: `btrs_sha256_${"d".repeat(64)}` };
 
@@ -115,6 +263,54 @@ test("T4b: healthy states still derive exactly", () => {
   const bound = { backendState: "READY", bindingState: "PROJECT_BOUND", boundProject: { projectId: "p", projectContextRevisionId: "c", sessionId: "s" }, capabilities: [] };
   assert.equal(deriveSurface({ ...baseState, status: bound, runSpecId: "short" }), "CANONICAL_RUN_SPEC_REQUIRED");
   assert.equal(deriveSurface({ ...baseState, status: bound }), "PROJECT_BOUND");
+});
+
+test("UNAVAILABLE run-spec cannot be selected or submitted by the renderer store gate", async () => {
+  const canonicalId = `btrs_sha256_${"e".repeat(64)}`;
+  const unavailable = {
+    specs: [{
+      runSpecId: canonicalId,
+      artifactId: `art_sha256_${"f".repeat(64)}`,
+      contentSha256: null,
+      projectContextRevisionId: null,
+      engineVersion: null,
+      createdAt: null,
+      executionAdapterVersionId: null,
+      status: "UNAVAILABLE",
+      diagnostic: "source bytes unavailable"
+    }],
+    hasMore: false,
+    nextAfterArtifactId: null
+  };
+  assert.equal(executableRunSpecSelection(unavailable, canonicalId), null);
+  assert.equal(executableRunSpecSelection({ ...unavailable, specs: [{ ...unavailable.specs[0], status: "EXECUTABLE" }] }, canonicalId), canonicalId);
+
+  let submissions = 0;
+  globalThis.window = {
+    v3ProductRuntime: {
+      submitExistingBacktestRunSpec: async () => {
+        submissions += 1;
+        throw new Error("UNAVAILABLE submission reached the bridge");
+      }
+    }
+  };
+  try {
+    useProductRuntime.setState({ runSpecs: unavailable, runSpecId: "" });
+    useProductRuntime.getState().setRunSpecId(canonicalId);
+    assert.equal(useProductRuntime.getState().runSpecId, "");
+    useProductRuntime.setState({ runSpecId: canonicalId });
+    await useProductRuntime.getState().submitRunSpec();
+    assert.equal(submissions, 0);
+  } finally {
+    delete globalThis.window;
+    useProductRuntime.setState({ runSpecs: null, runSpecId: "" });
+  }
+});
+
+test("UNAVAILABLE run-spec is disabled and diagnostic-visible in the product panel", async () => {
+  const panel = await readFile(new URL("../../apps/desktop/src/renderer/components/ProductRuntimePanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /disabled=\{entry\.status !== "EXECUTABLE"\}/);
+  assert.match(panel, /UNAVAILABLE.*entry\.diagnostic/s);
 });
 
 // ---- T6/T7: preload structured error parser (literal production source) --

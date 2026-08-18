@@ -1924,6 +1924,7 @@ class ProductRuntime:
             "ProjectSessionService",
             "ArtifactService",
             "BacktestService",
+            "ProductEntryService",
         }
         capabilities: list[Capability] = []
         for service in sorted(SERVICE_CONTRACTS):
@@ -1966,6 +1967,7 @@ def build_product_runtime(storage_root: str | Path | None = None) -> ProductRunt
 
 def build_product_ports(storage_root: str | Path | None = None) -> RuntimePorts:
     """Normal production RuntimePorts: real facades over durable product stores."""
+    from .product_entry import handle_product_entry_control
     from .product_facades import build_product_facades
 
     product = build_product_runtime(storage_root)
@@ -1979,6 +1981,9 @@ def build_product_ports(storage_root: str | Path | None = None) -> RuntimePorts:
         startup_reconcile=product.reconcile_supervisor,
         prepare_shutdown=product.prepare_shutdown,
         commit_shutdown=product.commit_shutdown,
+        product_entry_control=(
+            lambda kind, message: handle_product_entry_control(product, kind, message)
+        ),
     )
 
 

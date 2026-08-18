@@ -320,6 +320,59 @@ export interface ConnectExistingProjectRequest {
   readonly projectContextRevisionId: string;
 }
 
+export interface CreateProjectRequest {
+  readonly displayName: string;
+  readonly notes?: string;
+}
+
+/** Backend-minted clean-start project creation outcome (control protocol). */
+export interface ProjectCreatedView {
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly displayName: string;
+  readonly createdAt: string;
+}
+
+export interface ProjectListItemView {
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly displayName: string;
+  readonly createdAt: string;
+}
+
+export interface ProjectsListView {
+  readonly projects: readonly ProjectListItemView[];
+  readonly hasMore: boolean;
+}
+
+export interface RunSpecEntryView {
+  readonly runSpecId: string | null;
+  readonly artifactId: string;
+  readonly contentSha256: string | null;
+  readonly projectContextRevisionId: string | null;
+  readonly engineVersion: string | null;
+  readonly createdAt: string | null;
+  readonly executionAdapterVersionId: string | null;
+  readonly status: "EXECUTABLE" | "UNAVAILABLE";
+  readonly diagnostic: string | null;
+}
+
+export interface RunSpecsListView {
+  readonly specs: readonly RunSpecEntryView[];
+  readonly hasMore: boolean;
+  readonly nextAfterArtifactId: string | null;
+}
+
+/** Target-canonical-authority research package reuse outcome. */
+export interface ImportResearchPackageOutcomeView {
+  readonly runSpecId: string;
+  readonly runSpecArtifactId: string;
+  readonly contextArtifactId: string;
+  readonly alreadyImported: boolean;
+  readonly sourceProjectId: string;
+  readonly importedAt: string;
+}
+
 /**
  * Narrow typed product bridge exposed to the renderer. There is deliberately
  * no generic request(operationId, payload) member: every method maps to one
@@ -340,4 +393,16 @@ export interface V3ProductRuntimeBridge {
   getArtifactDescriptor(artifactId: string): Promise<ArtifactDescriptorView>;
   openArtifactStream(artifactId: string): Promise<ArtifactStreamTicketView>;
   submitExistingBacktestRunSpec(runSpecId: string): Promise<BacktestSubmitOutcomeView>;
+  /** Projectless clean-start entry: backend mints all canonical identities. */
+  createProject(request: CreateProjectRequest): Promise<ProjectCreatedView>;
+  listProjects(): Promise<ProjectsListView>;
+  /** Durable run-spec discovery with actual-artifact verification. */
+  listBacktestRunSpecs(): Promise<RunSpecsListView>;
+  /**
+   * Target-authority reuse: the Electron main process owns the file chooser and
+   * reads the selected V3 research package; the renderer never receives or
+   * controls raw filesystem paths. The target must already own and verify the
+   * package's source authority. Null = user cancelled the chooser.
+   */
+  importResearchPackage(): Promise<ImportResearchPackageOutcomeView | null>;
 }
