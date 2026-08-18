@@ -1,4 +1,4 @@
-"""Product Entry clean-start tests.
+"""Product Entry foundation tests.
 
 Covers the V1 Product Entry surface end-to-end at the runtime level:
 projectless project bootstrap through closed control frames, verified
@@ -7,9 +7,9 @@ the existing canonical execution path, restart recovery, and the required
 negative paths (tamper, traversal-free closed file sets, unknown manifest
 fields, idempotency conflicts, cross-project submit).
 
-The golden source storage is prepared ONLY as test setup (accepted canonical
-owners); the imported package passes through exactly the same verification
-path as a real user package.
+Positive import cases explicitly pre-establish accepted canonical owners in
+the target and therefore prove TARGET_CANONICAL_REUSE only. Separate empty-
+target negatives prove that a package cannot bootstrap first source authority.
 """
 
 from __future__ import annotations
@@ -31,6 +31,8 @@ for entry in (str(SRC), str(ROOT)):
         sys.path.insert(0, entry)
 
 from v3_backend.adapters.sqlite.connection import connect_catalog
+from v3_backend.contracts.common.dto import ContractValidationError
+from v3_backend.contracts.product_entry import ListBacktestRunSpecsResponseV1
 from v3_backend.domain.backtest_runtime.model import BacktestRunSpec
 from v3_backend.errors.exceptions import (
     IdempotencyConflictError,
@@ -61,8 +63,11 @@ from v3_backend.runtime.product_entry import (
 from v3_backend.runtime.product_runtime import (
     ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
     ProductRuntime,
+    build_product_ports,
     mint_v3_id,
+    mint_uuid7,
 )
+from v3_backend.runtime.request_router import RequestRouter
 
 from apps.backend.tests.product_runtime.helpers import build_product_golden_project
 
@@ -309,7 +314,7 @@ def _fully_consistent_weight_forgery(manifest: dict, files: list[dict]) -> tuple
     return forged_manifest, forged_files
 
 
-class _CleanStorageCase(unittest.TestCase):
+class _TargetCanonicalReuseCase(unittest.TestCase):
     def setUp(self) -> None:
         self._target_tmp = tempfile.TemporaryDirectory()
         self.target_root = Path(self._target_tmp.name)
@@ -353,7 +358,7 @@ class _CleanStorageCase(unittest.TestCase):
         return [(str(row["owner_id"]), str(row["artifact_id"])) for row in rows]
 
 
-class CleanStartFlowTests(_CleanStorageCase):
+class TargetCanonicalReuseFlowTests(_TargetCanonicalReuseCase):
     def test_fresh_storage_invents_no_projects_or_specs(self) -> None:
         with tempfile.TemporaryDirectory() as fresh:
             virgin = ProductRuntime(Path(fresh))
@@ -367,7 +372,7 @@ class CleanStartFlowTests(_CleanStorageCase):
             self.assertEqual(listing["specs"], [])
             self.assertFalse(listing["has_more"])
 
-    def test_import_discover_submit_restart_recovery(self) -> None:
+    def test_target_canonical_reuse_import_submit_restart_recovery(self) -> None:
         outcome = self._import()
         self.assertFalse(outcome["already_imported"])
         self.assertEqual(outcome["run_spec_id"], self.run_spec_id)
@@ -378,7 +383,7 @@ class CleanStartFlowTests(_CleanStorageCase):
         self.assertEqual(len(listing["specs"]), 1)
         entry = listing["specs"][0]
         self.assertEqual(entry["status"], "EXECUTABLE")
-        self.assertNotIn("diagnostic", entry)
+        self.assertIsNone(entry["diagnostic"])
         self.assertEqual(entry["project_context_revision_id"], self.pcr)
 
         execution = self.product.execution.submit_backtest(
@@ -463,7 +468,7 @@ class CleanStartFlowTests(_CleanStorageCase):
         self.assertEqual(outcome["run_spec_artifact_id"], self._import(key="p1")["run_spec_artifact_id"])
 
 
-class ProjectBootstrapTests(_CleanStorageCase):
+class ProjectBootstrapTests(_TargetCanonicalReuseCase):
     def test_create_project_mints_backend_identities_atomically(self) -> None:
         created = create_project(
             self.product, display_name="另一个项目", notes="备注", idempotency_key="fresh"
@@ -535,7 +540,7 @@ class ProjectBootstrapTests(_CleanStorageCase):
             )
 
 
-class ImportNegativeTests(_CleanStorageCase):
+class ImportNegativeTests(_TargetCanonicalReuseCase):
     def test_target_owner_absent_rejects_before_any_authority_registration(self) -> None:
         with tempfile.TemporaryDirectory() as external_source, tempfile.TemporaryDirectory() as empty_target:
             manifest, files, _ = _build_source_package(Path(external_source))
@@ -719,7 +724,7 @@ class ImportNegativeTests(_CleanStorageCase):
             )
 
 
-class DiscoveryNegativeTests(_CleanStorageCase):
+class DiscoveryNegativeTests(_TargetCanonicalReuseCase):
     def test_tampered_spec_artifact_is_listed_unavailable_not_executable(self) -> None:
         self._import()
         connection = connect_catalog(self.product.database_path)
@@ -750,8 +755,87 @@ class DiscoveryNegativeTests(_CleanStorageCase):
             )
             self.assertEqual(listing["specs"][0]["status"], "UNAVAILABLE")
             self.assertTrue(listing["specs"][0]["diagnostic"])
+            for field in (
+                "run_spec_id",
+                "content_sha256",
+                "project_context_revision_id",
+                "engine_version",
+                "created_at",
+                "execution_adapter_version_id",
+            ):
+                self.assertIsNone(listing["specs"][0][field], field)
+            self.assertNotIn("btrs_sha256_unknown", json.dumps(listing))
         finally:
             target_file.write_bytes(original)
+
+    def test_tampered_spec_degrades_through_request_router_as_valid_response(self) -> None:
+        self._import()
+        connection = connect_catalog(self.product.database_path, read_only=True)
+        try:
+            artifact_id = str(connection.execute(
+                "SELECT artifact_id FROM artifact_reference "
+                "WHERE owner_id=? AND role='RESEARCH_RUN_SPEC' AND state='ACTIVE'",
+                (self.project_id,),
+            ).fetchone()["artifact_id"])
+        finally:
+            connection.close()
+        sha = artifact_id.removeprefix("art_sha256_")
+        target_file = self.target_root / "artifacts" / "sha256" / sha[:2] / sha[2:4] / sha
+        original = target_file.read_bytes()
+        try:
+            target_file.write_bytes(original[:-1] + bytes([original[-1] ^ 0x01]))
+            router = RequestRouter(build_product_ports(self.target_root).operation_handlers)
+            request_id = mint_uuid7()
+            body = {
+                "request_id": request_id,
+                "project_id": self.project_id,
+                "project_context_revision_id": self.pcr,
+                "expected_api_version": "1.0",
+                "page": {"limit": 50},
+            }
+            response = router.route({
+                "kind": "request",
+                "request_id": request_id,
+                "operation_id": "ProductEntryService.v1.listBacktestRunSpecs",
+                "contract_version": "1.0",
+                "project_id": self.project_id,
+                "project_context_revision_id": self.pcr,
+                "body": body,
+            })
+            self.assertEqual(response["status"], "OK", response)
+            item = response["body"]["read_model"]["specs"][0]
+            self.assertEqual(item["status"], "UNAVAILABLE")
+            self.assertEqual(item["artifact_id"], artifact_id)
+            self.assertTrue(item["diagnostic"])
+            self.assertIsNone(item["run_spec_id"])
+            self.assertIsNone(item["content_sha256"])
+        finally:
+            target_file.write_bytes(original)
+
+    def test_executable_response_rejects_null_identity_metadata(self) -> None:
+        request_id = mint_uuid7()
+        invalid_item = {
+            "run_spec_id": None,
+            "artifact_id": "art_sha256_" + "a" * 64,
+            "content_sha256": "b" * 64,
+            "project_context_revision_id": "pcr_" + "A" * 26,
+            "engine_version": "engine/1",
+            "created_at": "2026-08-18T00:00:00Z",
+            "execution_adapter_version_id": "adapter/1",
+            "status": "EXECUTABLE",
+            "diagnostic": None,
+        }
+        with self.assertRaises(ContractValidationError):
+            ListBacktestRunSpecsResponseV1.from_mapping({
+                "request_id": request_id,
+                "truth_state": "FORMAL",
+                "read_model": {
+                    "read_model_version": "v3.product-entry/1.0",
+                    "specs": [invalid_item],
+                    "has_more": False,
+                    "next_after_artifact_id": None,
+                },
+            })
 
     def test_submit_run_spec_of_other_project_fails_closed(self) -> None:
         self._import()

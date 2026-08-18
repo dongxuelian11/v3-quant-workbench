@@ -164,11 +164,15 @@
                       "engine_version",
                       "created_at",
                       "execution_adapter_version_id",
-                      "status"
+                      "status",
+                      "diagnostic"
                     ],
                     "properties": {
                       "run_spec_id": {
-                        "type": "string",
+                        "type": [
+                          "string",
+                          "null"
+                        ],
                         "pattern": "^btrs_sha256_[0-9a-f]{64}$"
                       },
                       "artifact_id": {
@@ -176,24 +180,39 @@
                         "pattern": "^art_sha256_[0-9a-f]{64}$"
                       },
                       "content_sha256": {
-                        "type": "string",
+                        "type": [
+                          "string",
+                          "null"
+                        ],
                         "pattern": "^[0-9a-f]{64}$"
                       },
                       "project_context_revision_id": {
-                        "type": "string",
+                        "type": [
+                          "string",
+                          "null"
+                        ],
                         "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
                       },
                       "engine_version": {
-                        "type": "string",
+                        "type": [
+                          "string",
+                          "null"
+                        ],
                         "minLength": 1,
                         "maxLength": 200
                       },
                       "created_at": {
-                        "type": "string",
+                        "type": [
+                          "string",
+                          "null"
+                        ],
                         "format": "date-time"
                       },
                       "execution_adapter_version_id": {
-                        "type": "string",
+                        "type": [
+                          "string",
+                          "null"
+                        ],
                         "minLength": 1,
                         "maxLength": 200
                       },
@@ -205,7 +224,11 @@
                         ]
                       },
                       "diagnostic": {
-                        "type": "string",
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
                         "maxLength": 500
                       }
                     }

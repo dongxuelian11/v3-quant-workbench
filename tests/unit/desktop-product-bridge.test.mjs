@@ -238,7 +238,7 @@ test("LIVE fixture boundary remains explicit opt-in with packaged hard-deny", as
 
 
 // ---- T4: renderer surface derivation honors bindingState over refs -------
-const { deriveSurface } = await import("../../apps/desktop/src/renderer/productRuntimeStore.ts");
+const { deriveSurface, executableRunSpecSelection, useProductRuntime } = await import("../../apps/desktop/src/renderer/productRuntimeStore.ts");
 
 const baseState = { inflight: false, result: null, task: null, runSpecId: `btrs_sha256_${"d".repeat(64)}` };
 
@@ -263,6 +263,54 @@ test("T4b: healthy states still derive exactly", () => {
   const bound = { backendState: "READY", bindingState: "PROJECT_BOUND", boundProject: { projectId: "p", projectContextRevisionId: "c", sessionId: "s" }, capabilities: [] };
   assert.equal(deriveSurface({ ...baseState, status: bound, runSpecId: "short" }), "CANONICAL_RUN_SPEC_REQUIRED");
   assert.equal(deriveSurface({ ...baseState, status: bound }), "PROJECT_BOUND");
+});
+
+test("UNAVAILABLE run-spec cannot be selected or submitted by the renderer store gate", async () => {
+  const canonicalId = `btrs_sha256_${"e".repeat(64)}`;
+  const unavailable = {
+    specs: [{
+      runSpecId: canonicalId,
+      artifactId: `art_sha256_${"f".repeat(64)}`,
+      contentSha256: null,
+      projectContextRevisionId: null,
+      engineVersion: null,
+      createdAt: null,
+      executionAdapterVersionId: null,
+      status: "UNAVAILABLE",
+      diagnostic: "source bytes unavailable"
+    }],
+    hasMore: false,
+    nextAfterArtifactId: null
+  };
+  assert.equal(executableRunSpecSelection(unavailable, canonicalId), null);
+  assert.equal(executableRunSpecSelection({ ...unavailable, specs: [{ ...unavailable.specs[0], status: "EXECUTABLE" }] }, canonicalId), canonicalId);
+
+  let submissions = 0;
+  globalThis.window = {
+    v3ProductRuntime: {
+      submitExistingBacktestRunSpec: async () => {
+        submissions += 1;
+        throw new Error("UNAVAILABLE submission reached the bridge");
+      }
+    }
+  };
+  try {
+    useProductRuntime.setState({ runSpecs: unavailable, runSpecId: "" });
+    useProductRuntime.getState().setRunSpecId(canonicalId);
+    assert.equal(useProductRuntime.getState().runSpecId, "");
+    useProductRuntime.setState({ runSpecId: canonicalId });
+    await useProductRuntime.getState().submitRunSpec();
+    assert.equal(submissions, 0);
+  } finally {
+    delete globalThis.window;
+    useProductRuntime.setState({ runSpecs: null, runSpecId: "" });
+  }
+});
+
+test("UNAVAILABLE run-spec is disabled and diagnostic-visible in the product panel", async () => {
+  const panel = await readFile(new URL("../../apps/desktop/src/renderer/components/ProductRuntimePanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /disabled=\{entry\.status !== "EXECUTABLE"\}/);
+  assert.match(panel, /UNAVAILABLE.*entry\.diagnostic/s);
 });
 
 // ---- T6/T7: preload structured error parser (literal production source) --

@@ -58,6 +58,16 @@ interface ProductRuntimeState {
 
 const RUN_SPEC_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
 
+export function executableRunSpecSelection(
+  specs: RunSpecsListView | null,
+  value: string,
+): string | null {
+  const candidate = value.trim();
+  if (!RUN_SPEC_PATTERN.test(candidate)) return null;
+  const entry = specs?.specs.find((item) => item.runSpecId === candidate);
+  return entry?.status === "EXECUTABLE" ? candidate : null;
+}
+
 function capabilityOf(capabilities: readonly ProductCapabilityView[], code: string): ProductCapabilityView | undefined {
   return capabilities.find((capability) => capability.code === code);
 }
@@ -142,7 +152,10 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
     }
   },
 
-  setRunSpecId: (value) => set((state) => ({ runSpecId: value, surface: deriveSurface({ ...state, runSpecId: value }) })),
+  setRunSpecId: (value) => set((state) => {
+    const runSpecId = executableRunSpecSelection(state.runSpecs, value) ?? "";
+    return { runSpecId, surface: deriveSurface({ ...state, runSpecId }) };
+  }),
 
   connect: async (projectId, projectContextRevisionId) => {
     const bridge = window.v3ProductRuntime;
@@ -157,8 +170,8 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
 
   submitRunSpec: async () => {
     const bridge = window.v3ProductRuntime;
-    const runSpecId = get().runSpecId.trim();
-    if (!bridge || !RUN_SPEC_PATTERN.test(runSpecId)) return;
+    const runSpecId = executableRunSpecSelection(get().runSpecs, get().runSpecId);
+    if (!bridge || runSpecId === null) return;
     set((state) => ({ ...state, inflight: true, surface: "REQUEST_IN_FLIGHT", errorMessage: null, task: null, result: null, artifactDescriptor: null, lastSubmit: null }));
     try {
       // submitBacktest is a bounded synchronous in-process executor behind a
@@ -223,7 +236,15 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       set((state) => ({ ...state, lastImport: outcome, runSpecId: outcome.runSpecId }));
       await get().refresh();
     } catch (error) {
-      set((state) => ({ ...state, surface: "ERROR", errorMessage: describeError(error) ?? "导入 V3 研究包失败（已拒绝注册）" }));
+      const detail = describeError(error);
+      const sourceAuthorityMissing = detail?.includes("SOURCE_AUTHORITY_NOT_VERIFIED") === true;
+      set((state) => ({
+        ...state,
+        surface: "ERROR",
+        errorMessage: sourceAuthorityMissing
+          ? "SOURCE_AUTHORITY_NOT_VERIFIED · 研究包完整性可验证，但目标端缺少可信来源权威，不能作为可执行研究配置"
+          : detail ?? "绑定已验证研究包失败（已拒绝注册）"
+      }));
     } finally {
       set((state) => ({ ...state, entryBusy: false }));
     }

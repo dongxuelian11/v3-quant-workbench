@@ -18,7 +18,7 @@ target runtime. Package-provided rows cannot bootstrap authority.
 
 from __future__ import annotations
 
-from .common.dto import ClosedDto
+from .common.dto import ClosedDto, ContractValidationError, validate_schema
 from .common.operation import OperationContract, OperationKind, ServiceContract
 
 CONTRACT_ID = 'urn:v3:asl:product_entry:1.0.0'
@@ -93,17 +93,18 @@ METHOD_SPECS = {
                                         'run_spec_id', 'artifact_id', 'content_sha256',
                                         'project_context_revision_id', 'engine_version',
                                         'created_at', 'execution_adapter_version_id', 'status',
+                                        'diagnostic',
                                     ],
                                     'properties': {
-                                        'run_spec_id': {'type': 'string', 'pattern': _BTRS},
+                                        'run_spec_id': {'type': ['string', 'null'], 'pattern': _BTRS},
                                         'artifact_id': {'type': 'string', 'pattern': _ART},
-                                        'content_sha256': {'type': 'string', 'pattern': _HEX64},
-                                        'project_context_revision_id': {'type': 'string', 'pattern': _PCR},
-                                        'engine_version': {'type': 'string', 'minLength': 1, 'maxLength': 200},
-                                        'created_at': {'type': 'string', 'format': 'date-time'},
-                                        'execution_adapter_version_id': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+                                        'content_sha256': {'type': ['string', 'null'], 'pattern': _HEX64},
+                                        'project_context_revision_id': {'type': ['string', 'null'], 'pattern': _PCR},
+                                        'engine_version': {'type': ['string', 'null'], 'minLength': 1, 'maxLength': 200},
+                                        'created_at': {'type': ['string', 'null'], 'format': 'date-time'},
+                                        'execution_adapter_version_id': {'type': ['string', 'null'], 'minLength': 1, 'maxLength': 200},
                                         'status': {'type': 'string', 'enum': ['EXECUTABLE', 'UNAVAILABLE']},
-                                        'diagnostic': {'type': 'string', 'maxLength': 500},
+                                        'diagnostic': {'type': ['string', 'null'], 'minLength': 1, 'maxLength': 500},
                                     },
                                 },
                             },
@@ -201,6 +202,41 @@ class ListBacktestRunSpecsResponseV1(ClosedDto):
     DTO_NAME = 'ListBacktestRunSpecsResponseV1'
     OPERATION_ID = 'ProductEntryService.v1.listBacktestRunSpecs'
     SCHEMA = METHOD_SPECS['ProductEntryService.v1.listBacktestRunSpecs']['response_dto']['schema']
+
+    def __init__(self, **values):
+        super().__init__(**values)
+        specs = values['read_model']['specs']
+        metadata_schemas = {
+            'run_spec_id': {'type': 'string', 'pattern': _BTRS},
+            'content_sha256': {'type': 'string', 'pattern': _HEX64},
+            'project_context_revision_id': {'type': 'string', 'pattern': _PCR},
+            'engine_version': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+            'created_at': {'type': 'string', 'format': 'date-time'},
+            'execution_adapter_version_id': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+        }
+        for index, item in enumerate(specs):
+            path = f'$.read_model.specs[{index}]'
+            status = item['status']
+            diagnostic = item['diagnostic']
+            if status == 'EXECUTABLE':
+                if diagnostic is not None:
+                    raise ContractValidationError(
+                        f'{path}.diagnostic', 'EXECUTABLE diagnostic must be null'
+                    )
+                for name, schema in metadata_schemas.items():
+                    if item[name] is None:
+                        raise ContractValidationError(
+                            f'{path}.{name}', f'EXECUTABLE {name} must be canonical metadata'
+                        )
+                    validate_schema(item[name], schema, f'{path}.{name}')
+                continue
+            if not isinstance(diagnostic, str) or not diagnostic.strip():
+                raise ContractValidationError(
+                    f'{path}.diagnostic', 'UNAVAILABLE diagnostic must be non-empty'
+                )
+            for name, schema in metadata_schemas.items():
+                if item[name] is not None:
+                    validate_schema(item[name], schema, f'{path}.{name}')
 
 
 class ImportResearchPackageRequestV1(ClosedDto):

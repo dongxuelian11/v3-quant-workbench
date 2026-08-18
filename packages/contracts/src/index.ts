@@ -346,13 +346,13 @@ export interface ProjectsListView {
 }
 
 export interface RunSpecEntryView {
-  readonly runSpecId: string;
+  readonly runSpecId: string | null;
   readonly artifactId: string;
-  readonly contentSha256: string;
-  readonly projectContextRevisionId: string;
-  readonly engineVersion: string;
-  readonly createdAt: string;
-  readonly executionAdapterVersionId: string;
+  readonly contentSha256: string | null;
+  readonly projectContextRevisionId: string | null;
+  readonly engineVersion: string | null;
+  readonly createdAt: string | null;
+  readonly executionAdapterVersionId: string | null;
   readonly status: "EXECUTABLE" | "UNAVAILABLE";
   readonly diagnostic: string | null;
 }
@@ -363,7 +363,7 @@ export interface RunSpecsListView {
   readonly nextAfterArtifactId: string | null;
 }
 
-/** Verified canonical research package import outcome (package mode entry). */
+/** Target-canonical-authority research package reuse outcome. */
 export interface ImportResearchPackageOutcomeView {
   readonly runSpecId: string;
   readonly runSpecArtifactId: string;
@@ -399,9 +399,10 @@ export interface V3ProductRuntimeBridge {
   /** Durable run-spec discovery with actual-artifact verification. */
   listBacktestRunSpecs(): Promise<RunSpecsListView>;
   /**
-   * Package-mode entry: the Electron main process owns the file chooser and
+   * Target-authority reuse: the Electron main process owns the file chooser and
    * reads the selected V3 research package; the renderer never receives or
-   * controls raw filesystem paths. Null = user cancelled the chooser.
+   * controls raw filesystem paths. The target must already own and verify the
+   * package's source authority. Null = user cancelled the chooser.
    */
   importResearchPackage(): Promise<ImportResearchPackageOutcomeView | null>;
 }

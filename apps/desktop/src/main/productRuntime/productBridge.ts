@@ -53,6 +53,8 @@ import {
 const ADMITTED_EXECUTION_ADAPTER_VERSION_ID = "v3.a_share_daily_eod_engine/0.2.0";
 const RUN_SPEC_ID_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
 const ARTIFACT_ID_PATTERN = /^art_sha256_[0-9a-f]{64}$/;
+const CONTENT_SHA_PATTERN = /^[0-9a-f]{64}$/;
+const PROJECT_CONTEXT_REVISION_PATTERN = /^pcr_[0-9A-HJKMNP-TV-Z]{26}$/;
 const CANONICAL_ID_PATTERN = /^[A-Za-z0-9_\-]{1,200}$/;
 const PROJECT_LOCATOR_PREFIX = "v3:";
 const PRODUCT_ENTRY_PROTOCOL_VERSION = "v3.product-entry/1.0.0";
@@ -68,6 +70,57 @@ interface RunSpecPageView {
   readonly nextAfterArtifactId: string | null;
 }
 
+function runSpecStatus(rawStatus: unknown): RunSpecEntryView["status"] {
+  if (rawStatus === "EXECUTABLE" || rawStatus === "UNAVAILABLE") return rawStatus;
+  throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "run-spec discovery returned an unknown status");
+}
+
+function nullableRunSpecString(
+  row: Record<string, unknown>,
+  name: string,
+  maxLength: number
+): string | null {
+  const value = row[name];
+  if (value === null) return null;
+  if (typeof value !== "string" || value.length === 0 || value.length > maxLength) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", `run-spec discovery returned invalid ${name}`);
+  }
+  return value;
+}
+
+function validRunSpecMetadata(entry: RunSpecEntryView): boolean {
+  return entry.runSpecId !== null && RUN_SPEC_ID_PATTERN.test(entry.runSpecId)
+    && entry.contentSha256 !== null && CONTENT_SHA_PATTERN.test(entry.contentSha256)
+    && entry.projectContextRevisionId !== null && PROJECT_CONTEXT_REVISION_PATTERN.test(entry.projectContextRevisionId)
+    && entry.engineVersion !== null
+    && entry.createdAt !== null && entry.createdAt.endsWith("Z") && !Number.isNaN(Date.parse(entry.createdAt))
+    && entry.executionAdapterVersionId !== null;
+}
+
+function validateRunSpecStatusSemantics(entry: RunSpecEntryView): void {
+  if (entry.status === "EXECUTABLE") {
+    if (!validRunSpecMetadata(entry) || entry.diagnostic !== null) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "EXECUTABLE run-spec discovery metadata is not canonical");
+    }
+    return;
+  }
+  if (entry.diagnostic === null) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "UNAVAILABLE run-spec discovery requires a diagnostic");
+  }
+  for (const [name, value, pattern] of [
+    ["run_spec_id", entry.runSpecId, RUN_SPEC_ID_PATTERN],
+    ["content_sha256", entry.contentSha256, CONTENT_SHA_PATTERN],
+    ["project_context_revision_id", entry.projectContextRevisionId, PROJECT_CONTEXT_REVISION_PATTERN],
+  ] as const) {
+    if (value !== null && !pattern.test(value)) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", `UNAVAILABLE run-spec discovery returned invalid ${name}`);
+    }
+  }
+  if (entry.createdAt !== null && (!entry.createdAt.endsWith("Z") || Number.isNaN(Date.parse(entry.createdAt)))) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "UNAVAILABLE run-spec discovery returned invalid created_at");
+  }
+}
+
 function adaptRunSpecEntry(rawEntry: unknown, seenArtifacts: Set<string>): RunSpecEntryView {
   const row = rawEntry as Record<string, unknown>;
   const artifactId = String(row.artifact_id ?? "");
@@ -78,17 +131,19 @@ function adaptRunSpecEntry(rawEntry: unknown, seenArtifacts: Set<string>): RunSp
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "run-spec pagination returned a duplicate artifact");
   }
   seenArtifacts.add(artifactId);
-  return {
-    runSpecId: String(row.run_spec_id ?? ""),
+  const entry: RunSpecEntryView = {
+    runSpecId: nullableRunSpecString(row, "run_spec_id", 76),
     artifactId,
-    contentSha256: String(row.content_sha256 ?? ""),
-    projectContextRevisionId: String(row.project_context_revision_id ?? ""),
-    engineVersion: String(row.engine_version ?? ""),
-    createdAt: String(row.created_at ?? ""),
-    executionAdapterVersionId: String(row.execution_adapter_version_id ?? ""),
-    status: row.status === "EXECUTABLE" ? "EXECUTABLE" : "UNAVAILABLE",
-    diagnostic: typeof row.diagnostic === "string" ? row.diagnostic : null
+    contentSha256: nullableRunSpecString(row, "content_sha256", 64),
+    projectContextRevisionId: nullableRunSpecString(row, "project_context_revision_id", 30),
+    engineVersion: nullableRunSpecString(row, "engine_version", 200),
+    createdAt: nullableRunSpecString(row, "created_at", 200),
+    executionAdapterVersionId: nullableRunSpecString(row, "execution_adapter_version_id", 200),
+    status: runSpecStatus(row.status),
+    diagnostic: nullableRunSpecString(row, "diagnostic", 500)
   };
+  validateRunSpecStatusSemantics(entry);
+  return entry;
 }
 
 function adaptRunSpecPage(
@@ -461,11 +516,12 @@ export class ProductBridge {
   }
 
   /**
-   * Package-mode research entry. The Electron main process owns the native
+   * Target-canonical-authority reuse. The Electron main process owns the native
    * directory chooser and reads the actual package bytes; the renderer never
    * sees a filesystem path. Returns null when the user cancels the chooser.
    * Every byte/hash/identity is re-verified by the backend before anything is
-   * registered - the declared manifest alone is never trusted.
+   * registered - the declared manifest alone is never trusted and cannot
+   * establish the target's first source authority.
    */
   async importResearchPackage(): Promise<ImportResearchPackageOutcomeView | null> {
     this.requireBinding();

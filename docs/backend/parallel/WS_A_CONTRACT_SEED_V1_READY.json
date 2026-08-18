@@ -7,7 +7,7 @@
   "service_count": 18,
   "operation_count": 66,
   "contract_digest_algorithm": "sha256(path\\0sha256(file)\\n), domain-separated WS-A-CONTRACT-SEED-V1\\0",
-  "contract_digest": "353e708909ea8892c62aa9e09063574be2535099769d2678c1950d98bcb503b8",
+  "contract_digest": "6129c80f61cd09fc64c974316ce50ea92b26b3acff853aaf0a6ecac67d347e9d",
   "files": [
     "apps/backend/src/v3_backend/contracts/__init__.py",
     "apps/backend/src/v3_backend/contracts/artifact.py",
@@ -67,5 +67,5 @@
     "apps/backend/tests/ws_a_contracts/fixtures/asl/universe.contract.json",
     "apps/backend/tests/ws_a_contracts/fixtures/conformance_manifest.json"
   ],
-  "expansion_note": "2026-08-17 task-authorized bounded Product Entry expansion (V3-PRODUCT-ENTRY-V1-CLEAN-START-20260816-01): +ProductEntryService (2 project-scoped operations); original 17/64 frozen v1 set preserved exactly."
+  "expansion_note": "2026-08-18 bounded Product Entry foundation correction: +ProductEntryService remains 2 project-scoped operations; status-conditional RunSpec discovery DTO admits honest UNAVAILABLE metadata without placeholders; original 17/64 frozen v1 set remains preserved exactly."
 }

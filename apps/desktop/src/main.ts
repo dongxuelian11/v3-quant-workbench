@@ -140,13 +140,14 @@ function startBackendRuntime(): void {
   backendSupervisor.on("diagnostic", (item) => console.error(JSON.stringify(item)));
   registerBackendRuntimeIpc(ipcMain, trusted, backendSupervisor, () => backendRelay?.evidenceSnapshot ?? null);
   // Main-process owned research package chooser: the renderer never sees a
-  // filesystem path; it only asks the product bridge to start an import.
+  // filesystem path; it only asks the product bridge to bind a package whose
+  // source authority must already exist and verify in the target runtime.
   const chooseResearchPackage = async (): Promise<string | null> => {
     const window = mainWindow !== null ? (BrowserWindow.fromWebContents(mainWindow.webContents) ?? mainWindow) : null;
     const options = {
-      title: "导入 V3 研究包",
+      title: "绑定已验证研究包（需要本机 canonical 来源权威）",
       properties: ["openDirectory"] as Array<"openDirectory">,
-      buttonLabel: "验证并导入"
+      buttonLabel: "验证来源并绑定"
     };
     const selection = window !== null
       ? await dialog.showOpenDialog(window, options)

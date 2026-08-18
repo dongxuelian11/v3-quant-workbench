@@ -1,10 +1,9 @@
-"""smoke:product-entry package builder (test setup boundary).
+"""smoke:product-entry setup/inspection helper (test boundary).
 
-Prepares target-owned canonical source state in the smoke's exact storage,
-exports one package, then adds enough canonical RunSpecs to prove Desktop page
-2 discovery. The package can execute only because the backend later resolves
-the exact source rows and bytes from this target state; package rows cannot
-bootstrap authority.
+``build`` prepares target-owned canonical source state, exports one package,
+then adds enough canonical RunSpecs to prove Desktop page-2 discovery.
+``inspect-empty`` performs a read-only post-failure pollution audit against an
+external package. Package rows can never bootstrap target authority.
 """
 
 from __future__ import annotations
@@ -23,12 +22,10 @@ sys.path.insert(0, str(ROOT))
 from apps.backend.tests.product_runtime.helpers import build_product_golden_project  # noqa: E402
 from v3_backend.domain.backtest_runtime.model import BacktestRunSpec  # noqa: E402
 from v3_backend.runtime.product_entry import build_research_package  # noqa: E402
+from v3_backend.adapters.sqlite.connection import connect_catalog  # noqa: E402
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: product_entry_smoke_python.py <target-storage-root>")
-    source_root = Path(sys.argv[1]).resolve()
+def build(source_root: Path) -> int:
     package_root = Path(tempfile.mkdtemp(prefix="v3-product-entry-package-"))
     try:
         setup = build_product_golden_project(source_root)
@@ -90,6 +87,63 @@ def main() -> int:
         import shutil
         shutil.rmtree(package_root, ignore_errors=True)
         raise
+
+
+def inspect_empty(storage_root: Path, target_project_id: str, package_root: Path) -> int:
+    manifest = json.loads((package_root / "manifest.v3.json").read_text(encoding="utf-8"))
+    connection = connect_catalog(storage_root / "catalog.sqlite3", read_only=True)
+    try:
+        project_ids = [
+            str(row["project_id"])
+            for row in connection.execute("SELECT project_id FROM project ORDER BY project_id")
+        ]
+        source_project_id = str(manifest["source_project"]["project_id"])
+        owner_matches = {}
+        for table, identity_column in (
+            ("target_weight_vector_publication", "target_weight_vector_id"),
+            ("risk_policy_set_publication", "risk_policy_set_version_id"),
+            ("risk_application_receipt_publication", "risk_application_receipt_id"),
+            ("risk_adjusted_weight_vector_publication", "risk_adjusted_weight_vector_id"),
+        ):
+            identity = manifest["owner_publications"][table][identity_column]
+            owner_matches[table] = connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {identity_column}=?", (identity,)
+            ).fetchone()[0]
+        target_spec_refs = connection.execute(
+            "SELECT COUNT(*) FROM artifact_reference "
+            "WHERE owner_id=? AND role='RESEARCH_RUN_SPEC' AND state='ACTIVE'",
+            (target_project_id,),
+        ).fetchone()[0]
+        all_spec_refs = connection.execute(
+            "SELECT COUNT(*) FROM artifact_reference "
+            "WHERE role='RESEARCH_RUN_SPEC' AND state='ACTIVE'"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    print(json.dumps({
+        "project_ids": project_ids,
+        "source_project_id": source_project_id,
+        "source_project_present": source_project_id in project_ids,
+        "owner_row_matches": owner_matches,
+        "target_research_run_spec_refs": target_spec_refs,
+        "all_research_run_spec_refs": all_spec_refs,
+    }))
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "build" and len(sys.argv) == 3:
+        return build(Path(sys.argv[2]).resolve())
+    if len(sys.argv) == 2:
+        return build(Path(sys.argv[1]).resolve())
+    if len(sys.argv) == 5 and sys.argv[1] == "inspect-empty":
+        return inspect_empty(
+            Path(sys.argv[2]).resolve(), sys.argv[3], Path(sys.argv[4]).resolve()
+        )
+    raise SystemExit(
+        "usage: product_entry_smoke_python.py build <storage-root> | "
+        "inspect-empty <storage-root> <target-project-id> <package-root>"
+    )
 
 
 if __name__ == "__main__":

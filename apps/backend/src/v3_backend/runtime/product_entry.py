@@ -1,4 +1,4 @@
-"""Canonical Product Entry: clean-start projects + verified research packages.
+"""Canonical Product Entry: clean Project creation + target-authority reuse.
 
 This module owns the V1 Product Entry surface:
 
@@ -1134,6 +1134,7 @@ def _discover_single_spec(
             "created_at": str(context_wire["published_at"]),
             "execution_adapter_version_id": str(context_wire["engine_version"]),
             "status": "EXECUTABLE",
+            "diagnostic": None,
         }
     except (
         ArtifactError,
@@ -1146,39 +1147,17 @@ def _discover_single_spec(
         ValueError,
     ) as error:  # honest degradation: never list unverifiable specs
         diagnostic = f"{type(error).__name__}: {error}"[:500]
-        run_spec_id, content_sha256 = _unavailable_spec_identity(product, artifact_id)
         return {
-            "run_spec_id": run_spec_id,
+            "run_spec_id": None,
             "artifact_id": artifact_id,
-            "content_sha256": content_sha256,
-            "project_context_revision_id": "",
-            "engine_version": "",
-            "created_at": "",
-            "execution_adapter_version_id": "",
+            "content_sha256": None,
+            "project_context_revision_id": None,
+            "engine_version": None,
+            "created_at": None,
+            "execution_adapter_version_id": None,
             "status": "UNAVAILABLE",
             "diagnostic": diagnostic,
         }
-
-
-def _unavailable_spec_identity(
-    product: ProductRuntime, artifact_id: str
-) -> tuple[str, str]:
-    try:
-        payload = product.read_verified_bytes(artifact_id)
-        wire = json.loads(payload.decode("utf-8"))
-    except (
-        ArtifactError,
-        OSError,
-        UnicodeDecodeError,
-        json.JSONDecodeError,
-    ):
-        return "btrs_sha256_unknown", ""
-    if not isinstance(wire, dict):
-        return "btrs_sha256_unknown", ""
-    return (
-        str(wire.get("run_spec_id", "btrs_sha256_unknown")),
-        str(wire.get("content_sha256", "")),
-    )
 
 
 # ---------------------------------------------------------------------------

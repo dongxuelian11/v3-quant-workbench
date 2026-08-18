@@ -166,11 +166,12 @@ test("run-spec discovery reads page two without missing or duplicate artifacts",
       run_spec_id: `btrs_sha256_${(index + 1).toString(16).padStart(64, "0")}`,
       artifact_id: `art_sha256_${(index + 1).toString(16).padStart(64, "0")}`,
       content_sha256: (index + 1).toString(16).padStart(64, "0"),
-      project_context_revision_id: REFS.projectContextRevisionId,
+      project_context_revision_id: `pcr_${"A".repeat(26)}`,
       engine_version: "v3.a_share_daily_eod_engine/0.2.0",
       created_at: "2026-08-18T00:00:00Z",
       execution_adapter_version_id: "v3.a_share_daily_eod_engine/0.2.0",
-      status: "EXECUTABLE"
+      status: "EXECUTABLE",
+      diagnostic: null
     }));
     const supervisor = stubSupervisor({ runSpecRows });
     const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
@@ -185,6 +186,43 @@ test("run-spec discovery reads page two without missing or duplicate artifacts",
     assert.equal(requests.length, 2);
     assert.equal(requests[0].payload.page.after_artifact_id, undefined);
     assert.equal(requests[1].payload.page.after_artifact_id, runSpecRows[49].artifact_id);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("UNAVAILABLE run-spec with null metadata is readable and never fabricated", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-run-spec-unavailable-"));
+  try {
+    const artifactId = `art_sha256_${"d".repeat(64)}`;
+    const runSpecRows = [{
+      run_spec_id: null,
+      artifact_id: artifactId,
+      content_sha256: null,
+      project_context_revision_id: null,
+      engine_version: null,
+      created_at: null,
+      execution_adapter_version_id: null,
+      status: "UNAVAILABLE",
+      diagnostic: "ArtifactIntegrityError: digest mismatch"
+    }];
+    const supervisor = stubSupervisor({ runSpecRows });
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
+    const listing = await bridge.listBacktestRunSpecs();
+    assert.equal(listing.specs.length, 1);
+    assert.deepEqual(listing.specs[0], {
+      runSpecId: null,
+      artifactId,
+      contentSha256: null,
+      projectContextRevisionId: null,
+      engineVersion: null,
+      createdAt: null,
+      executionAdapterVersionId: null,
+      status: "UNAVAILABLE",
+      diagnostic: "ArtifactIntegrityError: digest mismatch"
+    });
+    assert.doesNotMatch(JSON.stringify(listing), /btrs_sha256_unknown|"contentSha256":""/);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }

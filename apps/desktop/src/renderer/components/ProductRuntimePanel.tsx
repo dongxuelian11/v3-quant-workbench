@@ -113,28 +113,28 @@ export function ProductRuntimePanel() {
     </div>}
 
     {bound && <div className="product-run" data-testid="product-run">
-      <div className="section-head"><div><small>可运行研究配置 · Canonical RunSpec</small><h2>研究配置</h2></div></div>
+      <div className="section-head"><div><small>可执行 canonical 研究配置</small><h2>研究配置</h2></div></div>
       {runSpecs === null && <p className="honest-note">正在从 canonical 项目引用读取可运行研究配置…</p>}
       {runSpecs?.specs.length === 0 && <div data-testid="empty-run-specs">
-        <p className="honest-note">本项目尚无可运行的研究配置 · 空状态为真：不显示 fixture 运行，提交按钮禁用。</p>
+        <p className="honest-note">尚无可执行 canonical 研究配置 · 新建项目不会自动获得第一份 Source Authority，提交按钮保持禁用。</p>
         <button data-action="import-research-package" disabled={entryBusy} onClick={() => void importResearchPackage()}>
-          {entryBusy ? "验证导入中…" : "导入 V3 研究包"}
+          {entryBusy ? "验证绑定中…" : "绑定已验证研究包"}
         </button>
-        <p className="honest-note">将验证内容哈希与 canonical 引用 · 逐字节校验后原子注册，失败不会留下半注册状态。</p>
+        <p className="honest-note">仅可使用本机已存在 canonical 来源权威的研究包；内容完整性不能替代来源权威。逐字节校验失败或来源权威缺失时不会注册。</p>
       </div>}
       {runSpecs !== null && runSpecs.specs.length > 0 && <ul style={{listStyle: "none", padding: 0}} data-testid="runspec-list">
-        {runSpecs.specs.map((entry) => <li key={entry.runSpecId} style={{display: "flex", alignItems: "center", gap: 8, padding: "4px 0"}}>
-          <input type="radio" name="runspec" checked={runSpecId.trim() === entry.runSpecId} onChange={() => setRunSpecId(entry.runSpecId)} aria-label={`选择 ${entry.runSpecId}`}/>
-          <span style={{flex: 1}} title={`${entry.runSpecId} · ${entry.contentSha256}`}>
-            {entry.runSpecId.slice(0, 22)}… · {entry.engineVersion}
+        {runSpecs.specs.map((entry) => <li key={entry.artifactId} style={{display: "flex", alignItems: "center", gap: 8, padding: "4px 0"}}>
+          <input type="radio" name="runspec" disabled={entry.status !== "EXECUTABLE"} checked={entry.status === "EXECUTABLE" && runSpecId.trim() === entry.runSpecId} onChange={() => { if (entry.runSpecId !== null) setRunSpecId(entry.runSpecId); }} aria-label={entry.status === "EXECUTABLE" ? `选择 ${entry.runSpecId}` : `不可选择 ${entry.artifactId}`}/>
+          <span style={{flex: 1}} title={`${entry.runSpecId ?? "identity unavailable"} · ${entry.contentSha256 ?? "hash unavailable"}`}>
+            {entry.runSpecId === null ? `${entry.artifactId.slice(0, 22)}…` : `${entry.runSpecId.slice(0, 22)}…`} · {entry.engineVersion ?? "metadata unavailable"}
           </span>
           <span className={`connection-badge ${entry.status === "EXECUTABLE" ? "ok" : "unavailable"}`}>
             {entry.status === "EXECUTABLE" ? "EXECUTABLE" : `UNAVAILABLE · ${entry.diagnostic ?? ""}`}
           </span>
-          {entry.status !== "EXECUTABLE" && <button disabled={entryBusy} onClick={() => void importResearchPackage()}>导入 V3 研究包</button>}
+          {entry.status !== "EXECUTABLE" && <button disabled={entryBusy} onClick={() => void importResearchPackage()}>绑定已验证研究包</button>}
         </li>)}
-        <li><button data-action="import-research-package" disabled={entryBusy} onClick={() => void importResearchPackage()}>{entryBusy ? "验证导入中…" : "导入 V3 研究包"}</button>
-        <span className="honest-note"> 将验证内容哈希与 canonical 引用</span></li>
+        <li><button data-action="import-research-package" disabled={entryBusy} onClick={() => void importResearchPackage()}>{entryBusy ? "验证绑定中…" : "绑定已验证研究包"}</button>
+        <span className="honest-note"> 仅复用目标端已存在并可验证的 canonical 来源权威</span></li>
       </ul>}
       {lastImport && <p className="honest-note">最近导入：{lastImport.runSpecId.slice(0, 22)}… {lastImport.alreadyImported ? "（幂等重放）" : ""}</p>}
       <button className="primary" disabled={!canSubmit} onClick={() => void submitRunSpec()} data-action="submit-existing-runspec">
