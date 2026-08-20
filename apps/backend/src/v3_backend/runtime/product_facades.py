@@ -37,6 +37,7 @@ from .product_runtime import (
     BUILD_MANIFEST_ID,
     DEFAULT_RETENTION_PROFILE,
     MAX_EXPERIMENT_CELLS,
+    ProductResearchSubmission,
     RUN_RESULT_REFERENCE_ROLE,
     ProductRuntime,
     _canonical_request_hash,
@@ -957,6 +958,7 @@ class ProductEntryFacade:
         return {
             "ProductEntryService.v1.listBacktestRunSpecs": self.list_backtest_run_specs,
             "ProductEntryService.v1.importResearchPackage": self.import_research_package,
+            "ProductEntryService.v1.submitResearch": self.submit_research,
         }
 
     def list_backtest_run_specs(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -991,6 +993,26 @@ class ProductEntryFacade:
             request,
             {"read_model_version": "v3.product-entry/1.0", **outcome},
         )
+
+    def submit_research(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        outcome = self.product.execution.submit_research(
+            ProductResearchSubmission(
+                project_id=str(request["project_id"]),
+                project_context_revision_id=str(request["project_context_revision_id"]),
+                research_profile_id=str(request["research_profile_id"]),
+                strategy_profile_id=str(request["strategy_profile_id"]),
+                source=request["source"],
+                idempotency_key=str(request["idempotency_key"]),
+            )
+        )
+        return {
+            "request_id": request["request_id"],
+            "truth_state": "DEMO",
+            "read_model": {
+                "read_model_version": "v3.product-entry-research/1.0",
+                **outcome,
+            },
+        }
 
 
 def _product_entry():

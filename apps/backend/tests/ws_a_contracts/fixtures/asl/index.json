@@ -207,10 +207,11 @@
       "service": "ProductEntryService",
       "contract_id": "urn:v3:asl:product_entry:1.0.0",
       "path": "product_entry.contract.json",
-      "method_count": 2,
+      "method_count": 3,
       "method_operation_ids": [
         "ProductEntryService.v1.listBacktestRunSpecs",
-        "ProductEntryService.v1.importResearchPackage"
+        "ProductEntryService.v1.importResearchPackage",
+        "ProductEntryService.v1.submitResearch"
       ]
     }
   ]

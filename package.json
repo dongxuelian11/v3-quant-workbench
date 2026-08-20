@@ -42,7 +42,8 @@
     "validate:public": "npm run validate:authority && npm run typecheck && npm run lint && npm test && npm run test:backend && npm run build && npm run verify:build-manifest && npm run test:runtime && npm run smoke:frontend && npm run secret-scan && npm run repo-audit && npm run sbom:check",
     "smoke:product-runtime": "node scripts/product-runtime-smoke.mjs",
     "smoke:desktop-b3": "node scripts/run-desktop-b3-smoke.mjs",
-    "smoke:product-entry": "node scripts/product-entry-smoke.mjs"
+    "smoke:product-entry": "node scripts/product-entry-smoke.mjs",
+    "smoke:product-research": "node scripts/product-research-smoke.mjs"
   },
   "dependencies": {
     "@tanstack/react-table": "8.21.3",

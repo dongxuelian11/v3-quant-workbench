@@ -379,6 +379,30 @@ export interface ImportResearchPackageOutcomeView {
   readonly importedAt: string;
 }
 
+/** Closed Product Entry source intent; the main process supplies provider refs. */
+export interface ProductResearchSubmitIntent {
+  readonly symbol: string;
+  readonly startDate: string;
+  readonly endDate: string;
+}
+
+export interface ProductResearchSubmitOutcomeView {
+  readonly truthState: "DEMO";
+  readonly taskId: string;
+  readonly runId: string;
+  readonly acceptedState: "QUEUED";
+  readonly idempotentReplay: boolean;
+  readonly maturity: "PRODUCT_CONNECTED_CANDIDATE";
+  readonly researchProfileId: "RESEARCH_FREE_DATA_V1";
+  readonly strategyProfileId: "RESEARCH_CLOSE_RANK_TOP1_V1";
+  readonly researchClassification: readonly ["RESEARCH_ONLY", "APPROXIMATE"];
+  readonly truthAdmission: {
+    readonly truth: "NOT_FORMAL";
+    readonly admission: "PRE_ALPHA";
+  };
+  readonly eventCursor?: number;
+}
+
 /**
  * Narrow typed product bridge exposed to the renderer. There is deliberately
  * no generic request(operationId, payload) member: every method maps to one
@@ -411,4 +435,10 @@ export interface V3ProductRuntimeBridge {
    * package's source authority. Null = user cancelled the chooser.
    */
   importResearchPackage(): Promise<ImportResearchPackageOutcomeView | null>;
+  /**
+   * Product-connected, research-only source admission. The renderer supplies
+   * only symbol/date intent; provider refs and the transport envelope are
+   * owned by Electron main and no numeric market truth is accepted here.
+   */
+  submitResearch(request: ProductResearchSubmitIntent): Promise<ProductResearchSubmitOutcomeView>;
 }

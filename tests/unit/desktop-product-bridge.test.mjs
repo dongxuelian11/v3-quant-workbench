@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { ProductBindingStore, parsePersistedBinding, productBindingPath } from "../../apps/desktop/src/main/productRuntime/bindingStore.ts";
-import { adaptCapabilities, adaptTask, ProductAdapterError } from "../../apps/desktop/src/main/productRuntime/adapters.ts";
+import { adaptCapabilities, adaptResearchSubmit, adaptTask, ProductAdapterError } from "../../apps/desktop/src/main/productRuntime/adapters.ts";
 import {
   CreateProjectIntentStore,
   createProjectIntentPath,
@@ -205,9 +205,45 @@ test("renderer-facing bridge contract stays free of generic transport members", 
   // Product Entry adds createProject / listProjects / listBacktestRunSpecs /
   // importResearchPackage (typed, no generic transport surface).
   const registrations = [...ipc.matchAll(/handle\((PRODUCT_RUNTIME_CHANNELS\.[A-Za-z]+)/g)].map((match) => match[1]);
-  assert.equal(registrations.length, 17);
+  assert.equal(registrations.length, 18);
   assert.doesNotMatch(ipc, /operation_?[Ii]d/);
   assert.match(ipc, /trusted\(event\)/);
+});
+
+test("Product Entry research adapter preserves explicit PRE_ALPHA truth and rejects numeric drift", () => {
+  const accepted = adaptResearchSubmit({
+    truth_state: "DEMO",
+    read_model: {
+      read_model_version: "v3.product-entry-research/1.0",
+      task_id: "tsk_01ARZ3NDEKTSV4RRFFQ69G5FB",
+      run_id: "run_01ARZ3NDEKTSV4RRFFQ69G5FB",
+      accepted_state: "QUEUED",
+      maturity: "PRODUCT_CONNECTED_CANDIDATE",
+      research_profile_id: "RESEARCH_FREE_DATA_V1",
+      strategy_profile_id: "RESEARCH_CLOSE_RANK_TOP1_V1",
+      research_classification: ["RESEARCH_ONLY", "APPROXIMATE"],
+      truth_admission: { truth: "NOT_FORMAL", admission: "PRE_ALPHA" },
+      event_cursor: 3
+    }
+  }, "request-1");
+  assert.equal(accepted.truthState, "DEMO");
+  assert.equal(accepted.maturity, "PRODUCT_CONNECTED_CANDIDATE");
+  assert.deepEqual(accepted.researchClassification, ["RESEARCH_ONLY", "APPROXIMATE"]);
+  assert.throws(() => adaptResearchSubmit({
+    truth_state: "DEMO",
+    read_model: {
+      read_model_version: "v3.product-entry-research/1.0",
+      task_id: "tsk_01ARZ3NDEKTSV4RRFFQ69G5FB",
+      run_id: "run_01ARZ3NDEKTSV4RRFFQ69G5FB",
+      accepted_state: "QUEUED",
+      maturity: "PRODUCT_CONNECTED_CANDIDATE",
+      research_profile_id: "RESEARCH_FREE_DATA_V1",
+      strategy_profile_id: "RESEARCH_CLOSE_RANK_TOP1_V1",
+      research_classification: ["RESEARCH_ONLY", "APPROXIMATE"],
+      truth_admission: { truth: "NOT_FORMAL", admission: "PRE_ALPHA" },
+      observations: []
+    }
+  }, "request-2"), ProductAdapterError);
 });
 
 test("main process boots unbound on the LIVE path; fixture identity stays fixture-scoped", async () => {

@@ -1,11 +1,11 @@
 """ProductEntryService ASL contract: canonical research entry operations.
 
-Bounded, versioned, non-P0 contract expansion for V1 Product Entry.  The two
-project-scoped operations below are the only public surface added by the
-Product Entry task; projectless bootstrap (createProject / listProjects) is a
-separate narrow runtime control protocol (see runtime/product_entry.py) and is
-deliberately NOT an ASL operation because every ASL request envelope is
-project-bound by frozen design.
+Bounded, versioned, non-P0 contract expansion for V1 Product Entry.  The three
+project-scoped operations below are the public Product Entry surface;
+projectless bootstrap (createProject / listProjects) is a separate narrow
+runtime control protocol (see runtime/product_entry.py) and is deliberately
+NOT an ASL operation because every ASL request envelope is project-bound by
+frozen design.
 
 listBacktestRunSpecs discovers durable, project-owned canonical BacktestRunSpec
 references and verifies actual artifact bytes before listing them executable.
@@ -35,7 +35,11 @@ _PRJ = r'^prj_[0-9A-HJKMNP-TV-Z]{26}$'
 _PCR = r'^pcr_[0-9A-HJKMNP-TV-Z]{26}$'
 _BTRS = r'^btrs_sha256_[0-9a-f]{64}$'
 _ART = r'^art_sha256_[0-9a-f]{64}$'
+_TSK = r'^tsk_[0-9A-HJKMNP-TV-Z]{26}$'
+_RUN = r'^run_[0-9A-HJKMNP-TV-Z]{26}$'
 _HEX64 = r'^[0-9a-f]{64}$'
+_DATE_YYYYMMDD = r'^[0-9]{8}$'
+_SYMBOL = r'^[0-9]{6}$'
 # Single-segment relative file names only; the importer rejects anything else.
 _PKG_PATH = r'^[a-z0-9][a-z0-9._-]{0,63}$'
 
@@ -193,6 +197,97 @@ METHOD_SPECS = {
             },
         },
     },
+    'ProductEntryService.v1.submitResearch': {
+        'operation_id': 'ProductEntryService.v1.submitResearch',
+        'version': '1.0.0',
+        'kind': 'COMMAND',
+        'request_dto': {
+            'name': 'SubmitResearchRequestV1',
+            'schema': {
+                'type': 'object',
+                'additionalProperties': False,
+                'required': [
+                    'request_id', 'project_id', 'project_context_revision_id',
+                    'expected_api_version', 'idempotency_key',
+                    'research_profile_id', 'strategy_profile_id', 'source',
+                ],
+                'properties': {
+                    'request_id': {'type': 'string', 'description': 'Transport deduplication identity', 'format': 'uuid'},
+                    'project_id': {'type': 'string', 'description': 'Canonical project identity', 'pattern': _PRJ},
+                    'project_context_revision_id': {'type': 'string', 'description': 'Canonical project context revision identity', 'pattern': _PCR},
+                    'expected_api_version': {'type': 'string', 'description': 'Exact ASL major.minor expected by caller', 'const': '1.0'},
+                    'idempotency_key': {'type': 'string', 'minLength': 1, 'maxLength': 200, 'description': 'Idempotency key scoped to operation + project'},
+                    'research_profile_id': {'type': 'string', 'const': 'RESEARCH_FREE_DATA_V1'},
+                    'strategy_profile_id': {'type': 'string', 'const': 'RESEARCH_CLOSE_RANK_TOP1_V1'},
+                    'source': {
+                        'type': 'object',
+                        'additionalProperties': False,
+                        'required': [
+                            'provider_id', 'connector_version_id', 'logical_dataset',
+                            'frequency', 'symbol', 'start_date', 'end_date',
+                        ],
+                        'properties': {
+                            'provider_id': {'type': 'string', 'const': 'pvd_akshare_eastmoney_a_share_eod_v1'},
+                            'connector_version_id': {'type': 'string', 'const': 'cov_akshare_eod_research_v1'},
+                            'logical_dataset': {'type': 'string', 'const': 'CN_A_SHARE_EOD'},
+                            'frequency': {'type': 'string', 'const': 'P1D'},
+                            'symbol': {'type': 'string', 'pattern': _SYMBOL},
+                            'start_date': {'type': 'string', 'pattern': _DATE_YYYYMMDD},
+                            'end_date': {'type': 'string', 'pattern': _DATE_YYYYMMDD},
+                        },
+                    },
+                },
+            },
+        },
+        'response_dto': {
+            'name': 'SubmitResearchResponseV1',
+            'schema': {
+                'type': 'object',
+                'additionalProperties': False,
+                'required': ['request_id', 'truth_state', 'read_model'],
+                'properties': {
+                    'request_id': {'type': 'string', 'description': 'Echoed request identity', 'format': 'uuid'},
+                    'truth_state': {'type': 'string', 'description': 'Explicit capability truth', 'enum': ['FORMAL', 'DEMO', 'UNAVAILABLE']},
+                    'read_model': {
+                        'type': 'object',
+                        'additionalProperties': False,
+                        'required': [
+                            'read_model_version', 'task_id', 'run_id',
+                            'accepted_state', 'maturity', 'research_profile_id',
+                            'strategy_profile_id', 'research_classification',
+                            'truth_admission',
+                        ],
+                        'properties': {
+                            'read_model_version': {'type': 'string', 'const': 'v3.product-entry-research/1.0'},
+                            'task_id': {'type': 'string', 'pattern': _TSK},
+                            'run_id': {'type': 'string', 'pattern': _RUN},
+                            'accepted_state': {'type': 'string', 'const': 'QUEUED'},
+                            'maturity': {'type': 'string', 'const': 'PRODUCT_CONNECTED_CANDIDATE'},
+                            'research_profile_id': {'type': 'string', 'const': 'RESEARCH_FREE_DATA_V1'},
+                            'strategy_profile_id': {'type': 'string', 'const': 'RESEARCH_CLOSE_RANK_TOP1_V1'},
+                            'research_classification': {
+                                'type': 'array',
+                                'minItems': 2,
+                                'maxItems': 2,
+                                'uniqueItems': True,
+                                'items': {'type': 'string', 'enum': ['RESEARCH_ONLY', 'APPROXIMATE']},
+                            },
+                            'truth_admission': {
+                                'type': 'object',
+                                'additionalProperties': False,
+                                'required': ['truth', 'admission'],
+                                'properties': {
+                                    'truth': {'type': 'string', 'const': 'NOT_FORMAL'},
+                                    'admission': {'type': 'string', 'const': 'PRE_ALPHA'},
+                                },
+                            },
+                            'event_cursor': {'type': 'integer', 'minimum': 1},
+                        },
+                    },
+                },
+            },
+        },
+    },
 }
 
 
@@ -255,9 +350,22 @@ class ImportResearchPackageResponseV1(ClosedDto):
     SCHEMA = METHOD_SPECS['ProductEntryService.v1.importResearchPackage']['response_dto']['schema']
 
 
+class SubmitResearchRequestV1(ClosedDto):
+    DTO_NAME = 'SubmitResearchRequestV1'
+    OPERATION_ID = 'ProductEntryService.v1.submitResearch'
+    SCHEMA = METHOD_SPECS['ProductEntryService.v1.submitResearch']['request_dto']['schema']
+
+
+class SubmitResearchResponseV1(ClosedDto):
+    DTO_NAME = 'SubmitResearchResponseV1'
+    OPERATION_ID = 'ProductEntryService.v1.submitResearch'
+    SCHEMA = METHOD_SPECS['ProductEntryService.v1.submitResearch']['response_dto']['schema']
+
+
 OPERATION_IDS = (
     'ProductEntryService.v1.listBacktestRunSpecs',
     'ProductEntryService.v1.importResearchPackage',
+    'ProductEntryService.v1.submitResearch',
 )
 OPERATIONS = (
     OperationContract(
@@ -277,6 +385,15 @@ OPERATIONS = (
         request_type=ImportResearchPackageRequestV1,
         response_type=ImportResearchPackageResponseV1,
         metadata=METHOD_SPECS['ProductEntryService.v1.importResearchPackage'],
+    ),
+    OperationContract(
+        operation_id='ProductEntryService.v1.submitResearch',
+        service=SERVICE,
+        version='1.0.0',
+        kind=OperationKind.COMMAND,
+        request_type=SubmitResearchRequestV1,
+        response_type=SubmitResearchResponseV1,
+        metadata=METHOD_SPECS['ProductEntryService.v1.submitResearch'],
     ),
 )
 CONTRACT = ServiceContract(
@@ -300,4 +417,6 @@ __all__ = (
     'ListBacktestRunSpecsResponseV1',
     'ImportResearchPackageRequestV1',
     'ImportResearchPackageResponseV1',
+    'SubmitResearchRequestV1',
+    'SubmitResearchResponseV1',
 )

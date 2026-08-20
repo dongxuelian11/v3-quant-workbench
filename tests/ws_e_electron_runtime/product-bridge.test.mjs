@@ -230,8 +230,8 @@ test("UNAVAILABLE run-spec with null metadata is readable and never fabricated",
 
 test("product IPC channel set is closed and typed", () => {
   const channels = Object.values(PRODUCT_RUNTIME_CHANNELS);
-  assert.equal(channels.length, 17);
-  assert.ok(new Set(channels).size === 17);
+  assert.equal(channels.length, 18);
+  assert.ok(new Set(channels).size === 18);
   for (const channel of channels) assert.ok(channel.startsWith("productRuntime:"));
 });
 

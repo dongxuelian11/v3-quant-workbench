@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { capabilityTruth, describeError, useProductRuntime, type ProductSurfaceState } from "../productRuntimeStore";
+import type { ProductResearchSubmitIntent } from "../../../../../packages/contracts/src/index";
 
 /**
  * LIVE B3 product runtime surface. Every state shown here is capability-driven
@@ -40,6 +41,7 @@ export function ProductRuntimePanel() {
   const runSpecs = useProductRuntime((state) => state.runSpecs);
   const entryBusy = useProductRuntime((state) => state.entryBusy);
   const lastImport = useProductRuntime((state) => state.lastImport);
+  const lastResearch = useProductRuntime((state) => state.lastResearch);
   const runSpecId = useProductRuntime((state) => state.runSpecId);
   const inflight = useProductRuntime((state) => state.inflight);
   const task = useProductRuntime((state) => state.task);
@@ -51,10 +53,14 @@ export function ProductRuntimePanel() {
   const submitRunSpec = useProductRuntime((state) => state.submitRunSpec);
   const createProjectAndBind = useProductRuntime((state) => state.createProjectAndBind);
   const importResearchPackage = useProductRuntime((state) => state.importResearchPackage);
+  const submitResearch = useProductRuntime((state) => state.submitResearch);
   const [projectIdInput, setProjectIdInput] = useState("");
   const [revisionInput, setRevisionInput] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectNotes, setNewProjectNotes] = useState("");
+  const [researchSymbol, setResearchSymbol] = useState("000001");
+  const [researchStartDate, setResearchStartDate] = useState("20260106");
+  const [researchEndDate, setResearchEndDate] = useState("20260107");
 
   useEffect(() => {
     void refresh();
@@ -115,10 +121,23 @@ export function ProductRuntimePanel() {
     </div>}
 
     {bound && <div className="product-run" data-testid="product-run">
+      <div className="section-head"><div><small>Product Entry · PRE_ALPHA / RESEARCH_ONLY</small><h2>从 canonical source 发起研究</h2></div></div>
+      <p className="honest-note">这里只提交标的与日期意图。Provider、ConnectorVersion、原始字节、观察值与数值真值由 backend 解析并校验；当前结果明确标记为 PRODUCT_CONNECTED_CANDIDATE，不是 Formal Market State。</p>
+      <div className="product-research-entry" data-testid="product-research-entry">
+        <label>标的代码<input value={researchSymbol} onChange={(event) => setResearchSymbol(event.target.value)} inputMode="numeric" aria-label="研究标的代码" disabled={inflight || entryBusy}/></label>
+        <label>开始日期<input value={researchStartDate} onChange={(event) => setResearchStartDate(event.target.value)} inputMode="numeric" aria-label="研究开始日期" disabled={inflight || entryBusy}/></label>
+        <label>结束日期<input value={researchEndDate} onChange={(event) => setResearchEndDate(event.target.value)} inputMode="numeric" aria-label="研究结束日期" disabled={inflight || entryBusy}/></label>
+        <button className="primary" data-action="submit-product-research" disabled={inflight || entryBusy || !/^[0-9]{6}$/.test(researchSymbol) || !/^[0-9]{8}$/.test(researchStartDate) || !/^[0-9]{8}$/.test(researchEndDate)} onClick={() => {
+          const intent: ProductResearchSubmitIntent = { symbol: researchSymbol, startDate: researchStartDate, endDate: researchEndDate };
+          void submitResearch(intent);
+        }}>{inflight ? "研究请求中…" : "提交 Product Entry 研究"}</button>
+      </div>
+      {lastResearch && <p className="honest-note" data-testid="product-research-admission">已接受：{lastResearch.taskId} · {lastResearch.maturity} · {lastResearch.researchClassification.join(" / ")} · {lastResearch.truthAdmission.admission}</p>}
+
       <div className="section-head"><div><small>可执行 canonical 研究配置</small><h2>研究配置</h2></div></div>
       {runSpecs === null && <p className="honest-note">正在从 canonical 项目引用读取可运行研究配置…</p>}
       {runSpecs?.specs.length === 0 && <div data-testid="empty-run-specs">
-        <p className="honest-note">尚无可执行 canonical 研究配置 · 新建项目不会自动获得第一份 Source Authority，提交按钮保持禁用。</p>
+        <p className="honest-note">尚无可执行 canonical RunSpec · RunSpec 执行路径仍需目标端已有 Source Authority；上方 Product Entry 研究入口是独立的 PRE_ALPHA research-only 路径。</p>
         <button data-action="import-research-package" disabled={entryBusy} onClick={() => void importResearchPackage()}>
           {entryBusy ? "验证绑定中…" : "绑定已验证研究包"}
         </button>

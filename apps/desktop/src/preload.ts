@@ -8,6 +8,8 @@ import type {
   DesktopBridge,
   DesktopCommandEnvelope,
   ImportResearchPackageOutcomeView,
+  ProductResearchSubmitIntent,
+  ProductResearchSubmitOutcomeView,
   PersistedWorkspace,
   ProductBindingRefs,
   ProductCapabilityView,
@@ -133,7 +135,8 @@ const productRuntimeBridge: V3ProductRuntimeBridge = Object.freeze({
   }),
   listProjects: () => invokeProduct<ProjectsListView>("productRuntime:listProjects"),
   listBacktestRunSpecs: () => invokeProduct<RunSpecsListView>("productRuntime:listBacktestRunSpecs"),
-  importResearchPackage: () => invokeProduct<ImportResearchPackageOutcomeView | null>("productRuntime:importResearchPackage")
+  importResearchPackage: () => invokeProduct<ImportResearchPackageOutcomeView | null>("productRuntime:importResearchPackage"),
+  submitResearch: (request: ProductResearchSubmitIntent) => invokeProduct<ProductResearchSubmitOutcomeView>("productRuntime:submitResearch", request)
 });
 
 contextBridge.exposeInMainWorld("v3ProductRuntime", productRuntimeBridge);

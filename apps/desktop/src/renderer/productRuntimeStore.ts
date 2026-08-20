@@ -3,6 +3,8 @@ import type {
   ArtifactDescriptorView,
   BacktestSubmitOutcomeView,
   ImportResearchPackageOutcomeView,
+  ProductResearchSubmitIntent,
+  ProductResearchSubmitOutcomeView,
   ProductBindingRefs,
   ProductCapabilityView,
   ProductResultView,
@@ -45,6 +47,7 @@ interface ProductRuntimeState {
   inflight: boolean;
   lastSubmit: BacktestSubmitOutcomeView | null;
   lastImport: ImportResearchPackageOutcomeView | null;
+  lastResearch: ProductResearchSubmitOutcomeView | null;
   task: ProductTaskView | null;
   result: ProductResultView | null;
   artifactDescriptor: ArtifactDescriptorView | null;
@@ -55,6 +58,7 @@ interface ProductRuntimeState {
   submitRunSpec(): Promise<void>;
   createProjectAndBind(displayName: string, notes?: string): Promise<void>;
   importResearchPackage(): Promise<void>;
+  submitResearch(intent: ProductResearchSubmitIntent): Promise<void>;
 }
 
 const RUN_SPEC_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
@@ -113,6 +117,7 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
   inflight: false,
   lastSubmit: null,
   lastImport: null,
+  lastResearch: null,
   task: null,
   result: null,
   artifactDescriptor: null,
@@ -253,6 +258,31 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       }));
     } finally {
       set((state) => ({ ...state, entryBusy: false }));
+    }
+  },
+
+  submitResearch: async (intent) => {
+    const bridge = window.v3ProductRuntime;
+    if (!bridge) return;
+    set((state) => ({ ...state, inflight: true, surface: "REQUEST_IN_FLIGHT", errorMessage: null, task: null, result: null, artifactDescriptor: null, lastResearch: null }));
+    try {
+      const outcome = await bridge.submitResearch(intent);
+      const task = await bridge.getTask(outcome.taskId);
+      let researchResult: ProductResultView | null = null;
+      let artifactDescriptor: ArtifactDescriptorView | null = null;
+      const resultArtifactId = task.outputs["BACKTEST_RUN_RESULT"];
+      if (resultArtifactId) artifactDescriptor = await bridge.getArtifactDescriptor(resultArtifactId).catch(() => null);
+      if (task.resultId !== null) researchResult = await bridge.getResult(task.resultId).catch(() => null);
+      set((state) => ({
+        inflight: false,
+        lastResearch: outcome,
+        task,
+        result: researchResult,
+        artifactDescriptor,
+        surface: deriveSurface({ ...state, inflight: false, result: researchResult, task })
+      }));
+    } catch (error) {
+      set({ inflight: false, surface: "ERROR", errorMessage: describeError(error) ?? "提交 Product Entry 研究失败" });
     }
   }
 }));
