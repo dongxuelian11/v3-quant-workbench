@@ -157,13 +157,40 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       const runSpecs = status.boundProject !== null
         ? await bridge.listBacktestRunSpecs().catch(() => null)
         : null;
+      const previousResearch = get().lastResearch;
+      let researchReadback: Awaited<ReturnType<typeof readResearchTaskView>> | null = null;
+      let researchReadbackError: unknown = null;
+      if (!stale && status.boundProject !== null && previousResearch !== null) {
+        try {
+          const candidate = await readResearchTaskView(bridge, previousResearch);
+          if (candidate.task.projectId === status.boundProject.projectId) {
+            researchReadback = candidate;
+          } else {
+            researchReadbackError = new Error("research readback project binding changed");
+          }
+        } catch (error) {
+          researchReadbackError = error;
+        }
+      }
       set((state) => ({
         status,
         capabilities,
         boundProject: status.boundProject,
         projects,
         runSpecs,
+        errorMessage: null,
         surface: deriveSurface({ ...state, status }),
+        ...(previousResearch !== null && !stale ? {
+          task: researchReadback?.task ?? null,
+          result: researchReadback?.researchResult ?? null,
+          artifactDescriptor: researchReadback?.artifactDescriptor ?? null,
+          surface: researchReadbackError === null
+            ? deriveSurface({ ...state, status, task: researchReadback?.task ?? null, result: researchReadback?.researchResult ?? null, inflight: false })
+            : "ERROR" as const,
+          errorMessage: researchReadbackError === null
+            ? null
+            : describeError(researchReadbackError) ?? "canonical research readback unavailable after reconnect"
+        } : {}),
         // A stale binding must not keep presenting previously-read canonical
         // task/result/artifact state as currently valid product truth.
         ...(stale ? {
@@ -173,7 +200,7 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
           lastSubmit: null,
           inflight: false,
           errorMessage: "项目绑定已失效 · BINDING_STALE - 需要重新验证并重新绑定 canonical 项目"
-        } : { errorMessage: null })
+        } : {})
       }));
     } catch (error) {
       set((state) => ({ surface: "BACKEND_DISCONNECTED", errorMessage: describeError(error) ?? state.errorMessage }));

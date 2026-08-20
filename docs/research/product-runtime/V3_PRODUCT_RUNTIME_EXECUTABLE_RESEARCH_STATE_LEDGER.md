@@ -1,26 +1,123 @@
-# V3 Product Runtime Executable Research State Ledger
+# V3 PR #46 Desktop Typed Executable Research Acceptance Closure State Ledger
 
 TASK_GOAL
-: Execute task `V3-PRODUCT-RUNTIME-EXECUTABLE-RESEARCH-20260820-01` from the exact GitHub CURRENT and deliver one bounded, project-bound `ProductEntryService.v1.submitResearch` operation. The product path must resolve canonical provider/source references to verified actual source bytes, construct `ResearchSessionObservation` only inside the backend, reuse `CoreResearchPipelineService` and its existing Strategy/Portfolio/Risk/Backtest owners, persist one canonical Task/Run/Result/Artifact lineage, expose typed Desktop query and restart/reopen behavior, and remain `PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE`.
+: Execute `V3-PR46-DESKTOP-TYPED-EXECUTABLE-RESEARCH-ACCEPTANCE-CLOSURE-20260821-01` only as one bounded same-PR correction on PR #46 / `codex/product-runtime-executable-research-01`: prove EMPTY STORAGE -> real Desktop ProductBridge -> real BackendSupervisor/framed backend -> `ProductEntryService.v1.submitResearch` -> actual source bytes/provenance -> existing `CoreResearchPipelineService` -> canonical Task/Run/Result/Artifact -> ProductBridge and renderer-store typed readback -> shutdown/restart/reopen. Keep PR #46 OPEN / UNMERGED and stop for independent review.
 
 TASK_PROGRESS
-: ADMITTED; exact-main worktree created; authority and CURRENT verified; first trace recorded; implementation complete; clean-start smokes, regressions, and full local validation PASS; guard fixes and focused rechecks PASS; final exact-head validation/guard, GitHub delivery, CI, and independent-review stop remain PENDING.
+: LOCAL_ACCEPTANCE_PASS; full P0, original task prompt, prior Ledger, local Git, and fresh GitHub CURRENT were reread after compaction. Prior backend composition is preserved. The real Desktop ProductBridge/BackendSupervisor/framed-backend path, renderer-store typed readback, restart/reopen equality, bounded contract test, and source-unavailable fail-closed path pass from empty storage. Focused suites, full backend, and full local `npm run validate` pass. Exact FINAL_HEAD guards, commit/push, fresh exact-head CI, forward scan, and independent-review stop remain PENDING.
 
 PROJECT_AUTHORITY
-: P0 authority version `1.0.2`; no `P0_AUTHORITY_AMENDMENT` is present in the user request or attached task document. Protected authority files are read-only for this task. Locked-file SHA-256 values verified against `docs/status/V3_PROJECT_AUTHORITY_MANIFEST.json` before implementation: `V3_PROJECT_CONSTITUTION.md=92ff8049addd10c1ca7f6ca293007b254045f3f63bae53ddc626b761da5bd32b`, `AGENTS.md=cbe7d78e2eccbfd5254fd08b30a0b145dc7c37b60aa5eadbbf4649b490f5b385`, `docs/architecture/V3_CANONICAL_ARCHITECTURE.md=ca74dcd00d2d20ba106d962b2455254f8ee69807df09d20ff4984e20a362bc5b`, `docs/status/V3_CAPABILITY_LEVELS.md=79ca5210a33f283332884a9a4268e08a093ffe2d4ea33fe97d20672d355a9266`, manifest self-hash `3306f51f4d9b26577f092d53e3a5cdb319619e9e9a75c0b90203c87bd21c425a`.
+: P0 authority `1.0.2`; no explicit `P0_AUTHORITY_AMENDMENT` in the user request or attached task document. Protected files are read-only. Manifest-locked SHA-256 verified at admission: `V3_PROJECT_CONSTITUTION.md=92ff8049addd10c1ca7f6ca293007b254045f3f63bae53ddc626b761da5bd32b`, `AGENTS.md=cbe7d78e2eccbfd5254fd08b30a0b145dc7c37b60aa5eadbbf4649b490f5b385`, `docs/architecture/V3_CANONICAL_ARCHITECTURE.md=ca74dcd00d2d20ba106d962b2455254f8ee69807df09d20ff4984e20a362bc5b`, `docs/status/V3_CAPABILITY_LEVELS.md=79ca5210a33f283332884a9a4268e08a093ffe2d4ea33fe97d20672d355a9266`. Manifest self-hash at admission was recorded by the prior Ledger and will be recomputed on final head.
 
 TOOLING_AUTHORITY
-: The attached V3 task document is the task-scoped execution authority. WorkflowGuard preflight/evidence are `NOT_APPLICABLE` because no explicit task-context JSON contract was provided; no synthetic context will be invented. Clean-code, test, and docs guards are required on exact FINAL_HEAD and must each report zero findings. GitHub CURRENT, repository P0 authority, this Ledger, and real test/build evidence outrank optional or missing tooling inputs.
+: The attached task document is task-scoped execution authority. `workflowguard-v3-preflight` and `workflowguard-v3-evidence` are `NOT_APPLICABLE` because no explicit task-context JSON contract was supplied; no synthetic contract will be invented. `clean-code-guard`, `test-guard`, and `docs-guard` are required on exact FINAL_HEAD and must report zero findings. GitHub CURRENT, P0, this Ledger, and actual test/build evidence outrank historical Ledger claims.
+
+TASK_SCOPE_EXACT
+: Existing PR #46 and branch only; bounded Desktop typed acceptance correction. Allowed: tests/smoke orchestration and minimal direct Desktop typed wiring if the real path exposes a small defect. Keep existing Product Entry backend composition, ASL, source authority ceiling, CoreResearchPipeline, Task/Run/Result/Artifact owners, and restart behavior.
+
+FORBIDDEN_SCOPE_EXACT
+: No backend Product Runtime redo; no new ASL operation/service; no new PR; no merge; no packaging/release/V1/Model/Agent/First Source Authority wave; no caller observations/bars/weights/raw bytes; no fake Product Entry authority, fixture fallback, second engine, shadow canonical objects, migration, dependency/lock graph, P0, CI workflow, or broad backend/domain semantic change.
 
 ## Admission and CURRENT
 
-- Task document: `Downloads/V3_PRODUCT_RUNTIME_EXECUTABLE_RESEARCH_20260820_V1_0.md`, read in full before work.
+TASK_GOAL_EXACT
+: `EMPTY STORAGE -> real ProductBridge -> real BackendSupervisor/framed backend -> submitResearch -> actual source bytes -> existing CoreResearchPipeline -> canonical Task/Run/Result/Artifact -> renderer store typed readback -> restart/reopen`, same PR only.
+
+CURRENT_MAIN
+: `2ee330f4d4967e4ecfbd58b1480753fd94e5fee3` (fresh GitHub API).
+
+CURRENT_MAIN_TREE
+: `2751ca39f06ad818cad502bb771457fd8876f79e` (fresh GitHub API).
+
+PR_NUMBER
+: `46`.
+
+TASK_BRANCH
+: `codex/product-runtime-executable-research-01`.
+
+PRE_CORRECTION_HEAD
+: `a86b8f824739ea9a11b20e3a1273712a0246d08b` (fresh GitHub API and local).
+
+PRE_CORRECTION_TREE
+: `481cae45ba6cfd4a1afeb9f19ce1417f94ea5704` (local exact `a86b8f824739ea9a11b20e3a1273712a0246d08b` tree; GitHub head commit matches).
+
+MERGE_BASE
+: `2ee330f4d4967e4ecfbd58b1480753fd94e5fee3` (local exact refs).
+
+PR_STATE
+: `OPEN / UNMERGED` before correction; `merged=false`, `closed_at=null` from fresh GitHub API.
+
+PR_MERGEABILITY
+: `clean` before correction from fresh GitHub API.
+
+PR_HEAD_REMOTE
+: `a86b8f824739ea9a11b20e3a1273712a0246d08b`; local `HEAD` and `origin/codex/product-runtime-executable-research-01` match.
+
+PR_CI_BEFORE
+: push run `32396624355=SUCCESS`; pull_request run `32396644582=SUCCESS`, both for pre-correction head only.
+
+ACCEPTED_BACKEND_COMPOSITION
+: `PRESERVE`: ProductEntry `submitResearch`, actual provider adapter bytes/hash/provenance, backend-only observations, existing CoreResearchPipeline and Strategy/Portfolio/Risk/Backtest owners, canonical Task/Run/Result/Artifact, and backend restart/reopen.
+
+CONFIRMED_ACCEPTANCE_BLOCKER
+: Current `smoke:product-research` runs only Node -> Python ProductRuntime/ProductEntry facade; it does not exercise real Desktop ProductBridge, BackendSupervisor/framed transport, or renderer store typed readback.
+
+DESKTOP_TYPED_PATH_BEFORE
+: `NO` / confirmed blocker.
+
+BACKEND_SMOKE_BEFORE
+: `PASS_REPORTED_PRIOR_LEDGER`; not treated as fresh evidence for this task.
+
+DESKTOP_TYPED_E2E_BEFORE
+: `NO`.
+
+CHANGED_PATHS
+: `apps/desktop/src/renderer/productRuntimeStore.ts`; `tests/ws_e_electron_runtime/product-bridge.test.mjs`; `scripts/product-research-smoke.mjs`; `docs/research/product-runtime/V3_PRODUCT_RUNTIME_EXECUTABLE_RESEARCH_STATE_LEDGER.md`.
+
+COMPLETED_WORK
+: Full attached task document read; P0 read/hash verified; fresh GitHub CURRENT recovery check; prior accepted backend composition inspected and preserved; real framed Desktop harness, renderer canonical readback wiring, bounded contract test, provider-boundary unavailable-path assertion, focused regressions, 982-test backend foundation, and full local validation completed successfully.
+
+REMAINING_WORK
+: Complete guard self-checks and Ledger closure fields; create normal same-branch correction commit; validate clean exact FINAL_HEAD; push the same branch; wait for fresh push/PR CI on that exact SHA; perform forward defect scan; stop for independent review.
+
+BLOCKERS
+: `NONE` at admission.
+
+TESTS_ACTUALLY_RUN
+: `npm run build=PASS`; `npm run smoke:product-research=PASS`; `npm run test:runtime=PASS (74/74)`; `npm test=PASS (123/123)`; `npm run smoke:product-entry=PASS`; `V3_PYTHON=python npm run smoke:product-runtime=PASS (69 checks)`; `npm run test:backend=PASS (37/37 suites, 62/62 files, 982 tests, one declared optional TA-Lib skip)`; `npm run validate=PASS` including authority, typecheck, lint, unit, backend, build/manifest, runtime, frontend, secret scan, repo audit, SBOM, Electron, and visual evidence. Exact clean FINAL_HEAD reruns remain `PENDING`.
+
+RESULTS_ACTUALLY_OBSERVED
+: `BACKEND_PRODUCT_RESEARCH_E2E=PASS`; `PRODUCTBRIDGE_REAL_BACKEND_INTEGRATION=PASS`; `RENDERER_STORE_REAL_TYPED_PATH=PASS`; `DESKTOP_TYPED_EXECUTABLE_RESEARCH_E2E=PASS_CANDIDATE`. Empty storage produced canonical `Task=tsk_YEZ64M3D2N2GDD2K4E4XZ6FJB4`, `Run=run_FPWG0SHX5H23D18FZ049M1N50M`, `Result=res_AR7SYZHJP13Q1BV3CZ1ZGMW7Z0`, result Artifact `art_sha256_c7b6f032f9ba7129754f835af5c4faeed1c0e86a4f49b036a0ab149d47780779`, and lineage Artifact `art_sha256_571bb2aefdd5d0e10595bfb71921ed6f209b0897fde6a94ae03b1ba3abd482e9`; new supervisor/bridge on the same storage reopened all exact IDs/hashes. Desktop caller carried only symbol/start/end. Source kind was `TEST_EXTERNAL_PROVIDER_BOUNDARY`. Unavailable source returned `INVALID_ARGUMENT` with no Task/Result/Artifact and transport remained READY.
+
+FULL_VALIDATE_STATE
+: `PASS` on the local correction candidate; exact clean FINAL_HEAD rerun is `PENDING`.
+
+GUARD_STATE
+: `PASS_CANDIDATE`; clean-code/test/docs self-checks are clean after one production error-message precedence fix and Ledger evidence refresh. Exact FINAL_HEAD confirmation remains `PENDING`.
+
+CI_STATE
+: `PENDING` for correction head; old CI is pre-correction only.
+
+DEFERRED
+: Real network free-source claim, First Source Authority broad wave, Formal Data Truth, Packaging, Release CI, V1 final acceptance, Model/Agent productization, async worker, checkpoint/resume.
+
+NOT_RUN
+: Exact clean FINAL_HEAD validation/guards, commit, push, fresh correction CI, and forward defect scan.
+
+PENDING
+: FINAL_HEAD/tree, exact-head guard evidence, push/PR CI, forward defect scan, final report, independent-review stop.
+
+BLOCKED
+: `NONE`.
+
+EXACT_NEXT_ACTION
+: Create the normal same-branch correction commit from the four allowed paths, then validate a clean exact FINAL_HEAD before push.
+
+- Task document: `Downloads/V3_PR46_DESKTOP_TYPED_EXECUTABLE_RESEARCH_ACCEPTANCE_CLOSURE_20260821_V1_0.md`, read in full before this correction.
 - Expected remote `main`: `2ee330f4d4967e4ecfbd58b1480753fd94e5fee3`.
 - Expected `main` tree: `2751ca39f06ad818cad502bb771457fd8876f79e`.
-- Fresh GitHub state at admission: open PR count `0`; main push CI for `2ee330f4d4967e4ecfbd58b1480753fd94e5fee3` succeeded.
-- Working branch: `codex/product-runtime-executable-research-01`.
+- Fresh GitHub state at admission: PR #46 is open, mergeability `clean`, head and base match the exact values above; pre-correction push/PR CI succeeded.
 - Isolated worktree: `.codex/worktrees/product-runtime-executable-research-01` under the repository root.
-- Exact starting HEAD: `2ee330f4d4967e4ecfbd58b1480753fd94e5fee3`.
 - The original root checkout was dirty on `codex/product-entry-v1-01`; its changes are user-owned and remain untouched.
 - No reset, rebase, force push, direct-main write, automatic merge, packaging, release, V1 acceptance, Model/Agent work, or next-task work is authorized.
 
@@ -198,10 +295,10 @@ TASK_IDEMPOTENCY
 : `PASS`; durable idempotency is project-bound, exact-request conflict fails closed, and restart replay returns the same Task/Run without a new cursor.
 
 TASK_ID
-: `tsk_Q8YMT7ZZJ96VHEZR0AGT34M9FR` from the latest clean-start research smoke.
+: `tsk_P0HFNMWH0N00F0H4Y48W3F77KM` from the latest real Desktop clean-start research smoke.
 
 RUN_ID
-: `run_BG54J57R7N3ND2D3TDD6G6R6KG` from the latest clean-start research smoke.
+: `run_SEQXJ845791F1C7E4KXKJMFFWR` from the latest real Desktop clean-start research smoke.
 
 PIPELINE_RUN_RELATION
 : Product canonical Run is the active reference for the existing pipeline output; lineage records bind the core pipeline run/result to the Product Task/Run.
@@ -210,16 +307,19 @@ RESULT_RELATION
 : Canonical Result is project/context/task/run bound and points to the registered result Artifact.
 
 RESULT_ID
-: `res_CCY9Y5NWBH15547X5TQ6G93RX8`.
+: `res_XV0KXVRNMS4TX78A69P0D896K4`.
 
 RESULT_ARTIFACT_ID
-: `art_sha256_28427b2e3500316382d0596373974924a7b62130b1553e1fb2951c2b4f6ee7b3`.
+: `art_sha256_c7b6f032f9ba7129754f835af5c4faeed1c0e86a4f49b036a0ab149d47780779`.
 
 RESULT_ARTIFACT_SHA256
-: `28427b2e3500316382d0596373974924a7b62130b1553e1fb2951c2b4f6ee7b3`.
+: `c7b6f032f9ba7129754f835af5c4faeed1c0e86a4f49b036a0ab149d47780779`.
+
+LINEAGE_ARTIFACT_ID
+: `art_sha256_d5876fc20f78ef57486e11270856fa83270a9adc6bf40cda38cdacc9fecb3bbb`; ProductBridge descriptor role `RESEARCH_PIPELINE_LINEAGE` and SHA identity verified.
 
 RESTART_REOPEN
-: `PASS`; clean-start smoke reopened Product Runtime and replayed the same idempotency key with stable Task/Run/Result/Artifact identity.
+: `PASS`; after shutdown, new `BackendSupervisor B` and `ProductBridge B` reopened/rebound the same storage and renderer refresh reacquired the exact Task/Run/Result/result Artifact/lineage Artifact IDs and hashes.
 
 PRODUCT_ENTRY_FACADE
 : `PASS`; closed `submitResearch` facade delegates to ProductExecution and returns the bounded accepted read model.
@@ -276,10 +376,10 @@ RESTART_TESTS
 : `PASS`; Product Runtime, Electron runtime, B3, and clean research smoke reopen paths.
 
 DESKTOP_BRIDGE_TESTS
-: `PASS`; typed adapter and bridge regressions included in 123 unit tests and 73 runtime tests.
+: `PASS`; typed bridge contract regression and real bridge/backend integration included in 123 unit tests, 74 runtime tests, and `smoke:product-research`.
 
 DESKTOP_STORE_TESTS
-: `PASS`; submit/query/replay behavior covered.
+: `PASS`; real ProductBridge-backed renderer store submit/readback/restart refresh behavior covered by `smoke:product-research`.
 
 DESKTOP_PANEL_TESTS
 : `PASS`; panel state and boundary behavior covered by frontend/runtime regression suite.
@@ -309,7 +409,7 @@ FULL_BACKEND
 : `PASS`; 37/37 suites, 62/62 discovered files, 982 test cases.
 
 RUNTIME_TESTS
-: `PASS`; 73/73.
+: `PASS`; 74/74.
 
 UNIT_TESTS
 : `PASS`; 123/123.
@@ -330,7 +430,7 @@ BUILD_MANIFEST
 : `PASS` locally; exact-clean-head manifest verification is `PENDING` until final commit/worktree.
 
 GIT_DIFF_CHECK
-: `PASS` before this Ledger update; rerun after the update and on exact FINAL_HEAD.
+: `PASS`; four-path bounded write set only. Rerun after this Ledger update and on exact FINAL_HEAD.
 
 DEFERRED_GAPS_UPDATED
 : `PASS`; this Ledger records the bounded wave status and preserves deferred gaps.
@@ -339,7 +439,7 @@ DEFERRED_GAPS_PRESERVED
 : `PASS`; First Source Authority broad work, strict PIT, paid data, Formal Market State, async worker, checkpoint/resume, Model/Agent, Packaging, and Release CI remain deferred.
 
 CURRENT_STATUS_UPDATE
-: Implementation and local validation complete; exact final-head guard, normal push, one PR, fresh CI, forward defect scan, and stop report remain pending.
+: Implementation, local full validation, and candidate guards complete; normal same-branch commit, exact FINAL_HEAD validation/guards, push, fresh CI, forward defect scan, and stop report remain pending.
 
 GUARD_SKILLS_AVAILABLE
 : `clean-code-guard`, `test-guard`, `docs-guard` read and available.
@@ -351,19 +451,19 @@ GUARD_SKILLS_SCOPE
 : All changed paths plus Product Entry/ASL, Product Runtime composition, provider/source boundary, CoreResearchPipeline boundary, Task/Run/Result/Artifact, and Desktop bridge/store/panel.
 
 CLEAN_CODE_GUARD
-: `PENDING`.
+: `PASS_CANDIDATE`; one finding fixed in `productRuntimeStore.refresh` (typed readback errors were being cleared by a later spread), zero findings flagged for author.
 
 TEST_GUARD
-: `PENDING`.
+: `PASS_CANDIDATE`; the ProductBridge contract test asserts an observable closed boundary at the supervisor/framed transport seam, while the primary smoke uses real ProductBridge/Supervisor/backend and empty durable storage. Zero findings flagged.
 
 DOCS_GUARD
-: `PENDING`.
+: `PASS_CANDIDATE`; current symbols/commands/results were verified against source and actual runs; stale pre-acceptance IDs and the runtime count were corrected. Zero findings flagged.
 
 GUARD_SKILLS_CODE_GATE
-: `PENDING`.
+: `PASS_CANDIDATE`; exact FINAL_HEAD rerun remains `PENDING`.
 
 GUARD_SKILLS_FINDINGS
-: `PENDING`.
+: `clean-code-guard: 1 fixed, 0 flagged for author`; `test-guard: clean`; `docs-guard: stale evidence refreshed, 0 flagged for author`.
 
 PUSH_CI
 : `PENDING`.
@@ -417,10 +517,10 @@ RELEASE_CI_STATUS
 : `NOT_RUN / LATER`.
 
 PRODUCT_RUNTIME_EXECUTABLE_RESEARCH_STATUS
-: `IMPLEMENTED / LOCAL_VALIDATION_PASS / FINAL_CLOSURE_PENDING`.
+: `DESKTOP_TYPED_ACCEPTANCE_IMPLEMENTED / LOCAL_FULL_VALIDATION_PASS / FINAL_EXACT_HEAD_CLOSURE_PENDING`.
 
 SUCCESS_MATURITY
-: `CLEAN_START_EXECUTABLE_RESEARCH = PASS_CANDIDATE`; `PRODUCT_RUNTIME_EXECUTABLE_RESEARCH = PRODUCT_CONNECTED_CANDIDATE`; `RESEARCH = PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE`.
+: `CLEAN_START_EXECUTABLE_RESEARCH = PASS_CANDIDATE`; `DESKTOP_TYPED_EXECUTABLE_RESEARCH_E2E = PASS_CANDIDATE`; `PRODUCT_RUNTIME_EXECUTABLE_RESEARCH = PRODUCT_CONNECTED_CANDIDATE`; `RESEARCH = DEMO / PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE`.
 
 TRACKED_P0_EDITS
 : `NONE`.
@@ -438,10 +538,10 @@ NOT_RUN
 : Real network free-source smoke, final exact-head guards, push/PR/CI, forward defect scan, Packaging, Release CI, V1 acceptance, Model/Agent productization, async worker, and checkpoint/resume.
 
 PENDING
-: FINAL_HEAD, FINAL_TREE_SHA, PR, guard results, push, fresh exact-head CI, forward scan, final RESULT, and STOP_FOR_INDEPENDENT_REVIEW.
+: FINAL_HEAD, FINAL_TREE_SHA, PR correction state, guard results, push, fresh exact-head CI, forward scan, final RESULT, and STOP_FOR_INDEPENDENT_REVIEW.
 
 BLOCKED
 : `NONE`.
 
 RECOVERY_CONSISTENCY
-: `PASS`; authority, task document, Ledger, Git CURRENT, and implementation status were rechecked after compaction before final closure.
+: `PASS`; after compaction, the original task document, P0 authority/hashes, Ledger, local `HEAD=a86b8f824739ea9a11b20e3a1273712a0246d08b`, local tree `481cae45ba6cfd4a1afeb9f19ce1417f94ea5704`, merge-base/main `2ee330f4d4967e4ecfbd58b1480753fd94e5fee3`, remote PR head `a86b8f824739ea9a11b20e3a1273712a0246d08b`, and PR `OPEN/UNMERGED/CLEAN` were rechecked; no authority drift was found.
