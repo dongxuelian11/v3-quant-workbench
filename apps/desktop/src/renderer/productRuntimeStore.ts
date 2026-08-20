@@ -11,7 +11,8 @@ import type {
   ProductStatusView,
   ProductTaskView,
   ProjectsListView,
-  RunSpecsListView
+  RunSpecsListView,
+  V3ProductRuntimeBridge
 } from "../../../../packages/contracts/src/index";
 
 declare global {
@@ -75,6 +76,25 @@ export function executableRunSpecSelection(
 
 function capabilityOf(capabilities: readonly ProductCapabilityView[], code: string): ProductCapabilityView | undefined {
   return capabilities.find((capability) => capability.code === code);
+}
+
+async function readResearchTaskView(
+  bridge: V3ProductRuntimeBridge,
+  outcome: ProductResearchSubmitOutcomeView,
+): Promise<{
+  task: ProductTaskView;
+  researchResult: ProductResultView | null;
+  artifactDescriptor: ArtifactDescriptorView | null;
+}> {
+  const task = await bridge.getTask(outcome.taskId);
+  const resultArtifactId = task.outputs["BACKTEST_RUN_RESULT"];
+  const artifactDescriptor = resultArtifactId
+    ? await bridge.getArtifactDescriptor(resultArtifactId).catch(() => null)
+    : null;
+  const researchResult = task.resultId === null
+    ? null
+    : await bridge.getResult(task.resultId).catch(() => null);
+  return { task, researchResult, artifactDescriptor };
 }
 
 /** Exported for focused tests: the binding-state authority derivation. */
@@ -267,19 +287,14 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
     set((state) => ({ ...state, inflight: true, surface: "REQUEST_IN_FLIGHT", errorMessage: null, task: null, result: null, artifactDescriptor: null, lastResearch: null }));
     try {
       const outcome = await bridge.submitResearch(intent);
-      const task = await bridge.getTask(outcome.taskId);
-      let researchResult: ProductResultView | null = null;
-      let artifactDescriptor: ArtifactDescriptorView | null = null;
-      const resultArtifactId = task.outputs["BACKTEST_RUN_RESULT"];
-      if (resultArtifactId) artifactDescriptor = await bridge.getArtifactDescriptor(resultArtifactId).catch(() => null);
-      if (task.resultId !== null) researchResult = await bridge.getResult(task.resultId).catch(() => null);
+      const view = await readResearchTaskView(bridge, outcome);
       set((state) => ({
         inflight: false,
         lastResearch: outcome,
-        task,
-        result: researchResult,
-        artifactDescriptor,
-        surface: deriveSurface({ ...state, inflight: false, result: researchResult, task })
+        task: view.task,
+        result: view.researchResult,
+        artifactDescriptor: view.artifactDescriptor,
+        surface: deriveSurface({ ...state, inflight: false, result: view.researchResult, task: view.task })
       }));
     } catch (error) {
       set({ inflight: false, surface: "ERROR", errorMessage: describeError(error) ?? "提交 Product Entry 研究失败" });

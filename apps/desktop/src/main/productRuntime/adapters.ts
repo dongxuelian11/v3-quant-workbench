@@ -262,22 +262,27 @@ export function adaptBacktestSubmit(raw: unknown, requestId: string): BacktestSu
   return Object.freeze({ taskId, runId, acceptedState: "QUEUED" as const, idempotentReplay });
 }
 
-export function adaptResearchSubmit(raw: unknown, requestId: string): ProductResearchSubmitOutcomeView {
+const RESEARCH_ADMISSION_FIELDS = new Set([
+  "read_model_version", "task_id", "run_id", "accepted_state", "maturity",
+  "research_profile_id", "strategy_profile_id", "research_classification",
+  "truth_admission", "event_cursor"
+]);
+
+function researchAdmissionModel(raw: unknown): Record<string, unknown> {
   const body = record(raw, "response body");
   if (body.truth_state !== "DEMO") {
     throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "research submission truth state is not DEMO");
   }
   const model = record(body.read_model, "research submission read model");
-  const allowedFields = new Set([
-    "read_model_version", "task_id", "run_id", "accepted_state", "maturity",
-    "research_profile_id", "strategy_profile_id", "research_classification",
-    "truth_admission", "event_cursor"
-  ]);
-  const unknownFields = Object.keys(model).filter((key) => !allowedFields.has(key));
+  const unknownFields = Object.keys(model).filter((key) => !RESEARCH_ADMISSION_FIELDS.has(key));
   if (unknownFields.length > 0) {
     throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `research submission returned unsupported fields: ${unknownFields.join(", ")}`);
   }
   versionField(model, "v3.product-entry-research/1.0", "research submission");
+  return model;
+}
+
+function assertResearchAdmissionIdentity(model: Record<string, unknown>): void {
   if (model.accepted_state !== "QUEUED") {
     throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "research submission accepted state must be QUEUED");
   }
@@ -287,18 +292,36 @@ export function adaptResearchSubmit(raw: unknown, requestId: string): ProductRes
   if (model.research_profile_id !== "RESEARCH_FREE_DATA_V1" || model.strategy_profile_id !== "RESEARCH_CLOSE_RANK_TOP1_V1") {
     throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "research submission profile identity is invalid");
   }
+}
+
+function assertResearchClassification(model: Record<string, unknown>): void {
   const classification = model.research_classification;
   if (!Array.isArray(classification) || classification.length !== 2 || classification[0] !== "RESEARCH_ONLY" || classification[1] !== "APPROXIMATE") {
     throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "research submission classification is invalid");
   }
+}
+
+function assertResearchTruthAdmission(model: Record<string, unknown>): void {
   const admission = record(model.truth_admission, "research truth admission");
   if (admission.truth !== "NOT_FORMAL" || admission.admission !== "PRE_ALPHA") {
     throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "research submission truth admission is invalid");
   }
+}
+
+function researchEventCursor(model: Record<string, unknown>): number | undefined {
   const eventCursor = model.event_cursor;
   if (eventCursor !== undefined && (typeof eventCursor !== "number" || !Number.isInteger(eventCursor) || eventCursor < 1)) {
     throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "research submission event cursor is invalid");
   }
+  return eventCursor as number | undefined;
+}
+
+export function adaptResearchSubmit(raw: unknown, requestId: string): ProductResearchSubmitOutcomeView {
+  const model = researchAdmissionModel(raw);
+  assertResearchAdmissionIdentity(model);
+  assertResearchClassification(model);
+  assertResearchTruthAdmission(model);
+  const eventCursor = researchEventCursor(model);
   void requestId;
   return Object.freeze({
     truthState: "DEMO" as const,
