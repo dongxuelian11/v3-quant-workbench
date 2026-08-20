@@ -125,9 +125,10 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       const status = await bridge.getProductStatus();
       const capabilities = status.capabilities;
       const stale = status.bindingState === "BINDING_STALE";
-      // Durable entry discovery alongside the status read: projects always,
-      // run specs only through the bound project's canonical references.
-      const projects = await bridge.listProjects().catch(() => null);
+      const productEntryCapability = capabilityOf(capabilities, "ProductEntryService");
+      const projects = productEntryCapability?.truth_state === "FORMAL"
+        ? await bridge.listProjects().catch(() => null)
+        : null;
       const runSpecs = status.boundProject !== null
         ? await bridge.listBacktestRunSpecs().catch(() => null)
         : null;
