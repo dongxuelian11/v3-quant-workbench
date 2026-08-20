@@ -4,7 +4,7 @@ TASK_GOAL
 : Execute task `V3-PRODUCT-RUNTIME-EXECUTABLE-RESEARCH-20260820-01` from the exact GitHub CURRENT and deliver one bounded, project-bound `ProductEntryService.v1.submitResearch` operation. The product path must resolve canonical provider/source references to verified actual source bytes, construct `ResearchSessionObservation` only inside the backend, reuse `CoreResearchPipelineService` and its existing Strategy/Portfolio/Risk/Backtest owners, persist one canonical Task/Run/Result/Artifact lineage, expose typed Desktop query and restart/reopen behavior, and remain `PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE`.
 
 TASK_PROGRESS
-: ADMITTED; exact-main worktree created; authority and CURRENT verified; first trace recorded; implementation complete; clean-start smokes, regressions, and full local validation PASS; final exact-head guard, GitHub delivery, CI, and independent-review stop remain PENDING.
+: ADMITTED; exact-main worktree created; authority and CURRENT verified; first trace recorded; implementation complete; clean-start smokes, regressions, and full local validation PASS; guard fixes and focused rechecks PASS; final exact-head validation/guard, GitHub delivery, CI, and independent-review stop remain PENDING.
 
 PROJECT_AUTHORITY
 : P0 authority version `1.0.2`; no `P0_AUTHORITY_AMENDMENT` is present in the user request or attached task document. Protected authority files are read-only for this task. Locked-file SHA-256 values verified against `docs/status/V3_PROJECT_AUTHORITY_MANIFEST.json` before implementation: `V3_PROJECT_CONSTITUTION.md=92ff8049addd10c1ca7f6ca293007b254045f3f63bae53ddc626b761da5bd32b`, `AGENTS.md=cbe7d78e2eccbfd5254fd08b30a0b145dc7c37b60aa5eadbbf4649b490f5b385`, `docs/architecture/V3_CANONICAL_ARCHITECTURE.md=ca74dcd00d2d20ba106d962b2455254f8ee69807df09d20ff4984e20a362bc5b`, `docs/status/V3_CAPABILITY_LEVELS.md=79ca5210a33f283332884a9a4268e08a093ffe2d4ea33fe97d20672d355a9266`, manifest self-hash `3306f51f4d9b26577f092d53e3a5cdb319619e9e9a75c0b90203c87bd21c425a`.
@@ -198,10 +198,10 @@ TASK_IDEMPOTENCY
 : `PASS`; durable idempotency is project-bound, exact-request conflict fails closed, and restart replay returns the same Task/Run without a new cursor.
 
 TASK_ID
-: `tsk_FJF3G3FW8N6NN8AGKTE5W3NY14` from the latest clean-start research smoke.
+: `tsk_Q8YMT7ZZJ96VHEZR0AGT34M9FR` from the latest clean-start research smoke.
 
 RUN_ID
-: `run_6908TZWAQH4GZFF3A2V6YW3KS4` from the latest clean-start research smoke.
+: `run_BG54J57R7N3ND2D3TDD6G6R6KG` from the latest clean-start research smoke.
 
 PIPELINE_RUN_RELATION
 : Product canonical Run is the active reference for the existing pipeline output; lineage records bind the core pipeline run/result to the Product Task/Run.
@@ -210,13 +210,13 @@ RESULT_RELATION
 : Canonical Result is project/context/task/run bound and points to the registered result Artifact.
 
 RESULT_ID
-: `res_EP86YT777N7TVDS7TW6J8B4DQR`.
+: `res_CCY9Y5NWBH15547X5TQ6G93RX8`.
 
 RESULT_ARTIFACT_ID
-: `art_sha256_fc1ab4e8981e8653c2ab34c23f62c741b2e8a0b147de64d2af854bb0b75c2f0a`.
+: `art_sha256_28427b2e3500316382d0596373974924a7b62130b1553e1fb2951c2b4f6ee7b3`.
 
 RESULT_ARTIFACT_SHA256
-: `fc1ab4e8981e8653c2ab34c23f62c741b2e8a0b147de64d2af854bb0b75c2f0a`.
+: `28427b2e3500316382d0596373974924a7b62130b1553e1fb2951c2b4f6ee7b3`.
 
 RESTART_REOPEN
 : `PASS`; clean-start smoke reopened Product Runtime and replayed the same idempotency key with stable Task/Run/Result/Artifact identity.
