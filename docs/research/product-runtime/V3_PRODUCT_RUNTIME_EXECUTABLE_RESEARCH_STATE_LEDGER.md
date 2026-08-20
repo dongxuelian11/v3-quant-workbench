@@ -543,5 +543,23 @@ PENDING
 BLOCKED
 : `NONE`.
 
+RECOVERED_TASK_GOAL
+: Preserve the accepted PR #46 backend composition and close only the missing empty-storage Desktop typed ProductBridge/BackendSupervisor/renderer-store/restart acceptance path on the same PR, then leave it OPEN / UNMERGED for independent review.
+
+RECOVERED_TASK_PROGRESS
+: Bounded implementation is committed locally at `8e4bfa63941205399cd51085d82aa6c3a22cdda6`; clean detached exact-head `npm run validate` passed with `BuildManifest=CLEAN`, 74/74 runtime tests, Electron smoke PASS, and visual evidence PASS. The visual smoke regenerated 11 tracked screenshots in the detached validation worktree; those generated differences are pending exact restoration before the final clean guard.
+
+RECOVERED_CURRENT_MAIN
+: GitHub CURRENT remains `2ee330f4d4967e4ecfbd58b1480753fd94e5fee3`, tree `2751ca39f06ad818cad502bb771457fd8876f79e`; no main drift.
+
+RECOVERED_HEAD
+: Local branch/detached candidate `8e4bfa63941205399cd51085d82aa6c3a22cdda6`, tree `4b0b405a406d2d1a911b0560f70e13ec9ea63d8b`; remote branch and PR head remain the authorized pre-correction `a86b8f824739ea9a11b20e3a1273712a0246d08b` until the normal push.
+
+RECOVERED_PENDING
+: Commit this recovery-only Ledger update; validate the resulting clean exact FINAL_HEAD; rerun the real Desktop research smoke and exact guards; restore any generated screenshot differences; normal same-branch push; fresh push and pull_request CI; forward defect scan; final OPEN / UNMERGED reconciliation.
+
+RECOVERED_NEXT_ACTION
+: Create the normal recovery-only Ledger commit on `codex/product-runtime-executable-research-01`, then construct a clean detached worktree for that new exact head and rerun the required exact-head gates before push.
+
 RECOVERY_CONSISTENCY
-: `PASS`; after compaction, the original task document, P0 authority/hashes, Ledger, local `HEAD=a86b8f824739ea9a11b20e3a1273712a0246d08b`, local tree `481cae45ba6cfd4a1afeb9f19ce1417f94ea5704`, merge-base/main `2ee330f4d4967e4ecfbd58b1480753fd94e5fee3`, remote PR head `a86b8f824739ea9a11b20e3a1273712a0246d08b`, and PR `OPEN/UNMERGED/CLEAN` were rechecked; no authority drift was found.
+: `PASS`; the complete original task prompt, all P0 authority files, current Ledger, exact changed source/tests/scripts, local Git, and fresh GitHub CURRENT were reread after compaction. P0 hashes remain exact, main and remote PR head did not drift, PR #46 remains `OPEN / UNMERGED / CLEAN`, the local correction ancestry and four-path write set match the persisted task, and no authority or scope inconsistency was found.
