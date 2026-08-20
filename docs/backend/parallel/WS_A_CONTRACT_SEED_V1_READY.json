@@ -5,9 +5,9 @@
   "branch": "rebuild/br1-ws-a-contracts-v1",
   "source_anchor": "97ce15b7548df56312b785a5ce10b0fadb87d81a",
   "service_count": 18,
-  "operation_count": 66,
+  "operation_count": 67,
   "contract_digest_algorithm": "sha256(path\\0sha256(file)\\n), domain-separated WS-A-CONTRACT-SEED-V1\\0",
-  "contract_digest": "1eb29d32fa1d44d124c9edbd015cfebb90fbe89aac02abfd277ab41382f0e03b",
+  "contract_digest": "422b56453e4622f0b3926a767fe0938c43dd57de8e26fe4c1e44cb69e0a18b42",
   "files": [
     "apps/backend/src/v3_backend/contracts/__init__.py",
     "apps/backend/src/v3_backend/contracts/artifact.py",
@@ -67,5 +67,5 @@
     "apps/backend/tests/ws_a_contracts/fixtures/asl/universe.contract.json",
     "apps/backend/tests/ws_a_contracts/fixtures/conformance_manifest.json"
   ],
-  "expansion_note": "2026-08-18 bounded Product Entry foundation correction: +ProductEntryService remains 2 project-scoped operations; status-conditional RunSpec discovery DTO admits honest UNAVAILABLE metadata without placeholders; original 17/64 frozen v1 set remains preserved exactly."
+  "expansion_note": "2026-08-20 bounded Product Runtime research wave: +ProductEntryService adds one project-bound submitResearch operation; provider/source refs are closed and backend-owned actual bytes construct internal observations before the existing CoreResearchPipelineService; original 17/64 frozen v1 set remains preserved exactly."
 }

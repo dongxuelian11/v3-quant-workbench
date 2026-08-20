@@ -6,6 +6,8 @@ import type {
   ArtifactStreamTicketView,
   BacktestSubmitOutcomeView,
   ImportResearchPackageOutcomeView,
+  ProductResearchSubmitIntent,
+  ProductResearchSubmitOutcomeView,
   ProductBindingRefs,
   ProductCapabilityView,
   ProductResultView,
@@ -26,6 +28,7 @@ import {
   adaptBacktestSubmit,
   adaptCapabilities,
   adaptProjectContext,
+  adaptResearchSubmit,
   adaptResult,
   adaptSessionRestore,
   adaptStreamTicket,
@@ -66,6 +69,37 @@ const MAX_PACKAGE_TOTAL_BYTES = transportContract.max_package_total_bytes;
 const MAX_PACKAGE_MANIFEST_BYTES = transportContract.max_package_manifest_bytes;
 const MAX_RUN_SPEC_AUTO_PAGES = 20;
 const PACKAGE_PATH_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const RESEARCH_SYMBOL_PATTERN = /^[0-9]{6}$/;
+const RESEARCH_DATE_PATTERN = /^[0-9]{8}$/;
+
+function assertResearchIntent(request: ProductResearchSubmitIntent): void {
+  if (!RESEARCH_SYMBOL_PATTERN.test(request.symbol)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "symbol must be six ASCII digits");
+  }
+  if (!RESEARCH_DATE_PATTERN.test(request.startDate) || !RESEARCH_DATE_PATTERN.test(request.endDate)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "research dates must use YYYYMMDD");
+  }
+}
+
+function researchOperationPayload(
+  request: ProductResearchSubmitIntent,
+  idempotencyKey: string,
+): Record<string, unknown> {
+  return {
+    research_profile_id: "RESEARCH_FREE_DATA_V1",
+    strategy_profile_id: "RESEARCH_CLOSE_RANK_TOP1_V1",
+    source: {
+      provider_id: "pvd_akshare_eastmoney_a_share_eod_v1",
+      connector_version_id: "cov_akshare_eod_research_v1",
+      logical_dataset: "CN_A_SHARE_EOD",
+      frequency: "P1D",
+      symbol: request.symbol,
+      start_date: request.startDate,
+      end_date: request.endDate
+    },
+    idempotency_key: idempotencyKey
+  };
+}
 
 interface RunSpecPageView {
   readonly specs: RunSpecEntryView[];
@@ -206,6 +240,7 @@ function assertCanonicalId(value: string, name: string): void {
 
 export class ProductBridge {
   private inflightSubmit = new Map<string, Promise<BacktestSubmitOutcomeView>>();
+  private inflightResearch = new Map<string, Promise<ProductResearchSubmitOutcomeView>>();
   private bindingOutcome: ProductBindingOutcome = { state: "NO_CANONICAL_PROJECT_BOUND" };
   private readonly supervisor: BackendSupervisor;
   private readonly store: WorkspaceStore;
@@ -558,6 +593,36 @@ export class ProductBridge {
       sourceProjectId: String(readModel.source_project_id ?? ""),
       importedAt: String(readModel.imported_at ?? "")
     });
+  }
+
+  /**
+   * Product-connected research entry. Provider identity is fixed by the main
+   * process; the renderer can submit only a bounded symbol/date intent.
+   */
+  private requestResearchOutcome(
+    request: ProductResearchSubmitIntent,
+    key: string,
+    idempotencyKey: string,
+  ): Promise<ProductResearchSubmitOutcomeView> {
+    return this.supervisor.request(
+      "ProductEntryService.v1.submitResearch",
+      researchOperationPayload(request, idempotencyKey),
+      { idempotencyKey, timeoutMs: 120_000 }
+    ).then((response) => adaptResearchSubmit(response, idempotencyKey)).finally(() => {
+      this.inflightResearch.delete(key);
+    });
+  }
+
+  async submitResearch(request: ProductResearchSubmitIntent): Promise<ProductResearchSubmitOutcomeView> {
+    this.requireBinding();
+    assertResearchIntent(request);
+    const key = `${request.symbol}:${request.startDate}:${request.endDate}`;
+    const existing = this.inflightResearch.get(key);
+    if (existing !== undefined) return existing;
+    const idempotencyKey = `v3-desktop:${uuidV4()}`;
+    const requestPromise = this.requestResearchOutcome(request, key, idempotencyKey);
+    this.inflightResearch.set(key, requestPromise);
+    return requestPromise;
   }
 
   /**

@@ -3,13 +3,16 @@ import type {
   ArtifactDescriptorView,
   BacktestSubmitOutcomeView,
   ImportResearchPackageOutcomeView,
+  ProductResearchSubmitIntent,
+  ProductResearchSubmitOutcomeView,
   ProductBindingRefs,
   ProductCapabilityView,
   ProductResultView,
   ProductStatusView,
   ProductTaskView,
   ProjectsListView,
-  RunSpecsListView
+  RunSpecsListView,
+  V3ProductRuntimeBridge
 } from "../../../../packages/contracts/src/index";
 
 declare global {
@@ -45,6 +48,7 @@ interface ProductRuntimeState {
   inflight: boolean;
   lastSubmit: BacktestSubmitOutcomeView | null;
   lastImport: ImportResearchPackageOutcomeView | null;
+  lastResearch: ProductResearchSubmitOutcomeView | null;
   task: ProductTaskView | null;
   result: ProductResultView | null;
   artifactDescriptor: ArtifactDescriptorView | null;
@@ -55,6 +59,7 @@ interface ProductRuntimeState {
   submitRunSpec(): Promise<void>;
   createProjectAndBind(displayName: string, notes?: string): Promise<void>;
   importResearchPackage(): Promise<void>;
+  submitResearch(intent: ProductResearchSubmitIntent): Promise<void>;
 }
 
 const RUN_SPEC_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
@@ -71,6 +76,25 @@ export function executableRunSpecSelection(
 
 function capabilityOf(capabilities: readonly ProductCapabilityView[], code: string): ProductCapabilityView | undefined {
   return capabilities.find((capability) => capability.code === code);
+}
+
+async function readResearchTaskView(
+  bridge: V3ProductRuntimeBridge,
+  outcome: ProductResearchSubmitOutcomeView,
+): Promise<{
+  task: ProductTaskView;
+  researchResult: ProductResultView | null;
+  artifactDescriptor: ArtifactDescriptorView | null;
+}> {
+  const task = await bridge.getTask(outcome.taskId);
+  const resultArtifactId = task.outputs["BACKTEST_RUN_RESULT"];
+  const artifactDescriptor = resultArtifactId
+    ? await bridge.getArtifactDescriptor(resultArtifactId).catch(() => null)
+    : null;
+  const researchResult = task.resultId === null
+    ? null
+    : await bridge.getResult(task.resultId).catch(() => null);
+  return { task, researchResult, artifactDescriptor };
 }
 
 /** Exported for focused tests: the binding-state authority derivation. */
@@ -113,6 +137,7 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
   inflight: false,
   lastSubmit: null,
   lastImport: null,
+  lastResearch: null,
   task: null,
   result: null,
   artifactDescriptor: null,
@@ -132,13 +157,40 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       const runSpecs = status.boundProject !== null
         ? await bridge.listBacktestRunSpecs().catch(() => null)
         : null;
+      const previousResearch = get().lastResearch;
+      let researchReadback: Awaited<ReturnType<typeof readResearchTaskView>> | null = null;
+      let researchReadbackError: unknown = null;
+      if (!stale && status.boundProject !== null && previousResearch !== null) {
+        try {
+          const candidate = await readResearchTaskView(bridge, previousResearch);
+          if (candidate.task.projectId === status.boundProject.projectId) {
+            researchReadback = candidate;
+          } else {
+            researchReadbackError = new Error("research readback project binding changed");
+          }
+        } catch (error) {
+          researchReadbackError = error;
+        }
+      }
       set((state) => ({
         status,
         capabilities,
         boundProject: status.boundProject,
         projects,
         runSpecs,
+        errorMessage: null,
         surface: deriveSurface({ ...state, status }),
+        ...(previousResearch !== null && !stale ? {
+          task: researchReadback?.task ?? null,
+          result: researchReadback?.researchResult ?? null,
+          artifactDescriptor: researchReadback?.artifactDescriptor ?? null,
+          surface: researchReadbackError === null
+            ? deriveSurface({ ...state, status, task: researchReadback?.task ?? null, result: researchReadback?.researchResult ?? null, inflight: false })
+            : "ERROR" as const,
+          errorMessage: researchReadbackError === null
+            ? null
+            : describeError(researchReadbackError) ?? "canonical research readback unavailable after reconnect"
+        } : {}),
         // A stale binding must not keep presenting previously-read canonical
         // task/result/artifact state as currently valid product truth.
         ...(stale ? {
@@ -148,7 +200,7 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
           lastSubmit: null,
           inflight: false,
           errorMessage: "项目绑定已失效 · BINDING_STALE - 需要重新验证并重新绑定 canonical 项目"
-        } : { errorMessage: null })
+        } : {})
       }));
     } catch (error) {
       set((state) => ({ surface: "BACKEND_DISCONNECTED", errorMessage: describeError(error) ?? state.errorMessage }));
@@ -253,6 +305,26 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       }));
     } finally {
       set((state) => ({ ...state, entryBusy: false }));
+    }
+  },
+
+  submitResearch: async (intent) => {
+    const bridge = window.v3ProductRuntime;
+    if (!bridge) return;
+    set((state) => ({ ...state, inflight: true, surface: "REQUEST_IN_FLIGHT", errorMessage: null, task: null, result: null, artifactDescriptor: null, lastResearch: null }));
+    try {
+      const outcome = await bridge.submitResearch(intent);
+      const view = await readResearchTaskView(bridge, outcome);
+      set((state) => ({
+        inflight: false,
+        lastResearch: outcome,
+        task: view.task,
+        result: view.researchResult,
+        artifactDescriptor: view.artifactDescriptor,
+        surface: deriveSurface({ ...state, inflight: false, result: view.researchResult, task: view.task })
+      }));
+    } catch (error) {
+      set({ inflight: false, surface: "ERROR", errorMessage: describeError(error) ?? "提交 Product Entry 研究失败" });
     }
   }
 }));

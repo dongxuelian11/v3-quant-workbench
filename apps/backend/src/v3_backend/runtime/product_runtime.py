@@ -200,7 +200,10 @@ def resolve_product_storage_root(explicit: str | None = None) -> Path:
 
 
 def product_artifact_policy() -> SafeFormatPolicy:
-    """Bounded product publication policy; every role is explicit canonical JSON."""
+    """Bounded product publication policy with explicit JSON validators per role."""
+    from v3_backend.domain.data_truth.capabilities import (
+        FIELD_CAPABILITY_POLICY_ROLE,
+    )
     from v3_backend.domain.research_pipeline import RESEARCH_BACKTEST_RESULT_ROLE
     from v3_backend.domain.strategies import SCORE_PAYLOAD_ROLE
 
@@ -219,6 +222,20 @@ def product_artifact_policy() -> SafeFormatPolicy:
             "canonical-json-v1",
             "PRE_ALPHA research result envelope with explicit assumptions",
         ),
+        FormatRule(
+            FIELD_CAPABILITY_POLICY_ROLE,
+            "application/json",
+            ADMITTED,
+            "canonical-json-v1",
+            "provider capability policy resolved from persisted Data Truth bytes",
+        ),
+        FormatRule(
+            "FEATURE_MATERIALIZATION",
+            "application/json",
+            ADMITTED,
+            "canonical-finite-json-v1",
+            "research-only derived feature values with finite numeric wire values",
+        ),
     )
     product_roles = (
         BACKTEST_RUN_SPEC_ROLE,
@@ -227,6 +244,13 @@ def product_artifact_policy() -> SafeFormatPolicy:
         LEDGER_MANIFEST_ROLE,
         EXPORT_MANIFEST_ROLE,
         EXPERIMENT_EXPANSION_MANIFEST_ROLE,
+        "DATA_TRUTH_RAW_CAPTURE",
+        "DATA_TRUTH_CALENDAR",
+        "DATA_TRUTH_SNAPSHOT_PARTITION",
+        "UNIVERSE_MEMBERSHIP",
+        "RESEARCH_STRATEGY_PROFILE",
+        "RESEARCH_DATASET_PROFILE",
+        "RESEARCH_PIPELINE_LINEAGE",
     )
     return SafeFormatPolicy(
         rules
@@ -393,6 +417,16 @@ class ExecutionOutcome:
     task_id: str
     run_id: str
     event_cursor: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProductResearchSubmission:
+    project_id: str
+    project_context_revision_id: str
+    research_profile_id: str
+    strategy_profile_id: str
+    source: Mapping[str, Any]
+    idempotency_key: str
 
 
 def _rule_profile_params(profile: AshareTradingRuleProfileVersion) -> dict[str, Any]:
@@ -1324,6 +1358,10 @@ class ProductExecution:
             )
         return ExecutionOutcome(task.task_id, run.run_id, event_cursor)
 
+    def submit_research(self, submission: ProductResearchSubmission) -> dict[str, Any]:
+        """Execute the one bounded Product Entry research composition."""
+        return self.product.research.submit(submission)
+
     def export_artifacts(
         self,
         *,
@@ -1764,7 +1802,7 @@ class _NoopPublishCallbacks:
 class ProductRuntime:
     """Durable product composition root behind the ASL facades."""
 
-    def __init__(self, storage_root: str | Path) -> None:
+    def __init__(self, storage_root: str | Path, *, research_provider_factory=None) -> None:
         self.storage_root = Path(storage_root).resolve()
         self.database_path = self.storage_root / CATALOG_FILENAME
         self.artifact_root = self.storage_root / ARTIFACT_DIRNAME
@@ -1781,6 +1819,12 @@ class ProductRuntime:
         self.event_replay = ProductEventReplay(self.database_path)
         self.spec_codec = ResearchRunSpecCodec(self)
         self.execution = ProductExecution(self)
+        from .product_research import ProductResearchService
+
+        self.research = ProductResearchService(
+            self,
+            provider_factory=research_provider_factory,
+        )
         self.idempotency = DurableIdempotency()
         self._shutdown_prepared = False
         self._shutdown_committed = False
@@ -2119,8 +2163,11 @@ class ProductRuntime:
         self._shutdown_committed = True
 
 
-def build_product_runtime(storage_root: str | Path | None = None) -> ProductRuntime:
-    return ProductRuntime(resolve_product_storage_root(None if storage_root is None else str(storage_root)))
+def build_product_runtime(storage_root: str | Path | None = None, *, research_provider_factory=None) -> ProductRuntime:
+    return ProductRuntime(
+        resolve_product_storage_root(None if storage_root is None else str(storage_root)),
+        research_provider_factory=research_provider_factory,
+    )
 
 
 def build_product_ports(storage_root: str | Path | None = None) -> RuntimePorts:

@@ -450,6 +450,259 @@
           }
         }
       }
+    },
+    {
+      "operation_id": "ProductEntryService.v1.submitResearch",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "idempotency": {
+        "mode": "IDEMPOTENCY_KEY",
+        "scope": "operation_id + project_id + idempotency_key",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": true,
+        "run_identity_inputs": [
+          "project_id",
+          "project_context_revision_id",
+          "research_profile_id",
+          "strategy_profile_id",
+          "canonical provider/source intent"
+        ],
+        "artifact_outputs": [
+          "BACKTEST_RUN_RESULT reference",
+          "LEDGER_MANIFEST reference",
+          "RESEARCH_PIPELINE_LINEAGE reference"
+        ],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "new idempotency key",
+        "attempt_rule": "one durable inline attempt"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists, belongs to the request project, and is current",
+        "Provider/source refs match the exact admitted Product Entry profile",
+        "Backend resolves and verifies provider raw bytes before constructing internal observations",
+        "PIT, paid-data, and Formal Market State semantics remain unavailable and are not inferred"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "TRUTH_PRECONDITION_FAILED",
+        "RESOURCE_REJECTED",
+        "CAPABILITY_UNAVAILABLE",
+        "INTERNAL_ERROR"
+      ],
+      "capability_notes": "One Product Entry source-admission composition: canonical provider refs -> backend actual source bytes -> internal ResearchSessionObservation -> existing CoreResearchPipelineService. Caller observations, bars, returns, weights, fixtures, and alternate engines are not accepted.",
+      "request_dto": {
+        "name": "SubmitResearchRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "idempotency_key",
+            "research_profile_id",
+            "strategy_profile_id",
+            "source"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Transport deduplication identity",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Canonical project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Canonical project context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor expected by caller",
+              "const": "1.0"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "Idempotency key scoped to operation + project"
+            },
+            "research_profile_id": {
+              "type": "string",
+              "const": "RESEARCH_FREE_DATA_V1"
+            },
+            "strategy_profile_id": {
+              "type": "string",
+              "const": "RESEARCH_CLOSE_RANK_TOP1_V1"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "provider_id",
+                "connector_version_id",
+                "logical_dataset",
+                "frequency",
+                "symbol",
+                "start_date",
+                "end_date"
+              ],
+              "properties": {
+                "provider_id": {
+                  "type": "string",
+                  "const": "pvd_akshare_eastmoney_a_share_eod_v1"
+                },
+                "connector_version_id": {
+                  "type": "string",
+                  "const": "cov_akshare_eod_research_v1"
+                },
+                "logical_dataset": {
+                  "type": "string",
+                  "const": "CN_A_SHARE_EOD"
+                },
+                "frequency": {
+                  "type": "string",
+                  "const": "P1D"
+                },
+                "symbol": {
+                  "type": "string",
+                  "pattern": "^[0-9]{6}$"
+                },
+                "start_date": {
+                  "type": "string",
+                  "pattern": "^[0-9]{8}$"
+                },
+                "end_date": {
+                  "type": "string",
+                  "pattern": "^[0-9]{8}$"
+                }
+              }
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "SubmitResearchResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "read_model_version",
+                "task_id",
+                "run_id",
+                "accepted_state",
+                "maturity",
+                "research_profile_id",
+                "strategy_profile_id",
+                "research_classification",
+                "truth_admission"
+              ],
+              "properties": {
+                "read_model_version": {
+                  "type": "string",
+                  "const": "v3.product-entry-research/1.0"
+                },
+                "task_id": {
+                  "type": "string",
+                  "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "run_id": {
+                  "type": "string",
+                  "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "accepted_state": {
+                  "type": "string",
+                  "const": "QUEUED"
+                },
+                "maturity": {
+                  "type": "string",
+                  "const": "PRODUCT_CONNECTED_CANDIDATE"
+                },
+                "research_profile_id": {
+                  "type": "string",
+                  "const": "RESEARCH_FREE_DATA_V1"
+                },
+                "strategy_profile_id": {
+                  "type": "string",
+                  "const": "RESEARCH_CLOSE_RANK_TOP1_V1"
+                },
+                "research_classification": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "RESEARCH_ONLY",
+                      "APPROXIMATE"
+                    ]
+                  }
+                },
+                "truth_admission": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "truth",
+                    "admission"
+                  ],
+                  "properties": {
+                    "truth": {
+                      "type": "string",
+                      "const": "NOT_FORMAL"
+                    },
+                    "admission": {
+                      "type": "string",
+                      "const": "PRE_ALPHA"
+                    }
+                  }
+                },
+                "event_cursor": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

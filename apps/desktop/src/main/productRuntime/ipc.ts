@@ -28,7 +28,8 @@ export const PRODUCT_RUNTIME_CHANNELS = Object.freeze({
   createProject: "productRuntime:createProject",
   listProjects: "productRuntime:listProjects",
   listBacktestRunSpecs: "productRuntime:listBacktestRunSpecs",
-  importResearchPackage: "productRuntime:importResearchPackage"
+  importResearchPackage: "productRuntime:importResearchPackage",
+  submitResearch: "productRuntime:submitResearch"
 } as const);
 
 function assertObject(value: unknown, allowed: readonly string[]): Record<string, unknown> {
@@ -124,6 +125,14 @@ export function registerProductRuntimeIpc(
   handle(PRODUCT_RUNTIME_CHANNELS.listProjects, () => bridge.listProjects());
   handle(PRODUCT_RUNTIME_CHANNELS.listBacktestRunSpecs, () => bridge.listBacktestRunSpecs());
   handle(PRODUCT_RUNTIME_CHANNELS.importResearchPackage, () => bridge.importResearchPackage());
+  handle(PRODUCT_RUNTIME_CHANNELS.submitResearch, (intentPayload) => {
+    const intentFields = assertObject(intentPayload, ["symbol", "startDate", "endDate"]);
+    return bridge.submitResearch({
+      symbol: requiredString(intentFields, "symbol"),
+      startDate: requiredString(intentFields, "startDate"),
+      endDate: requiredString(intentFields, "endDate")
+    });
+  });
   return () => {
     for (const channel of Object.values(PRODUCT_RUNTIME_CHANNELS)) ipcMain.removeHandler(channel);
   };

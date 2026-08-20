@@ -32,7 +32,7 @@ class ContractSeedConformanceTests(unittest.TestCase):
 
     def test_registry_counts_and_frozen_seventeen_service_subset(self) -> None:
         # Product Entry expansion (task-authorized, non-P0): 17->18 services,
-        # 64->66 operations.  The original frozen v1 registry must remain an
+        # 64->67 operations.  The original frozen v1 registry must remain an
         # EXACT subset: every pre-expansion service keeps its contract identity
         # and ordered operation set, and no new operation ID may collide.
         legacy_services = [
@@ -40,14 +40,14 @@ class ContractSeedConformanceTests(unittest.TestCase):
         ]
         self.assertEqual(len(legacy_services), 17)
         self.assertEqual(len(SERVICE_CONTRACTS), 18)
-        self.assertEqual(OPERATION_COUNT, 66)
+        self.assertEqual(OPERATION_COUNT, 67)
         self.assertEqual(len(OPERATIONS), len(set(OPERATIONS)))
         for item in legacy_services:
             contract = SERVICE_CONTRACTS[item["service"]]
             self.assertEqual(contract.contract_id, item["contract_id"])
             self.assertEqual(tuple(op.operation_id for op in contract.operations), tuple(item["method_operation_ids"]))
         product_entry = SERVICE_CONTRACTS["ProductEntryService"]
-        self.assertEqual(len(product_entry.operations), 2)
+        self.assertEqual(len(product_entry.operations), 3)
         legacy_operation_ids = {
             operation_id
             for item in legacy_services

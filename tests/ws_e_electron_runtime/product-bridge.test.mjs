@@ -74,6 +74,24 @@ function stubSupervisor({ failOpen = false, runSpecRows = null } = {}) {
       if (operationId === "BacktestService.v1.submitBacktest") {
         return { request_id: "req", task_id: "tsk_bridge01", run_id: "run_bridge01", accepted_state: "QUEUED", event_cursor: 5 };
       }
+      if (operationId === "ProductEntryService.v1.submitResearch") {
+        return {
+          request_id: "req-research",
+          truth_state: "DEMO",
+          read_model: {
+            read_model_version: "v3.product-entry-research/1.0",
+            task_id: "tsk_research01",
+            run_id: "run_research01",
+            accepted_state: "QUEUED",
+            event_cursor: 6,
+            maturity: "PRODUCT_CONNECTED_CANDIDATE",
+            research_profile_id: "RESEARCH_FREE_DATA_V1",
+            strategy_profile_id: "RESEARCH_CLOSE_RANK_TOP1_V1",
+            research_classification: ["RESEARCH_ONLY", "APPROXIMATE"],
+            truth_admission: { truth: "NOT_FORMAL", admission: "PRE_ALPHA" }
+          }
+        };
+      }
       if (operationId === "TaskService.v1.getTask") {
         return { read_model: {
           read_model_version: "v3.task/1.0", task_id: payload.task_id, project_id: this.context?.projectId ?? "prj_smoke01",
@@ -159,6 +177,37 @@ test("submitExistingBacktestRunSpec admits canonical specs only, collapses dupli
   }
 });
 
+test("submitResearch uses the exact Product Entry operation and main-owned closed payload", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-research-bridge-contract-"));
+  try {
+    const supervisor = stubSupervisor();
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
+    const intent = { symbol: "000001", startDate: "20260106", endDate: "20260107" };
+    const [first, second] = await Promise.all([bridge.submitResearch(intent), bridge.submitResearch(intent)]);
+    assert.equal(first.taskId, "tsk_research01");
+    assert.deepEqual(second, first, "same in-flight typed research intent must collapse in the main bridge");
+    const submits = supervisor.calls.filter((call) => call.operationId === "ProductEntryService.v1.submitResearch");
+    assert.equal(submits.length, 1);
+    assert.deepEqual(Object.keys(submits[0].payload).sort(), ["idempotency_key", "research_profile_id", "source", "strategy_profile_id"]);
+    assert.deepEqual(submits[0].payload.source, {
+      provider_id: "pvd_akshare_eastmoney_a_share_eod_v1",
+      connector_version_id: "cov_akshare_eod_research_v1",
+      logical_dataset: "CN_A_SHARE_EOD",
+      frequency: "P1D",
+      symbol: "000001",
+      start_date: "20260106",
+      end_date: "20260107"
+    });
+    for (const forbidden of ["observations", "bars", "returns", "weights", "predictions", "metrics", "nav", "result", "raw_source_bytes"]) {
+      assert.equal(forbidden in submits[0].payload, false, `research payload must not carry ${forbidden}`);
+    }
+    assert.equal(typeof submits[0].payload.idempotency_key, "string");
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
 test("run-spec discovery reads page two without missing or duplicate artifacts", async () => {
   const dir = await mkdtemp(join(tmpdir(), "v3-run-spec-pages-"));
   try {
@@ -230,8 +279,8 @@ test("UNAVAILABLE run-spec with null metadata is readable and never fabricated",
 
 test("product IPC channel set is closed and typed", () => {
   const channels = Object.values(PRODUCT_RUNTIME_CHANNELS);
-  assert.equal(channels.length, 17);
-  assert.ok(new Set(channels).size === 17);
+  assert.equal(channels.length, 18);
+  assert.ok(new Set(channels).size === 18);
   for (const channel of channels) assert.ok(channel.startsWith("productRuntime:"));
 });
 
