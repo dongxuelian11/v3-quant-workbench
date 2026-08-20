@@ -184,10 +184,9 @@ try {
     task = await reuseBridge.getTask(outcome.taskId);
   }
   assert.equal(task.state, "SUCCEEDED");
-  const events = await reuseBridge.getTaskEvents(0, 500);
-  const successEvent = [...events.items].reverse().find((item) => item.eventType === "TASK_SUCCEEDED" && item.resultId !== null);
-  assert.ok(successEvent?.resultId);
-  const result = await reuseBridge.getResult(successEvent.resultId);
+  const resultId = task.resultId;
+  assert.match(resultId ?? "", /^res_/);
+  const result = await reuseBridge.getResult(resultId);
   assert.ok(result.resultArtifact);
   const artifactId = result.resultArtifact.artifactId;
   assert.match((await reuseBridge.getArtifactDescriptor(artifactId)).artifactId, /^art_sha256_/);
@@ -206,7 +205,7 @@ try {
   });
   assert.deepEqual(await reuseRestartBridge.listBacktestRunSpecs(), listing);
   assert.equal((await reuseRestartBridge.getTask(outcome.taskId)).state, "SUCCEEDED");
-  assert.equal((await reuseRestartBridge.getResult(successEvent.resultId)).resultArtifact?.artifactId, artifactId);
+  assert.equal((await reuseRestartBridge.getResult(resultId)).resultArtifact?.artifactId, artifactId);
   await stop(reuseRestartSupervisor);
   console.log("[REUSE 5] restart -> RunSpec/Task/Result/Artifact recovered");
   console.log("TARGET_CANONICAL_REUSE = PASS");

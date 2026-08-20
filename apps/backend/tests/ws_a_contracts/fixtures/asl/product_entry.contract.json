@@ -369,7 +369,7 @@
                   "payload_base64": {
                     "type": "string",
                     "minLength": 4,
-                    "maxLength": 349526,
+                    "maxLength": 349528,
                     "description": "Actual payload bytes (base64)"
                   }
                 }

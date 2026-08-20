@@ -43,6 +43,27 @@ class MockProcess extends EventEmitter {
   }
 }
 
+class BackpressureStdin extends PassThrough {
+  blocked = false;
+  writeCalls = 0;
+  blockedWriteCalls = 0;
+
+  write(...args) {
+    this.writeCalls += 1;
+    const accepted = super.write(...args);
+    if (!this.blocked) return accepted;
+    this.blockedWriteCalls += 1;
+    return false;
+  }
+}
+
+class BackpressureProcess extends MockProcess {
+  constructor() {
+    super();
+    this.stdin = new BackpressureStdin();
+  }
+}
+
 class MockBackend {
   decoder = new FrameDecoder();
   received = [];
@@ -146,10 +167,14 @@ class MockFactory {
   backends = [];
   protocol = "v3.local/1.0";
 
+  constructor(processType = MockProcess) {
+    this.processType = processType;
+  }
+
   spawn(spec, token) {
     this.specs.push(spec);
     this.tokens.push(Buffer.from(token));
-    const process = new MockProcess();
+    const process = new this.processType();
     const backend = new MockBackend(process, this.processes.length + 1, this.protocol);
     this.processes.push(process);
     this.backends.push(backend);
@@ -272,6 +297,163 @@ test("crash loop guard stops bounded reconnects", async () => {
   factory.processes[1].crash();
   await waitFor(() => supervisor.state === "CRASH_LOOP");
   assert.equal(factory.processes.length, 2);
+});
+
+test("timed-out known reply is discarded without terminating the live backend", async () => {
+  const factory = new MockFactory();
+  const diagnostics = [];
+  const supervisor = create(factory, { autoReconnect: false, requestTimeoutMs: 20 });
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.requestMode = "queue";
+  const request = supervisor.cancelTask({ taskId: `tsk_${"0".repeat(26)}`, expectedStateVersion: 1, reason: "late-reply" });
+  await waitFor(() => backend.queuedRequests.length === 1);
+  await assert.rejects(request, (error) => error.code === "BACKEND_TIMEOUT");
+  backend.respondOk(backend.queuedRequests.shift());
+  await waitFor(() => diagnostics.some((item) => item.code === "LATE_RESPONSE_DISCARDED"));
+  assert.equal(supervisor.state, "READY");
+  backend.requestMode = "ok";
+  assert.equal((await supervisor.cancelTask({ taskId: `tsk_${"1".repeat(26)}`, expectedStateVersion: 1, reason: "still-live" })).operation_id, "TaskService.v1.cancelTask");
+  supervisor.stopNow();
+});
+
+test("request tombstones obey count and TTL bounds", async () => {
+  const countFactory = new MockFactory();
+  const countSupervisor = create(countFactory, {
+    autoReconnect: false,
+    requestTimeoutMs: 10,
+    requestTombstoneLimit: 1,
+    requestTombstoneTtlMs: 1_000
+  });
+  await countSupervisor.start();
+  countFactory.backends[0].requestMode = "queue";
+  const first = countSupervisor.cancelTask({ taskId: `tsk_${"6".repeat(26)}`, expectedStateVersion: 1, reason: "tombstone-count-1" });
+  const second = countSupervisor.cancelTask({ taskId: `tsk_${"7".repeat(26)}`, expectedStateVersion: 1, reason: "tombstone-count-2" });
+  await assert.rejects(first, (error) => error.code === "BACKEND_TIMEOUT");
+  await assert.rejects(second, (error) => error.code === "BACKEND_TIMEOUT");
+  assert.equal(countSupervisor.tombstones.size, 1);
+  countSupervisor.stopNow();
+
+  const ttlFactory = new MockFactory();
+  const ttlSupervisor = create(ttlFactory, {
+    autoReconnect: false,
+    requestTimeoutMs: 10,
+    requestTombstoneLimit: 2,
+    requestTombstoneTtlMs: 10
+  });
+  await ttlSupervisor.start();
+  ttlFactory.backends[0].requestMode = "queue";
+  const expired = ttlSupervisor.cancelTask({ taskId: `tsk_${"8".repeat(26)}`, expectedStateVersion: 1, reason: "tombstone-ttl-1" });
+  await assert.rejects(expired, (error) => error.code === "BACKEND_TIMEOUT");
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const current = ttlSupervisor.cancelTask({ taskId: `tsk_${"9".repeat(26)}`, expectedStateVersion: 1, reason: "tombstone-ttl-2" });
+  await assert.rejects(current, (error) => error.code === "BACKEND_TIMEOUT");
+  assert.equal(ttlSupervisor.tombstones.size, 1, "expired tombstones are pruned when a new tombstone is recorded");
+  ttlSupervisor.stopNow();
+});
+
+test("old session output cannot satisfy the new session after reconnect", async () => {
+  const factory = new MockFactory();
+  const states = [];
+  const supervisor = create(factory, { reconnectBaseDelayMs: 10, reconnectMaxDelayMs: 10 });
+  supervisor.on("state", (state) => states.push(state));
+  await supervisor.start();
+  const oldBackend = factory.backends[0];
+  oldBackend.requestMode = "queue";
+  const request = supervisor.cancelTask({ taskId: `tsk_${"2".repeat(26)}`, expectedStateVersion: 1, reason: "old-session" });
+  await waitFor(() => oldBackend.queuedRequests.length === 1);
+  const oldMessage = oldBackend.queuedRequests[0];
+  factory.processes[0].crash();
+  await assert.rejects(request, (error) => error.code === "BACKEND_DISCONNECTED");
+  await waitFor(() => factory.backends.length === 2 && supervisor.state === "READY");
+  oldBackend.respondOk(oldMessage);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(supervisor.state, "READY");
+  assert.ok(states.includes("RECONNECTING"));
+  supervisor.stopNow();
+});
+
+test("unknown unsolicited response remains a protocol failure", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  await supervisor.start();
+  factory.backends[0].send({
+    kind: "response",
+    request_id: "00000000-0000-7000-8000-000000000099",
+    status: "OK",
+    body: {}
+  });
+  await waitFor(() => supervisor.state === "DISCONNECTED");
+  assert.equal(factory.processes[0].terminated, true);
+});
+
+test("stdin false write is drained and queued frames stay bounded", async () => {
+  const factory = new MockFactory(BackpressureProcess);
+  const supervisor = create(factory, {
+    autoReconnect: false,
+    maxBufferedStdinWrites: 1,
+    maxBufferedStdinBytes: 4096
+  });
+  await supervisor.start();
+  const process = factory.processes[0];
+  const stdin = process.stdin;
+  stdin.blocked = true;
+  const backend = factory.backends[0];
+  backend.requestMode = "queue";
+  const first = supervisor.cancelTask({ taskId: `tsk_${"3".repeat(26)}`, expectedStateVersion: 1, reason: "backpressure-1" });
+  await waitFor(() => backend.queuedRequests.length === 1);
+  const firstRejection = assert.rejects(first, (error) => error.code === "TRANSPORT_BACKPRESSURE");
+  const second = supervisor.cancelTask({ taskId: `tsk_${"4".repeat(26)}`, expectedStateVersion: 1, reason: "backpressure-2" });
+  const secondRejection = assert.rejects(second, (error) => error.code === "TRANSPORT_BACKPRESSURE");
+  const third = supervisor.cancelTask({ taskId: `tsk_${"5".repeat(26)}`, expectedStateVersion: 1, reason: "backpressure-3" });
+  const thirdRejection = assert.rejects(third, (error) => error.code === "TRANSPORT_BACKPRESSURE");
+  await Promise.all([firstRejection, secondRejection, thirdRejection]);
+  assert.equal(stdin.blockedWriteCalls, 1, "queued frames must wait for drain rather than write repeatedly");
+  assert.equal(supervisor.state, "DISCONNECTED");
+});
+
+test("stderr without newlines is bounded and emits one truncation diagnostic", async () => {
+  const factory = new MockFactory();
+  const diagnostics = [];
+  const supervisor = create(factory, { autoReconnect: false, maxStderrLineBytes: 32, maxStderrBytes: 64 });
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await supervisor.start();
+  factory.processes[0].stderr.write("x".repeat(10_000));
+  await waitFor(() => diagnostics.some((item) => item.code === "BACKEND_STDERR_TRUNCATED"));
+  assert.equal(diagnostics.filter((item) => item.code === "BACKEND_STDERR_TRUNCATED").length, 1);
+  assert.equal(supervisor.state, "READY");
+  supervisor.stopNow();
+});
+
+test("intentional shutdown never enters the reconnect loop", async () => {
+  const factory = new MockFactory();
+  const states = [];
+  const supervisor = create(factory, { reconnectBaseDelayMs: 1, reconnectMaxDelayMs: 2 });
+  supervisor.on("state", (state) => states.push(state));
+  await supervisor.start();
+  await supervisor.shutdown(500);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(supervisor.state, "STOPPED");
+  assert.equal(factory.processes.length, 1);
+  assert.equal(states.includes("RECONNECTING"), false);
+});
+
+test("intentional shutdown during reconnect cancels the timer and clears tombstones", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { reconnectBaseDelayMs: 50, reconnectMaxDelayMs: 50, requestTimeoutMs: 20 });
+  await supervisor.start();
+  factory.backends[0].requestMode = "queue";
+  const request = supervisor.cancelTask({ taskId: `tsk_${"a".repeat(26)}`, expectedStateVersion: 1, reason: "shutdown-reconnect" });
+  await waitFor(() => factory.backends[0].queuedRequests.length === 1);
+  factory.processes[0].crash();
+  await assert.rejects(request, (error) => error.code === "BACKEND_DISCONNECTED");
+  assert.equal(supervisor.state, "DISCONNECTED");
+  await supervisor.shutdown(500);
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  assert.equal(supervisor.state, "STOPPED");
+  assert.equal(factory.processes.length, 1);
+  assert.equal(supervisor.tombstones.size, 0);
 });
 
 test("window close preserves backend and explicit quit delegates graceful shutdown", async () => {

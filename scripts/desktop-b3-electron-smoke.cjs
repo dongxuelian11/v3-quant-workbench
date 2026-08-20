@@ -100,8 +100,8 @@ app.whenReady().then(async () => {
       for (const required of ["TASK_QUEUED", "TASK_STARTED", "TASK_SUCCEEDED"]) {
         if (!types.has(required)) throw new Error(`missing durable task event ${required}`);
       }
-      const resultId = events.items.filter((item) => item.resultId !== null).map((item) => item.resultId).pop();
-      if (!resultId) throw new Error("TASK_SUCCEEDED event did not record canonical result_id");
+      const resultId = task.resultId;
+      if (!resultId || !resultId.startsWith("res_")) throw new Error(`Task read model did not resolve canonical result_id: ${JSON.stringify(task)}`);
       const result = await evaluate(win, `window.v3ProductRuntime.getResult(${JSON.stringify(resultId)})`);
       if (result.state !== "PENDING_RECONCILIATION") throw new Error(`result state wrong: ${JSON.stringify(result)}`);
       const descriptor = await evaluate(win, `window.v3ProductRuntime.getArtifactDescriptor(${JSON.stringify(resultArtifactId)})`);

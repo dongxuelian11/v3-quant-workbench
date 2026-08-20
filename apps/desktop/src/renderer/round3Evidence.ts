@@ -73,9 +73,12 @@ function emptyData(): AgentWorkspaceData {
 }
 
 function disconnectedBoundary(connectionState: RuntimeConnectionState): AgentWorkspaceBoundary {
+  const reconnecting = connectionState === "RECONNECTING";
   return {
     mode: connectionState === "READY" ? "LIVE_READ_ONLY_NO_EVIDENCE" : "BACKEND_DISCONNECTED",
-    label: connectionState === "READY" ? "实时只读 · 无证据 · LIVE_READ_ONLY" : "后端未连接 · BACKEND_DISCONNECTED",
+    label: connectionState === "READY"
+      ? "实时只读 · 无证据 · LIVE_READ_ONLY"
+      : reconnecting ? "后端重连中 · RECONNECTING" : "后端未连接 · BACKEND_DISCONNECTED",
     source: connectionState === "READY" ? "NO_CANONICAL_EVIDENCE_AVAILABLE" : "BACKEND_RUNTIME_UNAVAILABLE",
     transport: connectionState === "READY" ? "WS_E_READ_ONLY_CONNECTED" : `WS_E_${connectionState}`,
     authority: "READ_ONLY_VIEW_MODEL"

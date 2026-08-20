@@ -9,5 +9,6 @@ function run(command, args) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 run(process.platform === "win32" ? "tsc.cmd" : "tsc", ["-p", "tsconfig.json"]);
+run(process.platform === "win32" ? "node.exe" : "node", ["scripts/generate-build-manifest.mjs"]);
 run(process.platform === "win32" ? "vite.cmd" : "vite", ["build", "--config", "vite.config.mjs"]);
 console.log(`Built Electron 39 + React/Vite renderer to ${resolve(root, "dist")}`);

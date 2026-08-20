@@ -88,7 +88,7 @@ export function App() {
       healthAttempts += 1;
       void bridge.getHealth().then((health) => {
         const state = health.state;
-        if (!stopped && typeof state === "string" && ["STOPPED", "STARTING", "HANDSHAKING", "REPLAYING", "READY", "DISCONNECTED", "CRASH_LOOP", "SHUTTING_DOWN"].includes(state)) {
+        if (!stopped && typeof state === "string" && ["STOPPED", "STARTING", "HANDSHAKING", "REPLAYING", "READY", "RECONNECTING", "DISCONNECTED", "CRASH_LOOP", "SHUTTING_DOWN"].includes(state)) {
           setAgentState((current) => applyRound3ConnectionState(current, state as Parameters<typeof applyRound3ConnectionState>[1]));
         }
       }).catch(() => {

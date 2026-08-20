@@ -1,6 +1,7 @@
 # Dependencies and build output
 node_modules/
 dist/
+apps/backend/src/v3_backend/runtime/build_manifest.generated.json
 coverage/
 .cache/
 .vite/

@@ -188,7 +188,7 @@ export type ProductTruthState = "FORMAL" | "DEMO" | "UNAVAILABLE";
 
 export type ProductBackendState =
   | "STOPPED" | "STARTING" | "HANDSHAKING" | "REPLAYING"
-  | "READY" | "DISCONNECTED" | "CRASH_LOOP" | "SHUTTING_DOWN";
+  | "READY" | "RECONNECTING" | "DISCONNECTED" | "CRASH_LOOP" | "SHUTTING_DOWN";
 
 export type ProductBindingState =
   | "NO_CANONICAL_PROJECT_BOUND"
@@ -212,6 +212,8 @@ export interface ProductStatusView {
   readonly bindingState: ProductBindingState;
   readonly boundProject: ProductBindingRefs | null;
   readonly capabilities: readonly ProductCapabilityView[];
+  readonly buildManifestId: string | null;
+  readonly buildIdentityState: "CLEAN" | "DIRTY" | "UNAVAILABLE";
 }
 
 export interface ProductContextFieldsView {
@@ -254,6 +256,8 @@ export interface ProductTaskView {
   readonly state: string;
   readonly stateVersion: number;
   readonly runId: string;
+  /** Direct canonical Task -> Result relation; null is an explicit no-result state. */
+  readonly resultId: string | null;
   readonly attempt: ProductTaskAttemptView;
   readonly outputs: Readonly<Record<string, string>>;
   readonly createdAt: string;
@@ -280,6 +284,8 @@ export interface ProductResultView {
   readonly resultId: string;
   readonly projectId: string;
   readonly backtestRunId: string;
+  readonly codeVersion: string | null;
+  readonly buildManifestId: string | null;
   readonly state: string;
   readonly ledgerManifestArtifactId: string;
   readonly reconciliationArtifactId: string | null;

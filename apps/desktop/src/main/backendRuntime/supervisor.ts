@@ -30,6 +30,12 @@ const REPLAY_PAGE_LIMIT = 1000;
 const DEFAULT_MAX_BUFFERED_EVENTS = 1000;
 const DEFAULT_MAX_EVENT_SEQUENCE_GAP = 10_000;
 const RECENT_EVENT_ID_CACHE_LIMIT = 2000;
+const DEFAULT_REQUEST_TOMBSTONE_LIMIT = 2048;
+const DEFAULT_REQUEST_TOMBSTONE_TTL_MS = 60_000;
+const DEFAULT_MAX_BUFFERED_STDIN_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_BUFFERED_STDIN_WRITES = 256;
+const DEFAULT_MAX_STDERR_LINE_BYTES = 16 * 1024;
+const DEFAULT_MAX_STDERR_BYTES = 256 * 1024;
 
 /** Marker for a durable cursor commit failure inside event delivery. */
 class DurableCursorCommitError extends Error {
@@ -55,9 +61,16 @@ class ReplayContiguityError extends Error {
 }
 
 interface PendingRequest {
+  readonly requestId: string;
+  readonly generation: number;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
   readonly timer: NodeJS.Timeout;
+}
+
+interface RequestTombstone {
+  readonly generation: number;
+  readonly expiresAt: number;
 }
 
 interface Deferred<T> {
@@ -91,6 +104,16 @@ function asRecord(value: unknown, name: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function positiveInteger(value: number | undefined, fallback: number, name: string): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive safe integer`);
+  return value;
+}
+
+function boundedText(value: string, maximum = 2048): string {
+  return value.length <= maximum ? value : `${value.slice(0, maximum)}…[TRUNCATED]`;
+}
+
 export class BackendSupervisor extends EventEmitter {
   private readonly processFactory: BackendProcessFactory;
   private readonly tokenFactory: () => Uint8Array;
@@ -99,12 +122,24 @@ export class BackendSupervisor extends EventEmitter {
   private readonly maxBufferedEvents: number;
   private readonly maxEventSequenceGap: number;
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly tombstones = new Map<string, RequestTombstone>();
+  private readonly requestTombstoneLimit: number;
+  private readonly requestTombstoneTtlMs: number;
+  private readonly maxBufferedStdinBytes: number;
+  private readonly maxBufferedStdinWrites: number;
+  private readonly maxStderrLineBytes: number;
+  private readonly maxStderrBytes: number;
   private readonly recentEventIds = new Map<string, true>();
   private readonly bufferedEvents = new Map<number, RuntimeEvent>();
   private deliveryChain: Promise<void> = Promise.resolve();
   private deliveryScheduled = false;
   private deliveryInFlight = 0;
   private process?: BackendProcess;
+  private sessionGeneration = 0;
+  private writeQueue: Buffer[] = [];
+  private bufferedStdinBytes = 0;
+  private writeBackpressured = false;
+  private drainTarget?: Writable;
   private decoder = new FrameDecoder();
   private hello?: BackendHello;
   private ready?: Deferred<void>;
@@ -120,7 +155,10 @@ export class BackendSupervisor extends EventEmitter {
   private lastReplayAfterSequence: number | null = null;
   private expectedExit = false;
   private protocolRejected = false;
-  private stderrBuffer = "";
+  private stderrBuffer = Buffer.alloc(0);
+  private stderrTotalBytes = 0;
+  private stderrLineTruncated = false;
+  private stderrLimitDiagnosticEmitted = false;
   private stateValue: ConnectionState = "STOPPED";
   private capabilitiesValue: readonly BackendCapability[] = Object.freeze([]);
 
@@ -136,6 +174,12 @@ export class BackendSupervisor extends EventEmitter {
     this.cursorPort = config.cursorPort ?? { commit: async () => {} };
     this.maxBufferedEvents = config.maxBufferedEvents ?? DEFAULT_MAX_BUFFERED_EVENTS;
     this.maxEventSequenceGap = config.maxEventSequenceGap ?? DEFAULT_MAX_EVENT_SEQUENCE_GAP;
+    this.requestTombstoneLimit = positiveInteger(config.requestTombstoneLimit, DEFAULT_REQUEST_TOMBSTONE_LIMIT, "requestTombstoneLimit");
+    this.requestTombstoneTtlMs = positiveInteger(config.requestTombstoneTtlMs, DEFAULT_REQUEST_TOMBSTONE_TTL_MS, "requestTombstoneTtlMs");
+    this.maxBufferedStdinBytes = positiveInteger(config.maxBufferedStdinBytes, DEFAULT_MAX_BUFFERED_STDIN_BYTES, "maxBufferedStdinBytes");
+    this.maxBufferedStdinWrites = positiveInteger(config.maxBufferedStdinWrites, DEFAULT_MAX_BUFFERED_STDIN_WRITES, "maxBufferedStdinWrites");
+    this.maxStderrLineBytes = positiveInteger(config.maxStderrLineBytes, DEFAULT_MAX_STDERR_LINE_BYTES, "maxStderrLineBytes");
+    this.maxStderrBytes = positiveInteger(config.maxStderrBytes, DEFAULT_MAX_STDERR_BYTES, "maxStderrBytes");
     this.crashGuard = new CrashLoopGuard(config.crashLoopLimit ?? 5, config.crashLoopWindowMs ?? 60_000);
   }
 
@@ -195,15 +239,35 @@ export class BackendSupervisor extends EventEmitter {
     const timeoutMs = options.timeoutMs ?? this.config.requestTimeoutMs ?? 30_000;
     const waiting = deferred<unknown>();
     const timer = setTimeout(() => {
+      const pending = this.pending.get(requestId);
+      if (!pending) return;
       this.pending.delete(requestId);
+      this.rememberTombstone(requestId, pending.generation);
       waiting.reject(new BackendTimeoutError(`backend request timed out: ${operationId}`));
     }, timeoutMs);
-    this.pending.set(requestId, { resolve: waiting.resolve, reject: waiting.reject, timer });
+    this.pending.set(requestId, {
+      requestId,
+      generation: this.sessionGeneration,
+      resolve: waiting.resolve,
+      reject: waiting.reject,
+      timer
+    });
     try {
       this.send(envelope);
     } catch (error) {
       clearTimeout(timer);
-      this.pending.delete(requestId);
+      const pending = this.pending.get(requestId);
+      if (pending) {
+        this.pending.delete(requestId);
+        this.rememberTombstone(requestId, pending.generation);
+        pending.reject(error instanceof Error ? error : new BackendDisconnectedError(String(error)));
+      }
+      // A synchronous send failure rejects the async request below, so the
+      // internal waiting promise is otherwise left without an owner.  Keep
+      // the caller-facing transport error while consuming that internal
+      // rejection to avoid an unhandled rejection during queue overflow or
+      // a failed writable.
+      void waiting.promise.catch(() => undefined);
       throw error;
     }
     return waiting.promise;
@@ -264,9 +328,22 @@ export class BackendSupervisor extends EventEmitter {
   }
 
   async shutdown(deadlineMs = 10_000): Promise<void> {
-    if (["STOPPED", "DISCONNECTED"].includes(this.stateValue)) return;
+    if (this.stateValue === "STOPPED") return;
     this.setState("SHUTTING_DOWN");
     this.expectedExit = true;
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = undefined;
+    if (!this.process) {
+      const error = new BackendDisconnectedError("canonical backend shut down");
+      this.ready?.reject(error);
+      this.ready = undefined;
+      this.sessionGeneration += 1;
+      this.clearWriteQueue();
+      this.rejectAll(error);
+      this.tombstones.clear();
+      this.setState("STOPPED");
+      return;
+    }
     this.shutdownReady = deferred<void>();
     this.shutdownCommitted = deferred<void>();
     const deadlineAt = new Date(Date.now() + deadlineMs).toISOString();
@@ -280,9 +357,13 @@ export class BackendSupervisor extends EventEmitter {
       // ack) before terminating so no committed-but-unacked event is lost.
       await this.whenDeliveryIdle();
     } finally {
-      this.process?.terminate();
-      this.rejectAll(new BackendDisconnectedError("canonical backend shut down"));
+      const process = this.process;
       this.process = undefined;
+      this.sessionGeneration += 1;
+      this.clearWriteQueue();
+      process?.terminate();
+      this.rejectAll(new BackendDisconnectedError("canonical backend shut down"));
+      this.tombstones.clear();
       this.setState("STOPPED");
     }
   }
@@ -291,15 +372,24 @@ export class BackendSupervisor extends EventEmitter {
     this.expectedExit = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = undefined;
-    this.process?.terminate();
+    const process = this.process;
     this.process = undefined;
+    this.sessionGeneration += 1;
+    this.clearWriteQueue();
+    process?.terminate();
     this.rejectAll(new BackendDisconnectedError("canonical backend stopped"));
+    this.tombstones.clear();
     this.setState("STOPPED");
   }
 
   private async launch(): Promise<void> {
+    const generation = ++this.sessionGeneration;
     this.decoder = new FrameDecoder();
-    this.stderrBuffer = "";
+    this.clearWriteQueue();
+    this.stderrBuffer = Buffer.alloc(0);
+    this.stderrTotalBytes = 0;
+    this.stderrLineTruncated = false;
+    this.stderrLimitDiagnosticEmitted = false;
     this.hello = undefined;
     this.replayFrozenWatermark = null;
     this.lastReplayAfterSequence = null;
@@ -320,14 +410,15 @@ export class BackendSupervisor extends EventEmitter {
     };
     this.process = this.processFactory.spawn(spec, token);
     const launched = this.process;
-    launched.stdout.on("data", (chunk: Buffer) => this.onStdout(chunk, token));
-    launched.stderr.on("data", (chunk: Buffer) => this.onStderr(chunk));
-    launched.onExit((code, signal) => this.onExit(launched, code, signal));
+    launched.stdout.on("data", (chunk: Buffer) => this.onStdout(launched, generation, chunk, token));
+    launched.stderr.on("data", (chunk: Buffer) => this.onStderr(launched, generation, chunk));
+    launched.onExit((code, signal) => this.onExit(launched, generation, code, signal));
     this.readyTimer = setTimeout(() => this.rejectProtocol(new BackendTimeoutError("backend.hello/ready handshake timed out")), this.config.handshakeTimeoutMs ?? 10_000);
     return this.ready.promise;
   }
 
-  private onStdout(chunk: Uint8Array, token: Uint8Array): void {
+  private onStdout(process: BackendProcess, generation: number, chunk: Uint8Array, token: Uint8Array): void {
+    if (this.process !== process || this.sessionGeneration !== generation) return;
     try {
       for (const message of this.decoder.feed(chunk)) this.onMessage(message, token);
     } catch (error) {
@@ -382,7 +473,29 @@ export class BackendSupervisor extends EventEmitter {
     const requestId = message.request_id;
     if (typeof requestId !== "string") throw new TransportProtocolError("response request_id is missing");
     const pending = this.pending.get(requestId);
-    if (!pending) throw new TransportProtocolError("response has no pending request correlation");
+    if (!pending) {
+      const tombstone = this.takeTombstone(requestId);
+      if (tombstone) {
+        this.emit("diagnostic", {
+          level: "WARN",
+          code: "LATE_RESPONSE_DISCARDED",
+          message: `discarded late response for timed-out request ${requestId} from session generation ${tombstone.generation}`
+        } satisfies RuntimeDiagnostic);
+        return;
+      }
+      throw new TransportProtocolError("response has no pending request correlation");
+    }
+    if (pending.generation !== this.sessionGeneration) {
+      this.pending.delete(requestId);
+      clearTimeout(pending.timer);
+      this.rememberTombstone(requestId, pending.generation);
+      this.emit("diagnostic", {
+        level: "WARN",
+        code: "STALE_SESSION_RESPONSE_DISCARDED",
+        message: `discarded response for stale session generation ${pending.generation}`
+      } satisfies RuntimeDiagnostic);
+      return;
+    }
     this.pending.delete(requestId);
     clearTimeout(pending.timer);
     const keys = Object.keys(message).sort().join("|");
@@ -598,13 +711,61 @@ export class BackendSupervisor extends EventEmitter {
     }
   }
 
-  private onStderr(chunk: Uint8Array): void {
-    this.stderrBuffer += Buffer.from(chunk).toString("utf8");
+  private rememberTombstone(requestId: string, generation: number): void {
+    const now = Date.now();
+    this.pruneTombstones(now);
+    this.tombstones.delete(requestId);
+    this.tombstones.set(requestId, { generation, expiresAt: now + this.requestTombstoneTtlMs });
+    while (this.tombstones.size > this.requestTombstoneLimit) {
+      const oldest = this.tombstones.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.tombstones.delete(oldest);
+    }
+  }
+
+  private takeTombstone(requestId: string): RequestTombstone | undefined {
+    this.pruneTombstones(Date.now());
+    const tombstone = this.tombstones.get(requestId);
+    if (tombstone) this.tombstones.delete(requestId);
+    return tombstone;
+  }
+
+  private pruneTombstones(now: number): void {
+    for (const [requestId, tombstone] of this.tombstones) {
+      if (tombstone.expiresAt <= now) this.tombstones.delete(requestId);
+    }
+  }
+
+  private onStderr(process: BackendProcess, generation: number, chunk: Uint8Array): void {
+    if (this.process !== process || this.sessionGeneration !== generation) return;
+    const incoming = Buffer.from(chunk);
+    const remaining = this.maxStderrBytes - this.stderrTotalBytes;
+    if (remaining <= 0) {
+      this.emitStderrLimitDiagnostic();
+      return;
+    }
+    const accepted = incoming.subarray(0, remaining);
+    this.stderrTotalBytes += accepted.byteLength;
+    if (accepted.byteLength < incoming.byteLength) this.emitStderrLimitDiagnostic();
+    if (accepted.byteLength > 0) this.stderrBuffer = Buffer.concat([this.stderrBuffer, accepted]);
     for (;;) {
-      const newline = this.stderrBuffer.indexOf("\n");
-      if (newline < 0) return;
-      const line = this.stderrBuffer.slice(0, newline).trim();
-      this.stderrBuffer = this.stderrBuffer.slice(newline + 1);
+      const newline = this.stderrBuffer.indexOf(0x0a);
+      if (newline < 0) {
+        if (this.stderrBuffer.byteLength > this.maxStderrLineBytes) {
+          this.stderrBuffer = this.stderrBuffer.subarray(this.stderrBuffer.byteLength - this.maxStderrLineBytes);
+          this.stderrLineTruncated = true;
+        }
+        return;
+      }
+      const lineBytes = this.stderrBuffer.subarray(0, newline);
+      this.stderrBuffer = this.stderrBuffer.subarray(newline + 1);
+      const lineTruncated = this.stderrLineTruncated || lineBytes.byteLength > this.maxStderrLineBytes;
+      this.stderrLineTruncated = false;
+      if (lineTruncated) {
+        this.emitStderrLimitDiagnostic("stderr line exceeded the bounded line limit [TRUNCATED]");
+        continue;
+      }
+      const line = lineBytes.toString("utf8").trim();
       if (!line) continue;
       let diagnostic: RuntimeDiagnostic;
       try {
@@ -612,7 +773,7 @@ export class BackendSupervisor extends EventEmitter {
         diagnostic = {
           level: ["INFO", "WARN", "ERROR"].includes(String(parsed.level)) ? parsed.level as RuntimeDiagnostic["level"] : "ERROR",
           code: typeof parsed.code === "string" ? parsed.code : "BACKEND_STDERR",
-          message: typeof parsed.message === "string" ? parsed.message : "redacted backend diagnostic"
+          message: boundedText(typeof parsed.message === "string" ? parsed.message : "redacted backend diagnostic")
         };
       } catch {
         diagnostic = { level: "ERROR", code: "BACKEND_STDERR_UNSTRUCTURED", message: "redacted unstructured backend diagnostic" };
@@ -621,9 +782,20 @@ export class BackendSupervisor extends EventEmitter {
     }
   }
 
-  private onExit(process: BackendProcess, code: number | null, signal: NodeJS.Signals | null): void {
-    if (this.process !== process) return;
+  private emitStderrLimitDiagnostic(message = "backend stderr exceeded the bounded total limit [TRUNCATED]"): void {
+    if (this.stderrLimitDiagnosticEmitted) return;
+    this.stderrLimitDiagnosticEmitted = true;
+    this.emit("diagnostic", {
+      level: "WARN",
+      code: "BACKEND_STDERR_TRUNCATED",
+      message: boundedText(message)
+    } satisfies RuntimeDiagnostic);
+  }
+
+  private onExit(process: BackendProcess, generation: number, code: number | null, signal: NodeJS.Signals | null): void {
+    if (this.process !== process || this.sessionGeneration !== generation) return;
     this.process = undefined;
+    this.clearWriteQueue();
     if (this.readyTimer) clearTimeout(this.readyTimer);
     this.readyTimer = undefined;
     const error = new BackendDisconnectedError(`canonical backend exited (code=${String(code)}, signal=${String(signal)})`);
@@ -646,6 +818,8 @@ export class BackendSupervisor extends EventEmitter {
     const delay = Math.min(maximum, base * 2 ** this.restartAttempt++);
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined;
+      if (this.expectedExit || this.protocolRejected) return;
+      this.setState("RECONNECTING");
       void this.launch().catch((launchError: unknown) => this.emit("error", launchError));
     }, delay);
   }
@@ -655,6 +829,7 @@ export class BackendSupervisor extends EventEmitter {
     this.ready?.reject(error);
     this.ready = undefined;
     this.rejectAll(error);
+    this.clearWriteQueue();
     this.process?.terminate();
     this.setState("DISCONNECTED");
   }
@@ -662,6 +837,7 @@ export class BackendSupervisor extends EventEmitter {
   private rejectAll(error: Error): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
+      this.rememberTombstone(pending.requestId, pending.generation);
       pending.reject(error);
     }
     this.pending.clear();
@@ -674,7 +850,81 @@ export class BackendSupervisor extends EventEmitter {
   private send(message: Readonly<Record<string, unknown>>): void {
     const target: Writable | undefined = this.process?.stdin;
     if (!target || target.destroyed || !target.writable) throw new BackendDisconnectedError();
-    target.write(encodeFrame(message));
+    const frame = encodeFrame(message);
+    if (this.writeQueue.length > 0 || this.writeBackpressured) {
+      this.enqueueWrite(target, frame);
+      this.flushWrites(target);
+      return;
+    }
+    this.writeFrame(target, frame);
+  }
+
+  private enqueueWrite(target: Writable, frame: Buffer): void {
+    if (
+      this.writeQueue.length >= this.maxBufferedStdinWrites
+      || this.bufferedStdinBytes + frame.byteLength > this.maxBufferedStdinBytes
+    ) {
+      const error = new BackendRuntimeError(
+        "backend stdin backpressure queue exceeded its bounded limit",
+        "TRANSPORT_BACKPRESSURE",
+        true,
+        { max_bytes: this.maxBufferedStdinBytes, max_writes: this.maxBufferedStdinWrites }
+      );
+      this.emit("diagnostic", { level: "ERROR", code: error.code, message: error.message } satisfies RuntimeDiagnostic);
+      this.rejectAll(error);
+      this.process?.terminate();
+      throw error;
+    }
+    this.writeQueue.push(frame);
+    this.bufferedStdinBytes += frame.byteLength;
+    void target;
+  }
+
+  private flushWrites(target: Writable): void {
+    if (this.writeBackpressured || this.process?.stdin !== target) return;
+    while (this.writeQueue.length > 0 && !this.writeBackpressured) {
+      const frame = this.writeQueue.shift()!;
+      this.bufferedStdinBytes -= frame.byteLength;
+      this.writeFrame(target, frame);
+    }
+  }
+
+  private writeFrame(target: Writable, frame: Buffer): void {
+    try {
+      if (!target.write(frame)) {
+        this.writeBackpressured = true;
+        this.armDrain(target);
+      }
+    } catch (error) {
+      const failure = new BackendRuntimeError(
+        "backend stdin write failed",
+        "TRANSPORT_BACKPRESSURE",
+        true,
+        { cause: boundedText(error instanceof Error ? error.message : String(error)) }
+      );
+      this.emit("diagnostic", { level: "ERROR", code: failure.code, message: failure.message } satisfies RuntimeDiagnostic);
+      this.rejectAll(failure);
+      this.process?.terminate();
+      throw failure;
+    }
+  }
+
+  private armDrain(target: Writable): void {
+    if (this.drainTarget === target) return;
+    this.drainTarget = target;
+    target.once("drain", () => {
+      if (this.process?.stdin !== target) return;
+      this.drainTarget = undefined;
+      this.writeBackpressured = false;
+      this.flushWrites(target);
+    });
+  }
+
+  private clearWriteQueue(): void {
+    this.writeQueue = [];
+    this.bufferedStdinBytes = 0;
+    this.writeBackpressured = false;
+    this.drainTarget = undefined;
   }
 
   private setState(next: ConnectionState): void {
