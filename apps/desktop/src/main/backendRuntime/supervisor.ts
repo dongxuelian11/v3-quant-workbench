@@ -70,7 +70,7 @@ interface PendingRequest {
 
 interface RequestTombstone {
   readonly generation: number;
-  readonly expiresAt: number;
+  readonly ttlBoundaryAt: number;
 }
 
 interface Deferred<T> {
@@ -217,6 +217,7 @@ export class BackendSupervisor extends EventEmitter {
     for (const reserved of ["request_id", "project_id", "project_context_revision_id", "expected_api_version"]) {
       if (reserved in payload) throw new BackendRuntimeError(`renderer-controlled transport field rejected: ${reserved}`, "INVALID_ARGUMENT");
     }
+    this.ensureRequestTombstoneCapacity();
     const requestId = uuidV7();
     const body = {
       request_id: requestId,
@@ -339,7 +340,7 @@ export class BackendSupervisor extends EventEmitter {
       this.ready = undefined;
       this.sessionGeneration += 1;
       this.clearWriteQueue();
-      this.rejectAll(error);
+      this.rejectAll(error, false);
       this.tombstones.clear();
       this.setState("STOPPED");
       return;
@@ -362,7 +363,7 @@ export class BackendSupervisor extends EventEmitter {
       this.sessionGeneration += 1;
       this.clearWriteQueue();
       process?.terminate();
-      this.rejectAll(new BackendDisconnectedError("canonical backend shut down"));
+      this.rejectAll(new BackendDisconnectedError("canonical backend shut down"), false);
       this.tombstones.clear();
       this.setState("STOPPED");
     }
@@ -377,13 +378,14 @@ export class BackendSupervisor extends EventEmitter {
     this.sessionGeneration += 1;
     this.clearWriteQueue();
     process?.terminate();
-    this.rejectAll(new BackendDisconnectedError("canonical backend stopped"));
+    this.rejectAll(new BackendDisconnectedError("canonical backend stopped"), false);
     this.tombstones.clear();
     this.setState("STOPPED");
   }
 
   private async launch(): Promise<void> {
     const generation = ++this.sessionGeneration;
+    this.tombstones.clear();
     this.decoder = new FrameDecoder();
     this.clearWriteQueue();
     this.stderrBuffer = Buffer.alloc(0);
@@ -476,10 +478,11 @@ export class BackendSupervisor extends EventEmitter {
     if (!pending) {
       const tombstone = this.takeTombstone(requestId);
       if (tombstone) {
+        const lateWindow = tombstone.ttlBoundaryAt <= Date.now() ? " after the configured TTL window" : "";
         this.emit("diagnostic", {
           level: "WARN",
           code: "LATE_RESPONSE_DISCARDED",
-          message: `discarded late response for timed-out request ${requestId} from session generation ${tombstone.generation}`
+          message: `discarded late response for timed-out request ${requestId} from session generation ${tombstone.generation}${lateWindow}`
         } satisfies RuntimeDiagnostic);
         return;
       }
@@ -712,28 +715,40 @@ export class BackendSupervisor extends EventEmitter {
   }
 
   private rememberTombstone(requestId: string, generation: number): void {
-    const now = Date.now();
-    this.pruneTombstones(now);
     this.tombstones.delete(requestId);
-    this.tombstones.set(requestId, { generation, expiresAt: now + this.requestTombstoneTtlMs });
-    while (this.tombstones.size > this.requestTombstoneLimit) {
-      const oldest = this.tombstones.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      this.tombstones.delete(oldest);
+    if (this.tombstones.size >= this.requestTombstoneLimit) {
+      this.rejectProtocol(new BackendRuntimeError(
+        "backend timed-out request correlation capacity was exceeded",
+        "TRANSPORT_TOMBSTONE_CAPACITY"
+      ));
+      return;
     }
+    this.tombstones.set(requestId, {
+      generation,
+      ttlBoundaryAt: Date.now() + this.requestTombstoneTtlMs
+    });
   }
 
   private takeTombstone(requestId: string): RequestTombstone | undefined {
-    this.pruneTombstones(Date.now());
     const tombstone = this.tombstones.get(requestId);
     if (tombstone) this.tombstones.delete(requestId);
+    if (tombstone && tombstone.generation !== this.sessionGeneration) return undefined;
     return tombstone;
   }
 
-  private pruneTombstones(now: number): void {
-    for (const [requestId, tombstone] of this.tombstones) {
-      if (tombstone.expiresAt <= now) this.tombstones.delete(requestId);
-    }
+  private ensureRequestTombstoneCapacity(): void {
+    const reservedCorrelations = this.tombstones.size + this.pending.size;
+    if (reservedCorrelations < this.requestTombstoneLimit) return;
+    throw new BackendRuntimeError(
+      "new backend request rejected while timed-out correlation capacity is reserved",
+      "TRANSPORT_TOMBSTONE_CAPACITY",
+      true,
+      {
+        max_tombstones: this.requestTombstoneLimit,
+        timed_out_correlations: this.tombstones.size,
+        pending_correlations: this.pending.size
+      }
+    );
   }
 
   private onStderr(process: BackendProcess, generation: number, chunk: Uint8Array): void {
@@ -801,7 +816,8 @@ export class BackendSupervisor extends EventEmitter {
     const error = new BackendDisconnectedError(`canonical backend exited (code=${String(code)}, signal=${String(signal)})`);
     this.ready?.reject(error);
     this.ready = undefined;
-    this.rejectAll(error);
+    this.rejectAll(error, false);
+    this.tombstones.clear();
     if (this.expectedExit) {
       this.setState("STOPPED");
       return;
@@ -828,16 +844,16 @@ export class BackendSupervisor extends EventEmitter {
     this.protocolRejected = true;
     this.ready?.reject(error);
     this.ready = undefined;
-    this.rejectAll(error);
+    this.rejectAll(error, false);
     this.clearWriteQueue();
     this.process?.terminate();
     this.setState("DISCONNECTED");
   }
 
-  private rejectAll(error: Error): void {
+  private rejectAll(error: Error, preserveTombstones = true): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      this.rememberTombstone(pending.requestId, pending.generation);
+      if (preserveTombstones) this.rememberTombstone(pending.requestId, pending.generation);
       pending.reject(error);
     }
     this.pending.clear();
@@ -871,7 +887,7 @@ export class BackendSupervisor extends EventEmitter {
         { max_bytes: this.maxBufferedStdinBytes, max_writes: this.maxBufferedStdinWrites }
       );
       this.emit("diagnostic", { level: "ERROR", code: error.code, message: error.message } satisfies RuntimeDiagnostic);
-      this.rejectAll(error);
+      this.rejectAll(error, false);
       this.process?.terminate();
       throw error;
     }
@@ -903,7 +919,7 @@ export class BackendSupervisor extends EventEmitter {
         { cause: boundedText(error instanceof Error ? error.message : String(error)) }
       );
       this.emit("diagnostic", { level: "ERROR", code: failure.code, message: failure.message } satisfies RuntimeDiagnostic);
-      this.rejectAll(failure);
+      this.rejectAll(failure, false);
       this.process?.terminate();
       throw failure;
     }

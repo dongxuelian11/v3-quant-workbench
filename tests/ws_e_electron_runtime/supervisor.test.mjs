@@ -318,45 +318,73 @@ test("timed-out known reply is discarded without terminating the live backend", 
   supervisor.stopNow();
 });
 
-test("request tombstones obey count and TTL bounds", async () => {
-  const countFactory = new MockFactory();
-  const countSupervisor = create(countFactory, {
+test("very-late known reply remains safe after the configured TTL window", async () => {
+  const factory = new MockFactory();
+  const diagnostics = [];
+  const supervisor = create(factory, {
     autoReconnect: false,
     requestTimeoutMs: 10,
-    requestTombstoneLimit: 1,
-    requestTombstoneTtlMs: 1_000
+    requestTombstoneTtlMs: 10
   });
-  await countSupervisor.start();
-  countFactory.backends[0].requestMode = "queue";
-  const first = countSupervisor.cancelTask({ taskId: `tsk_${"6".repeat(26)}`, expectedStateVersion: 1, reason: "tombstone-count-1" });
-  const second = countSupervisor.cancelTask({ taskId: `tsk_${"7".repeat(26)}`, expectedStateVersion: 1, reason: "tombstone-count-2" });
-  await assert.rejects(first, (error) => error.code === "BACKEND_TIMEOUT");
-  await assert.rejects(second, (error) => error.code === "BACKEND_TIMEOUT");
-  assert.equal(countSupervisor.tombstones.size, 1);
-  countSupervisor.stopNow();
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.requestMode = "queue";
+  const request = supervisor.cancelTask({ taskId: `tsk_${"8".repeat(26)}`, expectedStateVersion: 1, reason: "very-late-reply" });
+  await waitFor(() => backend.queuedRequests.length === 1);
+  await assert.rejects(request, (error) => error.code === "BACKEND_TIMEOUT");
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  backend.respondOk(backend.queuedRequests.shift());
+  await waitFor(() => diagnostics.some((item) => item.code === "LATE_RESPONSE_DISCARDED" && item.message.includes("configured TTL window")));
+  assert.equal(supervisor.state, "READY");
+  assert.equal(supervisor.tombstones.size, 0);
+  backend.requestMode = "ok";
+  assert.equal((await supervisor.cancelTask({ taskId: `tsk_${"9".repeat(26)}`, expectedStateVersion: 1, reason: "capacity-released" })).operation_id, "TaskService.v1.cancelTask");
+  supervisor.stopNow();
+});
 
-  const ttlFactory = new MockFactory();
-  const ttlSupervisor = create(ttlFactory, {
+test("tombstone capacity rejects new work without evicting live-generation correlations", async () => {
+  const factory = new MockFactory();
+  const diagnostics = [];
+  const supervisor = create(factory, {
     autoReconnect: false,
     requestTimeoutMs: 10,
     requestTombstoneLimit: 2,
     requestTombstoneTtlMs: 10
   });
-  await ttlSupervisor.start();
-  ttlFactory.backends[0].requestMode = "queue";
-  const expired = ttlSupervisor.cancelTask({ taskId: `tsk_${"8".repeat(26)}`, expectedStateVersion: 1, reason: "tombstone-ttl-1" });
-  await assert.rejects(expired, (error) => error.code === "BACKEND_TIMEOUT");
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.requestMode = "queue";
+  const first = supervisor.cancelTask({ taskId: `tsk_${"a".repeat(26)}`, expectedStateVersion: 1, reason: "capacity-first" });
+  const second = supervisor.cancelTask({ taskId: `tsk_${"b".repeat(26)}`, expectedStateVersion: 1, reason: "capacity-second" });
+  await waitFor(() => backend.queuedRequests.length === 2);
+  await Promise.all([
+    assert.rejects(first, (error) => error.code === "BACKEND_TIMEOUT"),
+    assert.rejects(second, (error) => error.code === "BACKEND_TIMEOUT")
+  ]);
+  assert.equal(supervisor.tombstones.size, 2);
   await new Promise((resolve) => setTimeout(resolve, 25));
-  const current = ttlSupervisor.cancelTask({ taskId: `tsk_${"9".repeat(26)}`, expectedStateVersion: 1, reason: "tombstone-ttl-2" });
-  await assert.rejects(current, (error) => error.code === "BACKEND_TIMEOUT");
-  assert.equal(ttlSupervisor.tombstones.size, 1, "expired tombstones are pruned when a new tombstone is recorded");
-  ttlSupervisor.stopNow();
+  await assert.rejects(
+    supervisor.cancelTask({ taskId: `tsk_${"c".repeat(26)}`, expectedStateVersion: 1, reason: "capacity-rejected" }),
+    (error) => error.code === "TRANSPORT_TOMBSTONE_CAPACITY"
+  );
+  assert.equal(supervisor.tombstones.size, 2);
+  backend.respondOk(backend.queuedRequests.shift());
+  await waitFor(() => diagnostics.filter((item) => item.code === "LATE_RESPONSE_DISCARDED").length === 1);
+  assert.equal(supervisor.tombstones.size, 1);
+  backend.respondOk(backend.queuedRequests.shift());
+  await waitFor(() => diagnostics.filter((item) => item.code === "LATE_RESPONSE_DISCARDED").length === 2);
+  assert.equal(supervisor.tombstones.size, 0);
+  backend.requestMode = "ok";
+  assert.equal((await supervisor.cancelTask({ taskId: `tsk_${"d".repeat(26)}`, expectedStateVersion: 1, reason: "capacity-released" })).operation_id, "TaskService.v1.cancelTask");
+  supervisor.stopNow();
 });
 
 test("old session output cannot satisfy the new session after reconnect", async () => {
   const factory = new MockFactory();
   const states = [];
-  const supervisor = create(factory, { reconnectBaseDelayMs: 10, reconnectMaxDelayMs: 10 });
+  const supervisor = create(factory, { requestTimeoutMs: 10, reconnectBaseDelayMs: 10, reconnectMaxDelayMs: 10 });
   supervisor.on("state", (state) => states.push(state));
   await supervisor.start();
   const oldBackend = factory.backends[0];
@@ -364,9 +392,11 @@ test("old session output cannot satisfy the new session after reconnect", async 
   const request = supervisor.cancelTask({ taskId: `tsk_${"2".repeat(26)}`, expectedStateVersion: 1, reason: "old-session" });
   await waitFor(() => oldBackend.queuedRequests.length === 1);
   const oldMessage = oldBackend.queuedRequests[0];
+  await assert.rejects(request, (error) => error.code === "BACKEND_TIMEOUT");
+  assert.equal(supervisor.tombstones.size, 1);
   factory.processes[0].crash();
-  await assert.rejects(request, (error) => error.code === "BACKEND_DISCONNECTED");
   await waitFor(() => factory.backends.length === 2 && supervisor.state === "READY");
+  assert.equal(supervisor.tombstones.size, 0);
   oldBackend.respondOk(oldMessage);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(supervisor.state, "READY");
