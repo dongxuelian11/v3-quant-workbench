@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const storageRoot = mkdtempSync(resolve(tmpdir(), "v3-product-research-smoke-"));
 const python = process.env.V3_PYTHON ?? (process.platform === "win32" ? "python" : "python3");
-const result = spawnSync(
+const pythonRun = spawnSync(
   python,
   [resolve(root, "scripts/product_research_smoke_python.py"), storageRoot],
   {
@@ -19,12 +19,12 @@ const result = spawnSync(
   },
 );
 try {
-  if (result.status !== 0) {
-    console.error(result.stdout ?? "");
-    console.error(result.stderr ?? "");
-    process.exit(result.status ?? 1);
+  if (pythonRun.status !== 0) {
+    console.error(pythonRun.stdout ?? "");
+    console.error(pythonRun.stderr ?? "");
+    process.exit(pythonRun.status ?? 1);
   }
-  const evidence = JSON.parse((result.stdout ?? "").trim());
+  const evidence = JSON.parse((pythonRun.stdout ?? "").trim());
   if (evidence.status !== "PASS" || evidence.truth_state !== "DEMO" || evidence.maturity !== "PRODUCT_CONNECTED_CANDIDATE") {
     throw new Error("research smoke returned an unadmitted truth state");
   }

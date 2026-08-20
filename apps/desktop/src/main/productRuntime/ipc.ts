@@ -125,12 +125,12 @@ export function registerProductRuntimeIpc(
   handle(PRODUCT_RUNTIME_CHANNELS.listProjects, () => bridge.listProjects());
   handle(PRODUCT_RUNTIME_CHANNELS.listBacktestRunSpecs, () => bridge.listBacktestRunSpecs());
   handle(PRODUCT_RUNTIME_CHANNELS.importResearchPackage, () => bridge.importResearchPackage());
-  handle(PRODUCT_RUNTIME_CHANNELS.submitResearch, (value) => {
-    const item = assertObject(value, ["symbol", "startDate", "endDate"]);
+  handle(PRODUCT_RUNTIME_CHANNELS.submitResearch, (intentPayload) => {
+    const intentFields = assertObject(intentPayload, ["symbol", "startDate", "endDate"]);
     return bridge.submitResearch({
-      symbol: requiredString(item, "symbol"),
-      startDate: requiredString(item, "startDate"),
-      endDate: requiredString(item, "endDate")
+      symbol: requiredString(intentFields, "symbol"),
+      startDate: requiredString(intentFields, "startDate"),
+      endDate: requiredString(intentFields, "endDate")
     });
   });
   return () => {
