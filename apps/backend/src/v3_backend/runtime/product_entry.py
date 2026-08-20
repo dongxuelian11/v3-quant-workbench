@@ -60,6 +60,13 @@ from .product_runtime import (
     mint_v3_id,
     wire_time,
 )
+from v3_backend.transport_contract import (
+    MAX_PACKAGE_FILE_BASE64_CHARS,
+    MAX_PACKAGE_FILE_BYTES,
+    MAX_PACKAGE_FILE_COUNT,
+    MAX_PACKAGE_MANIFEST_BYTES,
+    MAX_PACKAGE_TOTAL_BYTES,
+)
 
 PRODUCT_ENTRY_PROTOCOL_VERSION = "v3.product-entry/1.0.0"
 PACKAGE_SCHEMA_VERSION = "v3.research-package/1.0.0"
@@ -70,8 +77,6 @@ MAX_DISPLAY_NAME_LENGTH = 200
 MAX_NOTES_LENGTH = 2048
 MAX_PROJECT_PAGE_SIZE = 100
 MAX_RUN_SPEC_PAGE_SIZE = 100
-MAX_PACKAGE_TOTAL_BYTES = 786_432
-
 # Closed set of durable owner tables described by a research package. These
 # rows are never imported as authority. Each must already exist, byte-for-byte,
 # in the target canonical catalog before the package may become executable.
@@ -324,8 +329,8 @@ def _parse_descriptor(value: Any, name: str) -> dict[str, Any]:
     if artifact_id != "art_sha256_" + sha256:
         raise InvalidArgumentError(f"{name}.artifact_id does not match its declared digest")
     byte_size = value["byte_size"]
-    if not isinstance(byte_size, int) or isinstance(byte_size, bool) or byte_size < 1 or byte_size > 262_144:
-        raise InvalidArgumentError(f"{name}.byte_size must be an integer in [1, 262144]")
+    if not isinstance(byte_size, int) or isinstance(byte_size, bool) or byte_size < 1 or byte_size > MAX_PACKAGE_FILE_BYTES:
+        raise InvalidArgumentError(f"{name}.byte_size must be an integer in [1, {MAX_PACKAGE_FILE_BYTES}]")
     return {
         "name": path,
         "artifact_id": artifact_id,
@@ -383,7 +388,7 @@ def parse_package_manifest(wire: Mapping[str, Any]) -> dict[str, Any]:
         raise InvalidArgumentError("run_spec_id must be a canonical btrs_sha256_ identity")
 
     artifacts = wire["artifacts"]
-    if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= 64:
+    if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= MAX_PACKAGE_FILE_COUNT:
         raise InvalidArgumentError("artifacts must be a bounded non-empty array")
     parsed_artifacts: list[dict[str, Any]] = []
     for item in artifacts:
@@ -393,7 +398,7 @@ def parse_package_manifest(wire: Mapping[str, Any]) -> dict[str, Any]:
             raise InvalidArgumentError("artifact row must be an object")
         row = dict(item["row"])
         byte_size = row.get("byte_size")
-        if not isinstance(byte_size, int) or isinstance(byte_size, bool) or byte_size < 0 or byte_size > 262_144:
+        if not isinstance(byte_size, int) or isinstance(byte_size, bool) or byte_size < 0 or byte_size > MAX_PACKAGE_FILE_BYTES:
             raise InvalidArgumentError("artifact row byte_size must be bounded")
         if byte_size > 0:
             path = _require_package_path(item["name"], "artifacts.name")
@@ -440,7 +445,7 @@ def parse_package_manifest(wire: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _decode_files(files_wire: Any) -> dict[str, PackageFile]:
-    if not isinstance(files_wire, list) or not 1 <= len(files_wire) <= 64:
+    if not isinstance(files_wire, list) or not 1 <= len(files_wire) <= MAX_PACKAGE_FILE_COUNT:
         raise InvalidArgumentError("files must be a bounded non-empty array")
     decoded: dict[str, PackageFile] = {}
     total = 0
@@ -452,10 +457,10 @@ def _decode_files(files_wire: Any) -> dict[str, PackageFile]:
             raise InvalidArgumentError(f"duplicate package file: {path}")
         declared_sha = _require_hex64(item["sha256"], "files.sha256")
         byte_size = item["byte_size"]
-        if not isinstance(byte_size, int) or isinstance(byte_size, bool) or byte_size < 1 or byte_size > 262_144:
-            raise InvalidArgumentError("files.byte_size must be an integer in [1, 262144]")
+        if not isinstance(byte_size, int) or isinstance(byte_size, bool) or byte_size < 1 or byte_size > MAX_PACKAGE_FILE_BYTES:
+            raise InvalidArgumentError(f"files.byte_size must be an integer in [1, {MAX_PACKAGE_FILE_BYTES}]")
         encoded = item["payload_base64"]
-        if not isinstance(encoded, str) or len(encoded) > 349_526:
+        if not isinstance(encoded, str) or len(encoded) > MAX_PACKAGE_FILE_BASE64_CHARS:
             raise InvalidArgumentError("files.payload_base64 exceeds the bounded transfer size")
         try:
             payload = base64.b64decode(encoded, validate=True)
@@ -584,6 +589,12 @@ def import_research_package(
     import leaves no active run-spec reference behind.
     """
     _require_text(idempotency_key, "idempotency_key", max_length=200)
+    try:
+        manifest_bytes = canonical_json_bytes(dict(manifest_wire))
+    except (TypeError, ValueError) as exc:
+        raise InvalidArgumentError("package manifest is not strict JSON") from exc
+    if len(manifest_bytes) > MAX_PACKAGE_MANIFEST_BYTES:
+        raise InvalidArgumentError("research package manifest exceeds the bounded transfer size")
     manifest = parse_package_manifest(manifest_wire)
     files = _decode_files(files_wire)
     _verify_closed_file_set(manifest, files)

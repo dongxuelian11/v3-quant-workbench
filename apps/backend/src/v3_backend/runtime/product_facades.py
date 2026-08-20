@@ -34,6 +34,7 @@ from v3_backend.repositories.unit_of_work import TransactionMode
 
 from .product_runtime import (
     ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
+    BUILD_MANIFEST_ID,
     DEFAULT_RETENTION_PROFILE,
     MAX_EXPERIMENT_CELLS,
     RUN_RESULT_REFERENCE_ROLE,
@@ -297,7 +298,17 @@ def _task_read_model(product: ProductRuntime, task_id: str) -> dict[str, Any]:
     connection = product._connection(read_only=True)
     try:
         row = connection.execute(
-            "SELECT created_at, updated_at, terminal_at FROM task WHERE task_id=?", (task_id,)
+            """
+            SELECT t.created_at, t.updated_at, t.terminal_at,
+                   result.result_id AS result_id
+            FROM task t
+            LEFT JOIN run r ON r.run_id=? AND r.task_id=t.task_id
+            LEFT JOIN result
+              ON result.backtest_run_id=r.run_id
+             AND result.project_id=t.project_id
+            WHERE t.task_id=? AND t.project_id=?
+            """,
+            (task.active_run_id, task_id, task.project_id),
         ).fetchone()
     finally:
         connection.close()
@@ -309,6 +320,7 @@ def _task_read_model(product: ProductRuntime, task_id: str) -> dict[str, Any]:
         "state": task.state.value,
         "state_version": task.state_version,
         "run_id": task.active_run_id,
+        "result_id": None if row["result_id"] is None else str(row["result_id"]),
         "attempt": _attempt_read_model(product, task_id, task.active_run_id),
         "outputs": outputs,
         "created_at": str(row["created_at"]),
@@ -888,6 +900,14 @@ class ResultFacade:
         if str(row["project_id"]) != str(request["project_id"]):
             raise TruthPreconditionFailedError("result belongs to a different project")
         result_artifact = None
+        connection = self.product._connection(read_only=True)
+        try:
+            run_row = connection.execute(
+                "SELECT code_version FROM run WHERE run_id=?",
+                (str(row["backtest_run_id"]),),
+            ).fetchone()
+        finally:
+            connection.close()
         references = self.product.references(
             str(row["backtest_run_id"]), RUN_RESULT_REFERENCE_ROLE
         )
@@ -902,6 +922,8 @@ class ResultFacade:
                 "result_id": result_id,
                 "project_id": str(row["project_id"]),
                 "backtest_run_id": str(row["backtest_run_id"]),
+                "code_version": None if run_row is None else str(run_row["code_version"]),
+                "build_manifest_id": BUILD_MANIFEST_ID,
                 "state": str(row["state"]),
                 "ledger_manifest_artifact_id": str(row["ledger_manifest_artifact_id"]),
                 "reconciliation_artifact_id": (

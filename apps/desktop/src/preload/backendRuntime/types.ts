@@ -1,5 +1,5 @@
 export type RuntimeTruthState = "FORMAL" | "DEMO" | "UNAVAILABLE";
-export type RuntimeConnectionState = "STOPPED" | "STARTING" | "HANDSHAKING" | "REPLAYING" | "READY" | "DISCONNECTED" | "CRASH_LOOP" | "SHUTTING_DOWN";
+export type RuntimeConnectionState = "STOPPED" | "STARTING" | "HANDSHAKING" | "REPLAYING" | "READY" | "RECONNECTING" | "DISCONNECTED" | "CRASH_LOOP" | "SHUTTING_DOWN";
 
 export interface RuntimeCapability {
   readonly code: string;

@@ -8,11 +8,12 @@ import sys
 from typing import Any
 
 from .composition_root import RuntimePorts, build_runtime, default_capabilities
+from .build_manifest import BUILD_MANIFEST
 from .framed_stdio import ProtocolViolation
 from .handshake import read_supervisor_token
 from .product_runtime import build_product_ports, resolve_product_storage_root
 
-BACKEND_VERSION = "0.1.0-recovery.2"
+BACKEND_VERSION = BUILD_MANIFEST.code_version
 TRANSPORT = "stdio-framed-v1"
 
 

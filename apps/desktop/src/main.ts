@@ -132,7 +132,7 @@ function startBackendRuntime(): void {
       commit: (projectId, sequence) => store.commitProjectEventCursor(projectId, sequence)
     },
     backendModule: AGENT_EVIDENCE_RUNTIME.backendModule,
-    autoReconnect: false
+    autoReconnect: true
   });
   backendRelay = new BackendRuntimeEventRelay(backendSupervisor, mainWindow.webContents);
   backendRelay.start();

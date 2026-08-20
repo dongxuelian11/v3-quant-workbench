@@ -1,6 +1,8 @@
+import transportContract from "../../../../../packages/contracts/research_package_transport_v1.json";
+
 const HEADER_SEPARATOR = Buffer.from("\r\n\r\n", "ascii");
 const CONTENT_TYPE = "application/json; charset=utf-8";
-export const MAX_FRAME_BYTES = 1024 * 1024;
+export const MAX_FRAME_BYTES = transportContract.max_frame_bytes;
 const MAX_HEADER_BYTES = 4096;
 
 export class TransportProtocolError extends Error {

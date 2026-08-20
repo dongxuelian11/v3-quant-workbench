@@ -20,6 +20,12 @@ from __future__ import annotations
 
 from .common.dto import ClosedDto, ContractValidationError, validate_schema
 from .common.operation import OperationContract, OperationKind, ServiceContract
+from v3_backend.transport_contract import (
+    MAX_PACKAGE_FILE_BASE64_CHARS,
+    MAX_PACKAGE_FILE_BYTES,
+    MAX_PACKAGE_FILE_COUNT,
+    MAX_PACKAGE_TOTAL_BYTES,
+)
 
 CONTRACT_ID = 'urn:v3:asl:product_entry:1.0.0'
 SERVICE = 'ProductEntryService'
@@ -34,9 +40,7 @@ _HEX64 = r'^[0-9a-f]{64}$'
 _PKG_PATH = r'^[a-z0-9][a-z0-9._-]{0,63}$'
 
 # Bounded package transfer limits (well inside the 1 MiB frame budget).
-MAX_PACKAGE_FILES = 64
-MAX_PACKAGE_FILE_BYTES = 262144
-MAX_PACKAGE_TOTAL_BYTES = 786432
+MAX_PACKAGE_FILES = MAX_PACKAGE_FILE_COUNT
 
 METHOD_SPECS = {
     'ProductEntryService.v1.listBacktestRunSpecs': {
@@ -151,7 +155,7 @@ METHOD_SPECS = {
                                 'name': {'type': 'string', 'pattern': _PKG_PATH, 'description': 'Relative package payload file name'},
                                 'sha256': {'type': 'string', 'pattern': _HEX64, 'description': 'Declared SHA-256 of the actual payload bytes'},
                                 'byte_size': {'type': 'integer', 'minimum': 1, 'maximum': MAX_PACKAGE_FILE_BYTES},
-                                'payload_base64': {'type': 'string', 'minLength': 4, 'maxLength': 349526, 'description': 'Actual payload bytes (base64)'},
+                                'payload_base64': {'type': 'string', 'minLength': 4, 'maxLength': MAX_PACKAGE_FILE_BASE64_CHARS, 'description': 'Actual payload bytes (base64)'},
                             },
                         },
                     },

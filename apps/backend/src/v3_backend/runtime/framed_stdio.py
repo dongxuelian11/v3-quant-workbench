@@ -6,7 +6,8 @@ import json
 from collections.abc import Iterator, Mapping
 from typing import Any, BinaryIO
 
-MAX_FRAME_BYTES = 1024 * 1024
+from v3_backend.transport_contract import MAX_FRAME_BYTES
+
 MAX_HEADER_BYTES = 4096
 _SEPARATOR = b"\r\n\r\n"
 _CONTENT_TYPE = "application/json; charset=utf-8"

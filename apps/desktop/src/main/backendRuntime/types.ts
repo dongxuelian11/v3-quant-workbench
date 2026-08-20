@@ -1,7 +1,7 @@
 import type { Readable, Writable } from "node:stream";
 
 export type TruthState = "FORMAL" | "DEMO" | "UNAVAILABLE";
-export type ConnectionState = "STOPPED" | "STARTING" | "HANDSHAKING" | "REPLAYING" | "READY" | "DISCONNECTED" | "CRASH_LOOP" | "SHUTTING_DOWN";
+export type ConnectionState = "STOPPED" | "STARTING" | "HANDSHAKING" | "REPLAYING" | "READY" | "RECONNECTING" | "DISCONNECTED" | "CRASH_LOOP" | "SHUTTING_DOWN";
 
 export interface BackendCapability {
   readonly code: string;
@@ -89,6 +89,12 @@ export interface SupervisorConfig {
   readonly autoReconnect?: boolean;
   readonly maxBufferedEvents?: number;
   readonly maxEventSequenceGap?: number;
+  readonly requestTombstoneLimit?: number;
+  readonly requestTombstoneTtlMs?: number;
+  readonly maxBufferedStdinBytes?: number;
+  readonly maxBufferedStdinWrites?: number;
+  readonly maxStderrLineBytes?: number;
+  readonly maxStderrBytes?: number;
   readonly backendModule?: "v3_backend.runtime.bootstrap" | "v3_backend.adapters.round3_evidence.development_runtime";
 }
 

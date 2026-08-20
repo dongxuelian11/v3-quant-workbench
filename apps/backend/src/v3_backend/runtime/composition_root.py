@@ -22,6 +22,7 @@ from .handshake import (
     verify_supervisor_accept,
 )
 from .health import RuntimeHealth
+from .build_manifest import BUILD_MANIFEST
 from .request_router import OperationHandler, RequestRouter
 
 
@@ -31,7 +32,7 @@ class RuntimePorts:
     capabilities: Sequence[Capability] = field(default_factory=tuple)
     event_replay: DurableEventReplayPort | None = None
     startup_reconcile: Callable[[AcceptedSupervisor], None] = lambda _accepted: None
-    prepare_shutdown: Callable[[str | None], None] = lambda _deadline: None
+    prepare_shutdown: Callable[[str | None], Mapping[str, Any] | None] = lambda _deadline: None
     commit_shutdown: Callable[[], None] = lambda: None
     # Narrow, versioned projectless Product Entry bootstrap seam.  None keeps
     # productEntry.* control frames fail-closed (unknown control frame).
@@ -54,7 +55,11 @@ class RuntimeSession:
         self.backend_instance_id = backend_instance_id or str(uuid.uuid4())
         self.router = RequestRouter(ports.operation_handlers)
         self.events = EventPublisher(ports.event_replay)
-        self.health = RuntimeHealth(self.backend_instance_id)
+        self.health = RuntimeHealth(
+            self.backend_instance_id,
+            backend_version=self.backend_version,
+            build_manifest=BUILD_MANIFEST.health_wire(),
+        )
 
     def run(self, source: BinaryIO, sink: BinaryIO) -> None:
         messages = iter(read_frames(source))
@@ -138,8 +143,17 @@ class RuntimeSession:
         if deadline is not None and not isinstance(deadline, str):
             raise ProtocolViolation("shutdown deadline must be a string or null")
         self.health.accepting_requests = False
-        self.ports.prepare_shutdown(deadline)
-        write_frame(sink, {"kind": "runtime.shutdownReady", "deadline_at": deadline})
+        truth = self.ports.prepare_shutdown(deadline)
+        response: dict[str, Any] = {
+            "kind": "runtime.shutdownReady",
+            "deadline_at": deadline,
+            "execution_mode": "SYNCHRONOUS_IN_PROCESS",
+            "active_task_policy": "DRAIN_BEFORE_SHUTDOWN",
+            "checkpoint_resume": "UNAVAILABLE",
+        }
+        if isinstance(truth, Mapping):
+            response.update(dict(truth))
+        write_frame(sink, response)
 
     def _handle_product_entry(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
         """Projectless Product Entry bootstrap control protocol.

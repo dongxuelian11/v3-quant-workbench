@@ -73,12 +73,14 @@ from v3_backend.domain.backtest_runtime import (
     cn_a_share_2023_08_28_cost_policy,
 )
 from v3_backend.domain.tasks.entities import (
+    ATTEMPT_TERMINAL_STATES,
     AttemptState,
     Run,
     RunIdentity,
     RunState,
     Task,
     TaskAttempt,
+    TASK_TERMINAL_STATES,
     TaskState,
 )
 from v3_backend.domain.tasks.events import PendingTaskEvent
@@ -105,6 +107,7 @@ from v3_backend.provenance.canonical_hash import canonical_json_bytes, canonical
 from v3_backend.repositories.unit_of_work import TransactionMode
 
 from .composition_root import Capability, RuntimePorts
+from .build_manifest import BUILD_MANIFEST, BUILD_MANIFEST_ID
 
 PRODUCT_RUNTIME_VERSION = "v3.product-runtime/1.0.0"
 PRODUCT_BACKEND_VERSION_FLAVOR = "product"
@@ -116,7 +119,7 @@ MIGRATION_APPLICATION_VERSION = "v3-product-runtime-composition"
 ADMITTED_EXECUTION_ADAPTER_VERSION_ID = "v3.a_share_daily_eod_engine/0.2.0"
 INLINE_WORKER_KIND = "PRODUCT_INLINE_V1"
 INLINE_ENVIRONMENT_PROFILE_ID = "v3.product-inline-executor/1.0.0"
-PRODUCT_CODE_VERSION = "git:" + PRODUCT_RUNTIME_VERSION
+PRODUCT_CODE_VERSION = BUILD_MANIFEST.code_version
 
 # Product artifact roles (product composition policy; bounded and explicit).
 BACKTEST_RUN_SPEC_ROLE = "BACKTEST_RUN_SPEC"
@@ -793,21 +796,6 @@ class DurableIdempotency:
         )
         return None
 
-
-
-
-class DurableIdempotency:
-    """Durable per-operation idempotency over the frozen idempotency_record table.
-
-    Same key + same canonical request returns the originally recorded
-    outcome; same key + different canonical request fails closed with
-    IDEMPOTENCY_CONFLICT.  Recording is atomic with the task-creation unit.
-    """
-
-    @staticmethod
-    def scope_key(operation_id: str, project_id: str, idempotency_key: str) -> str:
-        return f"{operation_id}|{project_id}|{idempotency_key}"
-
     def lookup(
         self, product: "ProductRuntime", scope_key: str, canonical_request_hash: str
     ) -> dict[str, Any] | None:
@@ -1008,6 +996,21 @@ class ProductExecution:
             )
             unit.commit()
 
+    @staticmethod
+    def _stop_worker_for_attempt(unit: SQLiteTaskUnitOfWork, attempt_id: str, now: str) -> None:
+        """Close the per-task inline worker without creating a second registry."""
+        unit.connection.execute(
+            """
+            UPDATE worker
+            SET state='STOPPED', stopped_at=?
+            WHERE worker_id IN (
+                SELECT worker_id FROM worker_lease WHERE attempt_id=?
+            )
+              AND state IN ('STARTING','IDLE','BUSY','DRAINING')
+            """,
+            (now, attempt_id),
+        )
+
     def _finish_success(
         self,
         task: Task,
@@ -1050,6 +1053,9 @@ class ProductExecution:
             unit.connection.execute(
                 "UPDATE worker_lease SET state='RELEASED', released_at=? WHERE attempt_id=?",
                 (wire_time(datetime.now(timezone.utc)), current_attempt.attempt_id),
+            )
+            self._stop_worker_for_attempt(
+                unit, current_attempt.attempt_id, wire_time(datetime.now(timezone.utc))
             )
             unit.commit()
 
@@ -1101,6 +1107,9 @@ class ProductExecution:
             unit.connection.execute(
                 "UPDATE worker_lease SET state='RELEASED', released_at=? WHERE attempt_id=?",
                 (wire_time(datetime.now(timezone.utc)), current_attempt.attempt_id),
+            )
+            self._stop_worker_for_attempt(
+                unit, current_attempt.attempt_id, wire_time(datetime.now(timezone.utc))
             )
             unit.commit()
 
@@ -1773,6 +1782,9 @@ class ProductRuntime:
         self.spec_codec = ResearchRunSpecCodec(self)
         self.execution = ProductExecution(self)
         self.idempotency = DurableIdempotency()
+        self._shutdown_prepared = False
+        self._shutdown_committed = False
+        self.reconciliation_summary = self._reconcile_execution_state()
 
     # -- catalog access ------------------------------------------------------
 
@@ -1951,14 +1963,160 @@ class ProductRuntime:
     # -- runtime seam -----------------------------------------------------------
 
     def reconcile_supervisor(self, accepted) -> None:
+        self.reconciliation_summary = self._reconcile_execution_state()
         if accepted.project_id is not None:
             self.event_replay.bind_project(accepted.project_id)
 
-    def prepare_shutdown(self, deadline: str | None) -> None:
-        return None
+    def _reconcile_execution_state(self) -> dict[str, int]:
+        """Reconcile inline execution rows after a backend restart.
+
+        The V1 executor has no child process that can survive a backend
+        restart.  Active leases therefore cannot be treated as recoverable;
+        they become REVOKED/LOST and the owning Task becomes FAILED.  Existing
+        terminal history is retained, while stale per-task workers are closed
+        to STOPPED.
+        """
+        terminal_tasks = {item.value for item in TASK_TERMINAL_STATES}
+        terminal_attempts = {item.value for item in ATTEMPT_TERMINAL_STATES}
+        now = wire_time(datetime.now(timezone.utc))
+        counts = {
+            "active_leases_revoked": 0,
+            "expired_leases_reconciled": 0,
+            "attempts_lost": 0,
+            "tasks_failed": 0,
+            "workers_stopped": 0,
+        }
+        with self.task_persistence.begin() as unit:
+            rows = unit.connection.execute(
+                """
+                SELECT l.lease_id, l.attempt_id, l.worker_id, l.state AS lease_state,
+                       a.state AS attempt_state, r.task_id,
+                       r.run_id, r.state AS run_state,
+                       t.project_id, t.state AS task_state, t.state_version
+                FROM worker_lease l
+                JOIN task_attempt a ON a.attempt_id=l.attempt_id
+                JOIN run r ON r.run_id=a.run_id
+                JOIN task t ON t.task_id=r.task_id
+                WHERE l.state IN ('GRANTED','RENEWED','EXPIRED')
+                ORDER BY t.task_id, a.attempt_no
+                """
+            ).fetchall()
+            failed_tasks: set[str] = set()
+            for row in rows:
+                task_id = str(row["task_id"])
+                task_is_terminal = str(row["task_state"]) in terminal_tasks
+                prior_lease_state = str(row["lease_state"])
+                lease_is_active = prior_lease_state in {"GRANTED", "RENEWED"}
+                lease_state = (
+                    ("RELEASED" if task_is_terminal else "REVOKED")
+                    if lease_is_active
+                    else prior_lease_state
+                )
+                unit.connection.execute(
+                    "UPDATE worker_lease SET state=?, released_at=? WHERE lease_id=? AND state IN ('GRANTED','RENEWED','EXPIRED')",
+                    (lease_state, now, str(row["lease_id"])),
+                )
+                counts["active_leases_revoked" if lease_is_active else "expired_leases_reconciled"] += 1
+                worker_state = "STOPPED" if task_is_terminal else "LOST"
+                worker_cursor = unit.connection.execute(
+                    "UPDATE worker SET state=?, stopped_at=? WHERE worker_id=? AND state IN ('STARTING','IDLE','BUSY','DRAINING')",
+                    (worker_state, now, str(row["worker_id"])),
+                )
+                counts["workers_stopped"] += worker_cursor.rowcount
+                if str(row["attempt_state"]) not in terminal_attempts:
+                    unit.connection.execute(
+                        """
+                        UPDATE task_attempt
+                        SET state='LOST', error_code='WORKER_LOST', finished_at=?
+                        WHERE attempt_id=? AND state NOT IN ('SUCCEEDED','FAILED','CANCELLED','LOST')
+                        """,
+                        (now, str(row["attempt_id"])),
+                    )
+                    counts["attempts_lost"] += 1
+                    unit.append_event(
+                        PendingTaskEvent(
+                            event_id=mint_v3_id("tev_"),
+                            event_version=_TASK_EVENT_VERSION,
+                            project_id=str(row["project_id"]),
+                            task_id=task_id,
+                            event_type="ATTEMPT_TERMINAL",
+                            occurred_at=datetime.now(timezone.utc),
+                            payload={
+                                "state": "LOST",
+                                "error_category": "WORKER_LOST",
+                                "reason_code": "RUNTIME_RESTART_RECONCILIATION",
+                            },
+                            run_id=str(row["run_id"]),
+                            attempt_id=str(row["attempt_id"]),
+                        )
+                    )
+                if not task_is_terminal and task_id not in failed_tasks:
+                    unit.connection.execute(
+                        """
+                        UPDATE task
+                        SET state='FAILED', state_version=state_version+1, updated_at=?, terminal_at=?
+                        WHERE task_id=? AND state NOT IN ('SUCCEEDED','FAILED','CANCELLED','PARTIAL')
+                        """,
+                        (now, now, task_id),
+                    )
+                    unit.connection.execute(
+                        "UPDATE run SET state='TERMINAL', terminal_at=? WHERE run_id=? AND state IN ('SEALED','ACTIVE')",
+                        (now, str(row["run_id"])),
+                    )
+                    unit.append_event(
+                        PendingTaskEvent(
+                            event_id=mint_v3_id("tev_"),
+                            event_version=_TASK_EVENT_VERSION,
+                            project_id=str(row["project_id"]),
+                            task_id=task_id,
+                            event_type="TASK_FAILED",
+                            occurred_at=datetime.now(timezone.utc),
+                            payload={
+                                "error_type": "RuntimeRestartReconciliation",
+                                "error_message": "synchronous in-process execution was interrupted by runtime restart",
+                                "error_category": "WORKER_LOST",
+                                "reason_code": "RUNTIME_RESTART_RECONCILIATION",
+                            },
+                            run_id=str(row["run_id"]),
+                            attempt_id=str(row["attempt_id"]),
+                        )
+                    )
+                    failed_tasks.add(task_id)
+                    counts["tasks_failed"] += 1
+
+            stopped = unit.connection.execute(
+                """
+                UPDATE worker
+                SET state='STOPPED', stopped_at=?
+                WHERE state IN ('STARTING','IDLE','BUSY','DRAINING')
+                  AND worker_id IN (
+                    SELECT l.worker_id
+                    FROM worker_lease l
+                    JOIN task_attempt a ON a.attempt_id=l.attempt_id
+                    JOIN run r ON r.run_id=a.run_id
+                    JOIN task t ON t.task_id=r.task_id
+                    WHERE l.state='RELEASED'
+                      AND t.state IN ('SUCCEEDED','FAILED','CANCELLED','PARTIAL')
+                  )
+                """,
+                (now,),
+            )
+            counts["workers_stopped"] += stopped.rowcount
+            unit.commit()
+        return counts
+
+    def prepare_shutdown(self, deadline: str | None) -> dict[str, str]:
+        self._shutdown_prepared = True
+        self.reconciliation_summary = self._reconcile_execution_state()
+        return {
+            "execution_mode": "SYNCHRONOUS_IN_PROCESS",
+            "active_task_policy": "DRAIN_BEFORE_SHUTDOWN",
+            "checkpoint_resume": "UNAVAILABLE",
+            "shutdown_truth": "TRANSPORT_DRAIN_ONLY_NO_CHECKPOINT",
+        }
 
     def commit_shutdown(self) -> None:
-        return None
+        self._shutdown_committed = True
 
 
 def build_product_runtime(storage_root: str | Path | None = None) -> ProductRuntime:

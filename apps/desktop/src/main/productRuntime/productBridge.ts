@@ -40,6 +40,7 @@ import {
   createProjectIntentPath,
   runCreateProjectIntent,
 } from "./createProjectIntentStore";
+import transportContract from "../../../../../packages/contracts/research_package_transport_v1.json";
 
 /**
  * Typed B3 product bridge owned by the Electron main process.
@@ -59,8 +60,10 @@ const CANONICAL_ID_PATTERN = /^[A-Za-z0-9_\-]{1,200}$/;
 const PROJECT_LOCATOR_PREFIX = "v3:";
 const PRODUCT_ENTRY_PROTOCOL_VERSION = "v3.product-entry/1.0.0";
 const PACKAGE_MANIFEST_FILENAME = "manifest.v3.json";
-const MAX_PACKAGE_FILE_BYTES = 262_144;
-const MAX_PACKAGE_FILE_COUNT = 64;
+const MAX_PACKAGE_FILE_BYTES = transportContract.max_package_file_bytes;
+const MAX_PACKAGE_FILE_COUNT = transportContract.max_package_file_count;
+const MAX_PACKAGE_TOTAL_BYTES = transportContract.max_package_total_bytes;
+const MAX_PACKAGE_MANIFEST_BYTES = transportContract.max_package_manifest_bytes;
 const MAX_RUN_SPEC_AUTO_PAGES = 20;
 const PACKAGE_PATH_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -269,11 +272,24 @@ export class ProductBridge {
       : this.bindingOutcome.state === "BINDING_STALE"
         ? "BINDING_STALE" as const
         : "NO_CANONICAL_PROJECT_BOUND" as const;
+    const health = this.supervisor.state === "READY" && typeof this.supervisor.getHealth === "function"
+      ? await this.supervisor.getHealth(2_000).catch(() => null)
+      : null;
+    const buildManifestId = health !== null && typeof health.build_manifest_id === "string"
+      ? health.build_manifest_id
+      : null;
+    const buildIdentityState = health?.build_identity_state === "CLEAN"
+      ? "CLEAN" as const
+      : health?.build_identity_state === "DIRTY"
+        ? "DIRTY" as const
+        : "UNAVAILABLE" as const;
     return Object.freeze({
       backendState: this.supervisor.state,
       bindingState,
       boundProject: bound,
-      capabilities: await this.getCapabilities()
+      capabilities: await this.getCapabilities(),
+      buildManifestId,
+      buildIdentityState
     });
   }
 
@@ -620,6 +636,9 @@ export async function readResearchPackageDirectory(
   } catch {
     throw new ProductAdapterError("INVALID_ARGUMENT", "研究包 manifest 不是有效 JSON");
   }
+  if (manifestBytes.byteLength > MAX_PACKAGE_MANIFEST_BYTES) {
+    throw new ProductAdapterError("UNBOUNDED", "研究包 manifest 超出有界传输大小");
+  }
   const declared = new Set<string>();
   const descriptorNames: unknown[] = [
     (manifest.run_spec_artifact as Record<string, unknown> | undefined)?.name,
@@ -659,7 +678,7 @@ export async function readResearchPackageDirectory(
       throw new ProductAdapterError("UNBOUNDED", `研究包文件大小越界: ${name}`);
     }
     total += payload.byteLength;
-    if (total > 786_432) {
+    if (total > MAX_PACKAGE_TOTAL_BYTES) {
       throw new ProductAdapterError("UNBOUNDED", "研究包总大小超出上限");
     }
     files.push({

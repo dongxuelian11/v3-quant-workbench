@@ -242,6 +242,71 @@ const { deriveSurface, executableRunSpecSelection, useProductRuntime } = await i
 
 const baseState = { inflight: false, result: null, task: null, runSpecId: `btrs_sha256_${"d".repeat(64)}` };
 
+function statusForProductEntryTruth(truthState) {
+  return {
+    backendState: "READY",
+    bindingState: "NO_CANONICAL_PROJECT_BOUND",
+    boundProject: null,
+    capabilities: truthState === null ? [] : [{ code: "ProductEntryService", truth_state: truthState }],
+    buildManifestId: null,
+    buildIdentityState: "UNAVAILABLE"
+  };
+}
+
+test("S1-S4: Product Entry discovery admits only FORMAL capability", async (t) => {
+  const scenarios = [
+    { name: "S1 UNAVAILABLE keeps discovery unavailable", truthState: "UNAVAILABLE", expectedProjects: null, expectedCalls: 0 },
+    { name: "S2 absent capability keeps discovery unavailable", truthState: null, expectedProjects: null, expectedCalls: 0 },
+    { name: "S3 DEMO does not grant control authority", truthState: "DEMO", expectedProjects: null, expectedCalls: 0 },
+    {
+      name: "S4 FORMAL preserves normal project discovery",
+      truthState: "FORMAL",
+      expectedProjects: { projects: [{ projectId: "prj_formal", projectContextRevisionId: "pcr_formal", displayName: "正式项目", createdAt: "2026-08-20T00:00:00Z" }], hasMore: false },
+      expectedCalls: 1
+    }
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const status = statusForProductEntryTruth(scenario.truthState);
+      let statusCalls = 0;
+      let listProjectsCalls = 0;
+      globalThis.window = {
+        v3ProductRuntime: {
+          getProductStatus: async () => { statusCalls += 1; return status; },
+          listProjects: async () => { listProjectsCalls += 1; return scenario.expectedProjects; }
+        }
+      };
+      useProductRuntime.setState({
+        status: null,
+        capabilities: [],
+        boundProject: null,
+        projects: null,
+        runSpecs: null,
+        surface: "BACKEND_STARTING",
+        errorMessage: null,
+        task: null,
+        result: null,
+        artifactDescriptor: null,
+        lastSubmit: null,
+        inflight: false
+      });
+      try {
+        await useProductRuntime.getState().refresh();
+        const state = useProductRuntime.getState();
+        assert.equal(statusCalls, 1);
+        assert.equal(listProjectsCalls, scenario.expectedCalls);
+        assert.deepEqual(state.status, status);
+        assert.deepEqual(state.capabilities, status.capabilities);
+        assert.deepEqual(state.projects, scenario.expectedProjects);
+        assert.equal(state.surface, "NO_CANONICAL_PROJECT_BOUND");
+        assert.equal(state.errorMessage, null);
+      } finally {
+        delete globalThis.window;
+      }
+    });
+  }
+});
+
 test("T4: BINDING_STALE wins over any defensively non-null boundProject", () => {
   const status = {
     backendState: "READY",

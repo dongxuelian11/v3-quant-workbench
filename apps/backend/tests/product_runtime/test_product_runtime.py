@@ -9,6 +9,7 @@ every response passes the frozen operation DTO validation on the way out.
 from __future__ import annotations
 
 import json
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,7 @@ from v3_backend.runtime.product_runtime import (
     build_product_runtime,
     mint_uuid7,
 )
+from v3_backend.runtime import product_runtime as product_runtime_module
 from v3_backend.domain.tasks.entities import TaskState
 
 from .helpers import build_product_golden_project
@@ -314,9 +316,11 @@ class GoldenExecutionTests(_PortsCase):
         read_model = task_response["body"]["read_model"]
         self.assertEqual(read_model["state"], "SUCCEEDED")
         self.assertEqual(read_model["run_id"], run_id)
+        result_id = read_model["result_id"]
+        self.assertIsInstance(result_id, str)
+        self.assertTrue(result_id.startswith("res_"))
 
         result_artifact_id = read_model["outputs"]["BACKTEST_RUN_RESULT"]
-        result_id = self._result_id_for_run(run_id)
         result_response = self.route(
             "ResultService.v1.getResult", result_id=result_id, section="summary", page={}
         )
@@ -353,15 +357,23 @@ class GoldenExecutionTests(_PortsCase):
             self.setup.pipeline_result.backtest_result_id.removeprefix("btrr_sha256_"),
         )
 
-    def _result_id_for_run(self, run_id: str) -> str:
         connection = self.product._connection(read_only=True)
         try:
-            row = connection.execute(
-                "SELECT result_id FROM result WHERE backtest_run_id=?", (run_id,)
+            lifecycle = connection.execute(
+                """
+                SELECT l.state AS lease_state, w.state AS worker_state
+                FROM worker_lease l JOIN worker w ON w.worker_id=l.worker_id
+                JOIN task_attempt a ON a.attempt_id=l.attempt_id
+                JOIN run r ON r.run_id=a.run_id
+                WHERE r.task_id=?
+                """,
+                (task_id,),
             ).fetchone()
         finally:
             connection.close()
-        return str(row[0])
+        self.assertIsNotNone(lifecycle)
+        self.assertEqual(lifecycle["lease_state"], "RELEASED")
+        self.assertEqual(lifecycle["worker_state"], "STOPPED")
 
     def test_duplicate_idempotency_key_returns_same_task(self) -> None:
         first = self._submit()
@@ -370,6 +382,14 @@ class GoldenExecutionTests(_PortsCase):
         self.assertEqual(second["status"], "OK", second)
         self.assertEqual(first["body"]["task_id"], second["body"]["task_id"])
         self.assertEqual(first["body"]["run_id"], second["body"]["run_id"])
+
+    def test_durable_idempotency_has_one_authoritative_definition(self) -> None:
+        self.assertEqual(
+            inspect.getsource(product_runtime_module).count("class DurableIdempotency"),
+            1,
+        )
+        self.assertTrue(hasattr(self.product.idempotency, "check_or_record"))
+        self.assertTrue(hasattr(self.product.idempotency, "lookup"))
 
     def test_same_key_different_request_fails_closed(self) -> None:
         first = self._submit(idempotency_key="golden-key-conflict")
@@ -382,6 +402,84 @@ class GoldenExecutionTests(_PortsCase):
 
 
 class RestartRecoveryTests(_PortsCase):
+    def test_restart_reconciles_orphan_active_task_lease_and_worker(self) -> None:
+        task, run, attempt = self.product.execution._create_task(
+            operation_id="BacktestService.v1.submitBacktest",
+            project_id=self.setup.project_id,
+            project_context_revision_id=self.setup.project_context_revision_id,
+            normalized_input_hash="a" * 64,
+            context_artifact_id=None,
+        )
+        self.product.execution._transition_to_running(task, run, attempt)
+
+        restarted = ProductRuntime(self.storage_root)
+        self.assertGreaterEqual(restarted.reconciliation_summary["tasks_failed"], 1)
+        connection = restarted._connection(read_only=True)
+        try:
+            row = connection.execute(
+                """
+                SELECT t.state AS task_state, r.state AS run_state,
+                       a.state AS attempt_state, l.state AS lease_state,
+                       w.state AS worker_state
+                FROM task t
+                JOIN run r ON r.task_id=t.task_id
+                JOIN task_attempt a ON a.run_id=r.run_id
+                JOIN worker_lease l ON l.attempt_id=a.attempt_id
+                JOIN worker w ON w.worker_id=l.worker_id
+                WHERE t.task_id=?
+                """,
+                (task.task_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["task_state"], "FAILED")
+        self.assertEqual(row["run_state"], "TERMINAL")
+        self.assertEqual(row["attempt_state"], "LOST")
+        self.assertEqual(row["lease_state"], "REVOKED")
+        self.assertEqual(row["worker_state"], "LOST")
+
+    def test_restart_reconciles_expired_lease_without_leaving_worker_busy(self) -> None:
+        task, run, attempt = self.product.execution._create_task(
+            operation_id="BacktestService.v1.submitBacktest",
+            project_id=self.setup.project_id,
+            project_context_revision_id=self.setup.project_context_revision_id,
+            normalized_input_hash="b" * 64,
+            context_artifact_id=None,
+        )
+        self.product.execution._transition_to_running(task, run, attempt)
+        with self.product.task_persistence.begin() as unit:
+            unit.connection.execute(
+                "UPDATE worker_lease SET state='EXPIRED' WHERE lease_id=?",
+                (attempt.lease_id,),
+            )
+            unit.commit()
+
+        restarted = ProductRuntime(self.storage_root)
+        self.assertGreaterEqual(restarted.reconciliation_summary["expired_leases_reconciled"], 1)
+        connection = restarted._connection(read_only=True)
+        try:
+            row = connection.execute(
+                """
+                SELECT t.state AS task_state, a.state AS attempt_state,
+                       l.state AS lease_state, w.state AS worker_state
+                FROM task t
+                JOIN run r ON r.task_id=t.task_id
+                JOIN task_attempt a ON a.run_id=r.run_id
+                JOIN worker_lease l ON l.attempt_id=a.attempt_id
+                JOIN worker w ON w.worker_id=l.worker_id
+                WHERE t.task_id=?
+                """,
+                (task.task_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["task_state"], "FAILED")
+        self.assertEqual(row["attempt_state"], "LOST")
+        self.assertEqual(row["lease_state"], "EXPIRED")
+        self.assertEqual(row["worker_state"], "LOST")
+
     def test_task_result_artifact_recover_after_restart(self) -> None:
         submitted = self.route(
             "BacktestService.v1.submitBacktest",
@@ -392,13 +490,14 @@ class RestartRecoveryTests(_PortsCase):
         task_id = submitted["body"]["task_id"]
         run_id = submitted["body"]["run_id"]
         before = self.route("TaskService.v1.getTask", task_id=task_id)
-        before_result_id = None
+        before_result_id = before["body"]["read_model"]["result_id"]
+        self.assertIsInstance(before_result_id, str)
         connection = self.product._connection(read_only=True)
         try:
             row = connection.execute(
                 "SELECT result_id FROM result WHERE backtest_run_id=?", (run_id,)
             ).fetchone()
-            before_result_id = str(row[0])
+            self.assertEqual(str(row[0]), before_result_id)
         finally:
             connection.close()
         result_artifact_id = before["body"]["read_model"]["outputs"]["BACKTEST_RUN_RESULT"]

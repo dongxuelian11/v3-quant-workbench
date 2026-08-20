@@ -7,7 +7,7 @@
   "service_count": 18,
   "operation_count": 66,
   "contract_digest_algorithm": "sha256(path\\0sha256(file)\\n), domain-separated WS-A-CONTRACT-SEED-V1\\0",
-  "contract_digest": "6129c80f61cd09fc64c974316ce50ea92b26b3acff853aaf0a6ecac67d347e9d",
+  "contract_digest": "1eb29d32fa1d44d124c9edbd015cfebb90fbe89aac02abfd277ab41382f0e03b",
   "files": [
     "apps/backend/src/v3_backend/contracts/__init__.py",
     "apps/backend/src/v3_backend/contracts/artifact.py",

@@ -1,0 +1,11 @@
+{
+  "schema_version": "v3.research-package-transport/1.0.0",
+  "max_frame_bytes": 1048576,
+  "max_package_file_bytes": 262144,
+  "max_package_file_count": 64,
+  "max_package_manifest_bytes": 32768,
+  "envelope_overhead_bytes": 65536,
+  "safety_margin_bytes": 65536,
+  "max_package_total_bytes": 688128,
+  "max_package_file_base64_chars": 349528
+}

@@ -11,6 +11,7 @@ import { capabilityTruth, describeError, useProductRuntime, type ProductSurfaceS
 const SURFACE_COPY: Record<ProductSurfaceState, string> = {
   BACKEND_STARTING: "后端启动中 · BACKEND_STARTING",
   BACKEND_READY: "后端就绪 · BACKEND_READY",
+  BACKEND_RECONNECTING: "后端重连中 · BACKEND_RECONNECTING",
   BACKEND_DISCONNECTED: "后端未连接 · BACKEND_DISCONNECTED",
   NO_CANONICAL_PROJECT_BOUND: "尚未绑定 canonical 项目 · NO_CANONICAL_PROJECT_BOUND",
   PROJECT_BOUND: "已绑定 canonical 项目 · PROJECT_BOUND",
@@ -77,6 +78,7 @@ export function ProductRuntimePanel() {
       <div className="experiment-trail">
         <span><small>后端</small>{status?.backendState ?? "UNKNOWN"}</span>
         <span><small>绑定</small>{bound ? boundProject.projectId : "未绑定"}</span>
+        <span><small>Build</small>{status?.buildManifestId ?? "UNAVAILABLE"}</span>
         <button onClick={() => void refresh()} disabled={!status}>刷新状态</button>
       </div>
     </header>
@@ -151,6 +153,7 @@ export function ProductRuntimePanel() {
     </div>}
 
     {surface === "BACKEND_DISCONNECTED" && <p className="honest-note">后端未连接：请确认 canonical backend（v3_backend.runtime.bootstrap）可启动。</p>}
+    {surface === "BACKEND_RECONNECTING" && <p className="honest-note">后端连接已断开，正在进行有界重连；不会自动重放未知结果的非幂等操作。</p>}
     {errorMessage && <p className="honest-note error" role="alert">{errorMessage}</p>}
   </section>;
 }

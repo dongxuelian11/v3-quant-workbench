@@ -21,6 +21,7 @@ declare global {
 export type ProductSurfaceState =
   | "BACKEND_STARTING"
   | "BACKEND_READY"
+  | "BACKEND_RECONNECTING"
   | "BACKEND_DISCONNECTED"
   | "NO_CANONICAL_PROJECT_BOUND"
   | "PROJECT_BOUND"
@@ -88,6 +89,7 @@ export function deriveSurface(state: {
   const bindingState = state.status?.bindingState ?? "NO_CANONICAL_PROJECT_BOUND";
   if (bindingState === "BINDING_STALE") return "CAPABILITY_UNAVAILABLE";
   if (backendState !== "READY") {
+    if (backendState === "RECONNECTING") return "BACKEND_RECONNECTING";
     if (backendState === "DISCONNECTED" || backendState === "CRASH_LOOP") return "BACKEND_DISCONNECTED";
     return "BACKEND_STARTING";
   }
@@ -123,9 +125,10 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       const status = await bridge.getProductStatus();
       const capabilities = status.capabilities;
       const stale = status.bindingState === "BINDING_STALE";
-      // Durable entry discovery alongside the status read: projects always,
-      // run specs only through the bound project's canonical references.
-      const projects = await bridge.listProjects().catch(() => null);
+      const productEntryCapability = capabilityOf(capabilities, "ProductEntryService");
+      const projects = productEntryCapability?.truth_state === "FORMAL"
+        ? await bridge.listProjects().catch(() => null)
+        : null;
       const runSpecs = status.boundProject !== null
         ? await bridge.listBacktestRunSpecs().catch(() => null)
         : null;
@@ -186,7 +189,10 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       if (resultArtifactId) {
         artifactDescriptor = await bridge.getArtifactDescriptor(resultArtifactId).catch(() => null);
       }
-      const resultId = await discoverResultId(outcome.taskId);
+      // Result identity is a direct canonical Task read-model relation. Event
+      // pages remain notifications only and cannot choose a result for this
+      // task.
+      const resultId = task.resultId;
       if (resultId !== null) {
         result = await bridge.getResult(resultId).catch(() => null);
       }
@@ -250,18 +256,6 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
     }
   }
 }));
-
-async function discoverResultId(taskId: string): Promise<string | null> {
-  const bridge = window.v3ProductRuntime;
-  if (!bridge) return null;
-  try {
-    const events = await bridge.getTaskEvents(0, 500);
-    const succeeded = [...events.items].reverse().find((item) => item.eventType === "TASK_SUCCEEDED" && item.resultId !== null);
-    return succeeded?.resultId ?? null;
-  } catch {
-    return null;
-  }
-}
 
 export function describeError(error: unknown): string | null {
   // The product bridge rejects with the closed structured view object itself

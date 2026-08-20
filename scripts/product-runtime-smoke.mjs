@@ -267,14 +267,9 @@ check(/^[0-9a-f]{64}$/.test(declaredSha), "descriptor carries a canonical SHA-25
 const ticket = await request("ArtifactService.v1.openArtifactStream", { artifact_id: resultArtifactId });
 check(ticket.status === "OK" && ticket.body.read_model.mode === "STREAM_TICKET", "stream ticket issued without a raw path");
 
-// The canonical result_id is recorded in the durable TASK_SUCCEEDED event.
-let resultId = null;
-for (const item of events.body.read_model.items) {
-  if (item.event_type === "TASK_SUCCEEDED" && item.body.outputs && item.body.outputs.result_id) {
-    resultId = item.body.outputs.result_id;
-  }
-}
-check(!!resultId, "canonical result_id recorded in the durable task event");
+// Events are notifications; the Task read model is the canonical relation.
+const resultId = task.body.read_model.result_id;
+check(typeof resultId === "string" && resultId.startsWith("res_"), "canonical result_id resolved directly from the Task read model");
 const resultRow = await request("ResultService.v1.getResult", {
   result_id: resultId,
   section: "summary",
