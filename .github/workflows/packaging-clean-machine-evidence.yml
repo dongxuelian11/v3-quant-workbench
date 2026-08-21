@@ -25,7 +25,6 @@ permissions:
 
 jobs:
   build-package:
-    if: ${{ github.event_name == 'push' || github.event.pull_request.number == 47 }}
     runs-on: windows-latest
     timeout-minutes: 120
     env:
@@ -118,7 +117,6 @@ jobs:
           compression-level: 0
 
   verify-clean-machine:
-    if: ${{ github.event_name == 'push' || github.event.pull_request.number == 47 }}
     needs: build-package
     runs-on: windows-latest
     timeout-minutes: 45
