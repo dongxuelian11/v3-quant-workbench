@@ -142,7 +142,11 @@ jobs:
           $markers = @(".git", ".github", "AGENTS.md", "V3_PROJECT_CONSTITUTION.md", "package.json", "package-lock.json", "apps", "packages", "node_modules", "tsconfig.json")
           $hits = @($markers | Where-Object { Test-Path -LiteralPath (Join-Path $workspace $_) })
           $gitRoot = ""
-          try { $gitRoot = (& git.exe -C $workspace rev-parse --show-toplevel 2>$null | Out-String).Trim() } catch { $gitRoot = "" }
+          try {
+            $gitOutput = & git.exe -C $workspace rev-parse --show-toplevel 2>$null
+            if ($LASTEXITCODE -eq 0) { $gitRoot = ($gitOutput | Out-String).Trim() }
+          } catch { $gitRoot = "" }
+          $global:LASTEXITCODE = 0
           if ($hits.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($gitRoot)) {
             throw "Job B workspace contains repository source before artifact download: hits=$($hits -join ',') gitRoot=$gitRoot"
           }
