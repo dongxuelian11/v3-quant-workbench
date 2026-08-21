@@ -91,7 +91,6 @@ jobs:
           "$zipHash  V3_PACKAGING_LEVEL2_DELIVERY.zip" | Set-Content -LiteralPath "$zipPath.sha256" -Encoding utf8 -NoNewline
           Copy-Item "scripts\packaged-clean-machine-evidence.ps1" $outputRoot
           Copy-Item "artifacts\package\V3_PACKAGE_EVIDENCE.json" $outputRoot
-          Copy-Item "artifacts\package-level2\V3_PACKAGING_LEVEL2_BUILD_PIN.json" $outputRoot
           $os = Get-CimInstance Win32_OperatingSystem
           [ordered]@{
             schema_version = "v3.packaging-level2-build-runner/1.0.0"
