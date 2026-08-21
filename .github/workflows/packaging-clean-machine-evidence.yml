@@ -134,6 +134,9 @@ jobs:
           "V3_LEVEL2_PRE_DOWNLOAD_INVENTORY=$preDownloadInventory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $env:V3_LEVEL2_PRE_DOWNLOAD_INVENTORY = $preDownloadInventory
           $workspace = $env:GITHUB_WORKSPACE
+          if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
+            New-Item -ItemType Directory -Force -Path $workspace | Out-Null
+          }
           $markers = @(".git", ".github", "AGENTS.md", "V3_PROJECT_CONSTITUTION.md", "package.json", "package-lock.json", "apps", "packages", "node_modules", "tsconfig.json")
           $hits = @($markers | Where-Object { Test-Path -LiteralPath (Join-Path $workspace $_) })
           $gitRoot = ""
