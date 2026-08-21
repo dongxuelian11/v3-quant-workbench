@@ -6,5 +6,6 @@ export * from "./ipc";
 export * from "./lifecycle";
 export * from "./processFactory";
 export * from "./protocol";
+export * from "./runtimeResolver";
 export * from "./supervisor";
 export type * from "./types";

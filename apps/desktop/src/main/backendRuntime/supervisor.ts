@@ -184,6 +184,21 @@ export class BackendSupervisor extends EventEmitter {
   }
 
   get state(): ConnectionState { return this.stateValue; }
+
+  get backendPid(): number | null { return this.process?.pid ?? null; }
+
+  /**
+   * Bounded, path-free handshake evidence for packaged runtime probes.
+   *
+   * The hello frame is validated before it is stored, and the returned clone
+   * contains no supervisor token or filesystem paths. Exposing this read-only
+   * projection lets a packaged evidence driver prove the framed identity and
+   * READY transition without adding a second transport or a product shortcut.
+   */
+  get handshake(): BackendHello | null {
+    return this.hello === undefined ? null : structuredClone(this.hello);
+  }
+
   get capabilities(): readonly BackendCapability[] { return structuredClone(this.capabilitiesValue); }
 
   /**
@@ -408,7 +423,7 @@ export class BackendSupervisor extends EventEmitter {
       executable: this.config.pythonExecutable,
       args: ["-m", backendModule, "--transport=stdio-framed-v1"],
       cwd: this.config.backendWorkingDirectory,
-      env: sanitizedBackendEnvironment()
+      env: sanitizedBackendEnvironment(process.env, this.config.backendRuntimeRoot, this.config.backendResourceRoot)
     };
     this.process = this.processFactory.spawn(spec, token);
     const launched = this.process;

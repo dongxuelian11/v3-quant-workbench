@@ -205,7 +205,8 @@ test("renderer-facing bridge contract stays free of generic transport members", 
   // Product Entry adds createProject / listProjects / listBacktestRunSpecs /
   // importResearchPackage (typed, no generic transport surface).
   const registrations = [...ipc.matchAll(/handle\((PRODUCT_RUNTIME_CHANNELS\.[A-Za-z]+)/g)].map((match) => match[1]);
-  assert.equal(registrations.length, 18);
+  assert.equal(registrations.length, 20);
+  assert.equal(new Set(registrations).size, 18);
   assert.doesNotMatch(ipc, /operation_?[Ii]d/);
   assert.match(ipc, /trusted\(event\)/);
 });
@@ -253,7 +254,7 @@ test("main process boots unbound on the LIVE path; fixture identity stays fixtur
   // product path is strictly binding-driven.
   assert.match(main, /FIXTURE_PROJECT_ID = "prj_01ARZ3NDEKTSV4RRFFQ69G5FAV"/);
   assert.match(main, /const fixtureMode = AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE"/);
-  const liveBoot = main.slice(main.indexOf("function startBackendRuntime"));
+  const liveBoot = main.slice(main.indexOf("function createBackendSupervisor"));
   assert.match(liveBoot, /projectContext === undefined \? \{\} : \{ projectContext \}/);
   assert.match(main, /productBindingPath\(app\.getPath\("userData"\)\)/);
   assert.match(main, /PRODUCT_SESSION_RESTORED/);

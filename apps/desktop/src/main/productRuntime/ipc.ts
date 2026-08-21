@@ -1,5 +1,6 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
 import type { TrustIpcSender } from "../backendRuntime/ipc";
+import type { ProductStatusView } from "../../../../../packages/contracts/src/index";
 import type { ProductBridge } from "./productBridge";
 import { errorToView } from "./productBridge";
 import { ProductAdapterError } from "./adapters";
@@ -133,6 +134,39 @@ export function registerProductRuntimeIpc(
       endDate: requiredString(intentFields, "endDate")
     });
   });
+  return () => {
+    for (const channel of Object.values(PRODUCT_RUNTIME_CHANNELS)) ipcMain.removeHandler(channel);
+  };
+}
+
+export function registerUnavailableProductRuntimeIpc(
+  ipcMain: IpcMain,
+  trusted: TrustIpcSender,
+  diagnostic: string,
+): () => void {
+  const capabilities = Object.freeze([
+    { code: "ProductRuntime", truth_state: "UNAVAILABLE" as const, reason_code: "PACKAGED_RUNTIME_UNAVAILABLE" },
+    { code: "DataSourceService", truth_state: "UNAVAILABLE" as const, reason_code: "PACKAGED_RUNTIME_UNAVAILABLE" },
+  ]);
+  const status: ProductStatusView = Object.freeze({
+    backendState: "DISCONNECTED",
+    bindingState: "NO_CANONICAL_PROJECT_BOUND",
+    boundProject: null,
+    capabilities,
+    buildManifestId: null,
+    buildIdentityState: "UNAVAILABLE",
+  });
+  const unavailable = (event: IpcMainInvokeEvent): never => {
+    trusted(event);
+    throw new Error(JSON.stringify(errorToView(new ProductAdapterError("BACKEND_UNAVAILABLE", diagnostic))));
+  };
+  ipcMain.handle(PRODUCT_RUNTIME_CHANNELS.status, (event) => { trusted(event); return status; });
+  ipcMain.handle(PRODUCT_RUNTIME_CHANNELS.capabilities, (event) => { trusted(event); return capabilities; });
+  for (const channel of Object.values(PRODUCT_RUNTIME_CHANNELS)) {
+    if (channel !== PRODUCT_RUNTIME_CHANNELS.status && channel !== PRODUCT_RUNTIME_CHANNELS.capabilities) {
+      ipcMain.handle(channel, unavailable);
+    }
+  }
   return () => {
     for (const channel of Object.values(PRODUCT_RUNTIME_CHANNELS)) ipcMain.removeHandler(channel);
   };

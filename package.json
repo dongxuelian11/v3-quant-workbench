@@ -43,7 +43,11 @@
     "smoke:product-runtime": "node scripts/product-runtime-smoke.mjs",
     "smoke:desktop-b3": "node scripts/run-desktop-b3-smoke.mjs",
     "smoke:product-entry": "node scripts/product-entry-smoke.mjs",
-    "smoke:product-research": "node scripts/product-research-smoke.mjs"
+    "smoke:product-research": "node scripts/product-research-smoke.mjs",
+    "package:win": "npm run package:win:unpacked",
+    "package:win:unpacked": "npm run build && node scripts/prepare-packaged-backend.mjs && electron-builder --win dir --x64 --config electron-builder.yml",
+    "verify:package": "node scripts/verify-package.mjs",
+    "smoke:packaged-win": "node scripts/packaged-runtime-smoke.mjs"
   },
   "dependencies": {
     "@tanstack/react-table": "8.21.3",
@@ -65,6 +69,7 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "electron": "39.8.10",
+    "electron-builder": "26.15.3",
     "typescript": "5.9.3",
     "vite": "6.4.3"
   }

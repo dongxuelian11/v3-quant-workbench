@@ -1,0 +1,186 @@
+name: packaging-clean-machine-evidence
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/packaging-clean-machine-evidence.yml"
+      - "apps/backend/**"
+      - "apps/desktop/**"
+      - "electron-builder.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/packaged-clean-machine-evidence-prep.mjs"
+      - "scripts/packaged-clean-machine-evidence.ps1"
+      - "scripts/packaged-runtime-smoke.mjs"
+      - "scripts/prepare-packaged-backend.mjs"
+      - "scripts/verify-package.mjs"
+      - "docs/packaging/**"
+  push:
+    branches:
+      - "codex/packaging-clean-machine-runtime-01"
+
+permissions:
+  contents: read
+
+jobs:
+  build-package:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      V3_SOURCE_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup exact CPython build input
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.5"
+          architecture: x64
+
+      - name: Record exact build checkout and runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $observed = (git rev-parse HEAD).Trim()
+          if ($observed -ne $env:V3_SOURCE_GIT_SHA) {
+            throw "Job A checkout is not the exact PR head: expected=$env:V3_SOURCE_GIT_SHA observed=$observed"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:pythonLocation)) {
+            throw "actions/setup-python did not expose pythonLocation"
+          }
+          "V3_PACKAGED_PYTHON_ROOT=$env:pythonLocation" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: npm.cmd ci
+
+      - name: Build and package Windows x64 delivery
+        shell: pwsh
+        run: npm.cmd run package:win:unpacked
+
+      - name: Verify package and reconcile CPython identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          npm.cmd run verify:package
+          node scripts/packaged-clean-machine-evidence-prep.mjs
+
+      - name: Assemble delivery artifact and bounded driver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $packageRoot = (Resolve-Path "artifacts\package\win-unpacked").Path
+          $outputRoot = Join-Path $env:GITHUB_WORKSPACE "artifacts\package-level2"
+          New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+          $zipPath = Join-Path $outputRoot "V3_PACKAGING_LEVEL2_DELIVERY.zip"
+          & tar.exe -a -c -f $zipPath -C $packageRoot .
+          if ($LASTEXITCODE -ne 0) { throw "tar delivery archive failed with exit code $LASTEXITCODE" }
+          $zipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
+          "$zipHash  V3_PACKAGING_LEVEL2_DELIVERY.zip" | Set-Content -LiteralPath "$zipPath.sha256" -Encoding utf8 -NoNewline
+          Copy-Item "scripts\packaged-clean-machine-evidence.ps1" $outputRoot
+          Copy-Item "artifacts\package\V3_PACKAGE_EVIDENCE.json" $outputRoot
+          $os = Get-CimInstance Win32_OperatingSystem
+          [ordered]@{
+            schema_version = "v3.packaging-level2-build-runner/1.0.0"
+            job_id = $env:GITHUB_JOB
+            runner_name = $env:RUNNER_NAME
+            runner_os = $env:RUNNER_OS
+            runner_arch = $env:RUNNER_ARCH
+            os_caption = $os.Caption
+            os_version = $os.Version
+            os_build = $os.BuildNumber
+            source_git_sha = $env:V3_SOURCE_GIT_SHA
+            package_artifact_name = "V3_PACKAGING_LEVEL2_DELIVERY.zip"
+            package_artifact_bytes = (Get-Item -LiteralPath $zipPath).Length
+            package_artifact_sha256 = $zipHash
+          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $outputRoot "V3_PACKAGING_LEVEL2_BUILD_RUNNER.json") -Encoding utf8
+
+      - name: Upload delivery artifact and standalone driver
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-pr47-level2-delivery
+          path: artifacts/package-level2
+          if-no-files-found: error
+          compression-level: 0
+
+  verify-clean-machine:
+    needs: build-package
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      V3_VERIFY_JOB_CHECKOUT_ACTION_PRESENT: "FALSE"
+    steps:
+      - name: Prove Job B begins without checkout
+        shell: pwsh
+        working-directory: 'C:\'
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Output "Job B pre-download probe started from $((Get-Location).Path); runner_temp=$env:RUNNER_TEMP; github_workspace=$env:GITHUB_WORKSPACE"
+          $inputRoot = Join-Path $env:RUNNER_TEMP "v3-pr47-level2-input"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "v3-level2-evidence"
+          $preDownloadInventory = Join-Path $env:RUNNER_TEMP "v3-level2-pre-download.json"
+          "V3_LEVEL2_INPUT_ROOT=$inputRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "V3_LEVEL2_EVIDENCE_ROOT=$evidenceRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "V3_LEVEL2_PRE_DOWNLOAD_INVENTORY=$preDownloadInventory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $env:V3_LEVEL2_PRE_DOWNLOAD_INVENTORY = $preDownloadInventory
+          $workspace = $env:GITHUB_WORKSPACE
+          if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
+            New-Item -ItemType Directory -Force -Path $workspace | Out-Null
+          }
+          $markers = @(".git", ".github", "AGENTS.md", "V3_PROJECT_CONSTITUTION.md", "package.json", "package-lock.json", "apps", "packages", "node_modules", "tsconfig.json")
+          $hits = @($markers | Where-Object { Test-Path -LiteralPath (Join-Path $workspace $_) })
+          $gitRoot = ""
+          try {
+            $gitOutput = & git.exe -C $workspace rev-parse --show-toplevel 2>$null
+            if ($LASTEXITCODE -eq 0) { $gitRoot = ($gitOutput | Out-String).Trim() }
+          } catch { $gitRoot = "" }
+          $global:LASTEXITCODE = 0
+          if ($hits.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($gitRoot)) {
+            throw "Job B workspace contains repository source before artifact download: hits=$($hits -join ',') gitRoot=$gitRoot"
+          }
+          $entries = @(Get-ChildItem -LiteralPath $workspace -Force | Select-Object -ExpandProperty Name)
+          [ordered]@{
+            schema_version = "v3.packaging-level2-pre-download/1.0.0"
+            checkout_used = $false
+            repository_source_tree_present = $false
+            checkout_action_present = $false
+            workspace = $workspace
+            entries = $entries
+          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $env:V3_LEVEL2_PRE_DOWNLOAD_INVENTORY -Encoding utf8
+
+      - name: Download only Job A delivery artifact and evidence driver
+        uses: actions/download-artifact@v4
+        with:
+          name: v3-pr47-level2-delivery
+          path: ${{ runner.temp }}\v3-pr47-level2-input
+
+      - name: Run standalone clean-machine evidence driver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $driver = Join-Path $env:V3_LEVEL2_INPUT_ROOT "packaged-clean-machine-evidence.ps1"
+          if (-not (Test-Path -LiteralPath $driver -PathType Leaf)) { throw "bounded evidence driver missing: $driver" }
+          & $driver -InputRoot $env:V3_LEVEL2_INPUT_ROOT -EvidenceRoot $env:V3_LEVEL2_EVIDENCE_ROOT
+
+      - name: Upload Level-2 machine evidence and bounded logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-pr47-level2-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}\v3-level2-evidence\**
+            ${{ runner.temp }}\v3-level2-pre-download.json
+          if-no-files-found: warn
+          compression-level: 0
