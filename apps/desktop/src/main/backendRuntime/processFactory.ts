@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Writable } from "node:stream";
+import { join } from "node:path";
 import type { BackendProcess, BackendProcessFactory, SpawnSpec } from "./types";
 
 class NodeBackendProcess implements BackendProcess {
@@ -44,8 +45,12 @@ export class NodeBackendProcessFactory implements BackendProcessFactory {
   }
 }
 
-export function sanitizedBackendEnvironment(source: NodeJS.ProcessEnv = process.env): Readonly<Record<string, string>> {
-  const result: Record<string, string> = {};
+export function sanitizedBackendEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+  packagedRuntimeRoot?: string,
+  packagedBackendResourceRoot?: string,
+): Readonly<Record<string, string>> {
+  const environment: Record<string, string> = {};
   // APPDATA lets a Windows CPython installation locate its standard per-user
   // site-packages (notably the IANA tzdata required by canonical BacktestRunSpec).
   // LOCALAPPDATA is the documented Windows base directory that
@@ -53,15 +58,30 @@ export function sanitizedBackendEnvironment(source: NodeJS.ProcessEnv = process.
   // the normal product storage root (%LOCALAPPDATA%/v3-quant-workbench/product).
   // No package-specific, project, token, or raw storage path is admitted.
   for (const name of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "APPDATA", "LOCALAPPDATA"]) {
-    const value = source[name];
-    if (typeof value === "string" && value.length > 0) result[name] = value;
+    const inheritedValue = source[name];
+    if (typeof inheritedValue === "string" && inheritedValue.length > 0) environment[name] = inheritedValue;
   }
-  // V3_PRODUCT_STORAGE_ROOT is the documented product storage root override
-  // consumed by v3_backend.runtime.bootstrap; it stays inside the backend
-  // process environment and never crosses the context bridge.
-  const storageRoot = source.V3_PRODUCT_STORAGE_ROOT;
-  if (typeof storageRoot === "string" && storageRoot.length > 0) result.V3_PRODUCT_STORAGE_ROOT = storageRoot;
-  result.PYTHONUTF8 = "1";
-  result.PYTHONUNBUFFERED = "1";
-  return Object.freeze(result);
+  if (packagedRuntimeRoot === undefined) {
+    const developmentStorageRoot = source.V3_PRODUCT_STORAGE_ROOT;
+    if (typeof developmentStorageRoot === "string" && developmentStorageRoot.length > 0) {
+      environment.V3_PRODUCT_STORAGE_ROOT = developmentStorageRoot;
+    }
+  } else {
+    environment.PYTHONHOME = packagedRuntimeRoot;
+    environment.PYTHONNOUSERSITE = "1";
+    environment.PYTHONDONTWRITEBYTECODE = "1";
+    environment.V3_BACKEND_RUNTIME_MODE = "PACKAGED";
+    if (packagedBackendResourceRoot !== undefined) {
+      environment.V3_RESEARCH_PACKAGE_TRANSPORT_PATH = join(
+        packagedBackendResourceRoot,
+        "backend-package",
+        "packages",
+        "contracts",
+        "research_package_transport_v1.json",
+      );
+    }
+  }
+  environment.PYTHONUTF8 = "1";
+  environment.PYTHONUNBUFFERED = "1";
+  return Object.freeze(environment);
 }

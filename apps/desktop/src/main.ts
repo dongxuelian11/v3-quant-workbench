@@ -1,19 +1,31 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, type IpcMainInvokeEvent } from "electron";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 import {
   type CommandReceipt,
   type DesktopCommandEnvelope,
-  type PersistedWorkspace
+  type PersistedWorkspace,
+  type ProductStatusView,
+  type ProjectContextView,
+  type ProjectCreatedView
 } from "../../../packages/contracts/src/index";
 import {
   BackendRuntimeEventRelay,
   BackendRuntimeLifecycle,
   BackendSupervisor,
+  resolveBackendRuntime,
   registerBackendRuntimeIpc
 } from "./main/backendRuntime/index";
+import type { BackendRuntimeResolution } from "./main/backendRuntime/runtimeResolver";
 import { WorkspaceStore, WorkspaceStoreError } from "./main/runtimePersistence/workspaceStore";
 import { resolveAgentEvidenceRuntime } from "./main/agentEvidenceRuntime";
-import { ProductBindingStore, ProductBridge, productBindingPath, registerProductRuntimeIpc } from "./main/productRuntime/index";
+import {
+  ProductBindingStore,
+  ProductBridge,
+  productBindingPath,
+  registerProductRuntimeIpc,
+  registerUnavailableProductRuntimeIpc
+} from "./main/productRuntime/index";
 
 let mainWindow: BrowserWindow | null = null;
 let store: WorkspaceStore;
@@ -21,10 +33,30 @@ let storePath = "";
 let backendSupervisor: BackendSupervisor | null = null;
 let backendRelay: BackendRuntimeEventRelay | null = null;
 let backendRuntimeLifecycle: BackendRuntimeLifecycle | null = null;
+let backendRuntimeResolution: BackendRuntimeResolution | null = null;
+let backendStartPromise: Promise<void> | null = null;
 let quitting = false;
 let shutdownComplete = false;
 
 const GRACEFUL_SHUTDOWN_DEADLINE_MS = 10_000;
+const PACKAGED_RUNTIME_SMOKE = process.argv.includes("--v3-packaged-smoke");
+const PACKAGED_RUNTIME_SMOKE_USER_DATA = process.env.V3_PACKAGED_SMOKE_USER_DATA;
+const PACKAGED_RUNTIME_SMOKE_OUTPUT = process.env.V3_PACKAGED_SMOKE_OUTPUT;
+
+if (PACKAGED_RUNTIME_SMOKE) {
+  if (process.platform !== "win32" || !PACKAGED_RUNTIME_SMOKE_USER_DATA || !isAbsolute(PACKAGED_RUNTIME_SMOKE_USER_DATA)) {
+    throw new Error("V3_PACKAGED_SMOKE_USER_DATA must be an absolute Windows path");
+  }
+  app.setPath("userData", resolve(PACKAGED_RUNTIME_SMOKE_USER_DATA));
+  app.setPath("cache", join(resolve(PACKAGED_RUNTIME_SMOKE_USER_DATA), "cache"));
+  // The packaged runtime smoke deliberately removes developer PATH entries.
+  // Disable Chromium GPU process startup before app readiness so the probe
+  // remains independent of optional graphics DLLs on the test host; normal
+  // packaged/product launches keep the regular Electron rendering path.
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+  app.disableHardwareAcceleration();
+}
 
 // PR #29 production boundary: a packaged build hard-denies the development
 // integration fixture; LIVE product mode always uses the canonical bootstrap.
@@ -106,11 +138,43 @@ function registerIpc(): void {
   });
 }
 
-function startBackendRuntime(): void {
-  if (!mainWindow || backendSupervisor) return;
+function logRuntimeSelection(runtime: BackendRuntimeResolution): void {
+  console.error(JSON.stringify({
+    level: "INFO",
+    code: runtime.mode === "PACKAGED" ? "PACKAGED_RUNTIME_SELECTED" : "DEVELOPMENT_RUNTIME_SELECTED",
+    runtime_mode: runtime.mode,
+    backend_executable: runtime.executable,
+    backend_working_directory: runtime.workingDirectory,
+    backend_resource_root: runtime.backendResourceRoot || null,
+    backend_module: runtime.backendModule,
+    source_git_sha: runtime.sourceGitSha,
+    build_manifest_id: runtime.buildManifestId,
+    resource_manifest_sha256: runtime.manifestSha256,
+  }));
+}
+
+function resolveRuntimeForStartup(): BackendRuntimeResolution | null {
+  try {
+    const runtime = resolveBackendRuntime(app.isPackaged, process.resourcesPath, process.env, process.platform);
+    backendRuntimeResolution = runtime;
+    logRuntimeSelection(runtime);
+    return runtime;
+  } catch (error) {
+    const diagnostic = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({
+      level: "ERROR",
+      code: app.isPackaged ? "PACKAGED_RUNTIME_UNAVAILABLE" : "DEVELOPMENT_RUNTIME_UNAVAILABLE",
+      message: diagnostic,
+    }));
+    registerUnavailableProductRuntimeIpc(ipcMain, trusted, diagnostic);
+    return null;
+  }
+}
+
+function initialProjectContext() {
   const binding = productBindings.current;
   const fixtureMode = AGENT_EVIDENCE_MODE === "DEVELOPMENT_INTEGRATION_FIXTURE";
-  const projectContext = fixtureMode
+  return fixtureMode
     ? {
         projectId: FIXTURE_PROJECT_ID,
         projectContextRevisionId: FIXTURE_PROJECT_CONTEXT_REVISION_ID,
@@ -121,11 +185,17 @@ function startBackendRuntime(): void {
       : {
           projectId: binding.projectId,
           projectContextRevisionId: binding.projectContextRevisionId,
-          lastDurableProjectEventSequence: store.getProjectEventCursor(binding.projectId)
-        };
-  backendSupervisor = new BackendSupervisor({
-    pythonExecutable: process.env.V3_BACKEND_PYTHON ?? process.env.V3_PYTHON ?? (process.platform === "win32" ? "python" : "python3"),
-    backendWorkingDirectory: process.env.V3_BACKEND_WORKING_DIRECTORY ?? join(process.cwd(), "apps", "backend", "src"),
+           lastDurableProjectEventSequence: store.getProjectEventCursor(binding.projectId)
+         };
+}
+
+function createBackendSupervisor(runtime: BackendRuntimeResolution): BackendSupervisor {
+  const projectContext = initialProjectContext();
+  return new BackendSupervisor({
+    pythonExecutable: runtime.executable,
+    backendWorkingDirectory: runtime.workingDirectory,
+    backendRuntimeRoot: runtime.mode === "PACKAGED" ? runtime.pythonRoot : undefined,
+    backendResourceRoot: runtime.mode === "PACKAGED" ? runtime.backendResourceRoot : undefined,
     desktopVersion: "0.1.0-recovery.1",
     ...(projectContext === undefined ? {} : { projectContext }),
     cursorPort: {
@@ -134,35 +204,49 @@ function startBackendRuntime(): void {
     backendModule: AGENT_EVIDENCE_RUNTIME.backendModule,
     autoReconnect: true
   });
+}
+
+async function chooseResearchPackage(): Promise<string | null> {
+  const window = mainWindow !== null ? (BrowserWindow.fromWebContents(mainWindow.webContents) ?? mainWindow) : null;
+  const options = {
+    title: "绑定已验证研究包（需要本机 canonical 来源权威）",
+    properties: ["openDirectory"] as Array<"openDirectory">,
+    buttonLabel: "验证来源并绑定"
+  };
+  const selection = window !== null
+    ? await dialog.showOpenDialog(window, options)
+    : await dialog.showOpenDialog(options);
+  if (selection.canceled || selection.filePaths.length !== 1) return null;
+  return selection.filePaths[0] ?? null;
+}
+
+function registerBackendRuntime(): void {
+  if (!mainWindow || !backendSupervisor) throw new Error("BACKEND_RUNTIME_REGISTRATION_NOT_READY");
   backendRelay = new BackendRuntimeEventRelay(backendSupervisor, mainWindow.webContents);
   backendRelay.start();
   backendRuntimeLifecycle = new BackendRuntimeLifecycle(backendSupervisor);
-  backendSupervisor.on("diagnostic", (item) => console.error(JSON.stringify(item)));
+  backendSupervisor.on("diagnostic", (diagnostic) => console.error(JSON.stringify(diagnostic)));
   registerBackendRuntimeIpc(ipcMain, trusted, backendSupervisor, () => backendRelay?.evidenceSnapshot ?? null);
-  // Main-process owned research package chooser: the renderer never sees a
-  // filesystem path; it only asks the product bridge to bind a package whose
-  // source authority must already exist and verify in the target runtime.
-  const chooseResearchPackage = async (): Promise<string | null> => {
-    const window = mainWindow !== null ? (BrowserWindow.fromWebContents(mainWindow.webContents) ?? mainWindow) : null;
-    const options = {
-      title: "绑定已验证研究包（需要本机 canonical 来源权威）",
-      properties: ["openDirectory"] as Array<"openDirectory">,
-      buttonLabel: "验证来源并绑定"
-    };
-    const selection = window !== null
-      ? await dialog.showOpenDialog(window, options)
-      : await dialog.showOpenDialog(options);
-    if (selection.canceled || selection.filePaths.length !== 1) return null;
-    return selection.filePaths[0] ?? null;
-  };
   productBridge = new ProductBridge(backendSupervisor, store, productBindings, chooseResearchPackage);
   registerProductRuntimeIpc(ipcMain, trusted, productBridge);
-  void backendSupervisor.start()
-    .then(() => recoverProductSession())
-    .catch((error: unknown) => {
-      const code = error !== null && typeof error === "object" && "code" in error ? String(error.code) : "BACKEND_START_FAILED";
-      console.error(JSON.stringify({ level: "ERROR", code, message: "canonical backendRuntime failed to start; no demo fallback" }));
-    });
+}
+
+function startBackendProcess(): void {
+  if (!backendSupervisor) throw new Error("BACKEND_SUPERVISOR_NOT_INITIALIZED");
+  backendStartPromise = backendSupervisor.start().then(() => recoverProductSession());
+  void backendStartPromise.catch((error: unknown) => {
+    const code = error !== null && typeof error === "object" && "code" in error ? String(error.code) : "BACKEND_START_FAILED";
+    console.error(JSON.stringify({ level: "ERROR", code, message: "canonical backendRuntime failed to start; no demo fallback" }));
+  });
+}
+
+function startBackendRuntime(): void {
+  if (!mainWindow || backendSupervisor) return;
+  const runtime = resolveRuntimeForStartup();
+  if (runtime === null) return;
+  backendSupervisor = createBackendSupervisor(runtime);
+  registerBackendRuntime();
+  startBackendProcess();
 }
 
 /**
@@ -199,6 +283,239 @@ async function recoverProductSession(): Promise<void> {
   }
 }
 
+function pathIsInside(parent: string, candidate: string): boolean {
+  const child = relative(resolve(parent), resolve(candidate));
+  return child === "" || (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child));
+}
+
+function packagedStoragePaths(): {
+  readonly storageRoot: string;
+  readonly catalogPath: string;
+  readonly artifactRoot: string;
+} {
+  const localAppData = process.env.LOCALAPPDATA?.length
+    ? process.env.LOCALAPPDATA
+    : join(app.getPath("userData"), "..", "Local");
+  const storageRoot = resolve(localAppData, "v3-quant-workbench", "product");
+  return {
+    storageRoot,
+    catalogPath: join(storageRoot, "catalog.sqlite3"),
+    artifactRoot: join(storageRoot, "artifacts")
+  };
+}
+
+async function writePackagedSmokeEvidence(evidence: Record<string, unknown>): Promise<void> {
+  if (!PACKAGED_RUNTIME_SMOKE_OUTPUT || !isAbsolute(PACKAGED_RUNTIME_SMOKE_OUTPUT)) {
+    throw new Error("V3_PACKAGED_SMOKE_OUTPUT must be an absolute path");
+  }
+  await mkdir(dirname(PACKAGED_RUNTIME_SMOKE_OUTPUT), { recursive: true });
+  await writeFile(PACKAGED_RUNTIME_SMOKE_OUTPUT, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+}
+
+type PackagedSmokePhase = "create-bind" | "relaunch";
+
+interface PackagedSmokeContext {
+  readonly phase: PackagedSmokePhase;
+  readonly runtime: BackendRuntimeResolution;
+  readonly supervisor: BackendSupervisor;
+  readonly bridge: ProductBridge;
+}
+
+interface PackagedSmokeFlow {
+  readonly statusBefore: ProductStatusView;
+  readonly statusAfter: ProductStatusView;
+  readonly sourceCapability: ProductStatusView["capabilities"][number];
+  readonly createdProject: ProjectCreatedView | null;
+  readonly projectContext: ProjectContextView;
+}
+
+interface PackagedSmokePaths {
+  readonly installRoot: string;
+  readonly userDataPath: string;
+  readonly storageRoot: string;
+  readonly catalogPath: string;
+  readonly artifactRoot: string;
+  readonly workspaceStatePath: string;
+  readonly bindingPath: string;
+}
+
+function packagedSmokePhase(value: string): PackagedSmokePhase {
+  if (value === "create-bind" || value === "relaunch") return value;
+  throw new Error(`PACKAGED_SMOKE_UNKNOWN_PHASE:${value}`);
+}
+
+async function awaitPackagedSmokeContext(phaseValue: string): Promise<PackagedSmokeContext> {
+  const phase = packagedSmokePhase(phaseValue);
+  if (!PACKAGED_RUNTIME_SMOKE || !app.isPackaged) throw new Error("PACKAGED_RUNTIME_SMOKE_REQUIRES_PACKAGED_ELECTRON");
+  const startup = backendStartPromise;
+  if (startup === null) throw new Error("PACKAGED_BACKEND_START_NOT_SCHEDULED");
+  await startup;
+  if (!backendSupervisor || !productBridge || !backendRuntimeResolution) {
+    throw new Error("PACKAGED_RUNTIME_SMOKE_RUNTIME_NOT_INITIALIZED");
+  }
+  return { phase, runtime: backendRuntimeResolution, supervisor: backendSupervisor, bridge: productBridge };
+}
+
+function assertReadyProductStatus(status: ProductStatusView, suffix: string): void {
+  if (status.backendState !== "READY") throw new Error(`PACKAGED_PRODUCT_RUNTIME_NOT_READY${suffix}:${status.backendState}`);
+}
+
+async function createAndBindSmokeProject(
+  bridge: ProductBridge,
+  statusBefore: ProductStatusView,
+): Promise<{ readonly createdProject: ProjectCreatedView; readonly projectContext: ProjectContextView }> {
+  if (statusBefore.bindingState !== "NO_CANONICAL_PROJECT_BOUND") {
+    throw new Error(`PACKAGED_SMOKE_EXPECTED_EMPTY_BINDING:${statusBefore.bindingState}`);
+  }
+  const createdProject = await bridge.createProject({
+    displayName: "打包运行时验证项目",
+    notes: "PACKAGING_CLEAN_MACHINE_RUNTIME"
+  });
+  const projectContext = await bridge.connectExistingProject({
+    projectId: createdProject.projectId,
+    projectContextRevisionId: createdProject.projectContextRevisionId
+  });
+  return { createdProject, projectContext };
+}
+
+async function reopenSmokeProject(
+  bridge: ProductBridge,
+  statusBefore: ProductStatusView,
+): Promise<{ readonly createdProject: null; readonly projectContext: ProjectContextView }> {
+  if (statusBefore.bindingState !== "PROJECT_BOUND" || statusBefore.boundProject === null) {
+    throw new Error(`PACKAGED_SMOKE_PROJECT_REOPEN_FAILED:${statusBefore.bindingState}`);
+  }
+  return { createdProject: null, projectContext: await bridge.getProjectContext() };
+}
+
+async function executePackagedSmokeFlow(context: PackagedSmokeContext): Promise<PackagedSmokeFlow> {
+  const statusBefore = await context.bridge.getProductStatus();
+  assertReadyProductStatus(statusBefore, "");
+  const flow = context.phase === "create-bind"
+    ? await createAndBindSmokeProject(context.bridge, statusBefore)
+    : await reopenSmokeProject(context.bridge, statusBefore);
+  const statusAfter = await context.bridge.getProductStatus();
+  assertReadyProductStatus(statusAfter, "_AFTER_FLOW");
+  if (statusAfter.bindingState !== "PROJECT_BOUND") {
+    throw new Error(`PACKAGED_SMOKE_PROJECT_${context.phase === "create-bind" ? "BIND" : "REOPEN"}_FAILED:${statusAfter.bindingState}`);
+  }
+  const sourceCapability = statusAfter.capabilities.find((capability) => capability.code === "DataSourceService");
+  if (sourceCapability === undefined || sourceCapability.truth_state !== "UNAVAILABLE") {
+    throw new Error(`PACKAGED_SOURCE_CAPABILITY_NOT_TRUTHFUL:${JSON.stringify(sourceCapability ?? null)}`);
+  }
+  return { statusBefore, statusAfter, sourceCapability, ...flow };
+}
+
+function packagedSmokePaths(): PackagedSmokePaths {
+  const userDataPath = app.getPath("userData");
+  const storage = packagedStoragePaths();
+  const installRoot = resolve(dirname(process.execPath));
+  const paths = {
+    installRoot,
+    userDataPath,
+    storageRoot: storage.storageRoot,
+    catalogPath: storage.catalogPath,
+    artifactRoot: storage.artifactRoot,
+    workspaceStatePath: join(userDataPath, "v3-workbench-state.json"),
+    bindingPath: productBindingPath(userDataPath),
+  };
+  if (pathIsInside(installRoot, paths.userDataPath) || pathIsInside(installRoot, paths.storageRoot)) {
+    throw new Error("PACKAGED_SMOKE_PATH_BOUNDARY_FAILED");
+  }
+  return paths;
+}
+
+function assertPackagedRuntimePaths(runtime: BackendRuntimeResolution): void {
+  if (runtime.mode !== "PACKAGED"
+    || !pathIsInside(runtime.backendResourceRoot, runtime.executable)
+    || !pathIsInside(runtime.backendResourceRoot, runtime.workingDirectory)) {
+    throw new Error("PACKAGED_SMOKE_RESOLVER_PATH_BOUNDARY_FAILED");
+  }
+}
+
+function createPackagedSmokeEvidence(
+  context: PackagedSmokeContext,
+  flow: PackagedSmokeFlow,
+  paths: PackagedSmokePaths,
+): Record<string, unknown> {
+  const { runtime, supervisor, phase } = context;
+  return {
+    schema_version: "v3.packaged-runtime-smoke/1.0.0",
+    success: true,
+    phase,
+    packaged: app.isPackaged,
+    process_id: process.pid,
+    app_is_packaged: app.isPackaged,
+    electron_version: process.versions.electron,
+    resources_path: process.resourcesPath,
+    app_path: app.getAppPath(),
+    install_root: paths.installRoot,
+    backend_runtime_mode: runtime.mode,
+    backend_executable: runtime.executable,
+    backend_working_directory: runtime.workingDirectory,
+    backend_resource_root: runtime.backendResourceRoot,
+    backend_python_root: runtime.pythonRoot,
+    backend_module: runtime.backendModule,
+    backend_pid: supervisor.backendPid,
+    resource_manifest_path: runtime.manifestPath,
+    resource_manifest_sha256: runtime.manifestSha256,
+    source_git_sha: runtime.sourceGitSha,
+    build_manifest_id: runtime.buildManifestId,
+    product_status_before: flow.statusBefore,
+    product_status_after: flow.statusAfter,
+    source_capability: flow.sourceCapability,
+    created_project: flow.createdProject,
+    project_context: flow.projectContext,
+    user_data_path: paths.userDataPath,
+    storage_root: paths.storageRoot,
+    catalog_path: paths.catalogPath,
+    artifact_root: paths.artifactRoot,
+    workspace_state_path: paths.workspaceStatePath,
+    product_binding_path: paths.bindingPath,
+    writes_inside_install_root: false,
+    first_launch_network_install: false,
+    shutdown_expected: "GRACEFUL_SHUTDOWN_REQUIRED",
+  };
+}
+
+async function writePackagedSmokeFailure(evidence: Record<string, unknown>, error: unknown): Promise<void> {
+  const failureEvidence = {
+    ...evidence,
+    error: error instanceof Error ? error.message : String(error),
+    backend_runtime_mode: backendRuntimeResolution?.mode ?? null,
+    backend_executable: backendRuntimeResolution?.executable ?? null,
+    backend_working_directory: backendRuntimeResolution?.workingDirectory ?? null,
+    backend_pid: backendSupervisor?.backendPid ?? null,
+  };
+  try {
+    await writePackagedSmokeEvidence(failureEvidence);
+  } catch (writeError) {
+    console.error(JSON.stringify({ level: "ERROR", code: "PACKAGED_SMOKE_EVIDENCE_WRITE_FAILED", message: writeError instanceof Error ? writeError.message : String(writeError) }));
+  }
+}
+
+async function runPackagedRuntimeSmoke(): Promise<void> {
+  const phase = process.env.V3_PACKAGED_SMOKE_PHASE ?? "create-bind";
+  const initialEvidence: Record<string, unknown> = {
+    schema_version: "v3.packaged-runtime-smoke/1.0.0", success: false, phase, packaged: app.isPackaged, process_id: process.pid
+  };
+  try {
+    const context = await awaitPackagedSmokeContext(phase);
+    assertPackagedRuntimePaths(context.runtime);
+    const flow = await executePackagedSmokeFlow(context);
+    const paths = packagedSmokePaths();
+    await writePackagedSmokeEvidence(createPackagedSmokeEvidence(context, flow, paths));
+    console.error(JSON.stringify({ level: "INFO", code: "PACKAGED_RUNTIME_SMOKE_PASS", phase: context.phase }));
+    process.exitCode = 0;
+  } catch (error) {
+    await writePackagedSmokeFailure(initialEvidence, error);
+    console.error(JSON.stringify({ level: "ERROR", code: "PACKAGED_RUNTIME_SMOKE_FAILED", message: error instanceof Error ? error.message : String(error) }));
+    process.exitCode = 1;
+  } finally {
+    app.quit();
+  }
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1536,
@@ -207,6 +524,12 @@ function createWindow(): void {
     minHeight: 680,
     frame: false,
     titleBarStyle: "hidden",
+    // The packaged smoke is a main-process/runtime acceptance probe. Keep a
+    // hidden owner window for the supervised relay, but do not load the normal
+    // renderer during the probe: its startup refreshes can issue concurrent
+    // projectless Product Entry reads while the probe is creating the first
+    // canonical Project.
+    show: !PACKAGED_RUNTIME_SMOKE,
     backgroundColor: "#0B0D14",
     title: "V3 量化研究工作台",
     webPreferences: {
@@ -217,7 +540,7 @@ function createWindow(): void {
       webSecurity: true
     }
   });
-  void mainWindow.loadFile(join(__dirname, "renderer", "index.html"));
+  if (!PACKAGED_RUNTIME_SMOKE) void mainWindow.loadFile(join(__dirname, "renderer", "index.html"));
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   const publishWindowState = (): void => {
@@ -250,6 +573,7 @@ if (!gotSingleInstanceLock) {
     registerIpc();
     createWindow();
     startBackendRuntime();
+    if (PACKAGED_RUNTIME_SMOKE) void runPackagedRuntimeSmoke();
     app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   }).catch((error: unknown) => {
     const code = error instanceof WorkspaceStoreError ? error.code : "APP_STARTUP_FAILED";

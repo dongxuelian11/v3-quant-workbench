@@ -77,6 +77,8 @@ export interface DurableEventCursorPort {
 export interface SupervisorConfig {
   readonly pythonExecutable: string;
   readonly backendWorkingDirectory: string;
+  readonly backendRuntimeRoot?: string;
+  readonly backendResourceRoot?: string;
   readonly desktopVersion: string;
   readonly projectContext?: SupervisorProjectContext;
   readonly cursorPort?: DurableEventCursorPort;

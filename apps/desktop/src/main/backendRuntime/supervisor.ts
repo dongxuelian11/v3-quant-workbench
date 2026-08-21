@@ -184,6 +184,8 @@ export class BackendSupervisor extends EventEmitter {
   }
 
   get state(): ConnectionState { return this.stateValue; }
+
+  get backendPid(): number | null { return this.process?.pid ?? null; }
   get capabilities(): readonly BackendCapability[] { return structuredClone(this.capabilitiesValue); }
 
   /**
@@ -408,7 +410,7 @@ export class BackendSupervisor extends EventEmitter {
       executable: this.config.pythonExecutable,
       args: ["-m", backendModule, "--transport=stdio-framed-v1"],
       cwd: this.config.backendWorkingDirectory,
-      env: sanitizedBackendEnvironment()
+      env: sanitizedBackendEnvironment(process.env, this.config.backendRuntimeRoot, this.config.backendResourceRoot)
     };
     this.process = this.processFactory.spawn(spec, token);
     const launched = this.process;
