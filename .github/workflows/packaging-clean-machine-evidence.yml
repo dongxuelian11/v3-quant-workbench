@@ -16,23 +16,26 @@ on:
       - "scripts/prepare-packaged-backend.mjs"
       - "scripts/verify-package.mjs"
       - "docs/packaging/**"
+  push:
+    branches:
+      - "codex/packaging-clean-machine-runtime-01"
 
 permissions:
   contents: read
 
 jobs:
   build-package:
-    if: github.event.pull_request.number == 47
+    if: ${{ (github.event_name == 'pull_request' && github.event.pull_request.number == 47) || (github.event_name == 'push' && github.ref == 'refs/heads/codex/packaging-clean-machine-runtime-01') }}
     runs-on: windows-latest
     timeout-minutes: 120
     env:
-      V3_SOURCE_GIT_SHA: ${{ github.event.pull_request.head.sha }}
+      V3_SOURCE_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Checkout exact PR head
         uses: actions/checkout@v6
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
 
       - name: Setup Node
@@ -115,7 +118,7 @@ jobs:
           compression-level: 0
 
   verify-clean-machine:
-    if: github.event.pull_request.number == 47
+    if: ${{ (github.event_name == 'pull_request' && github.event.pull_request.number == 47) || (github.event_name == 'push' && github.ref == 'refs/heads/codex/packaging-clean-machine-runtime-01') }}
     needs: build-package
     runs-on: windows-latest
     timeout-minutes: 45
