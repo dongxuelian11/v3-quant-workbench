@@ -124,6 +124,7 @@ jobs:
     steps:
       - name: Prove Job B begins without checkout
         shell: pwsh
+        working-directory: ${{ runner.temp }}
         run: |
           $ErrorActionPreference = "Stop"
           $inputRoot = Join-Path $env:RUNNER_TEMP "v3-pr47-level2-input"
