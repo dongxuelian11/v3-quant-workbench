@@ -457,6 +457,13 @@ function createPackagedSmokeEvidence(
     backend_python_root: runtime.pythonRoot,
     backend_module: runtime.backendModule,
     backend_pid: supervisor.backendPid,
+    backend_handshake: supervisor.handshake === null
+      ? null
+      : {
+          transport: "STDIO_FRAMED_V1",
+          ready: supervisor.state === "READY",
+          hello: supervisor.handshake,
+        },
     resource_manifest_path: runtime.manifestPath,
     resource_manifest_sha256: runtime.manifestSha256,
     source_git_sha: runtime.sourceGitSha,

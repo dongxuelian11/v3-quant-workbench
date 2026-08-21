@@ -63,6 +63,15 @@ SOURCE_CAPABILITY = NOT_AVAILABLE
 
 The current local machine run is not Windows Sandbox, a clean VM, or a dedicated clean machine. The package build, verifier, and isolated create/bind/relaunch smoke pass on the task worktree, but this evidence cannot produce the task's success token. A clean exact-final-head guard, clean-machine evidence, push/PR/CI, and independent review remain separate gates.
 
+## Level-2 clean-machine evidence workflow
+
+`.github/workflows/packaging-clean-machine-evidence.yml` is a bounded PR #47 evidence workflow, not release CI. It has two independent `windows-latest` jobs:
+
+1. `build-package` checks out the exact PR head, installs the build-only Node/CPython prerequisites, builds/verifies the unpacked Windows x64 package, reconciles the CPython build pin against `runtime-manifest.json` and the actual shipped `python.exe`, then uploads only a delivery ZIP, manifests, and `packaged-clean-machine-evidence.ps1`.
+2. `verify-clean-machine` has no checkout/setup/install step. It proves the fresh Job B workspace has no repository markers, downloads only Job A's delivery artifact and driver, verifies the ZIP SHA-256, extracts to a fresh path containing spaces, scrubs runtime overrides/PATH, and runs the packaged Electron smoke twice.
+
+The standalone driver emits `V3_PACKAGING_LEVEL2_CLEAN_MACHINE_EVIDENCE.json`. It fails closed unless the runner is distinct from Job A, the shipped CPython three-way SHA reconciliation is exact, framed `backend.hello`/`backend.ready` and Product Runtime `READY` are observed, empty storage creates and binds a canonical Project, `DataSourceService` remains `UNAVAILABLE`, both full app exits are graceful with zero orphan backend processes, the exact Project/ProjectContextRevision reopens, and the install tree digest is unchanged. Before a fresh GitHub-hosted Job B succeeds, the Level-2 claim remains `CLEAN_MACHINE_LAUNCH = NOT_PROVEN` and the result token is not permitted.
+
 ## Explicitly deferred
 
 This candidate does not close real free-source authority, First Source Authority, full-app historical research rediscovery, release CI, V1 acceptance, code signing, auto-update, Model/Agent productization, async workers, or checkpoint/resume.
