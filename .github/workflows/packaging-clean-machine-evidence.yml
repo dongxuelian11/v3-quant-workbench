@@ -122,14 +122,18 @@ jobs:
     timeout-minutes: 45
     env:
       V3_VERIFY_JOB_CHECKOUT_ACTION_PRESENT: "FALSE"
-      V3_LEVEL2_INPUT_ROOT: ${{ runner.temp }}\v3-pr47-level2-input
-      V3_LEVEL2_EVIDENCE_ROOT: ${{ runner.temp }}\v3-level2-evidence
-      V3_LEVEL2_PRE_DOWNLOAD_INVENTORY: ${{ runner.temp }}\v3-level2-pre-download.json
     steps:
       - name: Prove Job B begins without checkout
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $inputRoot = Join-Path $env:RUNNER_TEMP "v3-pr47-level2-input"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "v3-level2-evidence"
+          $preDownloadInventory = Join-Path $env:RUNNER_TEMP "v3-level2-pre-download.json"
+          "V3_LEVEL2_INPUT_ROOT=$inputRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "V3_LEVEL2_EVIDENCE_ROOT=$evidenceRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "V3_LEVEL2_PRE_DOWNLOAD_INVENTORY=$preDownloadInventory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $env:V3_LEVEL2_PRE_DOWNLOAD_INVENTORY = $preDownloadInventory
           $workspace = $env:GITHUB_WORKSPACE
           $markers = @(".git", ".github", "AGENTS.md", "V3_PROJECT_CONSTITUTION.md", "package.json", "package-lock.json", "apps", "packages", "node_modules", "tsconfig.json")
           $hits = @($markers | Where-Object { Test-Path -LiteralPath (Join-Path $workspace $_) })
