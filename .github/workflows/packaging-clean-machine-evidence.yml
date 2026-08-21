@@ -124,9 +124,10 @@ jobs:
     steps:
       - name: Prove Job B begins without checkout
         shell: pwsh
-        working-directory: ${{ runner.temp }}
+        working-directory: 'C:\'
         run: |
           $ErrorActionPreference = "Stop"
+          Write-Output "Job B pre-download probe started from $((Get-Location).Path); runner_temp=$env:RUNNER_TEMP; github_workspace=$env:GITHUB_WORKSPACE"
           $inputRoot = Join-Path $env:RUNNER_TEMP "v3-pr47-level2-input"
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "v3-level2-evidence"
           $preDownloadInventory = Join-Path $env:RUNNER_TEMP "v3-level2-pre-download.json"
