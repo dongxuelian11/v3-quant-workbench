@@ -90,13 +90,6 @@ function Get-BackendProcessSnapshot([string]$ResourceRoot) {
   return @($processes)
 }
 
-function Get-Property([object]$Object, [string]$Name) {
-  if ($null -eq $Object) { return $null }
-  $property = $Object.PSObject.Properties[$Name]
-  if ($null -eq $property) { return $null }
-  return $property.Value
-}
-
 function Invoke-PackagedSmoke([string]$Phase, [string]$OutputPath, [string]$Name) {
   $stdoutPath = Join-Path $script:EvidenceRoot "$Name.stdout.log"
   $stderrPath = Join-Path $script:EvidenceRoot "$Name.stderr.log"
