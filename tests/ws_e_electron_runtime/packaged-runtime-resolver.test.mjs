@@ -8,15 +8,6 @@ import { test } from "node:test";
 import { resolveBackendRuntime } from "../../dist/apps/desktop/src/main/backendRuntime/runtimeResolver.js";
 import { sanitizedBackendEnvironment } from "../../dist/apps/desktop/src/main/backendRuntime/processFactory.js";
 
-const CRITICAL_PATHS = [
-  "python/python.exe",
-  "backend-package/v3_backend/runtime/bootstrap.py",
-  "backend-package/v3_backend/runtime/build_manifest.generated.json",
-  "backend-package/packages/contracts/research_package_transport_v1.json",
-  "python/LICENSE.txt",
-  "python-dependency-inventory.json",
-];
-
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
