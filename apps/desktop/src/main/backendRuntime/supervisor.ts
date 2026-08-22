@@ -324,8 +324,16 @@ export class BackendSupervisor extends EventEmitter {
     if (this.healthReply) throw new BackendRuntimeError("health request already pending", "CONFLICT");
     const wait = deferred<Readonly<Record<string, unknown>>>();
     this.healthReply = wait;
-    this.send({ kind: "runtime.health" });
-    return this.withTimeout(wait.promise, timeoutMs, "backend health response timed out").finally(() => { this.healthReply = undefined; });
+    try {
+      this.send({ kind: "runtime.health" });
+      return await this.withTimeout(wait.promise, timeoutMs, "backend health response timed out");
+    } catch (error) {
+      // runtime.health has no request id. After a caller timeout, keep the
+      // slot reserved so its same-generation late reply cannot be mistaken
+      // for an unsolicited frame or satisfy a newer health request.
+      if (!(error instanceof BackendTimeoutError) && this.healthReply === wait) this.healthReply = undefined;
+      throw error;
+    }
   }
 
   /**
@@ -686,7 +694,9 @@ export class BackendSupervisor extends EventEmitter {
 
   private onHealth(message: Record<string, unknown>): void {
     if (!this.healthReply) throw new TransportProtocolError("unsolicited runtime.health response");
-    this.healthReply.resolve(contextBridgeSafe(message));
+    const reply = this.healthReply;
+    this.healthReply = undefined;
+    reply.resolve(contextBridgeSafe(message));
   }
 
   private onProductEntryReply(message: Record<string, unknown>): void {

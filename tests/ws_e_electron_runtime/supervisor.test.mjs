@@ -70,6 +70,8 @@ class MockBackend {
   acceptSequences = [];
   requestMode = "ok";
   queuedRequests = [];
+  healthMode = "ok";
+  queuedHealthRequests = 0;
 
   constructor(process, index, protocol = "v3.local/1.0") {
     this.process = process;
@@ -133,7 +135,11 @@ class MockBackend {
       }
       this.respondOk(message);
     } else if (message.kind === "runtime.health") {
-      this.send({ kind: "runtime.health", backend_instance_id: `backend-${this.index}`, state: "READY", uptime_seconds: 1 });
+      if (this.healthMode === "queue") {
+        this.queuedHealthRequests += 1;
+        return;
+      }
+      this.respondHealth();
     } else if (message.kind === "runtime.prepareShutdown") {
       this.send({ kind: "runtime.shutdownReady", deadline_at: message.deadline_at });
     } else if (message.kind === "runtime.commitShutdown") {
@@ -151,6 +157,10 @@ class MockBackend {
         body.access = { mode: "STREAM_TICKET", ticket_id: "ticket-1", expires_at: "2026-08-09T00:00:00Z" };
       }
       this.send({ kind: "response", request_id: message.request_id, status: "OK", body });
+  }
+
+  respondHealth() {
+    this.send({ kind: "runtime.health", backend_instance_id: `backend-${this.index}`, state: "READY", uptime_seconds: 1 });
   }
 
   flushRequestsInReverse() {
@@ -234,6 +244,29 @@ test("supervisor owns fixed spawn, handshake, capabilities, correlation, cancel,
   await supervisor.shutdown(500);
   assert.equal(supervisor.state, "STOPPED");
   assert.equal(factory.specs.length, 1, "no legacy fallback process may be spawned");
+});
+
+test("late same-generation health response after caller timeout keeps the backend connected", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.healthMode = "queue";
+
+  const timedOutHealth = supervisor.getHealth(10);
+  await waitFor(() => backend.queuedHealthRequests === 1);
+  await assert.rejects(timedOutHealth, (error) => error.code === "BACKEND_TIMEOUT");
+  await assert.rejects(supervisor.getHealth(10), (error) => error.code === "CONFLICT");
+
+  backend.respondHealth();
+  await waitFor(() => supervisor.healthReply === undefined);
+  assert.equal(supervisor.state, "READY");
+  assert.equal(factory.processes[0].terminated, false);
+
+  backend.healthMode = "ok";
+  const recoveredHealth = await supervisor.getHealth();
+  assert.equal(recoveredHealth.state, "READY");
+  supervisor.stopNow();
 });
 
 test("release acceptance provider is absent by default and forwarded only when explicitly configured", async () => {
