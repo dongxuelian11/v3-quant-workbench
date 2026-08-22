@@ -236,6 +236,28 @@ test("supervisor owns fixed spawn, handshake, capabilities, correlation, cancel,
   assert.equal(factory.specs.length, 1, "no legacy fallback process may be spawned");
 });
 
+test("release acceptance provider is absent by default and forwarded only when explicitly configured", async () => {
+  const normalFactory = new MockFactory();
+  const normal = create(normalFactory, { autoReconnect: false });
+  await normal.start();
+  assert.deepEqual(normalFactory.specs[0].args, ["-m", "v3_backend.runtime.bootstrap", "--transport=stdio-framed-v1"]);
+  await normal.shutdown(500);
+
+  const acceptanceFactory = new MockFactory();
+  const acceptance = create(acceptanceFactory, {
+    autoReconnect: false,
+    productReleaseAcceptanceProvider: "DETERMINISTIC_UNAVAILABLE"
+  });
+  await acceptance.start();
+  assert.deepEqual(acceptanceFactory.specs[0].args, [
+    "-m",
+    "v3_backend.runtime.bootstrap",
+    "--transport=stdio-framed-v1",
+    "--product-release-acceptance-provider=DETERMINISTIC_UNAVAILABLE"
+  ]);
+  await acceptance.shutdown(500);
+});
+
 test("request correlation survives reversed responses and maps backend errors/timeouts", async () => {
   const factory = new MockFactory();
   const supervisor = create(factory, { autoReconnect: false, requestTimeoutMs: 25 });

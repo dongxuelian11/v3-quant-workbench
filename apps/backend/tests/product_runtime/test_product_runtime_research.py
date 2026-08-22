@@ -15,7 +15,13 @@ from v3_backend.contracts.product_entry import (
 from v3_backend.runtime.product_entry import create_project
 from v3_backend.runtime.product_facades import build_product_facades
 from v3_backend.runtime.product_research import _ensure_provider_admission
+from v3_backend.runtime.product_release_acceptance import (
+    DETERMINISTIC_SUCCESS,
+    DETERMINISTIC_UNAVAILABLE,
+    product_release_acceptance_provider_factory,
+)
 from v3_backend.runtime.product_runtime import ProductRuntime
+from v3_backend.errors import CapabilityUnavailableError
 
 
 class _Frame:
@@ -30,6 +36,7 @@ class _Frame:
 
 class _FakeAkshare:
     __version__ = "1.18.84"
+    __v3_source_kind__ = "TEST_EXTERNAL_PROVIDER_BOUNDARY"
 
     def stock_zh_a_hist(self, **request: object) -> _Frame:
         del request
@@ -97,6 +104,93 @@ def _request(project_id: str, revision_id: str, *, key: str = "research-1") -> d
 
 
 class ProductRuntimeResearchTests(unittest.TestCase):
+    def test_release_acceptance_success_is_explicitly_test_only(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v3-release-acceptance-success-") as directory:
+            product = ProductRuntime(
+                Path(directory),
+                research_provider_factory=product_release_acceptance_provider_factory(
+                    DETERMINISTIC_SUCCESS
+                ),
+            )
+            project = create_project(
+                product,
+                display_name="V1 deterministic success",
+                notes=None,
+                idempotency_key="create-v1-success",
+            )
+            response = _facade_handler(product, "ProductEntryService.v1.submitResearch")(
+                _request(project["project_id"], project["project_context_revision_id"])
+            )
+            self.assertEqual(response["read_model"]["accepted_state"], "QUEUED")
+            connection = product._connection(read_only=True)
+            try:
+                row = connection.execute(
+                    "SELECT source_metadata_json FROM raw_capture_truth_descriptor"
+                ).fetchone()
+            finally:
+                connection.close()
+            self.assertIsNotNone(row)
+            self.assertIn('"source_kind":"TEST_EXTERNAL_PROVIDER_BOUNDARY"', row[0])
+
+    def test_release_acceptance_unavailable_fails_before_any_canonical_chain(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v3-release-acceptance-unavailable-") as directory:
+            product = ProductRuntime(
+                Path(directory),
+                research_provider_factory=product_release_acceptance_provider_factory(
+                    DETERMINISTIC_UNAVAILABLE
+                ),
+            )
+            project = create_project(
+                product,
+                display_name="V1 deterministic unavailable",
+                notes=None,
+                idempotency_key="create-v1-unavailable",
+            )
+            connection = product._connection(read_only=True)
+            try:
+                before = {
+                    table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    for table in ("task", "run", "result", "raw_capture", "artifact")
+                }
+            finally:
+                connection.close()
+            handler = _facade_handler(product, "ProductEntryService.v1.submitResearch")
+            with self.assertRaisesRegex(
+                CapabilityUnavailableError,
+                "PROVIDER_ACQUISITION_UNAVAILABLE",
+            ) as raised:
+                handler(_request(project["project_id"], project["project_context_revision_id"]))
+            self.assertEqual(
+                raised.exception.details,
+                {
+                    "reason_code": "PROVIDER_ACQUISITION_UNAVAILABLE",
+                    "provider_id": "pvd_akshare_eastmoney_a_share_eod_v1",
+                    "connector_version_id": "cov_akshare_eod_research_v1",
+                    "fallback_used": False,
+                    "canonical_chain_created": False,
+                },
+            )
+            connection = product._connection(read_only=True)
+            try:
+                after = {
+                    table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    for table in ("task", "run", "result", "raw_capture", "artifact")
+                }
+                artifact_roles = [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT semantic_role FROM artifact ORDER BY semantic_role"
+                    )
+                ]
+            finally:
+                connection.close()
+            self.assertEqual(
+                {name: after[name] for name in ("task", "run", "result", "raw_capture")},
+                {name: before[name] for name in ("task", "run", "result", "raw_capture")},
+            )
+            self.assertEqual(after["artifact"] - before["artifact"], 1)
+            self.assertEqual(artifact_roles, ["DATA_TRUTH_CAPABILITY_POLICY"])
+
     def test_closed_entry_and_clean_start_restart_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="v3-product-research-") as directory:
             root = Path(directory)

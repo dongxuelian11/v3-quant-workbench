@@ -15,11 +15,20 @@ on:
       - "scripts/packaged-runtime-smoke.mjs"
       - "scripts/prepare-packaged-backend.mjs"
       - "scripts/verify-package.mjs"
+      - "scripts/verify-release.mjs"
       - "scripts/product-closure-packaged-e2e.mjs"
+      - "scripts/product-release-packaged-e2e.mjs"
+      - "scripts/v1-release-clean-machine.ps1"
+      - "scripts/v1-release-catalog-probe.py"
       - "docs/packaging/**"
+      - "docs/release/**"
+      - "docs/oss/**"
+      - "sbom/**"
   push:
     branches:
-      - "codex/packaging-clean-machine-runtime-01"
+      - "main"
+      - "codex/v1-integrated-product-release-closure-01"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -67,34 +76,48 @@ jobs:
         shell: pwsh
         run: npm.cmd ci
 
-      - name: Build and package Windows x64 delivery
+      - name: Verify committed SBOM identity
         shell: pwsh
-        run: npm.cmd run package:win:unpacked
+        run: npm.cmd run sbom:check
 
-      - name: Verify package and reconcile CPython identity
+      - name: Build V1 Windows x64 package and NSIS installer
+        shell: pwsh
+        run: npm.cmd run package:win:release
+
+      - name: Verify release package, installer, and CPython identity
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           npm.cmd run verify:package
+          npm.cmd run verify:release
           node scripts/packaged-clean-machine-evidence-prep.mjs
+          npm.cmd run smoke:product-release
 
-      - name: Assemble delivery artifact and bounded driver
+      - name: Assemble V1 release delivery artifact and bounded driver
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $packageRoot = (Resolve-Path "artifacts\package\win-unpacked").Path
-          $outputRoot = Join-Path $env:GITHUB_WORKSPACE "artifacts\package-level2"
+          $outputRoot = Join-Path $env:GITHUB_WORKSPACE "artifacts\v1-release-delivery"
           New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
-          $zipPath = Join-Path $outputRoot "V3_PACKAGING_LEVEL2_DELIVERY.zip"
+          $zipPath = Join-Path $outputRoot "V3_V1_PRODUCT_RELEASE_PACKAGE.zip"
           & tar.exe -a -c -f $zipPath -C $packageRoot .
           if ($LASTEXITCODE -ne 0) { throw "tar delivery archive failed with exit code $LASTEXITCODE" }
           $zipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
-          "$zipHash  V3_PACKAGING_LEVEL2_DELIVERY.zip" | Set-Content -LiteralPath "$zipPath.sha256" -Encoding utf8 -NoNewline
-          Copy-Item "scripts\packaged-clean-machine-evidence.ps1" $outputRoot
+          "$zipHash  V3_V1_PRODUCT_RELEASE_PACKAGE.zip" | Set-Content -LiteralPath "$zipPath.sha256" -Encoding utf8 -NoNewline
+          $installer = (Resolve-Path "artifacts\package\v3-quant-workbench-1.0.0-x64.exe").Path
+          $installerTarget = Join-Path $outputRoot "v3-quant-workbench-1.0.0-x64.exe"
+          Copy-Item -LiteralPath $installer -Destination $installerTarget
+          $installerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerTarget).Hash.ToLowerInvariant()
+          "$installerHash  v3-quant-workbench-1.0.0-x64.exe" | Set-Content -LiteralPath "$installerTarget.sha256" -Encoding utf8 -NoNewline
+          Copy-Item "scripts\v1-release-clean-machine.ps1" $outputRoot
+          Copy-Item "scripts\v1-release-catalog-probe.py" $outputRoot
           Copy-Item "artifacts\package\V3_PACKAGE_EVIDENCE.json" $outputRoot
+          Copy-Item "artifacts\package\V3_RELEASE_MANIFEST.json" $outputRoot
+          Copy-Item "artifacts\package-level2\V3_PACKAGING_LEVEL2_BUILD_PIN.json" $outputRoot
           $os = Get-CimInstance Win32_OperatingSystem
           [ordered]@{
-            schema_version = "v3.packaging-level2-build-runner/1.0.0"
+            schema_version = "v3.v1-release-build-runner/1.0.0"
             job_id = $env:GITHUB_JOB
             runner_name = $env:RUNNER_NAME
             runner_os = $env:RUNNER_OS
@@ -103,16 +126,22 @@ jobs:
             os_version = $os.Version
             os_build = $os.BuildNumber
             source_git_sha = $env:V3_SOURCE_GIT_SHA
-            package_artifact_name = "V3_PACKAGING_LEVEL2_DELIVERY.zip"
+            source_git_tree_sha = (git rev-parse "HEAD^{tree}").Trim()
+            product_version = "1.0.0"
+            package_artifact_name = "V3_V1_PRODUCT_RELEASE_PACKAGE.zip"
             package_artifact_bytes = (Get-Item -LiteralPath $zipPath).Length
             package_artifact_sha256 = $zipHash
-          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $outputRoot "V3_PACKAGING_LEVEL2_BUILD_RUNNER.json") -Encoding utf8
+            installer_artifact_name = "v3-quant-workbench-1.0.0-x64.exe"
+            installer_artifact_bytes = (Get-Item -LiteralPath $installerTarget).Length
+            installer_artifact_sha256 = $installerHash
+            release_manifest_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath "artifacts\package\V3_RELEASE_MANIFEST.json").Hash.ToLowerInvariant()
+          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $outputRoot "V3_V1_RELEASE_BUILD_RUNNER.json") -Encoding utf8
 
-      - name: Upload delivery artifact and standalone driver
+      - name: Upload V1 release delivery and standalone acceptance driver
         uses: actions/upload-artifact@v4
         with:
-          name: v3-pr47-level2-delivery
-          path: artifacts/package-level2
+          name: v3-v1-product-release-delivery
+          path: artifacts/v1-release-delivery
           if-no-files-found: error
           compression-level: 0
 
@@ -129,13 +158,13 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           Write-Output "Job B pre-download probe started from $((Get-Location).Path); runner_temp=$env:RUNNER_TEMP; github_workspace=$env:GITHUB_WORKSPACE"
-          $inputRoot = Join-Path $env:RUNNER_TEMP "v3-pr47-level2-input"
-          $evidenceRoot = Join-Path $env:RUNNER_TEMP "v3-level2-evidence"
-          $preDownloadInventory = Join-Path $env:RUNNER_TEMP "v3-level2-pre-download.json"
-          "V3_LEVEL2_INPUT_ROOT=$inputRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "V3_LEVEL2_EVIDENCE_ROOT=$evidenceRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "V3_LEVEL2_PRE_DOWNLOAD_INVENTORY=$preDownloadInventory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $env:V3_LEVEL2_PRE_DOWNLOAD_INVENTORY = $preDownloadInventory
+          $inputRoot = Join-Path $env:RUNNER_TEMP "v3-v1-release-input"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "v3-v1-release-evidence"
+          $preDownloadInventory = Join-Path $env:RUNNER_TEMP "v3-v1-pre-download.json"
+          "V3_V1_INPUT_ROOT=$inputRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "V3_V1_EVIDENCE_ROOT=$evidenceRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "V3_V1_PRE_DOWNLOAD_INVENTORY=$preDownloadInventory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $env:V3_V1_PRE_DOWNLOAD_INVENTORY = $preDownloadInventory
           $workspace = $env:GITHUB_WORKSPACE
           if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
             New-Item -ItemType Directory -Force -Path $workspace | Out-Null
@@ -153,35 +182,35 @@ jobs:
           }
           $entries = @(Get-ChildItem -LiteralPath $workspace -Force | Select-Object -ExpandProperty Name)
           [ordered]@{
-            schema_version = "v3.packaging-level2-pre-download/1.0.0"
+            schema_version = "v3.v1-release-pre-download/1.0.0"
             checkout_used = $false
             repository_source_tree_present = $false
             checkout_action_present = $false
             workspace = $workspace
             entries = $entries
-          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $env:V3_LEVEL2_PRE_DOWNLOAD_INVENTORY -Encoding utf8
+          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $env:V3_V1_PRE_DOWNLOAD_INVENTORY -Encoding utf8
 
-      - name: Download only Job A delivery artifact and evidence driver
+      - name: Download only Job A V1 release delivery and evidence driver
         uses: actions/download-artifact@v4
         with:
-          name: v3-pr47-level2-delivery
-          path: ${{ runner.temp }}\v3-pr47-level2-input
+          name: v3-v1-product-release-delivery
+          path: ${{ runner.temp }}\v3-v1-release-input
 
-      - name: Run standalone clean-machine evidence driver
+      - name: Install and run standalone V1 clean-machine acceptance
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $driver = Join-Path $env:V3_LEVEL2_INPUT_ROOT "packaged-clean-machine-evidence.ps1"
+          $driver = Join-Path $env:V3_V1_INPUT_ROOT "v1-release-clean-machine.ps1"
           if (-not (Test-Path -LiteralPath $driver -PathType Leaf)) { throw "bounded evidence driver missing: $driver" }
-          & $driver -InputRoot $env:V3_LEVEL2_INPUT_ROOT -EvidenceRoot $env:V3_LEVEL2_EVIDENCE_ROOT
+          & $driver -InputRoot $env:V3_V1_INPUT_ROOT -EvidenceRoot $env:V3_V1_EVIDENCE_ROOT
 
-      - name: Upload Level-2 machine evidence and bounded logs
+      - name: Upload V1 clean-machine evidence and bounded logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v3-pr47-level2-evidence-${{ github.run_id }}
+          name: v3-v1-release-clean-machine-evidence-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}\v3-level2-evidence\**
-            ${{ runner.temp }}\v3-level2-pre-download.json
+            ${{ runner.temp }}\v3-v1-release-evidence\**
+            ${{ runner.temp }}\v3-v1-pre-download.json
           if-no-files-found: warn
           compression-level: 0

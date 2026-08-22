@@ -84,6 +84,7 @@ export function ProductRuntimePanel() {
         <p><span role="status" aria-live="polite" data-product-state={surface}>{SURFACE_COPY[surface]}</span></p>
       </div>
       <div className="experiment-trail">
+        <span><small>版本</small>{status?.productVersion ?? "UNAVAILABLE"}</span>
         <span><small>后端</small>{status?.backendState ?? "UNKNOWN"}</span>
         <span><small>绑定</small>{bound ? boundProject.projectId : "未绑定"}</span>
         <span><small>Build</small>{status?.buildManifestId ?? "UNAVAILABLE"}</span>

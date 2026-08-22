@@ -1,6 +1,6 @@
 {
   "name": "v3-oss-rebuild",
-  "version": "0.1.0-recovery.1",
+  "version": "1.0.0",
   "private": true,
   "description": "Pre-alpha V3 quantitative research workbench under active open-source reconstruction.",
   "license": "Apache-2.0",
@@ -44,11 +44,14 @@
     "smoke:desktop-b3": "node scripts/run-desktop-b3-smoke.mjs",
     "smoke:product-entry": "node scripts/product-entry-smoke.mjs",
     "smoke:product-research": "node scripts/product-research-smoke.mjs",
-    "package:win": "npm run package:win:unpacked",
+    "package:win": "npm run package:win:release",
     "package:win:unpacked": "npm run build && node scripts/prepare-packaged-backend.mjs && electron-builder --win dir --x64 --config electron-builder.yml",
+    "package:win:release": "npm run build && node scripts/prepare-packaged-backend.mjs && electron-builder --win --x64 --config electron-builder.yml",
     "verify:package": "node scripts/verify-package.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
     "smoke:packaged-win": "node scripts/packaged-runtime-smoke.mjs",
-    "smoke:product-closure": "node scripts/product-closure-packaged-e2e.mjs"
+    "smoke:product-closure": "node scripts/product-closure-packaged-e2e.mjs",
+    "smoke:product-release": "node scripts/product-release-packaged-e2e.mjs"
   },
   "dependencies": {
     "@tanstack/react-table": "8.21.3",

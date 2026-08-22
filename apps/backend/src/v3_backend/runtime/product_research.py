@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from v3_backend.adapters.market_data.akshare import (
     AkshareAShareEodAdapter,
+    ProviderAcquisitionError,
 )
 from v3_backend.adapters.sqlite.artifact_publication import SQLiteArtifactPublicationPort
 from v3_backend.adapters.sqlite.connection import connect_catalog
@@ -31,6 +32,7 @@ from v3_backend.adapters.sqlite.repositories import (
 from v3_backend.adapters.sqlite.risk_application import SQLiteRiskApplicationRepository
 from v3_backend.adapters.sqlite.unit_of_work import SQLiteUnitOfWork
 from v3_backend.contracts.common.truth_admission import PRE_ALPHA_CEILING
+from v3_backend.errors import CapabilityUnavailableError
 from v3_backend.domain.artifacts.identity import artifact_id_for_bytes
 from v3_backend.domain.artifacts.model import ArtifactDescriptor, ArtifactReference
 from v3_backend.domain.artifacts.publication import ArtifactPublication
@@ -2789,7 +2791,19 @@ class ProductResearchService:
             _PersistedAdmissionResolver(self.product),
             _PersistedPolicyResolver(self.product),
         )
-        return binding.capture(_provider_capture_request(request))
+        try:
+            return binding.capture(_provider_capture_request(request))
+        except ProviderAcquisitionError as error:
+            raise CapabilityUnavailableError(
+                "PROVIDER_ACQUISITION_UNAVAILABLE: free A-share source acquisition failed; retry later",
+                details={
+                    "reason_code": "PROVIDER_ACQUISITION_UNAVAILABLE",
+                    "provider_id": RESEARCH_PROVIDER_ID,
+                    "connector_version_id": RESEARCH_CONNECTOR_VERSION_ID,
+                    "fallback_used": False,
+                    "canonical_chain_created": False,
+                },
+            ) from error
 
     def _capture_source(self, request: _PreparedResearchRequest) -> _ResearchCapture:
         submission = self._capture_provider_submission(request)

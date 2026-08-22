@@ -162,6 +162,7 @@ export function registerUnavailableProductRuntimeIpc(
     { code: "DataSourceService", truth_state: "UNAVAILABLE" as const, reason_code: "PACKAGED_RUNTIME_UNAVAILABLE" },
   ]);
   const status: ProductStatusView = Object.freeze({
+    productVersion: "UNAVAILABLE",
     backendState: "DISCONNECTED",
     bindingState: "NO_CANONICAL_PROJECT_BOUND",
     boundProject: null,

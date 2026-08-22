@@ -29,6 +29,7 @@ import {
 } from "./main/productRuntime/index";
 
 let mainWindow: BrowserWindow | null = null;
+let productClosureRendererLoad: Promise<void> | null = null;
 let store: WorkspaceStore;
 let storePath = "";
 let backendSupervisor: BackendSupervisor | null = null;
@@ -46,6 +47,7 @@ const PACKAGED_RUNTIME_SMOKE_OUTPUT = process.env.V3_PACKAGED_SMOKE_OUTPUT;
 const PRODUCT_CLOSURE_SMOKE = process.argv.includes("--v3-product-closure-smoke");
 const PRODUCT_CLOSURE_SMOKE_PHASE = process.env.V3_PRODUCT_CLOSURE_SMOKE_PHASE ?? "";
 const PRODUCT_CLOSURE_SMOKE_OUTPUT = process.env.V3_PRODUCT_CLOSURE_SMOKE_OUTPUT ?? "";
+const PRODUCT_CLOSURE_PROVIDER_MODE = process.env.V3_PRODUCT_CLOSURE_PROVIDER_MODE;
 
 if (PACKAGED_RUNTIME_SMOKE || PRODUCT_CLOSURE_SMOKE) {
   if (process.platform !== "win32" || !PACKAGED_RUNTIME_SMOKE_USER_DATA || !isAbsolute(PACKAGED_RUNTIME_SMOKE_USER_DATA)) {
@@ -200,12 +202,15 @@ function createBackendSupervisor(runtime: BackendRuntimeResolution): BackendSupe
     backendWorkingDirectory: runtime.workingDirectory,
     backendRuntimeRoot: runtime.mode === "PACKAGED" ? runtime.pythonRoot : undefined,
     backendResourceRoot: runtime.mode === "PACKAGED" ? runtime.backendResourceRoot : undefined,
-    desktopVersion: "0.1.0-recovery.1",
+    desktopVersion: app.getVersion(),
     ...(projectContext === undefined ? {} : { projectContext }),
     cursorPort: {
       commit: (projectId, sequence) => store.commitProjectEventCursor(projectId, sequence)
     },
     backendModule: AGENT_EVIDENCE_RUNTIME.backendModule,
+    ...(PRODUCT_CLOSURE_SMOKE && (PRODUCT_CLOSURE_PROVIDER_MODE === "DETERMINISTIC_SUCCESS" || PRODUCT_CLOSURE_PROVIDER_MODE === "DETERMINISTIC_UNAVAILABLE")
+      ? { productReleaseAcceptanceProvider: PRODUCT_CLOSURE_PROVIDER_MODE }
+      : {}),
     autoReconnect: true
   });
 }
@@ -534,7 +539,9 @@ async function runProductClosureSmokeProbe(): Promise<void> {
     const startup = backendStartPromise;
     const supervisor = backendSupervisor;
     const runtime = backendRuntimeResolution;
-    if (window === null || startup === null || supervisor === null || runtime === null) throw new Error("PRODUCT_CLOSURE_SMOKE_RUNTIME_NOT_INITIALIZED");
+    const rendererLoad = productClosureRendererLoad;
+    if (window === null || startup === null || supervisor === null || runtime === null || rendererLoad === null) throw new Error("PRODUCT_CLOSURE_SMOKE_RUNTIME_NOT_INITIALIZED");
+    await rendererLoad;
     await runProductClosureSmokeFlow({
       window,
       startup,
@@ -580,7 +587,10 @@ function createWindow(): void {
     }
   });
   if (PRODUCT_CLOSURE_SMOKE) {
-    void mainWindow.loadFile(join(__dirname, "renderer", "index.html"), { search: "v3-product-closure-smoke=1" });
+    productClosureRendererLoad = mainWindow.loadFile(
+      join(__dirname, "renderer", "index.html"),
+      { search: "v3-product-closure-smoke=1" },
+    );
   } else if (!PACKAGED_RUNTIME_SMOKE) {
     void mainWindow.loadFile(join(__dirname, "renderer", "index.html"));
   }

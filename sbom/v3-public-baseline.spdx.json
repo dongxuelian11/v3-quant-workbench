@@ -3,7 +3,7 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "v3-public-baseline",
-  "documentNamespace": "https://v3.invalid/spdx/v3-public-baseline-322ff0b3af0bc3f1d6e30b887c0f4e5ccc1b5beaa193b9b959c940a1a098f6cb",
+  "documentNamespace": "https://v3.invalid/spdx/v3-public-baseline-a4bab85ea2779c6eeb71c2b13595ba4ee752a2bf5cb4184b3a735d99928f3531",
   "creationInfo": {
     "created": "2026-08-09T13:23:53Z",
     "creators": [
@@ -17,7 +17,7 @@
     {
       "SPDXID": "SPDXRef-Package-v3-oss-rebuild",
       "name": "v3-oss-rebuild",
-      "versionInfo": "0.1.0-recovery.1",
+      "versionInfo": "1.0.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",

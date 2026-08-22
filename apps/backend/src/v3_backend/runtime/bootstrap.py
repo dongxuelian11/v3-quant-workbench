@@ -33,7 +33,20 @@ def _build_ports(args: argparse.Namespace) -> RuntimePorts:
     if args.development_shell:
         return RuntimePorts(capabilities=default_capabilities())
     storage_root = resolve_product_storage_root(args.storage_root)
-    return build_product_ports(storage_root)
+    provider_factory = None
+    acceptance_provider = getattr(args, "product_release_acceptance_provider", None)
+    if acceptance_provider is not None:
+        from .product_release_acceptance import (
+            product_release_acceptance_provider_factory,
+        )
+
+        provider_factory = product_release_acceptance_provider_factory(
+            acceptance_provider
+        )
+    return build_product_ports(
+        storage_root,
+        research_provider_factory=provider_factory,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -48,6 +61,12 @@ def main(argv: list[str] | None = None) -> int:
         "--development-shell",
         action="store_true",
         help="explicit opt-in transport-only development shell (no product facades)",
+    )
+    parser.add_argument(
+        "--product-release-acceptance-provider",
+        choices=["DETERMINISTIC_SUCCESS", "DETERMINISTIC_UNAVAILABLE"],
+        default=None,
+        help="explicit packaged V1 acceptance-only provider boundary; never normal product startup",
     )
     args = parser.parse_args(argv)
     try:

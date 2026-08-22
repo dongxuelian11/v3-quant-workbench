@@ -208,6 +208,7 @@ export interface ProductCapabilityView {
 }
 
 export interface ProductStatusView {
+  readonly productVersion: string;
   readonly backendState: ProductBackendState;
   readonly bindingState: ProductBindingState;
   readonly boundProject: ProductBindingRefs | null;

@@ -419,9 +419,12 @@ export class BackendSupervisor extends EventEmitter {
     const token = this.tokenFactory();
     if (token.byteLength !== 32) throw new Error("supervisor token factory must return 256 bits");
     const backendModule = this.config.backendModule ?? "v3_backend.runtime.bootstrap";
+    const acceptanceArgument = this.config.productReleaseAcceptanceProvider === undefined
+      ? []
+      : [`--product-release-acceptance-provider=${this.config.productReleaseAcceptanceProvider}`];
     const spec: SpawnSpec = {
       executable: this.config.pythonExecutable,
-      args: ["-m", backendModule, "--transport=stdio-framed-v1"],
+      args: ["-m", backendModule, "--transport=stdio-framed-v1", ...acceptanceArgument],
       cwd: this.config.backendWorkingDirectory,
       env: sanitizedBackendEnvironment(process.env, this.config.backendRuntimeRoot, this.config.backendResourceRoot)
     };

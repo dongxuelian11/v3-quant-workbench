@@ -2170,12 +2170,19 @@ def build_product_runtime(storage_root: str | Path | None = None, *, research_pr
     )
 
 
-def build_product_ports(storage_root: str | Path | None = None) -> RuntimePorts:
+def build_product_ports(
+    storage_root: str | Path | None = None,
+    *,
+    research_provider_factory=None,
+) -> RuntimePorts:
     """Normal production RuntimePorts: real facades over durable product stores."""
     from .product_entry import handle_product_entry_control
     from .product_facades import build_product_facades
 
-    product = build_product_runtime(storage_root)
+    product = build_product_runtime(
+        storage_root,
+        research_provider_factory=research_provider_factory,
+    )
     handlers: dict[str, Any] = {}
     for facade in build_product_facades(product):
         handlers.update(facade.handlers())
