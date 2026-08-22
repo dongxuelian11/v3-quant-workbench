@@ -27,7 +27,7 @@ function projectContextReadModel(projectId, pcrId) {
   };
 }
 
-function stubSupervisor({ failOpen = false, runSpecRows = null } = {}) {
+function stubSupervisor({ failOpen = false, runSpecRows = null, taskRows = null } = {}) {
   const calls = [];
   return {
     calls,
@@ -56,6 +56,9 @@ function stubSupervisor({ failOpen = false, runSpecRows = null } = {}) {
           has_more: hasMore,
           next_after_artifact_id: hasMore ? specs.at(-1).artifact_id : null
         } };
+      }
+      if (operationId === "TaskService.v1.listTasks" && taskRows !== null) {
+        return { read_model: { items: taskRows, page_size: payload.page_size, truncated: false } };
       }
       if (operationId === "ProjectSessionService.v1.openProject") {
         if (failOpen) throw new BackendRuntimeError("canonical project not found", "NOT_FOUND");
@@ -359,6 +362,37 @@ test("T3: PROJECT_BOUND flow unchanged after the stale fail-closed fix", async (
   }
 });
 
+test("listTasks uses only the bounded admitted discovery filter over the existing operation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-list-tasks-"));
+  try {
+    const taskRows = [{
+      read_model_version: "v3.task/1.0",
+      task_id: "tsk_research",
+      project_id: REFS.projectId,
+      operation_id: "ProductEntryService.v1.submitResearch",
+      state: "SUCCEEDED",
+      state_version: 3,
+      run_id: "run_research",
+      result_id: "res_research",
+      attempt: { attempt_id: "att_research", ordinal: 1, state: "SUCCEEDED", error_category: null },
+      outputs: { BACKTEST_RUN_RESULT: `art_sha256_${"f".repeat(64)}` },
+      created_at: "2026-08-15T00:00:00Z",
+      updated_at: "2026-08-15T00:00:01Z",
+      terminal_at: "2026-08-15T00:00:01Z"
+    }];
+    const supervisor = stubSupervisor({ taskRows });
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
+    const tasks = await bridge.listTasks({ service: "ProductEntryService", state: "SUCCEEDED" });
+    assert.equal(tasks[0].taskId, "tsk_research");
+    const listCall = supervisor.calls.find((call) => call.operationId === "TaskService.v1.listTasks");
+    assert.deepEqual(listCall.payload.filter, { service: "ProductEntryService", state: "SUCCEEDED" });
+    assert.equal(listCall.payload.page_size, 200);
+    await assert.rejects(() => bridge.listTasks({ service: "BacktestService" }), (error) => error.code === "INVALID_ARGUMENT");
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
 test("T2b: unbound bridge still reports NO_CANONICAL_PROJECT_BOUND before requests", async () => {
   const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-unbound-"));
   try {

@@ -590,7 +590,14 @@ def _register_provider_rows(
     policy: FieldCapabilityPolicy,
     now: str,
 ) -> None:
-    registry.data_truth.register_provider(_provider_descriptor_wire(descriptor))
+    provider_row = _provider_descriptor_wire(descriptor)
+    existing_provider = registry.data_truth.table("provider_descriptor").get(descriptor.provider_id)
+    if existing_provider is not None:
+        # Provider descriptors are append-only. Reusing the persisted creation
+        # time makes repeated admission idempotent while the repository still
+        # rejects any change to the canonical descriptor fields.
+        provider_row["created_at"] = existing_provider["created_at"]
+    registry.data_truth.register_provider(provider_row)
     _register_connector_rows(registry, policy, now)
     _register_connector_capability(registry, policy)
     _register_connector_admission(registry, policy, now)
@@ -602,19 +609,23 @@ def _register_connector_extension(
     policy: FieldCapabilityPolicy,
     now: str,
 ) -> None:
-    registry.data_truth.declare_connector_capability_extension(
-        {
-            "connector_version_id": RESEARCH_CONNECTOR_VERSION_ID,
-            "capability_code": RESEARCH_DATASET,
-            "provider_id": RESEARCH_PROVIDER_ID,
-            "logical_dataset": RESEARCH_DATASET,
-            "frequency": RESEARCH_FREQUENCY,
-            "revision_semantics": RevisionSemantics.UNKNOWN.value,
-            "provenance_required": 1,
-            "policy_artifact_id": policy.policy_artifact_id,
-            "declared_at": now,
-        }
+    extension_row = {
+        "connector_version_id": RESEARCH_CONNECTOR_VERSION_ID,
+        "capability_code": RESEARCH_DATASET,
+        "provider_id": RESEARCH_PROVIDER_ID,
+        "logical_dataset": RESEARCH_DATASET,
+        "frequency": RESEARCH_FREQUENCY,
+        "revision_semantics": RevisionSemantics.UNKNOWN.value,
+        "provenance_required": 1,
+        "policy_artifact_id": policy.policy_artifact_id,
+        "declared_at": now,
+    }
+    existing_extension = registry.data_truth.table("connector_data_capability").get(
+        {"connector_version_id": RESEARCH_CONNECTOR_VERSION_ID, "capability_code": RESEARCH_DATASET}
     )
+    if existing_extension is not None:
+        extension_row["declared_at"] = existing_extension["declared_at"]
+    registry.data_truth.declare_connector_capability_extension(extension_row)
 
 
 def _connector_row(now: str) -> dict[str, Any]:
@@ -651,10 +662,19 @@ def _register_connector_rows(
     policy: FieldCapabilityPolicy,
     now: str,
 ) -> None:
-    registry.connector.table("connector").add_new(_connector_row(now), idempotent=True)
-    registry.connector.table("connector_version").add_new(
-        _connector_version_row(policy, now), idempotent=True
-    )
+    connector_repository = registry.connector.table("connector")
+    connector_row = _connector_row(now)
+    existing_connector = connector_repository.get(RESEARCH_CONNECTOR_ID)
+    if existing_connector is not None:
+        connector_row["created_at"] = existing_connector["created_at"]
+    connector_repository.add_new(connector_row, idempotent=True)
+
+    version_repository = registry.connector.table("connector_version")
+    version_row = _connector_version_row(policy, now)
+    existing_version = version_repository.get(RESEARCH_CONNECTOR_VERSION_ID)
+    if existing_version is not None:
+        version_row["created_at"] = existing_version["created_at"]
+    version_repository.add_new(version_row, idempotent=True)
 
 
 def _connector_capability_row(policy: FieldCapabilityPolicy) -> dict[str, Any]:

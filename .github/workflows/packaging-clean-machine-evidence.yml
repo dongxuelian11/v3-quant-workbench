@@ -15,6 +15,7 @@ on:
       - "scripts/packaged-runtime-smoke.mjs"
       - "scripts/prepare-packaged-backend.mjs"
       - "scripts/verify-package.mjs"
+      - "scripts/product-closure-packaged-e2e.mjs"
       - "docs/packaging/**"
   push:
     branches:

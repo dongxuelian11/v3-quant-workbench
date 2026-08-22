@@ -1,0 +1,558 @@
+{
+  "schema_version": "v3.python-dependency-lock/1.0.0",
+  "runtime": {
+    "python": "3.14.5",
+    "arch": "win_amd64",
+    "source": "isolated pip report resolved against apps/backend/requirements.txt",
+    "source_report": "not shipped; packaged inventory repeats the full report"
+  },
+  "packages": [
+    {
+      "name": "akshare",
+      "version": "1.18.84",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/04/5d/8b9b52f8f80e623276597050d78cb6cc26f83bcbe3e5c5f8810267642c44/akshare-1.18.84-py3-none-any.whl",
+      "integrity": "sha256=3919e1d6297a8ef65b16171163b61ee77b4c509111fb5f816be76660235a08df",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "lxml",
+      "version": "6.1.2",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/77/13/a3d483230a09201e211ceb1aa208b1374d27d23b8b180d74dba14b30f6b3/lxml-6.1.2-cp314-cp314-win_amd64.whl",
+      "integrity": "sha256=87e9673cd8a3445024fe38e7f91b55fa3428437eec9b7a7ff7d81979520c0d2d",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "LICENSE.txt",
+        "LICENSES.txt"
+      ],
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "mini-racer",
+      "version": "0.14.1",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/78/60/e0708ea8533e928f10f985be35af4c02dd2b61f4a7501dc88e8c927d85e5/mini_racer-0.14.1-py3-none-win_amd64.whl",
+      "integrity": "sha256=4abd58c62c9955988dbc0cbf5a798914334fe570d2b192f8890bec20135ab6d1",
+      "license": "ISC",
+      "license_files": [
+        "AUTHORS.md",
+        "LICENSE"
+      ],
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "openpyxl",
+      "version": "3.1.5",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl",
+      "integrity": "sha256=5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2",
+      "license": "MIT",
+      "license_files": "LICENCE.rst",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "opentelemetry-api",
+      "version": "1.44.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/ca/6f/a04e900f465ff3221ccc395522503e2d10e79fa21f2723c8e177aae1e0d1/opentelemetry_api-1.44.0-py3-none-any.whl",
+      "integrity": "sha256=94b98c893a91b88657eaac1e3ba89618cdb85be6918196705354f34728b2cdef",
+      "license": "Apache-2.0",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "pandas",
+      "version": "3.0.5",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/96/58/ad979ae617615576e8aafd569c9d4b62f1191d896e38f51d66ba06f3b89a/pandas-3.0.5-cp314-cp314-win_amd64.whl",
+      "integrity": "sha256=cd8f7c6dc98527058ee6264219343f5392240a6f1bfa654fc5d79023020d0c92",
+      "license": "BSD-3-Clause",
+      "license_files": null,
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "pydantic",
+      "version": "2.13.4",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/fd/7b/122376b1fd3c62c1ed9dc80c931ace4844b3c55407b6fb2d199377c9736f/pydantic-2.13.4-py3-none-any.whl",
+      "integrity": "sha256=45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "pydantic_core",
+      "version": "2.46.4",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/fc/b6/6b8de4c0a7d7ab3004c439c80c5c1e0a3e8d78bbae19379b01960383d9e5/pydantic_core-2.46.4-cp314-cp314-win_amd64.whl",
+      "integrity": "sha256=811ff8e9c313ab425368bcbb36e5c4ebd7108c2bbf4e4089cfbb0b01eff63fac",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "annotated-types",
+      "version": "0.8.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/99/91/8acff4f5e50511b911bbccb72b8628a49c68ce14148cd9f6431094859a90/annotated_types-0.8.0-py3-none-any.whl",
+      "integrity": "sha256=f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "python-dateutil",
+      "version": "2.9.0.post0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "integrity": "sha256=a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+      "license": "Dual License",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "requests",
+      "version": "2.34.2",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl",
+      "integrity": "sha256=2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0",
+      "license": "Apache-2.0",
+      "license_files": [
+        "LICENSE",
+        "NOTICE"
+      ],
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "logfire-api",
+      "version": "4.41.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/c8/96/97552d0d742866719b3a6e8fd7e68dd2877804f4c3b10c44a19a1f99b0d6/logfire_api-4.41.0-py3-none-any.whl",
+      "integrity": "sha256=c71010d086c0211b04b4640181e836e8a75cc635fcfa7f712557f7b0676c1413",
+      "license": "MIT",
+      "license_files": null,
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "charset-normalizer",
+      "version": "3.5.1",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/7a/7c/4938c329b6a9d446f6a59aa2092ff7118f274209b5ed0e26893d1d30a63c/charset_normalizer-3.5.1-cp314-cp314-win_amd64.whl",
+      "integrity": "sha256=c658c50ac0c98cd755a2dd50b7977d3bca7df401dcc47fbdfa87db53ef7d4e8b",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "six",
+      "version": "1.17.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl",
+      "integrity": "sha256=4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "soupsieve",
+      "version": "2.9.2",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/eb/dc/ad025c1ee131eba60c69f4dd5779b18fcf1e6b21a343e2162a84d5d133c7/soupsieve-2.9.2-py3-none-any.whl",
+      "integrity": "sha256=8089a26fd974ca7a1f30276d3d8492ab266ab15af581642dfe8aa162e0c1c823",
+      "license": "MIT",
+      "license_files": "LICENSE.md",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "tabulate",
+      "version": "0.10.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl",
+      "integrity": "sha256=f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/f9/1c/01bfd571a64e7f270e6bab5e33777debe0edc56759233ce84f27dec92d14/tqdm-4.70.0-py3-none-any.whl",
+      "integrity": "sha256=7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953",
+      "license": "MPL-2.0 AND MIT",
+      "license_files": "LICENCE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "truststore",
+      "version": "0.10.4",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl",
+      "integrity": "sha256=adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+      "integrity": "sha256=481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "license": "PSF-2.0",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.4",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl",
+      "integrity": "sha256=65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "xlrd",
+      "version": "2.0.2",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/1a/62/c8d562e7766786ba6587d09c5a8ba9f718ed3fa8af7f4553e8f91c36f302/xlrd-2.0.2-py2.py3-none-any.whl",
+      "integrity": "sha256=ea762c3d29f4cca48d82df517b6d89fbce4db3107f9d78713e48cd321d5c9aa9",
+      "license": "BSD",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "colorama",
+      "version": "0.4.6",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl",
+      "integrity": "sha256=4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+      "license": "BSD-3-Clause",
+      "license_files": "LICENSE.txt",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "et_xmlfile",
+      "version": "2.0.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl",
+      "integrity": "sha256=7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa",
+      "license": "MIT",
+      "license_files": [
+        "AUTHORS.txt",
+        "LICENCE.python",
+        "LICENCE.rst"
+      ],
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "urllib3",
+      "version": "2.7.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl",
+      "integrity": "sha256=9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
+      "license": "MIT",
+      "license_files": "LICENSE.txt",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "pycparser",
+      "version": "3.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl",
+      "integrity": "sha256=b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992",
+      "license": "BSD-3-Clause",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "jsonpath",
+      "version": "0.82.2",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/cf/a1/693351acd0a9edca4de9153372a65e75398898ea7f8a5c722ab00f464929/jsonpath-0.82.2.tar.gz",
+      "integrity": "sha256=d87ef2bcbcded68ee96bc34c1809b69457ecec9b0c4dd471658a12bd391002d1",
+      "license": "MIT",
+      "license_files": null,
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "httpcore2",
+      "version": "2.12.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/d2/74/d370e55600d9bcfa0d9794b0166126d49291a3d2b20c268fc98c453a4948/httpcore2-2.12.0-py3-none-any.whl",
+      "integrity": "sha256=7e04258ce01013d7d615e5b910a3b27fac937d7a95038227e79652b4ba3b4ceb",
+      "license": "BSD-3-Clause",
+      "license_files": "LICENSE.md",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "pydantic-ai-slim",
+      "version": "2.27.0",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/26/10/512641450549b15dd0b49600f975991a8b0067c921ec9e9b7caa0e89cff0/pydantic_ai_slim-2.27.0-py3-none-any.whl",
+      "integrity": "sha256=d30cabd5e60680574f46df2b8d8e78eb7a5dd5d0963fc50e26fa802909130219",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "tzdata",
+      "version": "2025.3",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/c7/b0/003792df09decd6849a5e39c28b513c06e84436a54440380862b5aeff25d/tzdata-2025.3-py2.py3-none-any.whl",
+      "integrity": "sha256=06a47e5700f3081aab02b2e513160914ff0694bce9947d6b76ebd6bf57cfc5d1",
+      "license": "Apache-2.0",
+      "license_files": [
+        "LICENSE",
+        "licenses/LICENSE_APACHE"
+      ],
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "numpy",
+      "version": "2.5.2",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/15/5c/7bcbd5b11f94199073320410cddcbb80cee62415bfeb540874b265c2d922/numpy-2.5.2-cp314-cp314-win_amd64.whl",
+      "integrity": "sha256=7587f53dfbd5edc0f7b87c6217b4c6d2d1f2ef9c3da70bc1315e7db5f8d7ec9d",
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "license_files": [
+        "LICENSE.txt",
+        "numpy/_core/include/numpy/libdivide/LICENSE.txt",
+        "numpy/_core/src/common/pythoncapi-compat/COPYING",
+        "numpy/_core/src/highway/LICENSE",
+        "numpy/_core/src/multiarray/dragon4_LICENSE.txt",
+        "numpy/_core/src/npysort/x86-simd-sort/LICENSE.md",
+        "numpy/_core/src/umath/svml/LICENSE",
+        "numpy/fft/pocketfft/LICENSE.md",
+        "numpy/linalg/lapack_lite/LICENSE.txt",
+        "numpy/ma/LICENSE",
+        "numpy/random/LICENSE.md",
+        "numpy/random/src/distributions/LICENSE.md",
+        "numpy/random/src/mt19937/LICENSE.md",
+        "numpy/random/src/pcg64/LICENSE.md",
+        "numpy/random/src/philox/LICENSE.md",
+        "numpy/random/src/sfc64/LICENSE.md",
+        "numpy/random/src/splitmix64/LICENSE.md"
+      ],
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "scipy",
+      "version": "1.18.0",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/93/3e/902d836831474b0ab5a37d16404f7bc5fafd9efba632890e271ba952635f/scipy-1.18.0-cp314-cp314-win_amd64.whl",
+      "integrity": "sha256=2d8bbdc6c817f5b4006a54d799d4f5bab6f910193cbb9a1ff310833d4d270f61",
+      "license": "BSD-3-Clause",
+      "license_files": null,
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "joblib",
+      "version": "1.5.3",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/7b/91/984aca2ec129e2757d1e4e3c81c3fcda9d0f85b74670a094cc443d9ee949/joblib-1.5.3-py3-none-any.whl",
+      "integrity": "sha256=5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713",
+      "license": "BSD-3-Clause",
+      "license_files": "LICENSE.txt",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "threadpoolctl",
+      "version": "3.6.0",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/32/d5/f9a850d79b0851d1d4ef6456097579a9005b31fea68726a4ae5f2d82ddd9/threadpoolctl-3.6.0-py3-none-any.whl",
+      "integrity": "sha256=43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb",
+      "license": "BSD-3-Clause",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "narwhals",
+      "version": "2.24.0",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/7e/85/a5bfaebfd305ac18b57b0854d74e37e586809061a91fda62f0bd50c8518e/narwhals-2.24.0-py3-none-any.whl",
+      "integrity": "sha256=42fdedf44e5b2ca7505630d45b4ac3058f38d8485cba9fe1652ca23152df7489",
+      "license": "MIT",
+      "license_files": "LICENSE.md",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "scikit-learn",
+      "version": "1.9.0",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/a2/d5/6a58eea2cb9abbb9b3f2bb8b2cfb3243d1152d69f442d256c7af71304769/scikit_learn-1.9.0-cp314-cp314-win_amd64.whl",
+      "integrity": "sha256=64fa347efc1c839c487433e40c5144d38c336e8a2b59c81aa8660373945c2673",
+      "license": "BSD-3-Clause",
+      "license_files": "COPYING",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "pydantic-graph",
+      "version": "2.27.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/f9/ce/6ecafa2680d70ce34b8c3fdc1667228896f1cd19df2f236dd7fa54214117/pydantic_graph-2.27.0-py3-none-any.whl",
+      "integrity": "sha256=f80a9f1cfbd3c07b64b032b45fa0710315d6d7e2ae35afc142d4992d99498a4d",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "anyio",
+      "version": "4.14.2",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl",
+      "integrity": "sha256=9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "idna",
+      "version": "3.19",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/57/b0/0e52c878c53f245edd3a11020f20979b3f490f245af532c7cae3027754b5/idna-3.19-py3-none-any.whl",
+      "integrity": "sha256=815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4",
+      "license": "BSD-3-Clause",
+      "license_files": "LICENSE.md",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "beautifulsoup4",
+      "version": "4.15.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl",
+      "integrity": "sha256=d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9",
+      "license": "MIT License",
+      "license_files": [
+        "AUTHORS",
+        "LICENSE"
+      ],
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/0b/a7/71ac2cff56fec219ed242bb11b8efb69fcc4bec75db06fb7bfe35de520e6/certifi-2026.7.22-py3-none-any.whl",
+      "integrity": "sha256=62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775",
+      "license": "MPL-2.0",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "cffi",
+      "version": "2.1.1",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/a7/06/1c3e01e3ba14c39f6d10bfbac52753b7e22259e38088e5cfe1d704918690/cffi-2.1.1-cp314-cp314-win_amd64.whl",
+      "integrity": "sha256=3222ba5d678f80a030e6afbcc33dc1ae5cb45facabb61cee2c7016b8432fde48",
+      "license": "MIT-0",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "decorator",
+      "version": "5.3.1",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/05/7f/798705f5296a58ca505d600456748d1be48078eac8a7050d8a98bc9edb89/decorator-5.3.1-py3-none-any.whl",
+      "integrity": "sha256=f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c",
+      "license": "BSD-2-Clause",
+      "license_files": "LICENSE.txt",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "genai-prices",
+      "version": "0.1.4",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/e6/54/911961e926a4c4ea30bf1fa0bf9d8ffc5c9ac5ed6a3f77b3d9e0ab5bb9a5/genai_prices-0.1.4-py3-none-any.whl",
+      "integrity": "sha256=1d1b01cc7ab1adfa17c3a1121f4c13990bd0a4377640ecd37ebfde5836768240",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "griffelib",
+      "version": "2.2.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/f6/b6/f65ac785d4ac90dcf7c831ac6256f5dd4a19780f4e1575b2c0d6eeebe319/griffelib-2.2.0-py3-none-any.whl",
+      "integrity": "sha256=d71c3bc2bbed9f958488634fe788b843a9f705d6d2838ca32cd6c25eeb64dfc4",
+      "license": "ISC",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "html5lib",
+      "version": "1.1",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/6c/dd/a834df6482147d48e225a49515aabc28974ad5a4ca3215c18a882565b028/html5lib-1.1-py2.py3-none-any.whl",
+      "integrity": "sha256=0d78f8fde1c230e99fe37986a60526d7049ed4bf8a9fadbad5f00e22e58e041d",
+      "license": "MIT License",
+      "license_files": null,
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl",
+      "integrity": "sha256=d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad",
+      "license": "BSD-3-Clause",
+      "license_files": null,
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/7e/f5/f66802a942d491edb555dd61e3a9961140fd64c90bce1eafd741609d334d/httpcore-1.0.9-py3-none-any.whl",
+      "integrity": "sha256=2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55",
+      "license": "BSD-3-Clause",
+      "license_files": "LICENSE.md",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl",
+      "integrity": "sha256=63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86",
+      "license": "MIT",
+      "license_files": "LICENSE.txt",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "httpx2",
+      "version": "2.12.0",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/c8/95/411ba65569158e862368917aaf56597f3e5fa3b91b0502919638465a08f3/httpx2-2.12.0-py3-none-any.whl",
+      "integrity": "sha256=cc8b6eecb8661c146b8f89a60e97456ee086e91a784ed31ac450c3a9e613dd36",
+      "license": "BSD-3-Clause",
+      "license_files": "LICENSE.md",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "curl_cffi",
+      "version": "0.16.1",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/f8/b5/dd86c045f7353c13dd1d7ea8d73515218ff7b710aa1d6f94f54cab1572ba/curl_cffi-0.16.1-cp310-abi3-win_amd64.whl",
+      "integrity": "sha256=018d32ea6c76f973678cc3acd88bfbfe9ae96cfd2c828d972e3d089731d5ea35",
+      "license": "MIT",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    },
+    {
+      "name": "webencodings",
+      "version": "0.6.1",
+      "role": "transitive",
+      "source": "https://files.pythonhosted.org/packages/77/c6/040cbc72480d789a5f40d63fb484d3106554c4dfa2d2b70ad5022057750f/webencodings-0.6.1-py3-none-any.whl",
+      "integrity": "sha256=7fab6269c8bf237c657876b52058ccb182e861518d1c695c1a9aaa8c1c105d5b",
+      "license": "BSD-3-Clause",
+      "license_files": "LICENSE",
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
+    }
+  ]
+}
