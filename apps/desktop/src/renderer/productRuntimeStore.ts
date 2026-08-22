@@ -20,6 +20,7 @@ declare global {
     v3ProductRuntime: import("../../../../packages/contracts/src/index").V3ProductRuntimeBridge;
     v3ProductClosureEvidence?: () => unknown;
     v3ProductClosureRunFirst?: (input: { displayName: string; notes: string; intent: ProductResearchSubmitIntent }) => Promise<void>;
+    v3ProductClosureRunUnavailable?: (input: { displayName: string; notes: string; intent: ProductResearchSubmitIntent }) => Promise<void>;
   }
 }
 
@@ -533,6 +534,33 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     const afterSubmit = useProductRuntime.getState();
     if (afterSubmit.lastResearch === null || afterSubmit.task === null || afterSubmit.result === null || afterSubmit.artifactDescriptor === null || afterSubmit.surface !== "RESULT_AVAILABLE") {
       throw new Error(afterSubmit.errorMessage ?? "product closure smoke research did not reach RESULT_AVAILABLE");
+    }
+  };
+
+  window.v3ProductClosureRunUnavailable = async (input) => {
+    const bridge = window.v3ProductRuntime;
+    const readyDeadline = Date.now() + 30_000;
+    while (Date.now() < readyDeadline) {
+      const status = await bridge.getProductStatus().catch(() => null);
+      if (status?.backendState === "READY" && status.bindingState === "NO_CANONICAL_PROJECT_BOUND") break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (Date.now() >= readyDeadline) throw new Error("provider-unavailable smoke backend did not become READY before create");
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await useProductRuntime.getState().createProjectAndBind(input.displayName, input.notes);
+    const afterBind = useProductRuntime.getState();
+    if (afterBind.boundProject === null || afterBind.errorMessage !== null) {
+      throw new Error(afterBind.errorMessage ?? "provider-unavailable smoke could not bind canonical Project");
+    }
+    await useProductRuntime.getState().submitResearch(input.intent);
+    const afterSubmit = useProductRuntime.getState();
+    if (afterSubmit.surface !== "ERROR" || afterSubmit.errorMessage === null ||
+        !afterSubmit.errorMessage.includes("CAPABILITY_UNAVAILABLE") ||
+        !afterSubmit.errorMessage.includes("PROVIDER_ACQUISITION_UNAVAILABLE")) {
+      throw new Error(afterSubmit.errorMessage ?? "provider-unavailable smoke did not expose the explicit acquisition failure");
+    }
+    if (afterSubmit.lastResearch !== null || afterSubmit.task !== null || afterSubmit.result !== null || afterSubmit.artifactDescriptor !== null) {
+      throw new Error("provider-unavailable smoke created a renderer-visible successful canonical chain");
     }
   };
 }

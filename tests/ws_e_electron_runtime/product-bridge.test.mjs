@@ -31,6 +31,7 @@ function stubSupervisor({ failOpen = false, runSpecRows = null, taskRows = null 
   const calls = [];
   return {
     calls,
+    config: { desktopVersion: "1.0.0" },
     state: "READY",
     capabilities: [
       { code: "ProjectSessionService", truth_state: "FORMAL" },
@@ -125,6 +126,7 @@ test("typed bridge binds only after canonical validation and restarts under the 
     const status = await bridge.getProductStatus();
     assert.equal(status.bindingState, "PROJECT_BOUND");
     assert.equal(status.backendState, "READY");
+    assert.equal(status.productVersion, "1.0.0");
     const restored = await bridge.restoreSession();
     assert.equal(restored.projectId, REFS.projectId);
   } finally {
