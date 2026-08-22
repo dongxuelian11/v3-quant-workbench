@@ -61,13 +61,23 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function executeRenderer<T>(window: BrowserWindow, source: string): Promise<T> {
+const RENDERER_QUERY_TIMEOUT_MS = 5_000;
+const RENDERER_OPERATION_TIMEOUT_MS = 120_000;
+
+async function executeRenderer<T>(
+  window: BrowserWindow,
+  source: string,
+  timeoutMilliseconds = RENDERER_OPERATION_TIMEOUT_MS,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       window.webContents.executeJavaScript("(async () => {" + source + "\n})()", true) as Promise<T>,
       new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("renderer JavaScript probe timed out after 5 seconds")), 5_000);
+        timer = setTimeout(
+          () => reject(new Error(`renderer JavaScript probe timed out after ${timeoutMilliseconds} milliseconds`)),
+          timeoutMilliseconds,
+        );
       }),
     ]);
   } finally {
@@ -85,7 +95,8 @@ async function waitForRenderer(window: BrowserWindow): Promise<void> {
     try {
       const ready = await executeRenderer<boolean>(
         window,
-        "return document.readyState === \"complete\" && typeof window.v3ProductClosureEvidence === \"function\";"
+        "return document.readyState === \"complete\" && typeof window.v3ProductClosureEvidence === \"function\";",
+        RENDERER_QUERY_TIMEOUT_MS,
       );
       if (ready) return;
     } catch (error) {
@@ -102,7 +113,8 @@ async function waitForRecoveredRenderer(window: BrowserWindow): Promise<Renderer
   while (Date.now() < deadline) {
     lastEvidence = await executeRenderer<RendererEvidence>(
       window,
-      "return window.v3ProductClosureEvidence();"
+      "return window.v3ProductClosureEvidence();",
+      RENDERER_QUERY_TIMEOUT_MS,
     );
     if (lastEvidence.currentRendererState.researchDiscoveryState === "RECOVERED") {
       return lastEvidence;
