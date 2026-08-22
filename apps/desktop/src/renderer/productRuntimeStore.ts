@@ -105,12 +105,21 @@ async function readResearchTaskView(
 
 const RESEARCH_OPERATION_ID = "ProductEntryService.v1.submitResearch";
 
-const COLD_RENDERER_INITIAL_STATE = Object.freeze({
-  lastResearch: null,
-  task: null,
-  result: null,
-  artifactDescriptor: null
-});
+type ProductClosureInitialRendererEvidence = Readonly<Pick<
+  ProductRuntimeState,
+  "lastResearch" | "task" | "result" | "artifactDescriptor"
+>>;
+
+export function projectInitialRendererEvidence(
+  state: ProductClosureInitialRendererEvidence,
+): ProductClosureInitialRendererEvidence {
+  return Object.freeze(structuredClone({
+    lastResearch: state.lastResearch,
+    task: state.task,
+    result: state.result,
+    artifactDescriptor: state.artifactDescriptor
+  }));
+}
 
 function compareTaskRecencyDescending(left: ProductTaskView, right: ProductTaskView): number {
   for (const field of ["terminalAt", "updatedAt", "createdAt"] as const) {
@@ -479,11 +488,15 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
   }
 }));
 
+export const productClosureInitialRendererEvidence = projectInitialRendererEvidence(
+  useProductRuntime.getInitialState(),
+);
+
 if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("v3-product-closure-smoke")) {
   window.v3ProductClosureEvidence = () => {
     const state = useProductRuntime.getState();
     return {
-      initialRendererState: COLD_RENDERER_INITIAL_STATE,
+      initialRendererState: productClosureInitialRendererEvidence,
       currentRendererState: {
         lastResearch: state.lastResearch,
         task: state.task,

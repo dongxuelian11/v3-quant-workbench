@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { selectLatestResearchTask, useProductRuntime } = await import("../../apps/desktop/src/renderer/productRuntimeStore.ts");
+const {
+  productClosureInitialRendererEvidence,
+  projectInitialRendererEvidence,
+  selectLatestResearchTask,
+  useProductRuntime
+} = await import("../../apps/desktop/src/renderer/productRuntimeStore.ts");
 
 const PROJECT = "prj_cold_project";
 const OTHER_PROJECT = "prj_other_project";
@@ -117,6 +122,66 @@ function bridgeFor(tasks, { missingResult = false, missingArtifact = false } = {
     }
   };
 }
+
+test("closure evidence is an immutable projection of the real Zustand initial state", () => {
+  const actualInitialState = useProductRuntime.getInitialState();
+  assert.deepEqual(productClosureInitialRendererEvidence, {
+    lastResearch: actualInitialState.lastResearch,
+    task: actualInitialState.task,
+    result: actualInitialState.result,
+    artifactDescriptor: actualInitialState.artifactDescriptor
+  });
+  assert.deepEqual(productClosureInitialRendererEvidence, {
+    lastResearch: null,
+    task: null,
+    result: null,
+    artifactDescriptor: null
+  });
+  assert.equal(Object.isFrozen(productClosureInitialRendererEvidence), true);
+});
+
+test("smoke closure evidence keeps the real initial state after current store mutation", async () => {
+  globalThis.window = { location: { search: "?v3-product-closure-smoke" } };
+  try {
+    const isolated = await import(new URL(
+      "../../apps/desktop/src/renderer/productRuntimeStore.ts?closure-evidence-authority",
+      import.meta.url,
+    ));
+    const actualInitialState = isolated.useProductRuntime.getInitialState();
+    isolated.useProductRuntime.setState({
+      lastResearch: { marker: "current-research" },
+      task: { marker: "current-task" },
+      result: { marker: "current-result" },
+      artifactDescriptor: { marker: "current-artifact" }
+    });
+    const evidence = globalThis.window.v3ProductClosureEvidence();
+    assert.deepEqual(evidence.initialRendererState, isolated.projectInitialRendererEvidence(actualInitialState));
+    assert.notDeepEqual(evidence.initialRendererState, {
+      lastResearch: isolated.useProductRuntime.getState().lastResearch,
+      task: isolated.useProductRuntime.getState().task,
+      result: isolated.useProductRuntime.getState().result,
+      artifactDescriptor: isolated.useProductRuntime.getState().artifactDescriptor
+    });
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("closure evidence projection propagates a synthetic non-empty initial state", () => {
+  const syntheticInitialState = {
+    lastResearch: { marker: "research" },
+    task: { marker: "task" },
+    result: { marker: "result" },
+    artifactDescriptor: { marker: "artifact" }
+  };
+  const evidence = projectInitialRendererEvidence(syntheticInitialState);
+  assert.deepEqual(evidence, syntheticInitialState);
+  assert.notEqual(evidence.lastResearch, syntheticInitialState.lastResearch);
+  assert.notEqual(evidence.task, syntheticInitialState.task);
+  assert.notEqual(evidence.result, syntheticInitialState.result);
+  assert.notEqual(evidence.artifactDescriptor, syntheticInitialState.artifactDescriptor);
+  assert.equal(Object.isFrozen(evidence), true);
+});
 
 test("cold selector ignores unrelated, failed, and wrong-project tasks and sorts independently of list order", () => {
   const old = task({ taskId: "old", terminalAt: "2026-08-20T01:00:00Z" });
