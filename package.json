@@ -47,7 +47,8 @@
     "package:win": "npm run package:win:unpacked",
     "package:win:unpacked": "npm run build && node scripts/prepare-packaged-backend.mjs && electron-builder --win dir --x64 --config electron-builder.yml",
     "verify:package": "node scripts/verify-package.mjs",
-    "smoke:packaged-win": "node scripts/packaged-runtime-smoke.mjs"
+    "smoke:packaged-win": "node scripts/packaged-runtime-smoke.mjs",
+    "smoke:product-closure": "node scripts/product-closure-packaged-e2e.mjs"
   },
   "dependencies": {
     "@tanstack/react-table": "8.21.3",

@@ -27,6 +27,10 @@ const buildManifestPath = resolve(root, "apps/backend/src/v3_backend/runtime/bui
 const transportContractPath = resolve(root, "packages/contracts/research_package_transport_v1.json");
 const EXPECTED_CPYTHON_SHA256 = "3adbbf2af609e206e3ca18cd55fc7c4b52f5c8bb8218dd99fd5a9e50d7a193cd";
 const EXPECTED_CPYTHON_LICENSE_SHA256 = "935cf13e19f8c31b497d20b05d73623431a226b230c3599bc30fa3348979bc68";
+const PACKAGED_SOURCE_CAPABILITY = "NOT_AVAILABLE";
+const AKSHARE_PROVIDER_ID = "pvd_akshare_eastmoney_a_share_eod_v1";
+const AKSHARE_CONNECTOR_VERSION = "cov_akshare_eod_research_v1";
+const AKSHARE_ENDPOINT = "stock_zh_a_hist";
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -133,7 +137,6 @@ run(sourcePython, [
   "-m", "pip", "install",
   "--target", stagedSitePackages,
   "--requirement", requirementsPath,
-  "--only-binary=:all:",
   "--upgrade",
   "--no-compile",
   "--disable-pip-version-check",
@@ -142,7 +145,7 @@ run(sourcePython, [
 
 const criticalImportSmoke = JSON.parse(run(resolve(stagedPythonRoot, "python.exe"), ["-c", [
   "import importlib,json",
-  "names=['v3_backend','pydantic','pydantic_core','pydantic_ai','numpy','scipy','sklearn','joblib']",
+  "names=['v3_backend','pydantic','pydantic_core','pydantic_ai','numpy','scipy','sklearn','joblib','akshare']",
   "versions={}",
   "[versions.__setitem__(name, getattr(importlib.import_module(name),'__version__','UNAVAILABLE')) for name in names]",
   "print(json.dumps({'status':'PASS','modules':versions},sort_keys=True))",
@@ -158,6 +161,9 @@ const criticalImportSmoke = JSON.parse(run(resolve(stagedPythonRoot, "python.exe
 }).trim());
 if (criticalImportSmoke.status !== "PASS" || !criticalImportSmoke.modules || typeof criticalImportSmoke.modules !== "object") {
   throw new Error(`critical Python import smoke did not pass: ${JSON.stringify(criticalImportSmoke)}`);
+}
+if (criticalImportSmoke.modules.akshare !== "1.18.84") {
+  throw new Error(`packaged AKShare import/version mismatch: ${JSON.stringify(criticalImportSmoke.modules.akshare)}`);
 }
 
 const report = JSON.parse(await readFile(reportPath, "utf8"));
@@ -208,6 +214,8 @@ const packages = report.install.map((installRecord) => {
   };
 }).sort((left, right) => left.name.localeCompare(right.name) || left.version.localeCompare(right.version));
 if (packages.some((packageRecord) => packageRecord.name.length === 0 || packageRecord.version.length === 0)) throw new Error("Python pip report contains incomplete package identity");
+const aksharePackage = packages.find((packageRecord) => packageRecord.name.toLowerCase() === "akshare");
+if (aksharePackage?.version !== "1.18.84") throw new Error(`Python inventory does not contain exact AKShare 1.18.84: ${JSON.stringify(aksharePackage)}`);
 
 const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
 const buildManifest = JSON.parse(await readFile(buildManifestPath, "utf8"));
@@ -229,7 +237,17 @@ const inventory = {
   packages,
   critical_import_smoke: criticalImportSmoke,
   first_launch_network_install: false,
-  source_capability: "NOT_AVAILABLE (real free source is outside this wave and is not shipped)",
+  source_capability: PACKAGED_SOURCE_CAPABILITY,
+  real_free_source: {
+    provider_id: AKSHARE_PROVIDER_ID,
+    connector_version_id: AKSHARE_CONNECTOR_VERSION,
+    package: "akshare",
+    package_version: "1.18.84",
+    endpoint: AKSHARE_ENDPOINT,
+    truth_state: "DEMO",
+    maturity: "PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE",
+    network_evidence: "SEPARATE_PRIMARY_E2E_REQUIRED"
+  },
 };
 await writeFile(inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`, "utf8");
 
@@ -272,7 +290,17 @@ const manifest = {
   critical_files: criticalNames.map((path) => ({ path, sha256: fileMap.get(path).sha256 })),
   files: fileRecords.sort((left, right) => left.path.localeCompare(right.path)),
   first_launch_network_install: false,
-  source_capability: "NOT_AVAILABLE",
+  source_capability: PACKAGED_SOURCE_CAPABILITY,
+  real_free_source: {
+    provider_id: AKSHARE_PROVIDER_ID,
+    connector_version_id: AKSHARE_CONNECTOR_VERSION,
+    package: "akshare",
+    package_version: "1.18.84",
+    endpoint: AKSHARE_ENDPOINT,
+    truth_state: "DEMO",
+    maturity: "PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE",
+    network_evidence: "SEPARATE_PRIMARY_E2E_REQUIRED"
+  },
 };
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 console.log(JSON.stringify({

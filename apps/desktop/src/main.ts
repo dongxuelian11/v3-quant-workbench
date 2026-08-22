@@ -19,6 +19,7 @@ import {
 import type { BackendRuntimeResolution } from "./main/backendRuntime/runtimeResolver";
 import { WorkspaceStore, WorkspaceStoreError } from "./main/runtimePersistence/workspaceStore";
 import { resolveAgentEvidenceRuntime } from "./main/agentEvidenceRuntime";
+import { runProductClosureSmoke as runProductClosureSmokeFlow, type ProductClosureSmokePhase } from "./main/productClosureSmoke";
 import {
   ProductBindingStore,
   ProductBridge,
@@ -42,8 +43,11 @@ const GRACEFUL_SHUTDOWN_DEADLINE_MS = 10_000;
 const PACKAGED_RUNTIME_SMOKE = process.argv.includes("--v3-packaged-smoke");
 const PACKAGED_RUNTIME_SMOKE_USER_DATA = process.env.V3_PACKAGED_SMOKE_USER_DATA;
 const PACKAGED_RUNTIME_SMOKE_OUTPUT = process.env.V3_PACKAGED_SMOKE_OUTPUT;
+const PRODUCT_CLOSURE_SMOKE = process.argv.includes("--v3-product-closure-smoke");
+const PRODUCT_CLOSURE_SMOKE_PHASE = process.env.V3_PRODUCT_CLOSURE_SMOKE_PHASE ?? "";
+const PRODUCT_CLOSURE_SMOKE_OUTPUT = process.env.V3_PRODUCT_CLOSURE_SMOKE_OUTPUT ?? "";
 
-if (PACKAGED_RUNTIME_SMOKE) {
+if (PACKAGED_RUNTIME_SMOKE || PRODUCT_CLOSURE_SMOKE) {
   if (process.platform !== "win32" || !PACKAGED_RUNTIME_SMOKE_USER_DATA || !isAbsolute(PACKAGED_RUNTIME_SMOKE_USER_DATA)) {
     throw new Error("V3_PACKAGED_SMOKE_USER_DATA must be an absolute Windows path");
   }
@@ -523,6 +527,34 @@ async function runPackagedRuntimeSmoke(): Promise<void> {
   }
 }
 
+async function runProductClosureSmokeProbe(): Promise<void> {
+  try {
+    if (!PRODUCT_CLOSURE_SMOKE || !app.isPackaged) throw new Error("PRODUCT_CLOSURE_SMOKE_REQUIRES_PACKAGED_ELECTRON");
+    const window = mainWindow;
+    const startup = backendStartPromise;
+    const supervisor = backendSupervisor;
+    const runtime = backendRuntimeResolution;
+    if (window === null || startup === null || supervisor === null || runtime === null) throw new Error("PRODUCT_CLOSURE_SMOKE_RUNTIME_NOT_INITIALIZED");
+    await runProductClosureSmokeFlow({
+      window,
+      startup,
+      phase: PRODUCT_CLOSURE_SMOKE_PHASE as ProductClosureSmokePhase,
+      outputPath: PRODUCT_CLOSURE_SMOKE_OUTPUT,
+      runtime,
+      supervisor,
+      electronVersion: process.versions.electron,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath
+    });
+    process.exitCode = 0;
+  } catch (error) {
+    console.error(JSON.stringify({ level: "ERROR", code: "PRODUCT_CLOSURE_PACKAGED_SMOKE_FAILED", message: error instanceof Error ? error.message : String(error) }));
+    process.exitCode = 1;
+  } finally {
+    app.quit();
+  }
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1536,
@@ -536,7 +568,7 @@ function createWindow(): void {
     // renderer during the probe: its startup refreshes can issue concurrent
     // projectless Product Entry reads while the probe is creating the first
     // canonical Project.
-    show: !PACKAGED_RUNTIME_SMOKE,
+    show: !PACKAGED_RUNTIME_SMOKE && !PRODUCT_CLOSURE_SMOKE,
     backgroundColor: "#0B0D14",
     title: "V3 量化研究工作台",
     webPreferences: {
@@ -547,7 +579,11 @@ function createWindow(): void {
       webSecurity: true
     }
   });
-  if (!PACKAGED_RUNTIME_SMOKE) void mainWindow.loadFile(join(__dirname, "renderer", "index.html"));
+  if (PRODUCT_CLOSURE_SMOKE) {
+    void mainWindow.loadFile(join(__dirname, "renderer", "index.html"), { search: "v3-product-closure-smoke=1" });
+  } else if (!PACKAGED_RUNTIME_SMOKE) {
+    void mainWindow.loadFile(join(__dirname, "renderer", "index.html"));
+  }
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   const publishWindowState = (): void => {
@@ -581,6 +617,7 @@ if (!gotSingleInstanceLock) {
     createWindow();
     startBackendRuntime();
     if (PACKAGED_RUNTIME_SMOKE) void runPackagedRuntimeSmoke();
+    if (PRODUCT_CLOSURE_SMOKE) void runProductClosureSmokeProbe();
     app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   }).catch((error: unknown) => {
     const code = error instanceof WorkspaceStoreError ? error.code : "APP_STARTUP_FAILED";

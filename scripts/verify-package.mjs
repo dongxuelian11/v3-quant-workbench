@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { listPackage } from "@electron/asar";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -9,6 +10,7 @@ const resourcesRoot = resolve(packageRoot, "resources");
 const backendRoot = resolve(resourcesRoot, "backend-runtime");
 const asarPath = resolve(resourcesRoot, "app.asar");
 const evidencePath = resolve(process.env.V3_PACKAGE_EVIDENCE ?? resolve(root, "artifacts/package/V3_PACKAGE_EVIDENCE.json"));
+const PACKAGED_SOURCE_CAPABILITY = "NOT_AVAILABLE";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -78,7 +80,12 @@ assert(runtimeManifest.schema_version === "v3.packaged-backend/1.0.0", "unexpect
 assert(runtimeManifest.product?.platform === "win32" && runtimeManifest.product?.arch === "x64", "packaged runtime is not Windows x64");
 assert(runtimeManifest.backend_delivery_strategy === "BUNDLED_EMBEDDED_CPYTHON_MODULE_MODE", "unexpected backend delivery strategy");
 assert(runtimeManifest.first_launch_network_install === false, "packaged runtime permits first-launch network install");
-assert(runtimeManifest.source_capability === "NOT_AVAILABLE", "packaged source capability is not honest");
+assert(runtimeManifest.source_capability === PACKAGED_SOURCE_CAPABILITY, "packaged source capability does not record the narrow AKShare boundary");
+assert(runtimeManifest.real_free_source?.provider_id === "pvd_akshare_eastmoney_a_share_eod_v1", "packaged AKShare provider identity is missing");
+assert(runtimeManifest.real_free_source?.connector_version_id === "cov_akshare_eod_research_v1", "packaged AKShare connector identity is missing");
+assert(runtimeManifest.real_free_source?.endpoint === "stock_zh_a_hist", "packaged AKShare endpoint identity is missing");
+assert(runtimeManifest.real_free_source?.package_version === "1.18.84", "packaged AKShare package version is missing");
+assert(runtimeManifest.real_free_source?.truth_state === "DEMO" && runtimeManifest.real_free_source?.maturity === "PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE", "packaged source maturity metadata overclaims");
 assert(typeof runtimeManifest.source_git_sha === "string" && /^[0-9a-f]{40}$/.test(runtimeManifest.source_git_sha), "runtime source identity missing");
 assert(Array.isArray(runtimeManifest.files) && runtimeManifest.files.length > 0, "runtime manifest file inventory is empty");
 assert(Array.isArray(runtimeManifest.critical_files) && runtimeManifest.critical_files.length > 0, "runtime manifest critical inventory is empty");
@@ -107,8 +114,20 @@ assert(inventory.python?.version === "3.14.5" && inventory.python?.arch === "win
 assert(inventory.python?.license === "PSF-2.0", "Python runtime license is missing");
 assert(Number.isInteger(inventory.installed_package_count) && inventory.installed_package_count > 0, "Python inventory has no packages");
 assert(inventory.critical_import_smoke?.status === "PASS", "critical Python import smoke was not recorded as PASS");
+assert(inventory.critical_import_smoke?.modules?.akshare === "1.18.84", "Python inventory does not prove exact AKShare import");
+assert(inventory.source_capability === PACKAGED_SOURCE_CAPABILITY, "Python inventory source capability is not the narrow AKShare boundary");
+assert(inventory.real_free_source?.provider_id === "pvd_akshare_eastmoney_a_share_eod_v1", "Python inventory AKShare provider identity is missing");
+assert(inventory.real_free_source?.connector_version_id === "cov_akshare_eod_research_v1", "Python inventory AKShare connector identity is missing");
+assert(inventory.real_free_source?.package_version === "1.18.84" && inventory.real_free_source?.endpoint === "stock_zh_a_hist", "Python inventory AKShare package/endpoint identity is missing");
 assert(Array.isArray(inventory.packages) && inventory.packages.every((packageRecord) => packageRecord.name && packageRecord.version && packageRecord.license), "Python license inventory is incomplete");
+assert(inventory.packages.some((packageRecord) => packageRecord.name.toLowerCase() === "akshare" && packageRecord.version === "1.18.84" && typeof packageRecord.integrity === "string"), "Python license inventory lacks exact AKShare archive identity");
 
+const packagedAkshareImport = JSON.parse(execFileSync(resolve(backendRoot, "python/python.exe"), ["-c", "import akshare,json; print(json.dumps({'version': akshare.__version__}))"], {
+  cwd: resolve(backendRoot, "backend-package"),
+  encoding: "utf8",
+  env: { ...process.env, PYTHONHOME: resolve(backendRoot, "python"), PYTHONPATH: "", PYTHONNOUSERSITE: "1" }
+}).trim());
+assert(packagedAkshareImport.version === "1.18.84", `packaged CPython imported unexpected AKShare version: ${packagedAkshareImport.version}`);
 const asarFiles = await listPackage(asarPath);
 const asarSet = new Set(asarFiles.map((entry) => String(entry).replaceAll("\\", "/").replace(/^\//u, "")));
 for (const required of ["dist/apps/desktop/src/main.js", "dist/apps/desktop/src/preload.js", "dist/apps/desktop/src/renderer/index.html", "package.json"]) {
@@ -136,6 +155,7 @@ const evidence = {
   python_dependency_count: inventory.installed_package_count,
   critical_import_smoke: inventory.critical_import_smoke,
   source_capability: runtimeManifest.source_capability,
+  real_free_source: runtimeManifest.real_free_source,
   first_launch_network_install: runtimeManifest.first_launch_network_install,
 };
 const { writeFile } = await import("node:fs/promises");

@@ -14,6 +14,7 @@ from v3_backend.contracts.product_entry import (
 )
 from v3_backend.runtime.product_entry import create_project
 from v3_backend.runtime.product_facades import build_product_facades
+from v3_backend.runtime.product_research import _ensure_provider_admission
 from v3_backend.runtime.product_runtime import ProductRuntime
 
 
@@ -149,6 +150,29 @@ class ProductRuntimeResearchTests(unittest.TestCase):
             self.assertEqual(replay_model["task_id"], read_model["task_id"])
             self.assertEqual(replay_model["run_id"], read_model["run_id"])
             self.assertNotIn("event_cursor", replay_model)
+
+    def test_repeated_provider_admission_reuses_append_only_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v3-product-provider-admission-") as directory:
+            product = ProductRuntime(Path(directory), research_provider_factory=_provider_factory)
+            project = create_project(
+                product,
+                display_name="Provider admission retry",
+                notes=None,
+                idempotency_key="create-provider-admission-project",
+            )
+            adapter = _provider_factory(None)
+            first_registry, first_config = _ensure_provider_admission(
+                product,
+                project_id=project["project_id"],
+                adapter=adapter,
+            )
+            second_registry, second_config = _ensure_provider_admission(
+                product,
+                project_id=project["project_id"],
+                adapter=adapter,
+            )
+            self.assertEqual(first_config, second_config)
+            self.assertIsNot(first_registry, second_registry)
 
     def test_caller_numeric_truth_is_rejected_by_closed_contract(self) -> None:
         request = _request("prj_01ARZ3NDEKTSV4RRFFQ69G5FB", "pcr_01ARZ3NDEKTSV4RRFFQ69G5FB")

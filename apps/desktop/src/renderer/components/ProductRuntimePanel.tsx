@@ -42,6 +42,8 @@ export function ProductRuntimePanel() {
   const entryBusy = useProductRuntime((state) => state.entryBusy);
   const lastImport = useProductRuntime((state) => state.lastImport);
   const lastResearch = useProductRuntime((state) => state.lastResearch);
+  const researchDiscoveryState = useProductRuntime((state) => state.researchDiscoveryState);
+  const recoveredResearchTaskId = useProductRuntime((state) => state.recoveredResearchTaskId);
   const runSpecId = useProductRuntime((state) => state.runSpecId);
   const inflight = useProductRuntime((state) => state.inflight);
   const task = useProductRuntime((state) => state.task);
@@ -133,6 +135,7 @@ export function ProductRuntimePanel() {
         }}>{inflight ? "研究请求中…" : "提交 Product Entry 研究"}</button>
       </div>
       {lastResearch && <p className="honest-note" data-testid="product-research-admission">已接受：{lastResearch.taskId} · {lastResearch.maturity} · {lastResearch.researchClassification.join(" / ")} · {lastResearch.truthAdmission.admission}</p>}
+      {researchDiscoveryState === "RECOVERED" && recoveredResearchTaskId && <p className="honest-note" data-testid="product-research-recovered">已从 canonical TaskService 历史自动恢复：{recoveredResearchTaskId} · Result/Artifact 已重新读取</p>}
 
       <div className="section-head"><div><small>可执行 canonical 研究配置</small><h2>研究配置</h2></div></div>
       {runSpecs === null && <p className="honest-note">正在从 canonical 项目引用读取可运行研究配置…</p>}

@@ -16,6 +16,7 @@ import type {
   ProductResultView,
   ProductStatusView,
   ProductTaskEventsView,
+  ProductTaskListFilter,
   ProductTaskView,
   ProjectContextView,
   ProjectCreatedView,
@@ -122,7 +123,10 @@ const productRuntimeBridge: V3ProductRuntimeBridge = Object.freeze({
     projectId: request.projectId,
     projectContextRevisionId: request.projectContextRevisionId
   }),
-  listTasks: () => invokeProduct<readonly ProductTaskView[]>("productRuntime:listTasks"),
+  listTasks: (filter?: ProductTaskListFilter) => invokeProduct<readonly ProductTaskView[]>("productRuntime:listTasks", filter === undefined ? undefined : {
+    ...(filter.service === undefined ? {} : { service: filter.service }),
+    ...(filter.state === undefined ? {} : { state: filter.state })
+  }),
   getTask: (taskId: string) => invokeProduct<ProductTaskView>("productRuntime:getTask", { taskId }),
   getTaskEvents: (afterSequence: number, limit: number) => invokeProduct<ProductTaskEventsView>("productRuntime:getTaskEvents", { afterSequence, limit }),
   getResult: (resultId: string) => invokeProduct<ProductResultView>("productRuntime:getResult", { resultId }),

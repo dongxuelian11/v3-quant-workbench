@@ -81,7 +81,20 @@ export function registerProductRuntimeIpc(
       projectContextRevisionId: requiredString(item, "projectContextRevisionId")
     });
   });
-  handle(PRODUCT_RUNTIME_CHANNELS.listTasks, () => bridge.listTasks());
+  handle(PRODUCT_RUNTIME_CHANNELS.listTasks, (value) => {
+    if (value === undefined) return bridge.listTasks();
+    const item = assertObject(value, ["service", "state"]);
+    if (item.service !== undefined && item.service !== "ProductEntryService") {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "task list service filter is not admitted");
+    }
+    if (item.state !== undefined && item.state !== "SUCCEEDED") {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "task list state filter is not admitted");
+    }
+    return bridge.listTasks({
+      ...(item.service === undefined ? {} : { service: item.service as "ProductEntryService" }),
+      ...(item.state === undefined ? {} : { state: item.state as "SUCCEEDED" })
+    });
+  });
   handle(PRODUCT_RUNTIME_CHANNELS.getTask, (value) => {
     const item = assertObject(value, ["taskId"]);
     return bridge.getTask(requiredString(item, "taskId"));

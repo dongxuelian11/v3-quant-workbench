@@ -13,6 +13,7 @@ import type {
   ProductResultView,
   ProductStatusView,
   ProductTaskEventsView,
+  ProductTaskListFilter,
   ProductTaskView,
   ProjectContextView,
   ProjectCreatedView,
@@ -71,6 +72,7 @@ const MAX_RUN_SPEC_AUTO_PAGES = 20;
 const PACKAGE_PATH_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const RESEARCH_SYMBOL_PATTERN = /^[0-9]{6}$/;
 const RESEARCH_DATE_PATTERN = /^[0-9]{8}$/;
+const MAX_TASK_LIST_PAGE_SIZE = 200;
 
 function assertResearchIntent(request: ProductResearchSubmitIntent): void {
   if (!RESEARCH_SYMBOL_PATTERN.test(request.symbol)) {
@@ -238,6 +240,27 @@ function assertCanonicalId(value: string, name: string): void {
   }
 }
 
+function assertTaskListFilter(filter: ProductTaskListFilter | undefined): ProductTaskListFilter {
+  const candidate = filter ?? {};
+  if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "task list filter must be an object");
+  }
+  const unknown = Object.keys(candidate as object).filter((key) => key !== "service" && key !== "state");
+  if (unknown.length > 0) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", `unknown task list filter fields: ${unknown.join(", ")}`);
+  }
+  if (candidate.service !== undefined && candidate.service !== "ProductEntryService") {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "task list service filter is not admitted");
+  }
+  if (candidate.state !== undefined && candidate.state !== "SUCCEEDED") {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "task list state filter is not admitted");
+  }
+  return Object.freeze({
+    ...(candidate.service === undefined ? {} : { service: candidate.service }),
+    ...(candidate.state === undefined ? {} : { state: candidate.state })
+  });
+}
+
 export class ProductBridge {
   private inflightSubmit = new Map<string, Promise<BacktestSubmitOutcomeView>>();
   private inflightResearch = new Map<string, Promise<ProductResearchSubmitOutcomeView>>();
@@ -397,9 +420,16 @@ export class ProductBridge {
     }
   }
 
-  async listTasks(): Promise<readonly ProductTaskView[]> {
+  async listTasks(filter?: ProductTaskListFilter): Promise<readonly ProductTaskView[]> {
     this.requireBinding();
-    const response = await this.supervisor.request("TaskService.v1.listTasks", { filter: {}, page_size: 50 });
+    const admittedFilter = assertTaskListFilter(filter);
+    // The canonical backend orders this existing read operation by created_at DESC, task_id.
+    // A bounded 200-row window is sufficient for the admitted service/state query:
+    // the first matching row is the latest research task, and no incidental array order is used.
+    const response = await this.supervisor.request("TaskService.v1.listTasks", {
+      filter: admittedFilter,
+      page_size: MAX_TASK_LIST_PAGE_SIZE
+    });
     return adaptTaskList(response);
   }
 

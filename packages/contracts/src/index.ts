@@ -248,6 +248,11 @@ export interface ProductTaskAttemptView {
   readonly errorCategory: string | null;
 }
 
+export interface ProductTaskListFilter {
+  readonly service?: "ProductEntryService";
+  readonly state?: "SUCCEEDED";
+}
+
 export interface ProductTaskView {
   readonly readModelVersion: "v3.task/1.0";
   readonly taskId: string;
@@ -416,7 +421,7 @@ export interface V3ProductRuntimeBridge {
   getProjectContext(): Promise<ProjectContextView>;
   restoreSession(): Promise<SessionRestoreView>;
   connectExistingProject(request: ConnectExistingProjectRequest): Promise<ProjectContextView>;
-  listTasks(): Promise<readonly ProductTaskView[]>;
+  listTasks(filter?: ProductTaskListFilter): Promise<readonly ProductTaskView[]>;
   getTask(taskId: string): Promise<ProductTaskView>;
   getTaskEvents(afterSequence: number, limit: number): Promise<ProductTaskEventsView>;
   getResult(resultId: string): Promise<ProductResultView>;
