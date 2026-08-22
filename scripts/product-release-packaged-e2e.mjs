@@ -123,7 +123,7 @@ async function catalogEvidence(pythonPath, pythonRoot, catalogPath, cwd, env) {
     "row=c.execute('select source_metadata_json from raw_capture_truth_descriptor order by rowid desc limit 1').fetchone()",
     "metadata=json.loads(row['source_metadata_json']) if row is not None else None",
     "roles=[r[0] for r in c.execute('select semantic_role from artifact order by semantic_role')]",
-    "print(json.dumps({'counts':counts,'source_metadata':metadata,'artifact_roles':roles},ensure_ascii=False,sort_keys=True))",
+    "print(json.dumps({'counts':counts,'source_metadata':metadata,'artifact_roles':roles},ensure_ascii=True,sort_keys=True))",
     "c.close()",
   ].join("\n");
   const result = await execFileAsync(pythonPath, ["-c", probe, catalogPath], {

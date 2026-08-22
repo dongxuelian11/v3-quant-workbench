@@ -46,7 +46,7 @@
     "smoke:product-research": "node scripts/product-research-smoke.mjs",
     "package:win": "npm run package:win:release",
     "package:win:unpacked": "npm run build && node scripts/prepare-packaged-backend.mjs && electron-builder --win dir --x64 --config electron-builder.yml",
-    "package:win:release": "npm run build && node scripts/prepare-packaged-backend.mjs && electron-builder --win --x64 --config electron-builder.yml",
+    "package:win:release": "npm run build && node scripts/prepare-packaged-backend.mjs && electron-builder --win --x64 --config electron-builder.yml --publish never",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:release": "node scripts/verify-release.mjs",
     "smoke:packaged-win": "node scripts/packaged-runtime-smoke.mjs",
