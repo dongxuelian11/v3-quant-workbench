@@ -98,6 +98,7 @@ export interface SupervisorConfig {
   readonly maxStderrLineBytes?: number;
   readonly maxStderrBytes?: number;
   readonly backendModule?: "v3_backend.runtime.bootstrap" | "v3_backend.adapters.round3_evidence.development_runtime";
+  readonly productReleaseAcceptanceProvider?: "DETERMINISTIC_SUCCESS" | "DETERMINISTIC_UNAVAILABLE";
 }
 
 export interface RuntimeResponseError {

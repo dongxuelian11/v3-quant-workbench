@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import type { BackendRuntimeResolution } from "./backendRuntime/runtimeResolver";
 import type { BackendSupervisor } from "./backendRuntime/supervisor";
 
-export type ProductClosureSmokePhase = "create-submit" | "reopen-discover";
+export type ProductClosureSmokePhase = "create-submit" | "reopen-discover" | "provider-unavailable";
 
 export interface ProductClosureSmokeOptions {
   readonly window: BrowserWindow;
@@ -61,8 +61,28 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function executeRenderer<T>(window: BrowserWindow, source: string): Promise<T> {
-  return await window.webContents.executeJavaScript("(async () => {" + source + "\n})()", true) as T;
+const RENDERER_QUERY_TIMEOUT_MS = 5_000;
+const RENDERER_OPERATION_TIMEOUT_MS = 120_000;
+
+async function executeRenderer<T>(
+  window: BrowserWindow,
+  source: string,
+  timeoutMilliseconds = RENDERER_OPERATION_TIMEOUT_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      window.webContents.executeJavaScript("(async () => {" + source + "\n})()", true) as Promise<T>,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`renderer JavaScript probe timed out after ${timeoutMilliseconds} milliseconds`)),
+          timeoutMilliseconds,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 async function waitForRenderer(window: BrowserWindow): Promise<void> {
@@ -75,7 +95,8 @@ async function waitForRenderer(window: BrowserWindow): Promise<void> {
     try {
       const ready = await executeRenderer<boolean>(
         window,
-        "return document.readyState === \"complete\" && typeof window.v3ProductClosureEvidence === \"function\";"
+        "return document.readyState === \"complete\" && typeof window.v3ProductClosureEvidence === \"function\";",
+        RENDERER_QUERY_TIMEOUT_MS,
       );
       if (ready) return;
     } catch (error) {
@@ -92,7 +113,8 @@ async function waitForRecoveredRenderer(window: BrowserWindow): Promise<Renderer
   while (Date.now() < deadline) {
     lastEvidence = await executeRenderer<RendererEvidence>(
       window,
-      "return window.v3ProductClosureEvidence();"
+      "return window.v3ProductClosureEvidence();",
+      RENDERER_QUERY_TIMEOUT_MS,
     );
     if (lastEvidence.currentRendererState.researchDiscoveryState === "RECOVERED") {
       return lastEvidence;
@@ -110,9 +132,9 @@ async function runCreateSubmit(window: BrowserWindow): Promise<Record<string, un
     window,
     "if (typeof window.v3ProductClosureRunFirst !== \"function\") throw new Error(\"renderer first-phase smoke action is unavailable\");" +
     "await window.v3ProductClosureRunFirst({" +
-    "displayName: \"V1 Product Closure Real Source\"," +
-    "notes: \"REAL_AKSHARE_NETWORK_COLD_RESTART\"," +
-    "intent: { symbol: \"600519\", startDate: \"20250701\", endDate: \"20250710\" }" +
+    "displayName: \"V1 Product Release Acceptance\"," +
+    "notes: \"TEST_EXTERNAL_PROVIDER_BOUNDARY_COLD_RESTART\"," +
+    "intent: { symbol: \"600519\", startDate: \"20260106\", endDate: \"20260107\" }" +
     "});" +
     "const evidence = window.v3ProductClosureEvidence();" +
     "const current = evidence.currentRendererState;" +
@@ -125,6 +147,30 @@ async function runCreateSubmit(window: BrowserWindow): Promise<Record<string, un
     "const result = await bridge.getResult(task.resultId);" +
     "const artifactDescriptor = await bridge.getArtifactDescriptor(task.outputs.BACKTEST_RUN_RESULT);" +
     "return { phase: \"create-submit\", status, projectContext, task, result, artifactDescriptor, rendererEvidence: evidence };"
+  );
+}
+
+async function runProviderUnavailable(window: BrowserWindow): Promise<Record<string, unknown>> {
+  return await executeRenderer<Record<string, unknown>>(
+    window,
+    "if (typeof window.v3ProductClosureRunUnavailable !== \"function\") throw new Error(\"renderer provider-unavailable smoke action is unavailable\");" +
+    "await window.v3ProductClosureRunUnavailable({" +
+    "displayName: \"V1 Provider Unavailable Acceptance\"," +
+    "notes: \"TEST_EXTERNAL_PROVIDER_BOUNDARY_UNAVAILABLE\"," +
+    "intent: { symbol: \"600519\", startDate: \"20260106\", endDate: \"20260107\" }" +
+    "});" +
+    "const evidence = window.v3ProductClosureEvidence();" +
+    "const current = evidence.currentRendererState;" +
+    "if (current.surface !== \"ERROR\" || typeof current.errorMessage !== \"string\" || !current.errorMessage.includes(\"CAPABILITY_UNAVAILABLE\") || !current.errorMessage.includes(\"PROVIDER_ACQUISITION_UNAVAILABLE\")) throw new Error(\"provider-unavailable renderer error is not explicit\");" +
+    "if (current.lastResearch !== null || current.task !== null || current.result !== null || current.artifactDescriptor !== null) throw new Error(\"provider-unavailable renderer exposed a successful chain\");" +
+    "const bridge = window.v3ProductRuntime;" +
+    "const status = await bridge.getProductStatus();" +
+    "const projectContext = await bridge.getProjectContext();" +
+    "const projects = await bridge.listProjects();" +
+    "const tasks = await bridge.listTasks();" +
+    "if (status.backendState !== \"READY\" || status.bindingState !== \"PROJECT_BOUND\") throw new Error(\"application was not usable after provider failure\");" +
+    "if (!Array.isArray(tasks) || tasks.length !== 0) throw new Error(\"provider failure minted a canonical Task\");" +
+    "return { phase: \"provider-unavailable\", status, projectContext, projects, tasks, rendererEvidence: evidence, retry_later: true, successful_canonical_chain_count: 0 };"
   );
 }
 
@@ -149,7 +195,7 @@ async function runReopenDiscover(window: BrowserWindow): Promise<Record<string, 
 }
 
 function assertPhase(value: string): ProductClosureSmokePhase {
-  if (value === "create-submit" || value === "reopen-discover") return value;
+  if (value === "create-submit" || value === "reopen-discover" || value === "provider-unavailable") return value;
   throw new Error("unknown product closure smoke phase: " + value);
 }
 
@@ -186,14 +232,17 @@ export async function runProductClosureSmoke(options: ProductClosureSmokeOptions
     await waitForRenderer(options.window);
     const flow = phase === "create-submit"
       ? await runCreateSubmit(options.window)
-      : await runReopenDiscover(options.window);
+      : phase === "reopen-discover"
+        ? await runReopenDiscover(options.window)
+        : await runProviderUnavailable(options.window);
     await writeEvidence(options.outputPath, {
       ...baseEvidence,
       success: true,
       flow,
       shutdown_expected: "GRACEFUL_SHUTDOWN_REQUIRED",
       known_id_injection: false,
-      renderer_store_instance: phase === "create-submit" ? "FIRST_PROCESS" : "NEW_PROCESS",
+      renderer_store_instance: phase === "create-submit" ? "FIRST_PROCESS" : phase === "reopen-discover" ? "NEW_PROCESS" : "ISOLATED_UNAVAILABLE_PROCESS",
+      provider_boundary: phase === "provider-unavailable" ? "TEST_EXTERNAL_PROVIDER_BOUNDARY_UNAVAILABLE" : "TEST_EXTERNAL_PROVIDER_BOUNDARY_SUCCESS",
       source_truth_ceiling: "PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE"
     });
     console.error(JSON.stringify({ level: "INFO", code: "PRODUCT_CLOSURE_PACKAGED_SMOKE_PASS", phase }));

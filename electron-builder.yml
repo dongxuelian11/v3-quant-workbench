@@ -15,7 +15,17 @@ extraResources:
       - '**/*'
 win:
   target:
+    - target: nsis
+      arch:
+        - x64
     - target: dir
       arch:
         - x64
   artifactName: v3-quant-workbench-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false

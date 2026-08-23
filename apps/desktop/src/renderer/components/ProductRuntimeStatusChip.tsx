@@ -13,12 +13,17 @@ export function ProductRuntimeStatusChip() {
 
   useEffect(() => {
     void refresh();
+    // Startup can render before the supervised backend has reached READY and
+    // before persisted project refs have been canonically revalidated. Keep a
+    // bounded read-only re-query alive from the always-mounted header so a
+    // missed connection event cannot strand cold history discovery.
+    const timer = setInterval(() => { void useProductRuntime.getState().refresh(); }, 4000);
     // Event notifications are hints: schedule a canonical re-query.
     const bridge = window.v3BackendRuntime;
-    if (!bridge) return;
+    if (!bridge) return () => clearInterval(timer);
     const stop = bridge.onEvidenceEvent(() => { void useProductRuntime.getState().refresh(); });
     const stopConnection = bridge.onConnectionState(() => { void useProductRuntime.getState().refresh(); });
-    return () => { stop(); stopConnection(); };
+    return () => { clearInterval(timer); stop(); stopConnection(); };
   }, [refresh]);
 
   const label = boundProject

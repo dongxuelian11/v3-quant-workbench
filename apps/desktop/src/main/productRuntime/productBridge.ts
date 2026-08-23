@@ -342,6 +342,7 @@ export class ProductBridge {
         ? "DIRTY" as const
         : "UNAVAILABLE" as const;
     return Object.freeze({
+      productVersion: this.supervisor.config?.desktopVersion ?? "UNAVAILABLE",
       backendState: this.supervisor.state,
       bindingState,
       boundProject: bound,

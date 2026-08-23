@@ -380,6 +380,9 @@ class AkshareAShareEodAdapter:
             raise ProviderVersionMismatch(
                 f"expected AKShare {AKSHARE_PROVIDER_VERSION}, observed {version!r}"
             )
+        source_kind = getattr(provider, "__v3_source_kind__", "REAL_EXTERNAL_PROVIDER")
+        if source_kind not in {"REAL_EXTERNAL_PROVIDER", "TEST_EXTERNAL_PROVIDER_BOUNDARY"}:
+            raise ProviderAcquisitionError("AKShare source kind is not admitted")
         endpoint = getattr(provider, _ENDPOINT, None)
         if not callable(endpoint):
             raise ProviderDependencyUnavailable(f"AKShare {_ENDPOINT} is unavailable")
@@ -404,6 +407,7 @@ class AkshareAShareEodAdapter:
                 "repository_revision": AKSHARE_PROVIDER_REPOSITORY_REVISION,
                 "source_authority": _SOURCE_AUTHORITY,
                 "endpoint": _ENDPOINT,
+                "source_kind": source_kind,
             },
             "records": records,
             "provider_neutral_observations": observations.to_wire(),
@@ -441,6 +445,7 @@ class AkshareAShareEodAdapter:
             "request": canonical_request,
             "request_fingerprint": request_fingerprint,
             "provider_package_version": version,
+            "source_kind": source_kind,
             "provider_repository_revision": AKSHARE_PROVIDER_REPOSITORY_REVISION,
             "provider_response_revision": None,
             "available_time_evidence": "UNKNOWN",
