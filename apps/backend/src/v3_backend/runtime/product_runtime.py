@@ -31,7 +31,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from threading import RLock
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
 from v3_backend.adapters.artifact_store import FileSystemArtifactStore
 from v3_backend.adapters.sqlite.artifact_publication import SQLiteArtifactPublicationPort
@@ -92,6 +93,7 @@ from v3_backend.domain.tasks.state_machine import (
     transition_run,
     transition_task,
 )
+
 from v3_backend.domain.weights import RuntimeIdentity
 from v3_backend.errors.exceptions import (
     ArtifactNotPublishedError,
@@ -108,6 +110,9 @@ from v3_backend.repositories.unit_of_work import TransactionMode
 
 from .composition_root import Capability, RuntimePorts
 from .build_manifest import BUILD_MANIFEST, BUILD_MANIFEST_ID
+
+if TYPE_CHECKING:
+    from .product_workers import ProductResearchWorkerConfig
 
 PRODUCT_RUNTIME_VERSION = "v3.product-runtime/1.0.0"
 PRODUCT_BACKEND_VERSION_FLAVOR = "product"
@@ -402,14 +407,14 @@ def _canonical_request_hash(operation_id: str, semantic: Mapping[str, Any]) -> s
     return canonical_sha256({"operation_id": operation_id, "semantic_request": dict(semantic)})
 
 
-def classify_execution_error(error: BaseException) -> ErrorCategory:
+def classify_execution_error(error: Exception) -> ErrorCategory:
     if isinstance(error, V3ContractError):
         return ErrorCategory.INVALID_ARGUMENT
     if isinstance(error, (ValueError, TypeError)):
         return ErrorCategory.INVALID_ARGUMENT
     if isinstance(error, (OSError, sqlite3.OperationalError)):
         return ErrorCategory.TRANSIENT_IO
-    return ErrorCategory.RETRYABLE_ADAPTER
+    return ErrorCategory.INTERNAL_ERROR
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +432,7 @@ class ProductResearchSubmission:
     strategy_profile_id: str
     source: Mapping[str, Any]
     idempotency_key: str
+    execution_deadline_at: str | None = None
 
 
 def _rule_profile_params(profile: AshareTradingRuleProfileVersion) -> dict[str, Any]:
@@ -856,11 +862,9 @@ def _accept_outcome_json(task_id: str, run_id: str) -> str:
 
 
 class ProductExecution:
-    """In-process product executor over the durable Task owner.
+    """Product executor over the durable Task owner.
 
-    Execution is synchronous and bounded (PRE_ALPHA research runs); worker
-    isolation, leasing heartbeat and checkpointing remain future worker
-    infrastructure.  Every mutation is durable through SQLiteTaskPersistence
+    Every mutation is durable through SQLiteTaskPersistence
     before and after engine execution; the Run's durable EXECUTION_CONTEXT
     artifact reference makes retry re-execution deterministic and
     restart-safe.  Failure transitions are persisted with an ErrorCategory
@@ -884,6 +888,8 @@ class ProductExecution:
         context_artifact_id: str | None,
         idempotency: tuple[str, str, str] | None = None,
         is_batch: bool = False,
+        execution_deadline_at: str | None = None,
+        inline_worker: bool = True,
     ) -> tuple[Task, Run, TaskAttempt]:
         run_id = mint_v3_id("run_")
         task = Task(
@@ -917,7 +923,7 @@ class ProductExecution:
             ordinal=1,
             state=AttemptState.QUEUED,
             state_version=0,
-            lease_id=mint_v3_id("lea_"),
+            lease_id=mint_v3_id("lea_") if inline_worker else None,
             resume_checkpoint_artifact_id=None,
             terminal_error_category=None,
         )
@@ -925,31 +931,41 @@ class ProductExecution:
             unit.add_task(task)
             unit.add_run(run)
             unit.add_attempt(attempt)
+            if execution_deadline_at is not None:
+                unit.connection.execute(
+                    "UPDATE task SET execution_deadline_at=? WHERE task_id=?",
+                    (execution_deadline_at, task.task_id),
+                )
+                unit.connection.execute(
+                    "UPDATE task_attempt SET execution_deadline_at=? WHERE attempt_id=?",
+                    (execution_deadline_at, attempt.attempt_id),
+                )
             now = wire_time(datetime.now(timezone.utc))
-            worker_id = mint_v3_id("wrk_")
-            unit.connection.execute(
-                """
-                INSERT INTO worker(worker_id, worker_kind, process_id, environment_profile_id,
-                                   state, started_at)
-                VALUES(?,?,?,?,?,?)
-                """,
-                (worker_id, INLINE_WORKER_KIND, os.getpid(), INLINE_ENVIRONMENT_PROFILE_ID, "BUSY", now),
-            )
-            unit.connection.execute(
-                """
-                INSERT INTO worker_lease(lease_id, attempt_id, worker_id, cpu_slots,
-                                         memory_limit_bytes, scratch_limit_bytes, state,
-                                         granted_at, expires_at)
-                VALUES(?,?,?,1,1073741824,1073741824,'GRANTED',?,?)
-                """,
-                (
-                    attempt.lease_id,
-                    attempt.attempt_id,
-                    worker_id,
-                    now,
-                    wire_time(datetime.now(timezone.utc) + timedelta(hours=1)),
-                ),
-            )
+            if inline_worker:
+                worker_id = mint_v3_id("wrk_")
+                unit.connection.execute(
+                    """
+                    INSERT INTO worker(worker_id, worker_kind, process_id, environment_profile_id,
+                                       state, started_at)
+                    VALUES(?,?,?,?,?,?)
+                    """,
+                    (worker_id, INLINE_WORKER_KIND, os.getpid(), INLINE_ENVIRONMENT_PROFILE_ID, "BUSY", now),
+                )
+                unit.connection.execute(
+                    """
+                    INSERT INTO worker_lease(lease_id, attempt_id, worker_id, cpu_slots,
+                                             memory_limit_bytes, scratch_limit_bytes, state,
+                                             granted_at, expires_at)
+                    VALUES(?,?,?,1,1073741824,1073741824,'GRANTED',?,?)
+                    """,
+                    (
+                        attempt.lease_id,
+                        attempt.attempt_id,
+                        worker_id,
+                        now,
+                        wire_time(datetime.now(timezone.utc) + timedelta(hours=1)),
+                    ),
+                )
             if context_artifact_id is not None:
                 unit.connection.execute(
                     """
@@ -1085,7 +1101,10 @@ class ProductExecution:
                 )
             )
             unit.connection.execute(
-                "UPDATE worker_lease SET state='RELEASED', released_at=? WHERE attempt_id=?",
+                """
+                UPDATE worker_lease SET state='RELEASED', released_at=?
+                WHERE attempt_id=? AND state IN ('GRANTED','RENEWED')
+                """,
                 (wire_time(datetime.now(timezone.utc)), current_attempt.attempt_id),
             )
             self._stop_worker_for_attempt(
@@ -1107,10 +1126,30 @@ class ProductExecution:
             current_task = unit.require_task(task.task_id)
             current_run = unit.require_run(run.run_id)
             current_attempt = unit.require_attempt(attempt.attempt_id)
-            current_attempt.terminal_error_category = category.value
-            current_attempt.state = transition_attempt(current_attempt.state, "ATTEMPT_FAILED")
-            unit.save_attempt(current_attempt, expected_version=current_attempt.state_version)
-            if run_transition:
+            if current_task.state in TASK_TERMINAL_STATES:
+                return
+            if current_attempt.state in ATTEMPT_TERMINAL_STATES:
+                if current_attempt.state is not AttemptState.FAILED:
+                    raise ImpossibleTransition(
+                        "failure finalization cannot overwrite a non-failed terminal Attempt"
+                    )
+                if current_attempt.terminal_error_category is None:
+                    current_attempt.terminal_error_category = category.value
+                    unit.save_attempt(
+                        current_attempt,
+                        expected_version=current_attempt.state_version,
+                    )
+            else:
+                current_attempt.terminal_error_category = category.value
+                current_attempt.state = transition_attempt(
+                    current_attempt.state,
+                    "ATTEMPT_FAILED",
+                )
+                unit.save_attempt(
+                    current_attempt,
+                    expected_version=current_attempt.state_version,
+                )
+            if run_transition and current_run.state is not RunState.TERMINAL:
                 current_run.state = transition_run(
                     current_run.state, "TASK_TERMINAL_NO_ACTIVE_ATTEMPT", no_active_attempt=True
                 )
@@ -1139,7 +1178,10 @@ class ProductExecution:
                 )
             )
             unit.connection.execute(
-                "UPDATE worker_lease SET state='RELEASED', released_at=? WHERE attempt_id=?",
+                """
+                UPDATE worker_lease SET state='RELEASED', released_at=?
+                WHERE attempt_id=? AND state IN ('GRANTED','RENEWED')
+                """,
                 (wire_time(datetime.now(timezone.utc)), current_attempt.attempt_id),
             )
             self._stop_worker_for_attempt(
@@ -1342,7 +1384,7 @@ class ProductExecution:
             self._transition_to_running(task, run, attempt)
             event_cursor = self._latest_sequence(project_id)
             result = self.engine.run(spec)
-        except BaseException as error:
+        except Exception as error:
             self._finish_failure(
                 task, run, attempt, error=error, category=classify_execution_error(error)
             )
@@ -1352,7 +1394,7 @@ class ProductExecution:
                 project_id=project_id, run_id=run.run_id, result=result
             )
             self._finish_success(task, run, attempt, outputs=outputs)
-        except BaseException as error:
+        except Exception as error:
             self._finish_failure(
                 task, run, attempt, error=error, category=classify_execution_error(error)
             )
@@ -1445,7 +1487,7 @@ class ProductExecution:
                 task, run, attempt,
                 outputs={"artifact_id": outputs.descriptor.artifact_id, "artifact_sha256": outputs.descriptor.sha256},
             )
-        except BaseException as error:
+        except Exception as error:
             self._finish_failure(
                 task, run, attempt, error=error, category=classify_execution_error(error)
             )
@@ -1604,7 +1646,7 @@ class ProductExecution:
                     task, run, attempt,
                     outputs={"manifest_artifact_id": outputs.descriptor.artifact_id, "child_task_ids": child_ids},
                 )
-        except BaseException as error:
+        except Exception as error:
             self._finish_failure(
                 task, run, attempt, error=error, category=classify_execution_error(error)
             )
@@ -1709,7 +1751,7 @@ class ProductExecution:
                     project_id=context_wire["project_id"], run_id=run_id, result=result
                 )
                 self._finish_success(task, run, attempt, outputs=outputs, run_transition=False)
-            except BaseException as error:
+            except Exception as error:
                 self._finish_failure(
                     task, run, attempt, error=error, category=classify_execution_error(error),
                     run_transition=False,
@@ -1745,7 +1787,7 @@ class ProductExecution:
                     outputs={"artifact_id": outputs.descriptor.artifact_id, "artifact_sha256": outputs.descriptor.sha256},
                     run_transition=False,
                 )
-            except BaseException as error:
+            except Exception as error:
                 self._finish_failure(
                     task, run, attempt, error=error, category=classify_execution_error(error),
                     run_transition=False,
@@ -1802,7 +1844,14 @@ class _NoopPublishCallbacks:
 class ProductRuntime:
     """Durable product composition root behind the ASL facades."""
 
-    def __init__(self, storage_root: str | Path, *, research_provider_factory=None) -> None:
+    def __init__(
+        self,
+        storage_root: str | Path,
+        *,
+        research_provider_factory=None,
+        research_worker_config: ProductResearchWorkerConfig | None = None,
+        reconcile_on_start: bool = True,
+    ) -> None:
         self.storage_root = Path(storage_root).resolve()
         self.database_path = self.storage_root / CATALOG_FILENAME
         self.artifact_root = self.storage_root / ARTIFACT_DIRNAME
@@ -1819,6 +1868,15 @@ class ProductRuntime:
         self.event_replay = ProductEventReplay(self.database_path)
         self.spec_codec = ResearchRunSpecCodec(self)
         self.execution = ProductExecution(self)
+        if research_worker_config is not None:
+            from .product_workers import ProductResearchWorkerManager
+
+            self.research_workers = ProductResearchWorkerManager(
+                self,
+                research_worker_config,
+            )
+        else:
+            self.research_workers = None
         from .product_research import ProductResearchService
 
         self.research = ProductResearchService(
@@ -1828,7 +1886,18 @@ class ProductRuntime:
         self.idempotency = DurableIdempotency()
         self._shutdown_prepared = False
         self._shutdown_committed = False
-        self.reconciliation_summary = self._reconcile_execution_state()
+        self._cancellation_lock = RLock()
+        self.reconciliation_summary = (
+            self._reconcile_execution_state()
+            if reconcile_on_start
+            else {
+                "active_leases_revoked": 0,
+                "expired_leases_reconciled": 0,
+                "attempts_lost": 0,
+                "tasks_failed": 0,
+                "workers_stopped": 0,
+            }
+        )
 
     # -- catalog access ------------------------------------------------------
 
@@ -2011,6 +2080,121 @@ class ProductRuntime:
         if accepted.project_id is not None:
             self.event_replay.bind_project(accepted.project_id)
 
+    def cancel_research_task(
+        self,
+        task_id: str,
+        *,
+        project_id: str | None = None,
+        expected_state_version: int | None = None,
+        reason: str,
+    ) -> bool:
+        """Cancel one isolated research process and durably fence its terminal state.
+
+        The first transaction records intent.  The operating-system child is
+        then cooperatively signalled and escalated by the worker owner.  Only a
+        confirmed exit permits the second transaction to publish CANCELLED.
+        """
+        with self._cancellation_lock:
+            task = self.task_persistence.read_task(task_id)
+            if project_id is not None and task.project_id != project_id:
+                raise TruthPreconditionFailedError("task belongs to a different project")
+            if task.state in TASK_TERMINAL_STATES:
+                if expected_state_version is None:
+                    return False
+                raise ConflictError("terminal Task cannot be cancelled")
+            if (
+                expected_state_version is not None
+                and task.state_version != expected_state_version
+            ):
+                raise ConflictError("Task state version is stale")
+
+            with self.task_persistence.begin() as unit:
+                current_task = unit.require_task(task_id)
+                attempt_row = unit.connection.execute(
+                    """
+                    SELECT a.attempt_id FROM task_attempt AS a
+                    JOIN run AS r ON r.run_id=a.run_id
+                    WHERE r.task_id=? ORDER BY a.attempt_no DESC LIMIT 1
+                    """,
+                    (task_id,),
+                ).fetchone()
+                if attempt_row is None:
+                    raise ConflictError("Task has no cancellable Attempt")
+                attempt_id = str(attempt_row[0])
+                current_task.state = transition_task(
+                    current_task.state,
+                    "CANCEL_REQUESTED",
+                    TaskTransitionContext(),
+                )
+                unit.save_task(current_task, expected_version=current_task.state_version)
+                unit.append_event(
+                    PendingTaskEvent(
+                        event_id=mint_v3_id("tev_"),
+                        event_version=_TASK_EVENT_VERSION,
+                        project_id=current_task.project_id,
+                        task_id=task_id,
+                        event_type="TASK_CANCEL_REQUESTED",
+                        occurred_at=datetime.now(timezone.utc),
+                        payload={"reason": reason},
+                        run_id=current_task.active_run_id,
+                        attempt_id=attempt_id,
+                    )
+                )
+                unit.commit()
+
+            workers = self.research_workers
+            if workers is None or not workers.cancel(task_id):
+                raise ConflictError("Task child process exit could not be confirmed")
+
+            with self.task_persistence.begin() as unit:
+                current_task = unit.require_task(task_id)
+                current_attempt = unit.require_attempt(attempt_id)
+                current_run = unit.require_run(current_task.active_run_id)
+                current_attempt.state = transition_attempt(
+                    current_attempt.state, "ATTEMPT_CANCELLED"
+                )
+                unit.save_attempt(
+                    current_attempt, expected_version=current_attempt.state_version
+                )
+                current_run.state = transition_run(
+                    current_run.state,
+                    "TASK_TERMINAL_NO_ACTIVE_ATTEMPT",
+                    no_active_attempt=True,
+                )
+                unit.save_run(current_run, expected_version=current_run.state_version)
+                current_task.state = transition_task(
+                    current_task.state,
+                    "WORKER_CANCELLED_OR_TERMINATED",
+                    TaskTransitionContext(cleanup_complete=True),
+                )
+                unit.save_task(current_task, expected_version=current_task.state_version)
+                unit.append_event(
+                    PendingTaskEvent(
+                        event_id=mint_v3_id("tev_"),
+                        event_version=_TASK_EVENT_VERSION,
+                        project_id=current_task.project_id,
+                        task_id=task_id,
+                        event_type="TASK_CANCELLED",
+                        occurred_at=datetime.now(timezone.utc),
+                        payload={"reason": reason},
+                        run_id=current_task.active_run_id,
+                        attempt_id=current_attempt.attempt_id,
+                    )
+                )
+                now = wire_time(datetime.now(timezone.utc))
+                unit.connection.execute(
+                    """
+                    UPDATE worker_lease SET state='REVOKED', released_at=?
+                    WHERE attempt_id=? AND state IN ('GRANTED','RENEWED')
+                    """,
+                    (now, current_attempt.attempt_id),
+                )
+                self.execution._stop_worker_for_attempt(
+                    unit, current_attempt.attempt_id, now
+                )
+                unit.commit()
+            return True
+
     def _reconcile_execution_state(self) -> dict[str, int]:
         """Reconcile inline execution rows after a backend restart.
 
@@ -2151,22 +2335,46 @@ class ProductRuntime:
 
     def prepare_shutdown(self, deadline: str | None) -> dict[str, str]:
         self._shutdown_prepared = True
+        if self.research_workers is not None:
+            for task_id in self.research_workers.task_ids():
+                self.cancel_research_task(
+                    task_id,
+                    reason="RUNTIME_SHUTDOWN",
+                )
+            if self.research_workers.has_live_processes():
+                raise ConflictError("shutdown cannot confirm all research child exits")
         self.reconciliation_summary = self._reconcile_execution_state()
         return {
-            "execution_mode": "SYNCHRONOUS_IN_PROCESS",
-            "active_task_policy": "DRAIN_BEFORE_SHUTDOWN",
+            "execution_mode": (
+                "ISOLATED_PRODUCT_PROCESS"
+                if self.research_workers is not None
+                else "SYNCHRONOUS_IN_PROCESS"
+            ),
+            "active_task_policy": (
+                "CANCEL_AND_CONFIRM_EXIT_BEFORE_SHUTDOWN"
+                if self.research_workers is not None
+                else "DRAIN_BEFORE_SHUTDOWN"
+            ),
             "checkpoint_resume": "UNAVAILABLE",
-            "shutdown_truth": "TRANSPORT_DRAIN_ONLY_NO_CHECKPOINT",
+            "shutdown_truth": "PROCESS_EXIT_CONFIRMED_NO_CHECKPOINT",
         }
 
     def commit_shutdown(self) -> None:
+        if self.research_workers is not None and self.research_workers.has_live_processes():
+            raise ConflictError("runtime shutdown commit requires zero live research children")
         self._shutdown_committed = True
 
 
-def build_product_runtime(storage_root: str | Path | None = None, *, research_provider_factory=None) -> ProductRuntime:
+def build_product_runtime(
+    storage_root: str | Path | None = None,
+    *,
+    research_provider_factory=None,
+    research_worker_config: ProductResearchWorkerConfig | None = None,
+) -> ProductRuntime:
     return ProductRuntime(
         resolve_product_storage_root(None if storage_root is None else str(storage_root)),
         research_provider_factory=research_provider_factory,
+        research_worker_config=research_worker_config,
     )
 
 
@@ -2174,14 +2382,19 @@ def build_product_ports(
     storage_root: str | Path | None = None,
     *,
     research_provider_factory=None,
+    research_provider_mode: str | None = None,
 ) -> RuntimePorts:
     """Normal production RuntimePorts: real facades over durable product stores."""
     from .product_entry import handle_product_entry_control
     from .product_facades import build_product_facades
+    from .product_workers import ProductResearchWorkerConfig
 
     product = build_product_runtime(
         storage_root,
         research_provider_factory=research_provider_factory,
+        research_worker_config=ProductResearchWorkerConfig(
+            provider_mode=research_provider_mode,
+        ),
     )
     handlers: dict[str, Any] = {}
     for facade in build_product_facades(product):

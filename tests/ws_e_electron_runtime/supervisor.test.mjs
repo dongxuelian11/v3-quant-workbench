@@ -29,12 +29,33 @@ class MockProcess extends EventEmitter {
   stderr = new PassThrough();
   pid = 4321;
   terminated = false;
+  exited = false;
+  constructor() {
+    super();
+    this.exitPromise = new Promise((resolve) => {
+      this.once("exit", () => { this.exited = true; resolve(); });
+    });
+  }
 
   onExit(listener) { this.once("exit", listener); }
   terminate() {
     if (this.terminated) return;
     this.terminated = true;
     queueMicrotask(() => this.emit("exit", 0, null));
+  }
+  kill() {
+    if (this.exited) return;
+    this.terminated = true;
+    queueMicrotask(() => this.emit("exit", null, "SIGKILL"));
+  }
+  isAlive() { return !this.exited; }
+  async waitForExit(deadlineAt) {
+    if (!this.isAlive()) return true;
+    const remaining = Math.max(0, deadlineAt - Date.now());
+    return Promise.race([
+      this.exitPromise.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), remaining))
+    ]);
   }
   crash() {
     if (this.terminated) return;
@@ -71,7 +92,9 @@ class MockBackend {
   requestMode = "ok";
   queuedRequests = [];
   healthMode = "ok";
-  queuedHealthRequests = 0;
+  queuedHealthRequests = [];
+  productEntryMode = "ok";
+  queuedProductEntryRequests = [];
 
   constructor(process, index, protocol = "v3.local/1.0") {
     this.process = process;
@@ -136,14 +159,29 @@ class MockBackend {
       this.respondOk(message);
     } else if (message.kind === "runtime.health") {
       if (this.healthMode === "queue") {
-        this.queuedHealthRequests += 1;
+        this.queuedHealthRequests.push(message);
         return;
       }
-      this.respondHealth();
+      this.respondHealth(message);
+    } else if (message.kind === "productEntry.listProjects") {
+      if (this.productEntryMode === "queue") {
+        this.queuedProductEntryRequests.push(message);
+        return;
+      }
+      this.respondProductEntry(message);
     } else if (message.kind === "runtime.prepareShutdown") {
-      this.send({ kind: "runtime.shutdownReady", deadline_at: message.deadline_at });
+      this.send({
+        kind: "runtime.shutdownReady",
+        deadline_at: message.deadline_at,
+        control_request_id: message.control_request_id,
+        runtime_generation: message.runtime_generation
+      });
     } else if (message.kind === "runtime.commitShutdown") {
-      this.send({ kind: "runtime.shutdownCommitted" });
+      this.send({
+        kind: "runtime.shutdownCommitted",
+        control_request_id: message.control_request_id,
+        runtime_generation: message.runtime_generation
+      });
       queueMicrotask(() => this.process.emit("exit", 0, null));
     }
   }
@@ -159,8 +197,27 @@ class MockBackend {
       this.send({ kind: "response", request_id: message.request_id, status: "OK", body });
   }
 
-  respondHealth() {
-    this.send({ kind: "runtime.health", backend_instance_id: `backend-${this.index}`, state: "READY", uptime_seconds: 1 });
+  respondHealth(request = this.queuedHealthRequests.shift()) {
+    const response = {
+      kind: "runtime.health",
+      backend_instance_id: `backend-${this.index}`,
+      state: "READY",
+      uptime_seconds: 1
+    };
+    if (request?.control_request_id !== undefined) response.control_request_id = request.control_request_id;
+    if (request?.runtime_generation !== undefined) response.runtime_generation = request.runtime_generation;
+    this.send(response);
+  }
+
+  respondProductEntry(request = this.queuedProductEntryRequests.shift()) {
+    const response = {
+      kind: "productEntry.projectsListed",
+      projects: [],
+      has_more: false
+    };
+    if (request?.control_request_id !== undefined) response.control_request_id = request.control_request_id;
+    if (request?.runtime_generation !== undefined) response.runtime_generation = request.runtime_generation;
+    this.send(response);
   }
 
   flushRequestsInReverse() {
@@ -246,27 +303,143 @@ test("supervisor owns fixed spawn, handshake, capabilities, correlation, cancel,
   assert.equal(factory.specs.length, 1, "no legacy fallback process may be spawned");
 });
 
-test("late same-generation health response after caller timeout keeps the backend connected", async () => {
+test("timed-out health releases its slot and a late correlated reply cannot satisfy the next request", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  const diagnostics = [];
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.healthMode = "queue";
+
+  const timedOutHealth = supervisor.getHealth(10);
+  await waitFor(() => backend.queuedHealthRequests.length === 1);
+  await assert.rejects(timedOutHealth, (error) => error.code === "BACKEND_TIMEOUT");
+  const firstRequest = backend.queuedHealthRequests[0];
+  assert.match(firstRequest.control_request_id, /^[0-9a-f-]{36}$/);
+  assert.equal(Number.isSafeInteger(firstRequest.runtime_generation), true);
+
+  const recoveredHealthPromise = supervisor.getHealth(200);
+  let recoveredSettled = false;
+  void recoveredHealthPromise.finally(() => { recoveredSettled = true; }).catch(() => undefined);
+  await waitFor(() => backend.queuedHealthRequests.length === 2);
+  const secondRequest = backend.queuedHealthRequests[1];
+  assert.notEqual(secondRequest.control_request_id, firstRequest.control_request_id);
+  assert.equal(secondRequest.runtime_generation, firstRequest.runtime_generation);
+
+  backend.respondHealth(firstRequest);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(recoveredSettled, false, "the late first reply must not settle the second health request");
+  await waitFor(() => diagnostics.some((item) => item.code === "LATE_CONTROL_RESPONSE_DISCARDED"));
+
+  backend.respondHealth(secondRequest);
+  const recoveredHealth = await recoveredHealthPromise;
+  assert.equal(recoveredHealth.state, "READY");
+  assert.equal(supervisor.state, "READY");
+  assert.equal(factory.processes[0].terminated, false);
+  supervisor.stopNow();
+});
+
+test("concurrent health calls in one runtime generation coalesce onto one control frame", async () => {
   const factory = new MockFactory();
   const supervisor = create(factory, { autoReconnect: false });
   await supervisor.start();
   const backend = factory.backends[0];
   backend.healthMode = "queue";
 
-  const timedOutHealth = supervisor.getHealth(10);
-  await waitFor(() => backend.queuedHealthRequests === 1);
-  await assert.rejects(timedOutHealth, (error) => error.code === "BACKEND_TIMEOUT");
-  await assert.rejects(supervisor.getHealth(10), (error) => error.code === "CONFLICT");
+  const first = supervisor.getHealth(200);
+  const second = supervisor.getHealth(200);
+  try {
+    await waitFor(() => backend.queuedHealthRequests.length >= 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(backend.queuedHealthRequests.length, 1);
 
-  backend.respondHealth();
-  await waitFor(() => supervisor.healthReply === undefined);
-  assert.equal(supervisor.state, "READY");
-  assert.equal(factory.processes[0].terminated, false);
+    backend.respondHealth();
+    const [firstHealth, secondHealth] = await Promise.all([first, second]);
+    assert.deepEqual(secondHealth, firstHealth);
+    assert.equal(supervisor.state, "READY");
+  } finally {
+    supervisor.stopNow();
+    await Promise.allSettled([first, second]);
+  }
+});
 
-  backend.healthMode = "ok";
-  const recoveredHealth = await supervisor.getHealth();
-  assert.equal(recoveredHealth.state, "READY");
-  supervisor.stopNow();
+test("health control tombstones stay bounded and a known late reply reopens one slot", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  const diagnostics = [];
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.healthMode = "queue";
+
+  try {
+    for (let index = 0; index < 256; index += 1) {
+      await assert.rejects(supervisor.getHealth(0), (error) => error.code === "BACKEND_TIMEOUT");
+    }
+    assert.equal(backend.queuedHealthRequests.length, 256);
+    await assert.rejects(
+      supervisor.getHealth(200),
+      (error) => error.code === "CONTROL_CORRELATION_CAPACITY"
+        && error.details.max_tombstones === 256
+        && error.details.timed_out_correlations === 256
+    );
+    assert.equal(backend.queuedHealthRequests.length, 256, "capacity rejection must not emit a frame");
+
+    backend.respondHealth(backend.queuedHealthRequests[0]);
+    await waitFor(() => diagnostics.some((item) => item.code === "LATE_CONTROL_RESPONSE_DISCARDED"));
+
+    const recovered = supervisor.getHealth(200);
+    await waitFor(() => backend.queuedHealthRequests.length === 257);
+    backend.respondHealth(backend.queuedHealthRequests.at(-1));
+    assert.equal((await recovered).state, "READY");
+  } finally {
+    supervisor.stopNow();
+  }
+});
+
+test("timed-out Product Entry control releases its slot and discards its correlated late reply", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  const diagnostics = [];
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.productEntryMode = "queue";
+  const frame = {
+    kind: "productEntry.listProjects",
+    protocol_version: "v3.product-entry/1.0.0",
+    limit: 50,
+    after_project_id: null
+  };
+
+  const timedOut = supervisor.productEntryControl(frame, 10);
+  await waitFor(() => backend.queuedProductEntryRequests.length === 1);
+  await assert.rejects(timedOut, (error) => error.code === "BACKEND_TIMEOUT");
+  const firstRequest = backend.queuedProductEntryRequests[0];
+  assert.match(firstRequest.control_request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+
+  const recovered = supervisor.productEntryControl(frame, 200);
+  let recoveredSettled = false;
+  void recovered.finally(() => { recoveredSettled = true; }).catch(() => undefined);
+  try {
+    await waitFor(() => backend.queuedProductEntryRequests.length === 2);
+    const secondRequest = backend.queuedProductEntryRequests[1];
+    assert.notEqual(secondRequest.control_request_id, firstRequest.control_request_id);
+    assert.equal(secondRequest.runtime_generation, firstRequest.runtime_generation);
+
+    backend.respondProductEntry(firstRequest);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(recoveredSettled, false);
+    await waitFor(() => diagnostics.some((item) => item.code === "LATE_CONTROL_RESPONSE_DISCARDED"));
+
+    backend.respondProductEntry(secondRequest);
+    assert.deepEqual((await recovered).projects, []);
+    assert.equal(supervisor.state, "READY");
+  } finally {
+    supervisor.stopNow();
+    await Promise.allSettled([recovered]);
+  }
 });
 
 test("release acceptance provider is absent by default and forwarded only when explicitly configured", async () => {

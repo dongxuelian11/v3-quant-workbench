@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { capabilityTruth, describeError, useProductRuntime, type ProductSurfaceState } from "../productRuntimeStore";
 import type { ProductResearchSubmitIntent } from "../../../../../packages/contracts/src/index";
 
 /**
  * LIVE B3 product runtime surface. Every state shown here is capability-driven
- * canonical truth read through the typed product bridge — no fixture numbers,
- * no demo charts, no async-worker overclaim. submitBacktest remains a bounded
- * synchronous in-process executor: REQUEST_IN_FLIGHT is transport state only.
+ * canonical truth read through the typed product bridge. Product Research is
+ * durably accepted into the isolated worker path; the legacy existing-RunSpec
+ * action retains its narrower runtime contract. REQUEST_IN_FLIGHT describes
+ * renderer request/readback state, never durable Task execution progress.
  */
 
 const SURFACE_COPY: Record<ProductSurfaceState, string> = {
@@ -17,13 +19,48 @@ const SURFACE_COPY: Record<ProductSurfaceState, string> = {
   NO_CANONICAL_PROJECT_BOUND: "尚未绑定 canonical 项目 · NO_CANONICAL_PROJECT_BOUND",
   PROJECT_BOUND: "已绑定 canonical 项目 · PROJECT_BOUND",
   CANONICAL_RUN_SPEC_REQUIRED: "需要 canonical 运行规格 · CANONICAL_RUN_SPEC_REQUIRED",
-  REQUEST_IN_FLIGHT: "请求执行中 · REQUEST_IN_FLIGHT（不可取消 / 无实时进度 / 不可续跑）",
+  REQUEST_IN_FLIGHT: "请求接受或读取中 · REQUEST_IN_FLIGHT（不是 Task 执行进度；续跑 NOT_AVAILABLE）",
   TASK_AVAILABLE: "Canonical 任务已读取 · TASK_AVAILABLE",
   RESULT_AVAILABLE: "Canonical 结果已读取 · RESULT_AVAILABLE",
   CAPABILITY_UNAVAILABLE: "能力不可用 · CAPABILITY_UNAVAILABLE",
   PRODUCT_OPERATION_SET_INCOMPLETE: "产品操作集不完整 · PRODUCT_OPERATION_SET_INCOMPLETE",
   ERROR: "产品运行时错误 · ERROR"
 };
+
+function VirtualizedRows<T>({
+  items,
+  itemKey,
+  renderItem,
+  rowHeight = 52,
+}: {
+  readonly items: readonly T[];
+  readonly itemKey: (item: T) => string;
+  readonly renderItem: (item: T) => ReactNode;
+  readonly rowHeight?: number;
+}) {
+  const viewportHeight = Math.min(260, Math.max(rowHeight, items.length * rowHeight));
+  const [scrollTop, setScrollTop] = useState(0);
+  const maximumScrollTop = Math.max(0, items.length * rowHeight - viewportHeight);
+  const boundedScrollTop = Math.min(scrollTop, maximumScrollTop);
+  const start = Math.max(0, Math.floor(boundedScrollTop / rowHeight) - 3);
+  const visibleCount = Math.ceil(viewportHeight / rowHeight) + 6;
+  const visible = items.slice(start, start + visibleCount);
+  return <div
+    className="product-virtual-list"
+    role="list"
+    style={{height: viewportHeight}}
+    onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+  >
+    <div className="product-virtual-list-spacer" style={{height: items.length * rowHeight}}>
+      {visible.map((item, offset) => <div
+        className="product-virtual-row"
+        role="listitem"
+        key={itemKey(item)}
+        style={{height: rowHeight, transform: `translateY(${(start + offset) * rowHeight}px)`}}
+      >{renderItem(item)}</div>)}
+    </div>
+  </div>;
+}
 
 function CapabilityBadge({ label, code }: { label: string; code: string }) {
   const capabilities = useProductRuntime((state) => state.capabilities);
@@ -55,6 +92,8 @@ export function ProductRuntimePanel() {
   const submitRunSpec = useProductRuntime((state) => state.submitRunSpec);
   const createProjectAndBind = useProductRuntime((state) => state.createProjectAndBind);
   const importResearchPackage = useProductRuntime((state) => state.importResearchPackage);
+  const loadNextProjectPage = useProductRuntime((state) => state.loadNextProjectPage);
+  const loadNextRunSpecPage = useProductRuntime((state) => state.loadNextRunSpecPage);
   const submitResearch = useProductRuntime((state) => state.submitResearch);
   const [projectIdInput, setProjectIdInput] = useState("");
   const [revisionInput, setRevisionInput] = useState("");
@@ -110,10 +149,15 @@ export function ProductRuntimePanel() {
       </button>
 
       {(projects?.projects.length ?? 0) > 0 && <div className="section-head" style={{marginTop: 16}}><div><small>产品存储中的 canonical 项目</small><h2>绑定已有项目</h2></div></div>}
-      {projects?.projects.map((item) => <div key={item.projectId} className="honest-note" style={{display: "flex", alignItems: "center", gap: 8}}>
-        <span style={{flex: 1}} title={item.projectId}>{item.displayName} · {item.projectId.slice(0, 12)}…</span>
-        <button disabled={entryBusy} onClick={() => void useProductRuntime.getState().connect(item.projectId, item.projectContextRevisionId)}>验证并绑定</button>
-      </div>)}
+      {projects !== null && projects.projects.length > 0 && <VirtualizedRows
+        items={projects.projects}
+        itemKey={(item) => item.projectId}
+        renderItem={(item) => <div className="honest-note product-project-row">
+          <span title={item.projectId}>{item.displayName} · {item.projectId.slice(0, 12)}…</span>
+          <button disabled={entryBusy} onClick={() => void useProductRuntime.getState().connect(item.projectId, item.projectContextRevisionId)}>验证并绑定</button>
+        </div>}
+      />}
+      {projects?.hasMore && <button data-action="load-next-project-page" disabled={entryBusy || projects.nextCursor === null} onClick={() => void loadNextProjectPage()}>加载更多项目</button>}
 
       <details style={{marginTop: 12}}>
         <summary className="honest-note">高级：按 canonical ID 绑定</summary>
@@ -147,20 +191,26 @@ export function ProductRuntimePanel() {
         </button>
         <p className="honest-note">仅可使用本机已存在 canonical 来源权威的研究包；内容完整性不能替代来源权威。逐字节校验失败或来源权威缺失时不会注册。</p>
       </div>}
-      {runSpecs !== null && runSpecs.specs.length > 0 && <ul style={{listStyle: "none", padding: 0}} data-testid="runspec-list">
-        {runSpecs.specs.map((entry) => <li key={entry.artifactId} style={{display: "flex", alignItems: "center", gap: 8, padding: "4px 0"}}>
+      {runSpecs !== null && runSpecs.specs.length > 0 && <div data-testid="runspec-list">
+        <VirtualizedRows
+          items={runSpecs.specs}
+          itemKey={(entry) => entry.artifactId}
+          rowHeight={60}
+          renderItem={(entry) => <div className="product-runspec-row">
           <input type="radio" name="runspec" disabled={entry.status !== "EXECUTABLE"} checked={entry.status === "EXECUTABLE" && runSpecId.trim() === entry.runSpecId} onChange={() => { if (entry.runSpecId !== null) setRunSpecId(entry.runSpecId); }} aria-label={entry.status === "EXECUTABLE" ? `选择 ${entry.runSpecId}` : `不可选择 ${entry.artifactId}`}/>
-          <span style={{flex: 1}} title={`${entry.runSpecId ?? "identity unavailable"} · ${entry.contentSha256 ?? "hash unavailable"}`}>
+          <span className="product-runspec-identity" title={`${entry.runSpecId ?? "identity unavailable"} · ${entry.contentSha256 ?? "hash unavailable"}`}>
             {entry.runSpecId === null ? `${entry.artifactId.slice(0, 22)}…` : `${entry.runSpecId.slice(0, 22)}…`} · {entry.engineVersion ?? "metadata unavailable"}
           </span>
           <span className={`connection-badge ${entry.status === "EXECUTABLE" ? "ok" : "unavailable"}`}>
             {entry.status === "EXECUTABLE" ? "EXECUTABLE" : `UNAVAILABLE · ${entry.diagnostic ?? ""}`}
           </span>
           {entry.status !== "EXECUTABLE" && <button disabled={entryBusy} onClick={() => void importResearchPackage()}>绑定已验证研究包</button>}
-        </li>)}
-        <li><button data-action="import-research-package" disabled={entryBusy} onClick={() => void importResearchPackage()}>{entryBusy ? "验证绑定中…" : "绑定已验证研究包"}</button>
-        <span className="honest-note"> 仅复用目标端已存在并可验证的 canonical 来源权威</span></li>
-      </ul>}
+        </div>}
+        />
+        <div className="product-runspec-actions"><button data-action="import-research-package" disabled={entryBusy} onClick={() => void importResearchPackage()}>{entryBusy ? "验证绑定中…" : "绑定已验证研究包"}</button>
+        <span className="honest-note"> 仅复用目标端已存在并可验证的 canonical 来源权威</span></div>
+      </div>}
+      {runSpecs?.hasMore && <button data-action="load-next-runspec-page" disabled={entryBusy || runSpecs.nextCursor === null} onClick={() => void loadNextRunSpecPage()}>加载更多研究配置</button>}
       {lastImport && <p className="honest-note">最近导入：{lastImport.runSpecId.slice(0, 22)}… {lastImport.alreadyImported ? "（幂等重放）" : ""}</p>}
       <button className="primary" disabled={!canSubmit} onClick={() => void submitRunSpec()} data-action="submit-existing-runspec">
         {inflight ? "请求执行中 · REQUEST_IN_FLIGHT" : "执行既有 RunSpec"}

@@ -6,6 +6,7 @@ import os
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, BinaryIO
 
 from v3_backend.contracts.registry import SERVICE_CONTRACTS
@@ -104,21 +105,72 @@ class RuntimeSession:
                     raise ProtocolViolation("events.ack fields do not match the closed wire shape")
                 self.events.acknowledge(message["project_sequence"])
             elif message.get("kind") == "runtime.health":
-                if set(message) != {"kind"}:
-                    raise ProtocolViolation("runtime.health request has unknown fields")
-                write_frame(sink, self.health.snapshot())
+                control_request_id, runtime_generation = self._control_correlation(message)
+                write_frame(
+                    sink,
+                    self.health.snapshot(
+                        control_request_id=control_request_id,
+                        runtime_generation=runtime_generation,
+                    ),
+                )
             elif str(message.get("kind", "")).startswith("productEntry."):
                 self._handle_product_entry(message, sink)
             elif message.get("kind") == "runtime.prepareShutdown":
                 self._prepare_shutdown(message, sink)
             elif message.get("kind") == "runtime.commitShutdown":
-                if set(message) != {"kind"} or self.health.accepting_requests:
+                control_request_id, runtime_generation = self._control_correlation(message)
+                if self.health.accepting_requests:
                     raise ProtocolViolation("runtime.commitShutdown requires a prepared runtime")
                 self.ports.commit_shutdown()
-                write_frame(sink, {"kind": "runtime.shutdownCommitted"})
+                write_frame(sink, {
+                    "kind": "runtime.shutdownCommitted",
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
+                })
                 return
             else:
                 raise ProtocolViolation("unknown runtime control frame")
+
+    @staticmethod
+    def _control_correlation(
+        message: Mapping[str, Any],
+        payload_fields: set[str] | frozenset[str] = frozenset(),
+    ) -> tuple[str, int]:
+        required = {"kind", "control_request_id", "runtime_generation", "deadline_at"}
+        if set(message) != required | set(payload_fields):
+            raise ProtocolViolation("control request fields do not match the closed wire shape")
+
+        control_request_id = message["control_request_id"]
+        try:
+            parsed_id = uuid.UUID(control_request_id)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ProtocolViolation("control_request_id must be a canonical UUIDv7") from exc
+        if (
+            not isinstance(control_request_id, str)
+            or str(parsed_id) != control_request_id.lower()
+            or parsed_id.version != 7
+        ):
+            raise ProtocolViolation("control_request_id must be a canonical UUIDv7")
+
+        runtime_generation = message["runtime_generation"]
+        if (
+            isinstance(runtime_generation, bool)
+            or not isinstance(runtime_generation, int)
+            or runtime_generation < 1
+            or runtime_generation > 9_007_199_254_740_991
+        ):
+            raise ProtocolViolation("runtime_generation must be a positive safe integer")
+
+        deadline = message["deadline_at"]
+        if deadline is not None:
+            if not isinstance(deadline, str) or not deadline.endswith("Z"):
+                raise ProtocolViolation("deadline_at must be RFC3339 UTC or null")
+            try:
+                datetime.fromisoformat(deadline[:-1] + "+00:00")
+            except ValueError as exc:
+                raise ProtocolViolation("deadline_at must be RFC3339 UTC or null") from exc
+
+        return control_request_id, runtime_generation
 
     def _handle_replay(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
         if set(message) != {"kind", "after_sequence", "limit"}:
@@ -137,22 +189,20 @@ class RuntimeSession:
         })
 
     def _prepare_shutdown(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
-        if set(message) != {"kind", "deadline_at"}:
-            raise ProtocolViolation("runtime.prepareShutdown fields do not match the closed wire shape")
+        control_request_id, runtime_generation = self._control_correlation(message)
         deadline = message["deadline_at"]
-        if deadline is not None and not isinstance(deadline, str):
-            raise ProtocolViolation("shutdown deadline must be a string or null")
         self.health.accepting_requests = False
         truth = self.ports.prepare_shutdown(deadline)
-        response: dict[str, Any] = {
+        response: dict[str, Any] = dict(truth) if isinstance(truth, Mapping) else {}
+        response.update({
             "kind": "runtime.shutdownReady",
+            "control_request_id": control_request_id,
+            "runtime_generation": runtime_generation,
             "deadline_at": deadline,
-            "execution_mode": "SYNCHRONOUS_IN_PROCESS",
-            "active_task_policy": "DRAIN_BEFORE_SHUTDOWN",
-            "checkpoint_resume": "UNAVAILABLE",
-        }
-        if isinstance(truth, Mapping):
-            response.update(dict(truth))
+        })
+        response.setdefault("execution_mode", "SYNCHRONOUS_IN_PROCESS")
+        response.setdefault("active_task_policy", "DRAIN_BEFORE_SHUTDOWN")
+        response.setdefault("checkpoint_resume", "UNAVAILABLE")
         write_frame(sink, response)
 
     def _handle_product_entry(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
@@ -167,26 +217,47 @@ class RuntimeSession:
 
         if self.ports.product_entry_control is None:
             raise ProtocolViolation("product entry control frames are not bound in this runtime")
+        kind = str(message["kind"])
+        payload_fields = {
+            "productEntry.createProject": {"protocol_version", "display_name", "idempotency_key", "notes"},
+            "productEntry.listProjects": {"protocol_version", "limit", "after_project_id"},
+        }.get(kind)
+        if payload_fields is None:
+            raise ProtocolViolation("unknown product entry control frame")
+        control_request_id, runtime_generation = self._control_correlation(message, payload_fields)
+        owner_message = {
+            key: value
+            for key, value in message.items()
+            if key not in {"control_request_id", "runtime_generation", "deadline_at"}
+        }
         if not self.health.accepting_requests:
             write_frame(
                 sink,
                 {
                     "kind": "productEntry.error",
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
                     "code": "RESOURCE_REJECTED",
                     "message": "runtime is draining and rejects new commands",
                     "retryable": False,
                 },
             )
             return
-        kind = str(message["kind"])
         try:
-            write_frame(sink, self.ports.product_entry_control(kind, message))
+            response = dict(self.ports.product_entry_control(kind, owner_message))
+            response.update({
+                "control_request_id": control_request_id,
+                "runtime_generation": runtime_generation,
+            })
+            write_frame(sink, response)
         except Exception as exc:
             error = map_exception(exc)
             write_frame(
                 sink,
                 {
                     "kind": "productEntry.error",
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
                     "code": error.code.value,
                     "message": error.message,
                     "retryable": error.retryable,

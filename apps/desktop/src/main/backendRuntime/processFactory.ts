@@ -8,6 +8,8 @@ class NodeBackendProcess implements BackendProcess {
   readonly stdout;
   readonly stderr;
   readonly pid;
+  private exited = false;
+  private readonly exitPromise: Promise<void>;
 
   constructor(private readonly child: ChildProcess) {
     if (!child.stdin || !child.stdout || !child.stderr) throw new Error("backend stdio pipes were not created");
@@ -15,14 +17,47 @@ class NodeBackendProcess implements BackendProcess {
     this.stdout = child.stdout;
     this.stderr = child.stderr;
     this.pid = child.pid;
+    this.exitPromise = new Promise((resolve) => {
+      child.once("exit", () => {
+        this.exited = true;
+        resolve();
+      });
+    });
   }
 
   onExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void {
+    if (this.exited) {
+      queueMicrotask(() => listener(this.child.exitCode, this.child.signalCode as NodeJS.Signals | null));
+      return;
+    }
     this.child.once("exit", listener);
   }
 
   terminate(): void {
-    this.child.kill();
+    if (this.isAlive()) this.child.kill("SIGTERM");
+  }
+
+  kill(): void {
+    if (this.isAlive()) this.child.kill("SIGKILL");
+  }
+
+  isAlive(): boolean {
+    return !this.exited && this.child.exitCode === null && this.child.signalCode === null;
+  }
+
+  async waitForExit(deadlineAt: number): Promise<boolean> {
+    if (!this.isAlive()) return true;
+    const remainingMs = Math.max(0, deadlineAt - Date.now());
+    if (remainingMs === 0) return !this.isAlive();
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), remainingMs);
+    });
+    try {
+      return await Promise.race([this.exitPromise.then(() => true as const), timedOut]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 }
 

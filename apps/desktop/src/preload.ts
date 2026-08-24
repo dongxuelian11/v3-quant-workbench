@@ -16,7 +16,9 @@ import type {
   ProductResultView,
   ProductStatusView,
   ProductTaskEventsView,
-  ProductTaskListFilter,
+  ProductTaskPageRequest,
+  ProductTasksListView,
+  ProductPageRequest,
   ProductTaskView,
   ProjectContextView,
   ProjectCreatedView,
@@ -123,10 +125,7 @@ const productRuntimeBridge: V3ProductRuntimeBridge = Object.freeze({
     projectId: request.projectId,
     projectContextRevisionId: request.projectContextRevisionId
   }),
-  listTasks: (filter?: ProductTaskListFilter) => invokeProduct<readonly ProductTaskView[]>("productRuntime:listTasks", filter === undefined ? undefined : {
-    ...(filter.service === undefined ? {} : { service: filter.service }),
-    ...(filter.state === undefined ? {} : { state: filter.state })
-  }),
+  listTasks: (request?: ProductTaskPageRequest) => invokeProduct<ProductTasksListView>("productRuntime:listTasks", request),
   getTask: (taskId: string) => invokeProduct<ProductTaskView>("productRuntime:getTask", { taskId }),
   getTaskEvents: (afterSequence: number, limit: number) => invokeProduct<ProductTaskEventsView>("productRuntime:getTaskEvents", { afterSequence, limit }),
   getResult: (resultId: string) => invokeProduct<ProductResultView>("productRuntime:getResult", { resultId }),
@@ -137,8 +136,8 @@ const productRuntimeBridge: V3ProductRuntimeBridge = Object.freeze({
     displayName: request.displayName,
     ...(request.notes === undefined ? {} : { notes: request.notes })
   }),
-  listProjects: () => invokeProduct<ProjectsListView>("productRuntime:listProjects"),
-  listBacktestRunSpecs: () => invokeProduct<RunSpecsListView>("productRuntime:listBacktestRunSpecs"),
+  listProjects: (request?: ProductPageRequest) => invokeProduct<ProjectsListView>("productRuntime:listProjects", request),
+  listBacktestRunSpecs: (request?: ProductPageRequest) => invokeProduct<RunSpecsListView>("productRuntime:listBacktestRunSpecs", request),
   importResearchPackage: () => invokeProduct<ImportResearchPackageOutcomeView | null>("productRuntime:importResearchPackage"),
   submitResearch: (request: ProductResearchSubmitIntent) => invokeProduct<ProductResearchSubmitOutcomeView>("productRuntime:submitResearch", request)
 });

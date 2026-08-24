@@ -12,10 +12,12 @@ import json
 import inspect
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from v3_backend.contracts.registry import OPERATIONS, SERVICE_CONTRACTS
 from v3_backend.errors.codes import ErrorCode
+from v3_backend.errors import ResourceRejectedError
 from v3_backend.runtime.bootstrap import _build_ports
 from v3_backend.runtime.composition_root import (
     RuntimePorts,
@@ -31,7 +33,9 @@ from v3_backend.runtime.product_runtime import (
     mint_uuid7,
 )
 from v3_backend.runtime import product_runtime as product_runtime_module
+from v3_backend.runtime import product_research as product_research_module
 from v3_backend.domain.tasks.entities import TaskState
+from v3_backend.runtime.product_facades import ArtifactFacade
 
 from .helpers import build_product_golden_project
 
@@ -391,6 +395,20 @@ class GoldenExecutionTests(_PortsCase):
         self.assertTrue(hasattr(self.product.idempotency, "check_or_record"))
         self.assertTrue(hasattr(self.product.idempotency, "lookup"))
 
+    def test_product_orchestration_does_not_capture_process_lifecycle_exceptions(self) -> None:
+        for module in (product_runtime_module, product_research_module):
+            self.assertNotIn("except BaseException", inspect.getsource(module))
+
+    def test_unknown_product_exception_is_internal_and_not_retryable(self) -> None:
+        from v3_backend.domain.tasks.retry_policy import RetryPolicy
+        from v3_backend.runtime.product_runtime import classify_execution_error
+
+        category = classify_execution_error(RuntimeError("unclassified program defect"))
+        self.assertEqual(category.value, "INTERNAL_ERROR")
+        decision = RetryPolicy().decide(category, 1)
+        self.assertFalse(decision.allowed)
+        self.assertIsNone(decision.delay_seconds)
+
     def test_same_key_different_request_fails_closed(self) -> None:
         first = self._submit(idempotency_key="golden-key-conflict")
         self.assertEqual(first["status"], "OK", first)
@@ -685,6 +703,38 @@ class NegativePathTests(_PortsCase):
 
 
 class ArtifactServiceTests(_PortsCase):
+    def test_acc_c1_07_stream_ticket_capacity_and_expiry_are_bounded(self) -> None:
+        submitted = self.route(
+            "BacktestService.v1.submitBacktest",
+            run_spec_id=self.setup.run_spec_id,
+            execution_adapter_version_id=ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
+            idempotency_key="artifact-ticket-bound-key",
+        )
+        artifact_id = self.route(
+            "TaskService.v1.getTask", task_id=submitted["body"]["task_id"]
+        )["body"]["read_model"]["outputs"]["BACKTEST_RUN_RESULT"]
+        now = [datetime(2026, 8, 23, tzinfo=timezone.utc)]
+        facade = ArtifactFacade(
+            self.product,
+            clock=lambda: now[0],
+            ticket_limit=4,
+        )
+        request_wire = {
+            "request_id": mint_uuid7(),
+            "project_id": self.setup.project_id,
+            "artifact_id": artifact_id,
+            "range": None,
+        }
+        for _ in range(4):
+            facade.open_artifact_stream(request_wire)
+        self.assertEqual(facade.retained_ticket_count, 4)
+        with self.assertRaises(ResourceRejectedError):
+            facade.open_artifact_stream(request_wire)
+
+        now[0] += timedelta(seconds=301)
+        facade.open_artifact_stream(request_wire)
+        self.assertEqual(facade.retained_ticket_count, 1)
+
     def test_stream_ticket_and_gc_plan(self) -> None:
         submitted = self.route(
             "BacktestService.v1.submitBacktest",
@@ -801,6 +851,45 @@ class TaskOperationTests(_PortsCase):
         self.assertEqual(events["status"], "OK", events)
         event_types = {item["event_type"] for item in events["body"]["read_model"]["items"]}
         self.assertIn("TASK_SUCCEEDED", event_types)
+
+    def test_list_tasks_uses_filter_bound_keyset_cursor(self) -> None:
+        for ordinal in range(2):
+            submitted = self.route(
+                "BacktestService.v1.submitBacktest",
+                run_spec_id=self.setup.run_spec_id,
+                execution_adapter_version_id=ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
+                idempotency_key=f"task-page-key-{ordinal}",
+            )
+            self.assertEqual(submitted["status"], "OK", submitted)
+
+        first = self.route(
+            "TaskService.v1.listTasks", filter={}, page_size=1
+        )
+        self.assertEqual(first["status"], "OK", first)
+        first_model = first["body"]["read_model"]
+        self.assertEqual(len(first_model["items"]), 1)
+        self.assertTrue(first_model["has_more"])
+        self.assertIsInstance(first_model["next_cursor"], str)
+
+        second = self.route(
+            "TaskService.v1.listTasks",
+            filter={"cursor": first_model["next_cursor"]},
+            page_size=1,
+        )
+        self.assertEqual(second["status"], "OK", second)
+        second_model = second["body"]["read_model"]
+        self.assertEqual(len(second_model["items"]), 1)
+        self.assertNotEqual(
+            first_model["items"][0]["task_id"],
+            second_model["items"][0]["task_id"],
+        )
+
+        mismatched = self.route(
+            "TaskService.v1.listTasks",
+            filter={"state": "SUCCEEDED", "cursor": first_model["next_cursor"]},
+            page_size=1,
+        )
+        self.assertNotEqual(mismatched["status"], "OK")
 
     def test_cancel_terminal_task_is_rejected(self) -> None:
         submitted = self.route(

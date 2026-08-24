@@ -34,6 +34,7 @@ class OperationProfile:
     scratch_budget_bytes: int = 512 * 1024 * 1024
     wall_clock_seconds: int = 3600
     heartbeat_interval_seconds: int = 5
+    lease_expiry_seconds: int | None = None
     gpu_device: str | None = None
     resumable: bool = False
 
@@ -53,6 +54,7 @@ class ResourceGrant:
     scratch_budget_bytes: int
     wall_clock_seconds: int
     heartbeat_interval_seconds: int
+    lease_expiry_seconds: int | None
     gpu_device: str | None
 
 
@@ -117,6 +119,7 @@ class ResourceGovernor:
             scratch_budget_bytes=profile.scratch_budget_bytes,
             wall_clock_seconds=profile.wall_clock_seconds,
             heartbeat_interval_seconds=profile.heartbeat_interval_seconds,
+            lease_expiry_seconds=profile.lease_expiry_seconds,
             gpu_device=profile.gpu_device,
         )
         self.active[lease_id] = grant

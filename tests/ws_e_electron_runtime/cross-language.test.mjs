@@ -7,8 +7,8 @@ import test from "node:test";
 import { sanitizedBackendEnvironment } from "../../dist/apps/desktop/src/main/backendRuntime/processFactory.js";
 import { BackendSupervisor } from "../../dist/apps/desktop/src/main/backendRuntime/supervisor.js";
 import { parseRound3ResearchEvidenceBundle } from "../../dist/packages/contracts/src/round3Evidence.js";
-import { applyRound3ConnectionState, applyRound3EvidenceEvent, initialRound3AgentWorkspaceState } from "../../dist/apps/desktop/src/renderer/round3Evidence.js";
-import { PERMISSION_SURFACE } from "../../dist/apps/desktop/src/renderer/agentWorkspace.js";
+import { applyRound3ConnectionState, applyRound3EvidenceEvent, initialRound3AgentWorkspaceState } from "../../apps/desktop/src/renderer/round3Evidence.ts";
+import { PERMISSION_SURFACE } from "../../apps/desktop/src/renderer/agentWorkspace.ts";
 
 test("sanitized backend environment forwards the Windows product storage base and strips secrets and home paths", () => {
   const source = {

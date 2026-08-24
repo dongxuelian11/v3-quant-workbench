@@ -53,6 +53,14 @@ function requiredString(item: Record<string, unknown>, name: string): string {
   return value;
 }
 
+function requiredInteger(item: Record<string, unknown>, name: string, minimum: number, maximum: number): number {
+  const value = item[name];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", `${name} must be an integer in [${minimum}, ${maximum}]`);
+  }
+  return value;
+}
+
 export function registerProductRuntimeIpc(
   ipcMain: IpcMain,
   trusted: TrustIpcSender,
@@ -83,16 +91,21 @@ export function registerProductRuntimeIpc(
   });
   handle(PRODUCT_RUNTIME_CHANNELS.listTasks, (value) => {
     if (value === undefined) return bridge.listTasks();
-    const item = assertObject(value, ["service", "state"]);
-    if (item.service !== undefined && item.service !== "ProductEntryService") {
+    const item = assertObject(value, ["filter", "cursor", "pageSize"]);
+    const filter = item.filter === undefined ? {} : assertObject(item.filter, ["service", "state"]);
+    if (filter.service !== undefined && filter.service !== "ProductEntryService") {
       throw new ProductAdapterError("INVALID_ARGUMENT", "task list service filter is not admitted");
     }
-    if (item.state !== undefined && item.state !== "SUCCEEDED") {
+    if (filter.state !== undefined && filter.state !== "SUCCEEDED") {
       throw new ProductAdapterError("INVALID_ARGUMENT", "task list state filter is not admitted");
     }
     return bridge.listTasks({
-      ...(item.service === undefined ? {} : { service: item.service as "ProductEntryService" }),
-      ...(item.state === undefined ? {} : { state: item.state as "SUCCEEDED" })
+      filter: {
+        ...(filter.service === undefined ? {} : { service: filter.service as "ProductEntryService" }),
+        ...(filter.state === undefined ? {} : { state: filter.state as "SUCCEEDED" })
+      },
+      ...(item.cursor === undefined ? {} : { cursor: requiredString(item, "cursor") }),
+      ...(item.pageSize === undefined ? {} : { pageSize: requiredInteger(item, "pageSize", 1, 100) })
     });
   });
   handle(PRODUCT_RUNTIME_CHANNELS.getTask, (value) => {
@@ -103,13 +116,13 @@ export function registerProductRuntimeIpc(
     const item = assertObject(value, ["afterSequence", "limit"]);
     const afterSequence = item.afterSequence;
     const limit = item.limit;
-    if (!Number.isInteger(afterSequence) || Number(afterSequence) < 0) {
+    if (typeof afterSequence !== "number" || !Number.isInteger(afterSequence) || afterSequence < 0) {
       throw new ProductAdapterError("INVALID_ARGUMENT", "afterSequence must be a non-negative integer");
     }
-    if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 500) {
+    if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 500) {
       throw new ProductAdapterError("INVALID_ARGUMENT", "limit must be an integer in [1, 500]");
     }
-    return bridge.getTaskEvents(Number(afterSequence), Number(limit));
+    return bridge.getTaskEvents(afterSequence, limit);
   });
   handle(PRODUCT_RUNTIME_CHANNELS.getResult, (value) => {
     const item = assertObject(value, ["resultId"]);
@@ -136,8 +149,16 @@ export function registerProductRuntimeIpc(
     }
     return bridge.createProject({ displayName, ...(notes === undefined ? {} : { notes }) });
   });
-  handle(PRODUCT_RUNTIME_CHANNELS.listProjects, () => bridge.listProjects());
-  handle(PRODUCT_RUNTIME_CHANNELS.listBacktestRunSpecs, () => bridge.listBacktestRunSpecs());
+  const pageRequest = (value: unknown) => {
+    if (value === undefined) return undefined;
+    const item = assertObject(value, ["cursor", "pageSize"]);
+    return {
+      ...(item.cursor === undefined ? {} : { cursor: requiredString(item, "cursor") }),
+      ...(item.pageSize === undefined ? {} : { pageSize: requiredInteger(item, "pageSize", 1, 100) })
+    };
+  };
+  handle(PRODUCT_RUNTIME_CHANNELS.listProjects, (value) => bridge.listProjects(pageRequest(value)));
+  handle(PRODUCT_RUNTIME_CHANNELS.listBacktestRunSpecs, (value) => bridge.listBacktestRunSpecs(pageRequest(value)));
   handle(PRODUCT_RUNTIME_CHANNELS.importResearchPackage, () => bridge.importResearchPackage());
   handle(PRODUCT_RUNTIME_CHANNELS.submitResearch, (intentPayload) => {
     const intentFields = assertObject(intentPayload, ["symbol", "startDate", "endDate"]);

@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 
-import { DEMO_TRUTH, LAB_IDS } from "../packages/contracts/src/index.ts";
-import { AGENT_WORKSPACE_BOUNDARY, ARTIFACT_RENDERER_REGISTRY, PERMISSION_SURFACE, validateAgentWorkspaceFixture } from "../apps/desktop/src/renderer/agentWorkspace.ts";
-import { agentStatements, artifactViews, evidenceViews, researchSessions, timelineEntries } from "../apps/desktop/src/renderer/agentWorkspaceFixture.ts";
+import { PRODUCT_NAVIGATION } from "../apps/desktop/src/renderer/productShellModel.ts";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -23,8 +21,10 @@ function assertSourceContract(source, pattern, message) {
 const packageJson = JSON.parse(await readRequired("package.json"));
 assert.equal(packageJson.main, "dist/apps/desktop/src/main.js", "Electron main entrypoint changed unexpectedly");
 assert.equal(packageJson.scripts["smoke:frontend"], "node scripts/public-frontend-smoke.mjs");
+assert.equal(packageJson.scripts["verify:product-bundle-truth"], "node scripts/verify-product-bundle-truth.mjs");
 assert.equal(packageJson.scripts["smoke:visual-evidence"], "node scripts/frontend-smoke.mjs");
 assert.match(packageJson.scripts["validate:public"], /npm run smoke:frontend/);
+assert.match(packageJson.scripts["validate:public"], /npm run build && npm run verify:product-bundle-truth/);
 assert.doesNotMatch(packageJson.scripts["validate:public"], /smoke:(?:electron|visual-evidence)/);
 assert.match(packageJson.scripts.validate, /npm run validate:public/);
 assert.match(packageJson.scripts.validate, /npm run smoke:electron/);
@@ -61,6 +61,26 @@ for (const asset of new Set(referencedAssets)) {
   const info = await stat(assetPath);
   assert.ok(info.isFile() && info.size > 0, `Renderer asset is missing or empty: ${asset}`);
 }
+const rendererPayload = (await Promise.all([...new Set(referencedAssets)].map((asset) => readFile(resolve(rendererDirectory, asset), "utf8")))).join("\n");
+for (const token of [
+  "BT-DEMO",
+  "demo-v",
+  "DEVELOPMENT_INTEGRATION_FIXTURE",
+  "DeterministicFrontendDemoProvider",
+  "CN Daily Adjusted · Demo",
+  "BacktestHandoffDraft/demo",
+]) {
+  assert.doesNotMatch(rendererPayload, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `PRODUCT renderer asset contains ${token}`);
+}
+for (const marker of [
+  "首页 / 项目",
+  "V1_1_C2_DATA_NOT_CONNECTED",
+  "V1_1_C2_FACTOR_NOT_CONNECTED",
+  "V1_1_C3_BACKTEST_NOT_CONNECTED",
+  "V1_1_C3_RESULTS_NOT_CONNECTED",
+]) {
+  assert.ok(rendererPayload.includes(marker), `PRODUCT renderer asset is missing ${marker}`);
+}
 
 const mainSource = await readRequired("apps/desktop/src/main.ts", 500);
 for (const [preference, expected] of [
@@ -76,52 +96,32 @@ assertSourceContract(mainSource, /will-navigate["']\s*,\s*\(event\)\s*=>\s*event
 
 const preloadSource = await readRequired("apps/desktop/src/preload.ts", 200);
 assertSourceContract(preloadSource, /contextBridge\.exposeInMainWorld\(["']v3Desktop["']/, "Preload bridge exposure is missing");
-const factorWorkbenchSource = await readRequired("apps/desktop/src/renderer/components/FactorWorkbench.tsx", 1000);
-assertSourceContract(factorWorkbenchSource, /fixtureMode\s*\?\s*W0_FACTORS\s*:\s*\[\]/, "Factor fixtures must be gated from production mode");
-assertSourceContract(factorWorkbenchSource, /尚未接入 · NOT_CONNECTED/, "Production Factor UI must expose its disconnected truth");
-assertSourceContract(factorWorkbenchSource, /当前 main 没有桌面只读目录路由；未注入任何演示因子。/, "Production Factor Library must not silently fall back to fixture data");
-assertSourceContract(factorWorkbenchSource, /if \(!fixtureMode\).*NOT_CONNECTED/, "TDX analysis must fail closed without the explicit development fixture mode");
-
-assert.deepEqual([...LAB_IDS], ["research", "strategy", "model", "backtest", "result"]);
-const appSource = await readRequired("apps/desktop/src/renderer/App.tsx", 500);
-assertSourceContract(appSource, /useState<WorkspaceSurface>\(["']agent["']\)/, "Agent Workspace must remain the default product surface");
-assertSourceContract(appSource, /data-surface=["']agent["']/, "Agent Workspace navigation entry is missing");
-for (const lab of LAB_IDS) {
-  assertSourceContract(appSource, new RegExp(`id:\\s*["']${lab}["']`), `Renderer route metadata is missing for ${lab}`);
-}
-for (const componentPath of [
-  "apps/desktop/src/renderer/components/ResearchPanels.tsx",
-  "apps/desktop/src/renderer/components/StrategyPanels.tsx",
-  "apps/desktop/src/renderer/components/ModelPanels.tsx",
-  "apps/desktop/src/renderer/components/BacktestResultPanels.tsx",
-  "apps/desktop/src/renderer/components/Workbench.tsx",
-  "apps/desktop/src/renderer/components/AgentWorkspace.tsx",
-  "apps/desktop/src/renderer/components/ResearchSessionNavigator.tsx",
-  "apps/desktop/src/renderer/components/ArtifactViewer.tsx"
+const rendererEntrySource = await readRequired("apps/desktop/src/renderer/main.tsx", 200);
+assertSourceContract(rendererEntrySource, /import \{ ProductApp \} from ["']\.\/ProductApp["']/, "PRODUCT renderer entry must import ProductApp");
+assert.doesNotMatch(rendererEntrySource, /from ["']\.\/App["']|<App\s*\//, "Development workbench must not be the PRODUCT entry");
+const productAppSource = await readRequired("apps/desktop/src/renderer/ProductApp.tsx", 1000);
+assertSourceContract(productAppSource, /data-product-mode=["']PRODUCT["']/, "PRODUCT mode marker is missing");
+assertSourceContract(productAppSource, /<ProductRuntimePanel\s*\/>/, "Home must consume the canonical product runtime read model");
+assertSourceContract(productAppSource, /disabled=\{!item\.available\}/, "Deferred PRODUCT pages must render disabled");
+assertSourceContract(productAppSource, /data-unavailable-reason=\{item\.reason \?\? undefined\}/, "Deferred PRODUCT pages must expose their reason");
+assert.deepEqual(PRODUCT_NAVIGATION.map((item) => item.id), ["home", "data", "research", "backtest", "results"]);
+assert.deepEqual(PRODUCT_NAVIGATION.filter((item) => item.available).map((item) => item.id), ["home"]);
+assert.ok(PRODUCT_NAVIGATION.filter((item) => !item.available).every((item) => item.reason?.startsWith("NOT_AVAILABLE · ")));
+const productPanelSource = await readRequired("apps/desktop/src/renderer/components/ProductRuntimePanel.tsx", 1000);
+for (const [action, ownerCall] of [
+  ["create-project", "createProjectAndBind"],
+  ["submit-product-research", "submitResearch"],
+  ["import-research-package", "importResearchPackage"],
+  ["submit-existing-runspec", "submitRunSpec"],
 ]) {
-  await readRequired(componentPath, 500);
+  assert.ok(productPanelSource.includes(`data-action=\"${action}\"`), `PRODUCT action ${action} is missing`);
+  assert.ok(productPanelSource.includes(`${ownerCall}(`), `PRODUCT action ${action} has no real owner call`);
 }
 
-const agentWorkspaceSource = await readRequired("apps/desktop/src/renderer/components/AgentWorkspace.tsx", 1000);
-const artifactViewerSource = await readRequired("apps/desktop/src/renderer/components/ArtifactViewer.tsx", 500);
-assert.doesNotMatch(`${agentWorkspaceSource}\n${artifactViewerSource}`, /dangerouslySetInnerHTML|\beval\s*\(|new Function\s*\(/, "Agent output must never execute arbitrary model HTML or code");
-assertSourceContract(agentWorkspaceSource, /NON_CANONICAL/, "Agent drafts must expose the non-canonical boundary");
-assertSourceContract(agentWorkspaceSource, /Open in .* Lab/, "Open-in-Lab navigation is missing");
-assert.equal(AGENT_WORKSPACE_BOUNDARY.mode, "LIVE_READ_ONLY");
-assertSourceContract(appSource, /getEvidenceSnapshot/, "Agent Workspace must consume the existing backendRuntime read-only snapshot");
-assertSourceContract(appSource, /onEvidenceEvent/, "Agent Workspace must consume the existing backendRuntime event relay");
 const preloadBridgeSource = await readRequired("apps/desktop/src/preload/backendRuntime/bridge.ts", 500);
 assertSourceContract(preloadBridgeSource, /createBackendRuntimeReadOnlyBridge/, "Read-only backendRuntime product bridge is missing");
 for (const forbidden of ["cancelTask", "retryTask", "resumeTask", "openArtifactStream"]) {
   const productSurface = preloadBridgeSource.slice(preloadBridgeSource.indexOf("createBackendRuntimeReadOnlyBridge"));
   assert.doesNotMatch(productSurface, new RegExp(`${forbidden}\\s*:`), `Renderer product bridge must not expose ${forbidden}`);
 }
-assert.deepEqual(PERMISSION_SURFACE.filter((item) => item.allowed).map((item) => item.level), ["L0_READ", "L1_DRAFT"]);
-assert.deepEqual(Object.keys(ARTIFACT_RENDERER_REGISTRY), ["table", "metric", "text", "details", "chart", "backtest-result"]);
-assert.ok(researchSessions.length >= 3 && evidenceViews.length >= 12 && timelineEntries.length >= 8, "Agent-first fixture coverage is incomplete");
-assert.equal(validateAgentWorkspaceFixture({ sessions: researchSessions, statements: agentStatements, timeline: timelineEntries, evidence: evidenceViews, artifacts: artifactViews }), true);
-
-assert.equal(DEMO_TRUTH.classification, "DEMO");
-assert.match(DEMO_TRUTH.label, /NOT FORMAL FINANCIAL OUTPUT/);
-
-console.log(`Public frontend smoke PASS: Agent-first default, ${LAB_IDS.length} preserved Lab contracts, closed artifact registry, Electron security invariants, runtime outputs, and ${new Set(referencedAssets).size} renderer assets verified without GUI or local evidence artifacts.`);
+console.log(`Public frontend smoke PASS: truthful PRODUCT shell, one connected Home, four reasoned NOT_AVAILABLE pages, Electron security invariants, and ${new Set(referencedAssets).size} renderer assets verified without development fixtures.`);

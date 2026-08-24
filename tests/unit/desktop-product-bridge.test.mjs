@@ -23,6 +23,16 @@ test("binding store rejects invalid persisted shapes and accepts canonical refs"
     assert.equal(parsePersistedBinding({ schemaVersion: 1, projectId: "../escape", projectContextRevisionId: "c", sessionId: "s", savedAt: "x" }), null);
     assert.equal(parsePersistedBinding({ schemaVersion: 1, projectId: "p", projectContextRevisionId: "c", sessionId: "s" }), null);
     assert.equal(await store.load(), null);
+    await writeFile(productBindingPath(dir), "{not-json", "utf8");
+    await assert.rejects(
+      () => new ProductBindingStore(productBindingPath(dir)).load(),
+      (error) => error.code === "BINDING_STORE_CORRUPT"
+    );
+    await assert.rejects(
+      () => new ProductBindingStore(dir).load(),
+      (error) => error.code === "BINDING_STORE_IO_FAILED",
+      "only ENOENT may be interpreted as an unbound product"
+    );
     const persisted = await store.persist(REFS);
     assert.equal(persisted.projectId, REFS.projectId);
     const reloaded = new ProductBindingStore(productBindingPath(dir));
@@ -209,6 +219,9 @@ test("renderer-facing bridge contract stays free of generic transport members", 
   assert.equal(new Set(registrations).size, 18);
   assert.doesNotMatch(ipc, /operation_?[Ii]d/);
   assert.match(ipc, /trusted\(event\)/);
+  const panel = await readFile(new URL("../../apps/desktop/src/renderer/components/ProductRuntimePanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /function VirtualizedRows/);
+  assert.match(panel, /className="product-virtual-list"/);
 });
 
 test("Product Entry research adapter preserves explicit PRE_ALPHA truth and rejects numeric drift", () => {
@@ -298,7 +311,7 @@ test("S1-S4: Product Entry discovery admits only FORMAL capability", async (t) =
     {
       name: "S4 FORMAL preserves normal project discovery",
       truthState: "FORMAL",
-      expectedProjects: { projects: [{ projectId: "prj_formal", projectContextRevisionId: "pcr_formal", displayName: "正式项目", createdAt: "2026-08-20T00:00:00Z" }], hasMore: false },
+      expectedProjects: { projects: [{ projectId: "prj_formal", projectContextRevisionId: "pcr_formal", displayName: "正式项目", createdAt: "2026-08-20T00:00:00Z" }], hasMore: false, nextCursor: null },
       expectedCalls: 1
     }
   ];
@@ -382,7 +395,7 @@ test("UNAVAILABLE run-spec cannot be selected or submitted by the renderer store
       diagnostic: "source bytes unavailable"
     }],
     hasMore: false,
-    nextAfterArtifactId: null
+    nextCursor: null
   };
   assert.equal(executableRunSpecSelection(unavailable, canonicalId), null);
   assert.equal(executableRunSpecSelection({ ...unavailable, specs: [{ ...unavailable.specs[0], status: "EXECUTABLE" }] }, canonicalId), canonicalId);

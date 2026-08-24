@@ -53,6 +53,9 @@ export interface BackendProcess {
   readonly stderr: Readable;
   onExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
   terminate(): void;
+  kill(): void;
+  isAlive(): boolean;
+  waitForExit(deadlineAt: number): Promise<boolean>;
 }
 
 export interface BackendProcessFactory {

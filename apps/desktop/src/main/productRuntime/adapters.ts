@@ -8,6 +8,7 @@ import type {
   ProductTaskAttemptView,
   ProductTaskEventView,
   ProductTaskEventsView,
+  ProductTasksListView,
   ProductTaskView,
   ProjectContextView,
   SessionRestoreView
@@ -21,11 +22,13 @@ import type {
 
 export class ProductAdapterError extends Error {
   readonly code: string;
+  override readonly cause?: unknown;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, cause?: unknown) {
     super(message);
     this.code = code;
     this.name = "ProductAdapterError";
+    this.cause = cause;
   }
 }
 
@@ -166,12 +169,25 @@ export function adaptTask(raw: unknown): ProductTaskView {
   });
 }
 
-export function adaptTaskList(raw: unknown): readonly ProductTaskView[] {
+export function adaptTaskList(raw: unknown): ProductTasksListView {
   const body = record(raw, "response body");
   const model = record(body.read_model, "task list read model");
   const items = model.items;
   if (!Array.isArray(items)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "task list items must be an array");
-  return Object.freeze(items.map((entry) => adaptTask({ read_model: entry })));
+  const hasMore = model.has_more;
+  const nextCursor = model.next_cursor;
+  if (typeof hasMore !== "boolean") throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "task list has_more must be boolean");
+  if (nextCursor !== null && (typeof nextCursor !== "string" || nextCursor.length < 1 || nextCursor.length > 2048)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "task list next_cursor must be null or a bounded opaque string");
+  }
+  if (hasMore !== (nextCursor !== null)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "task list cursor does not match has_more");
+  }
+  return Object.freeze({
+    tasks: Object.freeze(items.map((entry) => adaptTask({ read_model: entry }))),
+    hasMore,
+    nextCursor: nextCursor as string | null
+  });
 }
 
 export function adaptTaskEvents(raw: unknown): ProductTaskEventsView {

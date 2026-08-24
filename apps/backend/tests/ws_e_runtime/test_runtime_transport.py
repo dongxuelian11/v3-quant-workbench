@@ -17,6 +17,10 @@ from v3_backend.runtime.handshake import (
 from v3_backend.runtime.request_router import RequestRouter
 
 REQUEST_ID = "01890f3c-7b5a-7000-8000-000000000001"
+HEALTH_CONTROL_ID = "01890f3c-7b5a-7000-8000-000000000003"
+PREPARE_CONTROL_ID = "01890f3c-7b5a-7000-8000-000000000004"
+COMMIT_CONTROL_ID = "01890f3c-7b5a-7000-8000-000000000005"
+PRODUCT_CONTROL_ID = "01890f3c-7b5a-7000-8000-000000000006"
 PROJECT_ID = "prj_00000000000000000000000000"
 REVISION_ID = "pcr_00000000000000000000000000"
 TASK_ID = "tsk_00000000000000000000000000"
@@ -100,6 +104,58 @@ class HandshakeTests(unittest.TestCase):
 
 
 class RequestRouterTests(unittest.TestCase):
+    def test_acc_c1_07_seen_response_cache_expires_by_owned_ttl(self) -> None:
+        calls = 0
+        now = [0.0]
+
+        def handler(dto: dict[str, object]) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            return {"request_id": dto["request_id"], "truth_state": "UNAVAILABLE", "read_model": {}}
+
+        router = RequestRouter(
+            {"TaskService.v1.getTask": handler},
+            clock=lambda: now[0],
+            response_cache_ttl_seconds=5.0,
+        )
+        original = request()
+        router.route(original)
+        router.route(original)
+        self.assertEqual(calls, 1)
+        now[0] = 6.0
+        router.route(original)
+        self.assertEqual(calls, 2)
+        self.assertEqual(router.retained_response_count, 1)
+
+    def test_acc_c1_07_seen_response_cache_stays_bounded_after_4096_requests(self) -> None:
+        def handler(dto: dict[str, object]) -> dict[str, object]:
+            return {"request_id": dto["request_id"], "truth_state": "UNAVAILABLE", "read_model": {}}
+
+        router = RequestRouter({"TaskService.v1.getTask": handler})
+        for index in range(4097):
+            request_id = f"01890f3c-7b5a-7000-8000-{index:012x}"
+            wire = request(get_task_body(request_id))
+            wire["request_id"] = request_id
+            self.assertEqual(router.route(wire)["status"], "OK")
+
+        self.assertEqual(router.retained_response_count, 4096)
+
+    def test_acc_c1_06_expired_request_is_rejected_before_dispatch(self) -> None:
+        calls: list[str] = []
+
+        def handler(dto: dict[str, object]) -> dict[str, object]:
+            calls.append(str(dto["task_id"]))
+            return {"request_id": dto["request_id"], "truth_state": "UNAVAILABLE", "read_model": {}}
+
+        expired = request()
+        expired["deadline_at"] = "2000-01-01T00:00:00Z"
+        response = RequestRouter({"TaskService.v1.getTask": handler}).route(expired)
+
+        self.assertEqual(response["status"], "ERROR")
+        self.assertEqual(response["error"]["code"], "RESOURCE_REJECTED")
+        self.assertEqual(response["error"]["details"]["reason_code"], "DEADLINE_EXPIRED")
+        self.assertEqual(calls, [], "an expired request must never reach the operation handler")
+
     def test_operation_correlation_and_unknown_operation(self) -> None:
         calls: list[str] = []
 
@@ -178,6 +234,95 @@ class EventAndShutdownTests(unittest.TestCase):
                 "body": {},
             })
 
+    def test_runtime_health_echoes_closed_control_correlation(self) -> None:
+        fixed_hello = create_hello("backend", 1, "0.1.0", [], nonce="de" * 32)
+        accept = {
+            "kind": "supervisor.accept",
+            "token_proof": token_proof(TOKEN, fixed_hello["nonce"]),
+            "requested_protocol": "v3.local/1.0",
+            "requested_asl_versions": {name: "1.0" for name in SERVICE_CONTRACTS},
+            "desktop_version": "0.1.0",
+            "project_id": None,
+            "project_context_revision_id": None,
+            "last_project_event_sequence": 0,
+        }
+        health_request = {
+            "kind": "runtime.health",
+            "control_request_id": HEALTH_CONTROL_ID,
+            "runtime_generation": 1,
+            "deadline_at": "2026-08-23T00:00:30Z",
+        }
+        source = io.BytesIO(encode_frame(accept) + encode_frame(health_request))
+        sink = io.BytesIO()
+        session = RuntimeSession(
+            RuntimePorts(),
+            TOKEN,
+            "0.1.0",
+            backend_instance_id="backend",
+        )
+
+        with patch("v3_backend.runtime.composition_root.create_hello", return_value=fixed_hello):
+            session.run(source, sink)
+
+        decoded = FrameDecoder().feed(sink.getvalue())
+        self.assertEqual([item["kind"] for item in decoded], [
+            "backend.hello",
+            "backend.ready",
+            "runtime.health",
+        ])
+        self.assertEqual(decoded[2]["control_request_id"], HEALTH_CONTROL_ID)
+        self.assertEqual(decoded[2]["runtime_generation"], 1)
+
+    def test_product_entry_correlation_is_transport_owned(self) -> None:
+        fixed_hello = create_hello("backend", 1, "0.1.0", [], nonce="ac" * 32)
+        accept = {
+            "kind": "supervisor.accept",
+            "token_proof": token_proof(TOKEN, fixed_hello["nonce"]),
+            "requested_protocol": "v3.local/1.0",
+            "requested_asl_versions": {name: "1.0" for name in SERVICE_CONTRACTS},
+            "desktop_version": "0.1.0",
+            "project_id": None,
+            "project_context_revision_id": None,
+            "last_project_event_sequence": 0,
+        }
+        owner_messages: list[dict[str, object]] = []
+
+        def product_entry(kind: str, message: object) -> dict[str, object]:
+            owner_messages.append(dict(message))
+            return {"kind": "productEntry.projectsListed", "projects": [], "has_more": False}
+
+        request_message = {
+            "kind": "productEntry.listProjects",
+            "protocol_version": "v3.product-entry/1.0.0",
+            "limit": 50,
+            "after_project_id": None,
+            "control_request_id": PRODUCT_CONTROL_ID,
+            "runtime_generation": 1,
+            "deadline_at": "2026-08-23T00:00:30Z",
+        }
+        source = io.BytesIO(encode_frame(accept) + encode_frame(request_message))
+        sink = io.BytesIO()
+        session = RuntimeSession(
+            RuntimePorts(product_entry_control=product_entry),
+            TOKEN,
+            "0.1.0",
+            backend_instance_id="backend",
+        )
+
+        with patch("v3_backend.runtime.composition_root.create_hello", return_value=fixed_hello):
+            session.run(source, sink)
+
+        decoded = FrameDecoder().feed(sink.getvalue())
+        self.assertEqual(decoded[2]["kind"], "productEntry.projectsListed")
+        self.assertEqual(decoded[2]["control_request_id"], PRODUCT_CONTROL_ID)
+        self.assertEqual(decoded[2]["runtime_generation"], 1)
+        self.assertEqual(owner_messages, [{
+            "kind": "productEntry.listProjects",
+            "protocol_version": "v3.product-entry/1.0.0",
+            "limit": 50,
+            "after_project_id": None,
+        }])
+
     def test_runtime_graceful_shutdown_sequence(self) -> None:
         prepared: list[str | None] = []
         committed: list[bool] = []
@@ -194,9 +339,19 @@ class EventAndShutdownTests(unittest.TestCase):
         }
         source = io.BytesIO(
             encode_frame(accept)
-            + encode_frame({"kind": "runtime.prepareShutdown", "deadline_at": "2026-08-09T00:00:00Z"})
+            + encode_frame({
+                "kind": "runtime.prepareShutdown",
+                "control_request_id": PREPARE_CONTROL_ID,
+                "runtime_generation": 1,
+                "deadline_at": "2026-08-09T00:00:00Z",
+            })
             + encode_frame(request())
-            + encode_frame({"kind": "runtime.commitShutdown"})
+            + encode_frame({
+                "kind": "runtime.commitShutdown",
+                "control_request_id": COMMIT_CONTROL_ID,
+                "runtime_generation": 1,
+                "deadline_at": "2026-08-09T00:00:00Z",
+            })
         )
         sink = io.BytesIO()
         session = RuntimeSession(
@@ -220,6 +375,10 @@ class EventAndShutdownTests(unittest.TestCase):
         ])
         self.assertEqual(decoded[3]["status"], "ERROR")
         self.assertEqual(decoded[3]["error"]["details"]["reason_code"], "RUNTIME_DRAINING")
+        self.assertEqual(decoded[2]["control_request_id"], PREPARE_CONTROL_ID)
+        self.assertEqual(decoded[2]["runtime_generation"], 1)
+        self.assertEqual(decoded[4]["control_request_id"], COMMIT_CONTROL_ID)
+        self.assertEqual(decoded[4]["runtime_generation"], 1)
         self.assertEqual(prepared, ["2026-08-09T00:00:00Z"])
         self.assertEqual(committed, [True])
 

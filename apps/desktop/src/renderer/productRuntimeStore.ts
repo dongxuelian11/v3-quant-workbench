@@ -41,6 +41,16 @@ export type ProductSurfaceState =
 
 export type ProductResearchDiscoveryState = "NOT_RUN" | "NO_HISTORY" | "RECOVERED" | "ERROR";
 
+export interface ProjectScope {
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly bindingGeneration: number;
+}
+
+export interface ProjectScopeToken extends ProjectScope {
+  readonly requestId: string;
+}
+
 interface ProductRuntimeState {
   surface: ProductSurfaceState;
   status: ProductStatusView | null;
@@ -60,7 +70,12 @@ interface ProductRuntimeState {
   result: ProductResultView | null;
   artifactDescriptor: ArtifactDescriptorView | null;
   errorMessage: string | null;
+  projectScope: ProjectScope | null;
+  bindingGeneration: number;
   refresh(): Promise<void>;
+  loadNextProjectPage(): Promise<void>;
+  loadNextRunSpecPage(): Promise<void>;
+  activateProjectScope(refs: ProductBindingRefs | null): void;
   setRunSpecId(value: string): void;
   connect(projectId: string, projectContextRevisionId: string): Promise<void>;
   submitRunSpec(): Promise<void>;
@@ -70,6 +85,45 @@ interface ProductRuntimeState {
 }
 
 const RUN_SPEC_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
+let rendererRequestOrdinal = 0;
+
+class LateScopeResultDropped extends Error {
+  constructor() {
+    super("LATE_SCOPE_RESULT_DROPPED");
+    this.name = "LateScopeResultDropped";
+  }
+}
+
+function captureProjectScope(state: Pick<ProductRuntimeState, "projectScope">): ProjectScopeToken | null {
+  if (state.projectScope === null) return null;
+  rendererRequestOrdinal += 1;
+  return Object.freeze({
+    ...state.projectScope,
+    requestId: `renderer_request_${rendererRequestOrdinal}`
+  });
+}
+
+function isCurrentProjectScope(state: Pick<ProductRuntimeState, "projectScope">, token: ProjectScopeToken): boolean {
+  return state.projectScope !== null
+    && state.projectScope.projectId === token.projectId
+    && state.projectScope.projectContextRevisionId === token.projectContextRevisionId
+    && state.projectScope.bindingGeneration === token.bindingGeneration;
+}
+
+function guardProjectScope(token: ProjectScopeToken): void {
+  if (!isCurrentProjectScope(useProductRuntime.getState(), token)) throw new LateScopeResultDropped();
+}
+
+function recordLateScopeResult(token: ProjectScopeToken): void {
+  console.warn(JSON.stringify({
+    level: "WARN",
+    code: "LATE_SCOPE_RESULT_DROPPED",
+    project_id: token.projectId,
+    project_context_revision_id: token.projectContextRevisionId,
+    binding_generation: token.bindingGeneration,
+    request_id: token.requestId
+  }));
+}
 
 export function executableRunSpecSelection(
   specs: RunSpecsListView | null,
@@ -88,19 +142,23 @@ function capabilityOf(capabilities: readonly ProductCapabilityView[], code: stri
 async function readResearchTaskView(
   bridge: V3ProductRuntimeBridge,
   outcome: ProductResearchSubmitOutcomeView,
+  scopeGuard: () => void = () => undefined,
 ): Promise<{
   task: ProductTaskView;
   researchResult: ProductResultView | null;
   artifactDescriptor: ArtifactDescriptorView | null;
 }> {
   const task = await bridge.getTask(outcome.taskId);
+  scopeGuard();
   const resultArtifactId = task.outputs["BACKTEST_RUN_RESULT"];
   const artifactDescriptor = resultArtifactId
     ? await bridge.getArtifactDescriptor(resultArtifactId).catch(() => null)
     : null;
+  scopeGuard();
   const researchResult = task.resultId === null
     ? null
     : await bridge.getResult(task.resultId).catch(() => null);
+  scopeGuard();
   return { task, researchResult, artifactDescriptor };
 }
 
@@ -151,8 +209,10 @@ async function readDiscoveredResearchTaskView(
   bridge: V3ProductRuntimeBridge,
   candidate: ProductTaskView,
   projectId: string,
+  scopeGuard: () => void = () => undefined,
 ): Promise<Awaited<ReturnType<typeof readResearchTaskView>>> {
   const task = await bridge.getTask(candidate.taskId);
+  scopeGuard();
   if (task.projectId !== projectId || task.operationId !== RESEARCH_OPERATION_ID || task.state !== "SUCCEEDED") {
     throw new Error("canonical research task no longer matches the bound project or operation");
   }
@@ -165,6 +225,7 @@ async function readDiscoveredResearchTaskView(
     bridge.getResult(resultId),
     bridge.getArtifactDescriptor(resultArtifactId)
   ]);
+  scopeGuard();
   if (researchResult.resultId !== resultId || researchResult.projectId !== projectId || researchResult.backtestRunId !== task.runId) {
     throw new Error("canonical research Result identity does not match the selected Task");
   }
@@ -225,21 +286,75 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
   result: null,
   artifactDescriptor: null,
   errorMessage: null,
+  projectScope: null,
+  bindingGeneration: 0,
+
+  activateProjectScope: (refs) => set((state) => {
+    const sameScope = refs !== null
+      && state.projectScope !== null
+      && state.projectScope.projectId === refs.projectId
+      && state.projectScope.projectContextRevisionId === refs.projectContextRevisionId
+      && state.boundProject?.sessionId === refs.sessionId;
+    if (sameScope || (refs === null && state.projectScope === null)) return state;
+    const bindingGeneration = state.bindingGeneration + 1;
+    const projectScope = refs === null
+      ? null
+      : Object.freeze({
+          projectId: refs.projectId,
+          projectContextRevisionId: refs.projectContextRevisionId,
+          bindingGeneration
+        });
+    const status = state.status === null
+      ? null
+      : {
+          ...state.status,
+          bindingState: refs === null ? "NO_CANONICAL_PROJECT_BOUND" as const : "PROJECT_BOUND" as const,
+          boundProject: refs
+        };
+    return {
+      ...state,
+      projectScope,
+      bindingGeneration,
+      status,
+      boundProject: refs,
+      runSpecs: null,
+      runSpecId: "",
+      inflight: false,
+      entryBusy: false,
+      lastSubmit: null,
+      lastImport: null,
+      lastResearch: null,
+      researchDiscoveryState: "NOT_RUN" as const,
+      recoveredResearchTaskId: null,
+      task: null,
+      result: null,
+      artifactDescriptor: null,
+      errorMessage: null,
+      surface: refs === null ? "NO_CANONICAL_PROJECT_BOUND" as const : "PROJECT_BOUND" as const
+    };
+  }),
 
   refresh: async () => {
     const bridge = window.v3ProductRuntime;
     if (!bridge) return;
+    const startingToken = captureProjectScope(get());
+    let refreshToken = startingToken;
     try {
       const status = await bridge.getProductStatus();
+      if (startingToken !== null) guardProjectScope(startingToken);
+      get().activateProjectScope(status.boundProject);
+      refreshToken = captureProjectScope(get());
       const capabilities = status.capabilities;
       const stale = status.bindingState === "BINDING_STALE";
       const productEntryCapability = capabilityOf(capabilities, "ProductEntryService");
       const projects = productEntryCapability?.truth_state === "FORMAL"
         ? await bridge.listProjects().catch(() => null)
         : null;
+      if (refreshToken !== null) guardProjectScope(refreshToken);
       const runSpecs = status.boundProject !== null
         ? await bridge.listBacktestRunSpecs().catch(() => null)
         : null;
+      if (refreshToken !== null) guardProjectScope(refreshToken);
       const current = get();
       const previousResearch = current.lastResearch;
       const coldResearchDiscoveryEligible = previousResearch === null
@@ -252,7 +367,11 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       let discoveryError: unknown = null;
       if (!stale && status.boundProject !== null && previousResearch !== null) {
         try {
-          const candidate = await readResearchTaskView(bridge, previousResearch);
+          const candidate = await readResearchTaskView(
+            bridge,
+            previousResearch,
+            () => { if (refreshToken !== null) guardProjectScope(refreshToken); }
+          );
           if (candidate.task.projectId === status.boundProject.projectId) {
             researchReadback = candidate;
           } else {
@@ -263,16 +382,24 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
         }
       } else if (!stale && status.boundProject !== null && coldResearchDiscoveryEligible) {
         try {
-          const tasks = await bridge.listTasks({ service: "ProductEntryService", state: "SUCCEEDED" });
-          const candidate = selectLatestResearchTask(tasks, status.boundProject.projectId);
+          const taskPage = await bridge.listTasks({ filter: { service: "ProductEntryService", state: "SUCCEEDED" } });
+          if (refreshToken !== null) guardProjectScope(refreshToken);
+          const candidate = selectLatestResearchTask(taskPage.tasks, status.boundProject.projectId);
           if (candidate !== null) {
-            researchReadback = await readDiscoveredResearchTaskView(bridge, candidate, status.boundProject.projectId);
+            researchReadback = await readDiscoveredResearchTaskView(
+              bridge,
+              candidate,
+              status.boundProject.projectId,
+              () => { if (refreshToken !== null) guardProjectScope(refreshToken); }
+            );
           }
         } catch (error) {
           discoveryError = error;
         }
       }
+      if (refreshToken !== null) guardProjectScope(refreshToken);
       set((state) => {
+        if (refreshToken !== null && !isCurrentProjectScope(state, refreshToken)) return state;
         const base = {
           status,
           capabilities,
@@ -362,7 +489,60 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
         };
       });
     } catch (error) {
+      if (error instanceof LateScopeResultDropped) {
+        const dropped = refreshToken ?? startingToken;
+        if (dropped !== null) recordLateScopeResult(dropped);
+        return;
+      }
       set((state) => ({ surface: "BACKEND_DISCONNECTED", errorMessage: describeError(error) ?? state.errorMessage }));
+    }
+  },
+
+  loadNextProjectPage: async () => {
+    const bridge = window.v3ProductRuntime;
+    const current = get().projects;
+    if (!bridge || current === null || !current.hasMore || current.nextCursor === null) return;
+    try {
+      const page = await bridge.listProjects({ cursor: current.nextCursor });
+      set((state) => state.projects === current ? {
+        projects: {
+          projects: Object.freeze([...current.projects, ...page.projects.filter((item) => !current.projects.some((prior) => prior.projectId === item.projectId))]),
+          hasMore: page.hasMore,
+          nextCursor: page.nextCursor
+        },
+        errorMessage: null
+      } : state);
+    } catch (error) {
+      set((state) => state.projects === current
+        ? { surface: "ERROR", errorMessage: describeError(error) ?? "加载更多 canonical 项目失败" }
+        : state);
+    }
+  },
+
+  loadNextRunSpecPage: async () => {
+    const bridge = window.v3ProductRuntime;
+    const current = get().runSpecs;
+    const token = captureProjectScope(get());
+    if (!bridge || current === null || !current.hasMore || current.nextCursor === null || token === null) return;
+    try {
+      const page = await bridge.listBacktestRunSpecs({ cursor: current.nextCursor });
+      guardProjectScope(token);
+      set((state) => isCurrentProjectScope(state, token) && state.runSpecs === current ? {
+        runSpecs: {
+          specs: Object.freeze([...current.specs, ...page.specs.filter((item) => !current.specs.some((prior) => prior.artifactId === item.artifactId))]),
+          hasMore: page.hasMore,
+          nextCursor: page.nextCursor
+        },
+        errorMessage: null
+      } : state);
+    } catch (error) {
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token) && state.runSpecs === current
+        ? { surface: "ERROR", errorMessage: describeError(error) ?? "加载更多 canonical 研究配置失败" }
+        : state);
     }
   },
   setRunSpecId: (value) => set((state) => {
@@ -375,6 +555,15 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
     if (!bridge) return;
     try {
       await bridge.connectExistingProject({ projectId, projectContextRevisionId });
+      // The main-process response is emitted only after the active binding
+      // commit. Invalidate the prior scope before the additional refs read so
+      // no A completion can land in the post-commit/pre-refresh interval.
+      get().activateProjectScope(null);
+      const refs = await bridge.getBoundProject();
+      if (refs === null || refs.projectId !== projectId || refs.projectContextRevisionId !== projectContextRevisionId) {
+        throw new Error("committed binding refs did not exactly match the requested project scope");
+      }
+      get().activateProjectScope(refs);
       await get().refresh();
     } catch (error) {
       set({ surface: "ERROR", errorMessage: describeError(error) ?? "绑定 canonical 项目失败" });
@@ -384,20 +573,26 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
   submitRunSpec: async () => {
     const bridge = window.v3ProductRuntime;
     const runSpecId = executableRunSpecSelection(get().runSpecs, get().runSpecId);
-    if (!bridge || runSpecId === null) return;
-    set((state) => ({ ...state, inflight: true, surface: "REQUEST_IN_FLIGHT", errorMessage: null, task: null, result: null, artifactDescriptor: null, lastSubmit: null, researchDiscoveryState: "NOT_RUN" as const, recoveredResearchTaskId: null }));
+    const token = captureProjectScope(get());
+    if (!bridge || runSpecId === null || token === null) return;
+    set((state) => isCurrentProjectScope(state, token)
+      ? { ...state, inflight: true, surface: "REQUEST_IN_FLIGHT", errorMessage: null, task: null, result: null, artifactDescriptor: null, lastSubmit: null, researchDiscoveryState: "NOT_RUN" as const, recoveredResearchTaskId: null }
+      : state);
     try {
       // submitBacktest is a bounded synchronous in-process executor behind a
       // durable Task: we await the transport request, then re-query canonical
       // Task/Result/Artifact read state. This is REQUEST_IN_FLIGHT, never a
       // claimed live TASK_RUNNING / progress / cancel / resume.
       const outcome = await bridge.submitExistingBacktestRunSpec(runSpecId);
+      guardProjectScope(token);
       const task = await bridge.getTask(outcome.taskId);
+      guardProjectScope(token);
       let result: ProductResultView | null = null;
       let artifactDescriptor: ArtifactDescriptorView | null = null;
       const resultArtifactId = task.outputs["BACKTEST_RUN_RESULT"];
       if (resultArtifactId) {
         artifactDescriptor = await bridge.getArtifactDescriptor(resultArtifactId).catch(() => null);
+        guardProjectScope(token);
       }
       // Result identity is a direct canonical Task read-model relation. Event
       // pages remain notifications only and cannot choose a result for this
@@ -405,17 +600,26 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       const resultId = task.resultId;
       if (resultId !== null) {
         result = await bridge.getResult(resultId).catch(() => null);
+        guardProjectScope(token);
       }
-      set((state) => ({
-        inflight: false,
-        lastSubmit: outcome,
-        task,
-        result,
-        artifactDescriptor,
-        surface: deriveSurface({ ...state, inflight: false, result, task })
-      }));
+      set((state) => isCurrentProjectScope(state, token)
+        ? {
+            inflight: false,
+            lastSubmit: outcome,
+            task,
+            result,
+            artifactDescriptor,
+            surface: deriveSurface({ ...state, inflight: false, result, task })
+          }
+        : state);
     } catch (error) {
-      set({ inflight: false, surface: "ERROR", errorMessage: describeError(error) ?? "执行 canonical 回测失败" });
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { inflight: false, surface: "ERROR", errorMessage: describeError(error) ?? "执行 canonical 回测失败" }
+        : state);
     }
   },
 
@@ -431,6 +635,12 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
         projectId: created.projectId,
         projectContextRevisionId: created.projectContextRevisionId
       });
+      get().activateProjectScope(null);
+      const refs = await bridge.getBoundProject();
+      if (refs === null || refs.projectId !== created.projectId || refs.projectContextRevisionId !== created.projectContextRevisionId) {
+        throw new Error("new project binding refs did not exactly match the created canonical project");
+      }
+      get().activateProjectScope(refs);
       await get().refresh();
     } catch (error) {
       set((state) => ({ ...state, surface: "ERROR", errorMessage: describeError(error) ?? "创建 canonical 项目失败" }));
@@ -441,50 +651,75 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
 
   importResearchPackage: async () => {
     const bridge = window.v3ProductRuntime;
-    if (!bridge) return;
-    set((state) => ({ ...state, entryBusy: true, errorMessage: null }));
+    const token = captureProjectScope(get());
+    if (!bridge || token === null) return;
+    set((state) => isCurrentProjectScope(state, token)
+      ? { ...state, entryBusy: true, errorMessage: null }
+      : state);
     try {
       const outcome = await bridge.importResearchPackage();
+      guardProjectScope(token);
       if (outcome === null) {
-        set((state) => ({ ...state, entryBusy: false }));
+        set((state) => isCurrentProjectScope(state, token) ? { ...state, entryBusy: false } : state);
         return;
       }
-      set((state) => ({ ...state, lastImport: outcome, runSpecId: outcome.runSpecId }));
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, lastImport: outcome, runSpecId: outcome.runSpecId }
+        : state);
       await get().refresh();
     } catch (error) {
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
       const detail = describeError(error);
       const sourceAuthorityMissing = detail?.includes("SOURCE_AUTHORITY_NOT_VERIFIED") === true;
-      set((state) => ({
-        ...state,
-        surface: "ERROR",
-        errorMessage: sourceAuthorityMissing
-          ? "SOURCE_AUTHORITY_NOT_VERIFIED · 研究包完整性可验证，但目标端缺少可信来源权威，不能作为可执行研究配置"
-          : detail ?? "绑定已验证研究包失败（已拒绝注册）"
-      }));
+      set((state) => isCurrentProjectScope(state, token)
+        ? {
+            ...state,
+            surface: "ERROR",
+            errorMessage: sourceAuthorityMissing
+              ? "SOURCE_AUTHORITY_NOT_VERIFIED · 研究包完整性可验证，但目标端缺少可信来源权威，不能作为可执行研究配置"
+              : detail ?? "绑定已验证研究包失败（已拒绝注册）"
+          }
+        : state);
     } finally {
-      set((state) => ({ ...state, entryBusy: false }));
+      set((state) => isCurrentProjectScope(state, token) ? { ...state, entryBusy: false } : state);
     }
   },
 
   submitResearch: async (intent) => {
     const bridge = window.v3ProductRuntime;
     if (!bridge) return;
-    set((state) => ({ ...state, inflight: true, surface: "REQUEST_IN_FLIGHT", errorMessage: null, task: null, result: null, artifactDescriptor: null, lastResearch: null, researchDiscoveryState: "NOT_RUN" as const, recoveredResearchTaskId: null }));
+    const token = captureProjectScope(get());
+    if (token === null) return;
+    set((state) => isCurrentProjectScope(state, token)
+      ? { ...state, inflight: true, surface: "REQUEST_IN_FLIGHT", errorMessage: null, task: null, result: null, artifactDescriptor: null, lastResearch: null, researchDiscoveryState: "NOT_RUN" as const, recoveredResearchTaskId: null }
+      : state);
     try {
       const outcome = await bridge.submitResearch(intent);
-      const view = await readResearchTaskView(bridge, outcome);
-      set((state) => ({
-        inflight: false,
-        lastResearch: outcome,
-        researchDiscoveryState: "NOT_RUN" as const,
-        recoveredResearchTaskId: null,
-        task: view.task,
-        result: view.researchResult,
-        artifactDescriptor: view.artifactDescriptor,
-        surface: deriveSurface({ ...state, inflight: false, result: view.researchResult, task: view.task })
-      }));
+      guardProjectScope(token);
+      const view = await readResearchTaskView(bridge, outcome, () => guardProjectScope(token));
+      set((state) => isCurrentProjectScope(state, token)
+        ? {
+            inflight: false,
+            lastResearch: outcome,
+            researchDiscoveryState: "NOT_RUN" as const,
+            recoveredResearchTaskId: null,
+            task: view.task,
+            result: view.researchResult,
+            artifactDescriptor: view.artifactDescriptor,
+            surface: deriveSurface({ ...state, inflight: false, result: view.researchResult, task: view.task })
+          }
+        : state);
     } catch (error) {
-      set({ inflight: false, surface: "ERROR", errorMessage: describeError(error) ?? "提交 Product Entry 研究失败" });
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { inflight: false, surface: "ERROR", errorMessage: describeError(error) ?? "提交 Product Entry 研究失败" }
+        : state);
     }
   }
 }));

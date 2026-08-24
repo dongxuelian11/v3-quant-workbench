@@ -1,0 +1,52 @@
+import React from "react";
+import { ProductRuntimePanel } from "./components/ProductRuntimePanel";
+import { WindowControls } from "./components/WindowControls";
+import { useProductRuntime } from "./productRuntimeStore";
+import { PRODUCT_NAVIGATION, selectCurrentProjectLabel } from "./productShellModel";
+
+export function ProductApp() {
+  const boundProject = useProductRuntime((state) => state.boundProject);
+  const projects = useProductRuntime((state) => state.projects);
+  const currentProjectLabel = selectCurrentProjectLabel(boundProject, projects?.projects ?? []);
+
+  return <div className="product-app-shell" data-testid="product-app-shell" data-product-mode="PRODUCT">
+    <header className="product-titlebar" onDoubleClick={(event) => {
+      if ((event.target as HTMLElement).closest("button")) return;
+      void window.v3Desktop.windowControl("toggle-maximize");
+    }}>
+      <div className="product-brand" aria-label="V3 可用研究产品">
+        <strong>V3</strong>
+        <span>可用研究产品</span>
+        <small>PRODUCT · PRE_ALPHA / RESEARCH_ONLY</small>
+      </div>
+      <nav aria-label="产品主导航">
+        {PRODUCT_NAVIGATION.map((item) => <button
+          key={item.id}
+          className={item.id === "home" ? "active" : undefined}
+          aria-current={item.id === "home" ? "page" : undefined}
+          disabled={!item.available}
+          title={item.reason ?? item.label}
+          aria-label={item.reason === null ? item.label : `${item.label}，${item.reason}`}
+          data-product-page={item.id}
+          data-unavailable-reason={item.reason ?? undefined}
+        >{item.label}{item.reason !== null && <small>NOT_AVAILABLE</small>}</button>)}
+      </nav>
+      <div className="product-current-project" aria-live="polite">
+        <small>当前项目</small>
+        <span title={boundProject?.projectId ?? "NO_CANONICAL_PROJECT_BOUND"}>
+          {currentProjectLabel}
+        </span>
+      </div>
+      <WindowControls />
+    </header>
+
+    <main className="product-home" data-product-page="home">
+      <ProductRuntimePanel />
+    </main>
+
+    <footer className="product-truth-footer">
+      <span>正式能力以 canonical backend read model 为准</span>
+      <span>未接通页面保持 NOT_AVAILABLE，不使用开发数据替代</span>
+    </footer>
+  </div>;
+}

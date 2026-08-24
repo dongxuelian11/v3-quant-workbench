@@ -32,6 +32,9 @@ const DEFAULT_MAX_EVENT_SEQUENCE_GAP = 10_000;
 const RECENT_EVENT_ID_CACHE_LIMIT = 2000;
 const DEFAULT_REQUEST_TOMBSTONE_LIMIT = 2048;
 const DEFAULT_REQUEST_TOMBSTONE_TTL_MS = 60_000;
+const MAX_PENDING_CONTROL_REQUESTS = 32;
+const CONTROL_TOMBSTONE_LIMIT = 256;
+const CONTROL_TOMBSTONE_TTL_MS = 5 * 60_000;
 const DEFAULT_MAX_BUFFERED_STDIN_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_BUFFERED_STDIN_WRITES = 256;
 const DEFAULT_MAX_STDERR_LINE_BYTES = 16 * 1024;
@@ -69,6 +72,29 @@ interface PendingRequest {
 }
 
 interface RequestTombstone {
+  readonly generation: number;
+  readonly ttlBoundaryAt: number;
+}
+
+type ControlRequestKind =
+  | "runtime.health"
+  | "runtime.prepareShutdown"
+  | "runtime.commitShutdown"
+  | "productEntry.createProject"
+  | "productEntry.listProjects";
+
+interface PendingControlRequest<T> {
+  readonly kind: ControlRequestKind;
+  readonly responseKinds: readonly string[];
+  readonly controlRequestId: string;
+  readonly generation: number;
+  readonly wait: Deferred<T>;
+  readonly timer: NodeJS.Timeout;
+}
+
+interface ControlTombstone {
+  readonly kind: ControlRequestKind;
+  readonly responseKinds: readonly string[];
   readonly generation: number;
   readonly ttlBoundaryAt: number;
 }
@@ -123,6 +149,8 @@ export class BackendSupervisor extends EventEmitter {
   private readonly maxEventSequenceGap: number;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly tombstones = new Map<string, RequestTombstone>();
+  private readonly pendingControls = new Map<string, PendingControlRequest<Readonly<Record<string, unknown>>>>();
+  private readonly controlTombstones = new Map<string, ControlTombstone>();
   private readonly requestTombstoneLimit: number;
   private readonly requestTombstoneTtlMs: number;
   private readonly maxBufferedStdinBytes: number;
@@ -144,10 +172,6 @@ export class BackendSupervisor extends EventEmitter {
   private hello?: BackendHello;
   private ready?: Deferred<void>;
   private readyTimer?: NodeJS.Timeout;
-  private shutdownReady?: Deferred<void>;
-  private shutdownCommitted?: Deferred<void>;
-  private healthReply?: Deferred<Readonly<Record<string, unknown>>>;
-  private productEntryReply?: Deferred<Readonly<Record<string, unknown>>>;
   private restartTimer?: NodeJS.Timeout;
   private restartAttempt = 0;
   private projectContext?: SupervisorProjectContext;
@@ -219,6 +243,9 @@ export class BackendSupervisor extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    if (this.stateValue === "SHUTTING_DOWN" && this.process?.isAlive()) {
+      throw this.backendExitNotConfirmed(this.process);
+    }
     if (!["STOPPED", "DISCONNECTED"].includes(this.stateValue)) throw new Error(`cannot start backend from ${this.stateValue}`);
     this.expectedExit = false;
     this.protocolRejected = false;
@@ -321,19 +348,20 @@ export class BackendSupervisor extends EventEmitter {
 
   async getHealth(timeoutMs = 5_000): Promise<Readonly<Record<string, unknown>>> {
     if (this.stateValue !== "READY") throw new BackendDisconnectedError();
-    if (this.healthReply) throw new BackendRuntimeError("health request already pending", "CONFLICT");
-    const wait = deferred<Readonly<Record<string, unknown>>>();
-    this.healthReply = wait;
-    try {
-      this.send({ kind: "runtime.health" });
-      return await this.withTimeout(wait.promise, timeoutMs, "backend health response timed out");
-    } catch (error) {
-      // runtime.health has no request id. After a caller timeout, keep the
-      // slot reserved so its same-generation late reply cannot be mistaken
-      // for an unsolicited frame or satisfy a newer health request.
-      if (!(error instanceof BackendTimeoutError) && this.healthReply === wait) this.healthReply = undefined;
-      throw error;
-    }
+    const message = await this.requestControl(
+      "runtime.health",
+      ["runtime.health"],
+      { deadline_at: new Date(Date.now() + timeoutMs).toISOString() },
+      timeoutMs,
+      "backend health response timed out",
+      true
+    );
+    const {
+      control_request_id: _controlRequestId,
+      runtime_generation: _runtimeGeneration,
+      ...health
+    } = message;
+    return contextBridgeSafe(health);
   }
 
   /**
@@ -344,11 +372,32 @@ export class BackendSupervisor extends EventEmitter {
    */
   async productEntryControl(frame: Record<string, unknown>, timeoutMs = 30_000): Promise<Readonly<Record<string, unknown>>> {
     if (this.stateValue !== "READY") throw new BackendDisconnectedError();
-    if (this.productEntryReply) throw new BackendRuntimeError("product entry control already pending", "CONFLICT");
-    const wait = deferred<Readonly<Record<string, unknown>>>();
-    this.productEntryReply = wait;
-    this.send(frame);
-    return this.withTimeout(wait.promise, timeoutMs, "product entry control timed out").finally(() => { this.productEntryReply = undefined; });
+    const kind = frame.kind;
+    if (kind !== "productEntry.createProject" && kind !== "productEntry.listProjects") {
+      throw new BackendRuntimeError("unknown Product Entry control kind", "INVALID_ARGUMENT");
+    }
+    const { kind: _kind, ...payload } = frame;
+    const successKind = kind === "productEntry.createProject"
+      ? "productEntry.projectCreated"
+      : "productEntry.projectsListed";
+    const message = await this.requestControl(
+      kind,
+      [successKind, "productEntry.error"],
+      { ...payload, deadline_at: new Date(Date.now() + timeoutMs).toISOString() },
+      timeoutMs,
+      "product entry control timed out"
+    );
+    if (message.kind === "productEntry.error") {
+      const code = typeof message.code === "string" && message.code.length > 0 ? message.code : "PRODUCT_ENTRY_ERROR";
+      const text = typeof message.message === "string" ? message.message : "product entry control failed";
+      throw new BackendRuntimeError(text, code);
+    }
+    const {
+      control_request_id: _controlRequestId,
+      runtime_generation: _runtimeGeneration,
+      ...response
+    } = message;
+    return contextBridgeSafe(response);
   }
 
   async shutdown(deadlineMs = 10_000): Promise<void> {
@@ -368,28 +417,124 @@ export class BackendSupervisor extends EventEmitter {
       this.setState("STOPPED");
       return;
     }
-    this.shutdownReady = deferred<void>();
-    this.shutdownCommitted = deferred<void>();
+    const process = this.process;
     const deadlineAt = new Date(Date.now() + deadlineMs).toISOString();
-    this.send({ kind: "runtime.prepareShutdown", deadline_at: deadlineAt });
+    let gracefulCommitAcknowledged = false;
     try {
-      await this.withTimeout(this.shutdownReady.promise, deadlineMs, "backend prepare shutdown timed out");
-      this.send({ kind: "runtime.commitShutdown" });
-      await this.withTimeout(this.shutdownCommitted.promise, deadlineMs, "backend commit shutdown timed out");
+      await this.requestControl(
+        "runtime.prepareShutdown",
+        ["runtime.shutdownReady"],
+        { deadline_at: deadlineAt },
+        deadlineMs,
+        "backend prepare shutdown timed out"
+      );
+      // prepareShutdown is the quiesce barrier: once acknowledged, no new
+      // business work may start. Drain and durably ack every event accepted
+      // before that barrier while the backend transport is still alive.
+      await this.whenDeliveryIdle();
+      await this.requestControl(
+        "runtime.commitShutdown",
+        ["runtime.shutdownCommitted"],
+        { deadline_at: deadlineAt },
+        deadlineMs,
+        "backend commit shutdown timed out"
+      );
       // The backend cannot emit any more events after shutdownCommitted:
       // drain accepted event deliveries (application emit, cursor commit,
       // ack) before terminating so no committed-but-unacked event is lost.
       await this.whenDeliveryIdle();
+      gracefulCommitAcknowledged = true;
     } finally {
-      const process = this.process;
-      this.process = undefined;
+      try {
+        await this.confirmBackendExit(process, deadlineMs, gracefulCommitAcknowledged);
+      } catch (error) {
+        this.clearWriteQueue();
+        this.rejectAll(new BackendDisconnectedError("canonical backend shutdown is fenced pending confirmed process exit"), false);
+        this.tombstones.clear();
+        this.setState("SHUTTING_DOWN");
+        throw error;
+      }
+      if (this.process === process) this.process = undefined;
       this.sessionGeneration += 1;
       this.clearWriteQueue();
-      process?.terminate();
       this.rejectAll(new BackendDisconnectedError("canonical backend shut down"), false);
       this.tombstones.clear();
       this.setState("STOPPED");
     }
+  }
+
+  private async confirmBackendExit(
+    process: BackendProcess,
+    deadlineMs: number,
+    waitForNaturalExit: boolean
+  ): Promise<void> {
+    const waitWindowMs = Math.max(1, deadlineMs);
+    if (!process.isAlive()) return;
+    if (waitForNaturalExit && await process.waitForExit(Date.now() + waitWindowMs)) return;
+    if (!process.isAlive()) return;
+    process.terminate();
+    if (await process.waitForExit(Date.now() + waitWindowMs)) return;
+    if (!process.isAlive()) return;
+    process.kill();
+    if (await process.waitForExit(Date.now() + waitWindowMs)) return;
+    if (!process.isAlive()) return;
+    throw this.backendExitNotConfirmed(process);
+  }
+
+  private backendExitNotConfirmed(process: BackendProcess): BackendRuntimeError {
+    return new BackendRuntimeError(
+      "canonical backend exit could not be confirmed; replacement generation is fenced",
+      "BACKEND_EXIT_NOT_CONFIRMED",
+      false,
+      { pid: process.pid ?? null }
+    );
+  }
+
+  private requestControl(
+    kind: ControlRequestKind,
+    responseKinds: readonly string[],
+    payload: Readonly<Record<string, unknown>>,
+    timeoutMs: number,
+    timeoutMessage: string,
+    coalesce = false
+  ): Promise<Readonly<Record<string, unknown>>> {
+    const generation = this.sessionGeneration;
+    if (coalesce) {
+      const existing = [...this.pendingControls.values()].find(
+        (pending) => pending.kind === kind && pending.generation === generation
+      );
+      if (existing) return existing.wait.promise;
+    }
+    for (const reserved of ["kind", "control_request_id", "runtime_generation"]) {
+      if (reserved in payload) {
+        throw new BackendRuntimeError(`caller-controlled control field rejected: ${reserved}`, "INVALID_ARGUMENT");
+      }
+    }
+    this.ensureControlCapacity();
+    const controlRequestId = uuidV7();
+    const wait = deferred<Readonly<Record<string, unknown>>>();
+    let pending!: PendingControlRequest<Readonly<Record<string, unknown>>>;
+    const timer = setTimeout(() => {
+      if (this.pendingControls.get(controlRequestId) !== pending) return;
+      this.pendingControls.delete(controlRequestId);
+      this.rememberControlTombstone(controlRequestId, pending);
+      wait.reject(new BackendTimeoutError(timeoutMessage));
+    }, timeoutMs);
+    pending = { kind, responseKinds: Object.freeze([...responseKinds]), controlRequestId, generation, wait, timer };
+    this.pendingControls.set(controlRequestId, pending);
+    try {
+      this.send({
+        kind,
+        ...payload,
+        control_request_id: controlRequestId,
+        runtime_generation: generation
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      if (this.pendingControls.get(controlRequestId) === pending) this.pendingControls.delete(controlRequestId);
+      throw error;
+    }
+    return wait.promise;
   }
 
   stopNow(): void {
@@ -409,6 +554,7 @@ export class BackendSupervisor extends EventEmitter {
   private async launch(): Promise<void> {
     const generation = ++this.sessionGeneration;
     this.tombstones.clear();
+    this.controlTombstones.clear();
     this.decoder = new FrameDecoder();
     this.clearWriteQueue();
     this.stderrBuffer = Buffer.alloc(0);
@@ -487,12 +633,12 @@ export class BackendSupervisor extends EventEmitter {
       case "response": this.onResponse(message); break;
       case "event": this.onEvent(validateEvent(message)); break;
       case "events.replayComplete": this.onReplayComplete(message); break;
-      case "runtime.health": this.onHealth(message); break;
+      case "runtime.health": this.onControlResponse(message); break;
       case "productEntry.projectCreated":
-      case "productEntry.projectsListed": this.onProductEntryReply(message); break;
-      case "productEntry.error": this.onProductEntryError(message); break;
-      case "runtime.shutdownReady": this.shutdownReady?.resolve(); break;
-      case "runtime.shutdownCommitted": this.shutdownCommitted?.resolve(); break;
+      case "productEntry.projectsListed": this.onControlResponse(message); break;
+      case "productEntry.error": this.onControlResponse(message); break;
+      case "runtime.shutdownReady": this.onControlResponse(message); break;
+      case "runtime.shutdownCommitted": this.onControlResponse(message); break;
       default: throw new TransportProtocolError(`unexpected backend frame: ${String(message.kind)}`);
     }
   }
@@ -692,23 +838,52 @@ export class BackendSupervisor extends EventEmitter {
     this.send({ kind: "events.replay", after_sequence: afterSequence, limit: REPLAY_PAGE_LIMIT });
   }
 
-  private onHealth(message: Record<string, unknown>): void {
-    if (!this.healthReply) throw new TransportProtocolError("unsolicited runtime.health response");
-    const reply = this.healthReply;
-    this.healthReply = undefined;
-    reply.resolve(contextBridgeSafe(message));
-  }
-
-  private onProductEntryReply(message: Record<string, unknown>): void {
-    if (!this.productEntryReply) throw new TransportProtocolError(`unsolicited ${String(message.kind)} response`);
-    this.productEntryReply.resolve(contextBridgeSafe(message));
-  }
-
-  private onProductEntryError(message: Record<string, unknown>): void {
-    if (!this.productEntryReply) throw new TransportProtocolError("unsolicited productEntry.error response");
-    const code = typeof message.code === "string" && message.code.length > 0 ? message.code : "PRODUCT_ENTRY_ERROR";
-    const text = typeof message.message === "string" ? message.message : "product entry control failed";
-    this.productEntryReply.reject(new BackendRuntimeError(text, code));
+  private onControlResponse(message: Record<string, unknown>): void {
+    const controlRequestId = message.control_request_id;
+    const generation = message.runtime_generation;
+    if (
+      typeof controlRequestId !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(controlRequestId)
+    ) {
+      throw new TransportProtocolError(`${String(message.kind)} control_request_id is invalid`);
+    }
+    if (!Number.isSafeInteger(generation) || Number(generation) < 1) {
+      throw new TransportProtocolError(`${String(message.kind)} runtime_generation is invalid`);
+    }
+    const pending = this.pendingControls.get(controlRequestId);
+    if (!pending) {
+      const tombstone = this.getControlTombstone(controlRequestId);
+      if (
+        tombstone
+        && tombstone.responseKinds.includes(String(message.kind))
+        && tombstone.generation === Number(generation)
+      ) {
+        this.controlTombstones.delete(controlRequestId);
+        this.emit("diagnostic", {
+          level: "WARN",
+          code: "LATE_CONTROL_RESPONSE_DISCARDED",
+          message: `discarded late ${String(message.kind)} response for control request ${controlRequestId} from session generation ${tombstone.generation}`
+        } satisfies RuntimeDiagnostic);
+        return;
+      }
+      throw new TransportProtocolError(`${String(message.kind)} response has no pending control correlation`);
+    }
+    if (!pending.responseKinds.includes(String(message.kind))) {
+      throw new TransportProtocolError(
+        `${String(message.kind)} response does not match pending ${pending.kind} control request`
+      );
+    }
+    if (pending.generation !== Number(generation) || pending.generation !== this.sessionGeneration) {
+      this.emit("diagnostic", {
+        level: "WARN",
+        code: "STALE_CONTROL_RESPONSE_DISCARDED",
+        message: `discarded ${String(message.kind)} response for stale session generation ${String(generation)}`
+      } satisfies RuntimeDiagnostic);
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingControls.delete(controlRequestId);
+    pending.wait.resolve(contextBridgeSafe(message));
   }
 
   private becomeReady(): void {
@@ -777,6 +952,50 @@ export class BackendSupervisor extends EventEmitter {
         pending_correlations: this.pending.size
       }
     );
+  }
+
+  private ensureControlCapacity(): void {
+    this.pruneControlTombstones();
+    if (
+      this.pendingControls.size >= MAX_PENDING_CONTROL_REQUESTS
+      || this.pendingControls.size + this.controlTombstones.size >= CONTROL_TOMBSTONE_LIMIT
+    ) {
+      throw new BackendRuntimeError(
+        "new backend control request rejected while correlation capacity is reserved",
+        "CONTROL_CORRELATION_CAPACITY",
+        true,
+        {
+          max_pending: MAX_PENDING_CONTROL_REQUESTS,
+          max_tombstones: CONTROL_TOMBSTONE_LIMIT,
+          pending_correlations: this.pendingControls.size,
+          timed_out_correlations: this.controlTombstones.size
+        }
+      );
+    }
+  }
+
+  private rememberControlTombstone(
+    controlRequestId: string,
+    pending: PendingControlRequest<Readonly<Record<string, unknown>>>
+  ): void {
+    this.pruneControlTombstones();
+    this.controlTombstones.set(controlRequestId, {
+      kind: pending.kind,
+      responseKinds: pending.responseKinds,
+      generation: pending.generation,
+      ttlBoundaryAt: Date.now() + CONTROL_TOMBSTONE_TTL_MS
+    });
+  }
+
+  private getControlTombstone(controlRequestId: string): ControlTombstone | undefined {
+    this.pruneControlTombstones();
+    return this.controlTombstones.get(controlRequestId);
+  }
+
+  private pruneControlTombstones(now = Date.now()): void {
+    for (const [controlRequestId, tombstone] of this.controlTombstones) {
+      if (tombstone.ttlBoundaryAt <= now) this.controlTombstones.delete(controlRequestId);
+    }
   }
 
   private onStderr(process: BackendProcess, generation: number, chunk: Uint8Array): void {
@@ -885,10 +1104,12 @@ export class BackendSupervisor extends EventEmitter {
       pending.reject(error);
     }
     this.pending.clear();
-    this.healthReply?.reject(error);
-    this.healthReply = undefined;
-    this.productEntryReply?.reject(error);
-    this.productEntryReply = undefined;
+    for (const pending of this.pendingControls.values()) {
+      clearTimeout(pending.timer);
+      pending.wait.reject(error);
+    }
+    this.pendingControls.clear();
+    this.controlTombstones.clear();
   }
 
   private send(message: Readonly<Record<string, unknown>>): void {

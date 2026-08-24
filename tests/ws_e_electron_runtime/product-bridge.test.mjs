@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-const { ProductBridge, errorToView } = await import("../../dist/apps/desktop/src/main/productRuntime/productBridge.js");
+const { ProductBridge, adaptImportResearchPackageOutcome, errorToView } = await import("../../dist/apps/desktop/src/main/productRuntime/productBridge.js");
 const { ProductBindingStore, productBindingPath } = await import("../../dist/apps/desktop/src/main/productRuntime/bindingStore.js");
-const { PRODUCT_RUNTIME_CHANNELS } = await import("../../dist/apps/desktop/src/main/productRuntime/ipc.js");
+const { PRODUCT_RUNTIME_CHANNELS, registerProductRuntimeIpc } = await import("../../dist/apps/desktop/src/main/productRuntime/ipc.js");
 const { BackendRuntimeError } = await import("../../dist/apps/desktop/src/main/backendRuntime/errors.js");
 
 const REFS = { projectId: "prj_smoke01", projectContextRevisionId: "pcr_smoke01", sessionId: "aaaaaaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee" };
@@ -27,7 +27,7 @@ function projectContextReadModel(projectId, pcrId) {
   };
 }
 
-function stubSupervisor({ failOpen = false, runSpecRows = null, taskRows = null } = {}) {
+function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = null, runSpecRows = null, taskRows = null } = {}) {
   const calls = [];
   return {
     calls,
@@ -41,10 +41,18 @@ function stubSupervisor({ failOpen = false, runSpecRows = null, taskRows = null 
     context: null,
     shutdowns: 0,
     starts: 0,
+    restores: 0,
     setProjectContext(context) { this.context = context; },
     clearProjectContext() { this.context = undefined; },
     async shutdown() { this.shutdowns += 1; this.state = "STOPPED"; },
-    async start() { this.starts += 1; this.state = "READY"; },
+    async start() {
+      this.starts += 1;
+      if (this.starts === failStartAt) {
+        this.state = "STOPPED";
+        throw new BackendRuntimeError("candidate runtime failed to start", "BACKEND_START_FAILED");
+      }
+      this.state = "READY";
+    },
     async request(operationId, payload) {
       calls.push({ operationId, payload });
       if (operationId === "ProductEntryService.v1.listBacktestRunSpecs" && runSpecRows !== null) {
@@ -59,7 +67,7 @@ function stubSupervisor({ failOpen = false, runSpecRows = null, taskRows = null 
         } };
       }
       if (operationId === "TaskService.v1.listTasks" && taskRows !== null) {
-        return { read_model: { items: taskRows, page_size: payload.page_size, truncated: false } };
+        return { read_model: { items: taskRows, page_size: payload.page_size, truncated: false, has_more: false, next_cursor: null } };
       }
       if (operationId === "ProjectSessionService.v1.openProject") {
         if (failOpen) throw new BackendRuntimeError("canonical project not found", "NOT_FOUND");
@@ -69,6 +77,10 @@ function stubSupervisor({ failOpen = false, runSpecRows = null, taskRows = null 
         return { read_model: projectContextReadModel(this.context.projectId, this.context.projectContextRevisionId) };
       }
       if (operationId === "ProjectSessionService.v1.restoreSession") {
+        this.restores += 1;
+        if (this.restores === failRestoreAt) {
+          throw new BackendRuntimeError("candidate session restore failed", "SESSION_RESTORE_FAILED");
+        }
         return { read_model: {
           read_model_version: "v3.session-restore/1.0", session_row_id: "ses_test", project_id: this.context.projectId,
           project_context_revision_id: this.context.projectContextRevisionId, state: "OPEN", active_lab: null,
@@ -110,6 +122,29 @@ function stubSupervisor({ failOpen = false, runSpecRows = null, taskRows = null 
   };
 }
 
+function bindingFileOps({ failRenameAt = null } = {}) {
+  let renameCount = 0;
+  return {
+    readFile: (path) => readFile(path, "utf8"),
+    async writeFileDurable(path, content) {
+      const handle = await open(path, "w");
+      try { await handle.writeFile(content, "utf8"); await handle.sync(); } finally { await handle.close(); }
+    },
+    rename: async (from, to) => {
+      renameCount += 1;
+      if (renameCount === failRenameAt) {
+        const error = new Error("injected binding rename failure");
+        error.code = "EACCES";
+        throw error;
+      }
+      await rename(from, to);
+    },
+    mkdir: async (path) => { await mkdir(path, { recursive: true }); },
+    unlink,
+    syncCommitDirectory: async () => undefined
+  };
+}
+
 const stubStore = () => ({ cursors: {}, getProjectEventCursor(id) { return this.cursors[id] ?? 0; }, commitProjectEventCursor(id, sequence) { this.cursors[id] = sequence; return Promise.resolve(); } });
 
 test("typed bridge binds only after canonical validation and restarts under the bound context", async () => {
@@ -141,11 +176,171 @@ test("typed bridge never persists invalid refs and restores prior context on fai
     const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
     await assert.rejects(
       () => bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId }),
-      (error) => error.code === "NOT_FOUND"
+      (error) => error.code === "BINDING_ACTIVATION_FAILED" && error.cause?.code === "NOT_FOUND"
     );
     assert.equal(await bridge.getBoundProject(), null);
     assert.equal(supervisor.context, undefined, "failed bind must clear the candidate context");
     await assert.rejects(() => bridge.connectExistingProject({ projectId: "not canonical!", projectContextRevisionId: REFS.projectContextRevisionId }));
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("ACC-C1-01 candidate start failure preserves and revalidates the prior active binding", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-activation-start-fail-"));
+  try {
+    const supervisor = stubSupervisor({ failStartAt: 2 });
+    const bindingPath = productBindingPath(dir);
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(bindingPath));
+    const prior = { projectId: "prj_prior01", projectContextRevisionId: "pcr_prior01" };
+    const candidate = { projectId: "prj_candidate01", projectContextRevisionId: "pcr_candidate01" };
+
+    await bridge.connectExistingProject(prior);
+    const priorActive = JSON.parse(await (await import("node:fs/promises")).readFile(bindingPath, "utf8"));
+
+    await assert.rejects(
+      () => bridge.connectExistingProject(candidate),
+      (error) => error.code === "BINDING_ACTIVATION_FAILED"
+        && error.cause?.code === "BACKEND_START_FAILED"
+    );
+
+    const activeAfterFailure = JSON.parse(await (await import("node:fs/promises")).readFile(bindingPath, "utf8"));
+    assert.deepEqual(activeAfterFailure, priorActive, "active file is the only commit marker and must remain prior");
+    assert.equal(supervisor.state, "READY", "prior runtime must be restarted after candidate failure");
+    assert.equal(supervisor.starts, 3, "initial prior, failed candidate, then recovered prior generations");
+    assert.equal(supervisor.context.projectId, prior.projectId);
+    assert.equal((await bridge.getBoundProject()).projectId, prior.projectId, "renderer authority must remain prior");
+    const restoredSessions = supervisor.calls.filter((call) => call.operationId === "ProjectSessionService.v1.restoreSession");
+    assert.equal(restoredSessions.at(-1).payload.session_id, priorActive.sessionId, "recovery must revalidate the prior session");
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("ACC-C1-01 candidate restore failure rolls back runtime, session, and visible binding", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-activation-restore-fail-"));
+  try {
+    const supervisor = stubSupervisor({ failRestoreAt: 2 });
+    const bindingPath = productBindingPath(dir);
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(bindingPath));
+    const prior = { projectId: "prj_prior02", projectContextRevisionId: "pcr_prior02" };
+    const candidate = { projectId: "prj_candidate02", projectContextRevisionId: "pcr_candidate02" };
+    await bridge.connectExistingProject(prior);
+    const priorActive = JSON.parse(await readFile(bindingPath, "utf8"));
+
+    await assert.rejects(
+      () => bridge.connectExistingProject(candidate),
+      (error) => error.code === "BINDING_ACTIVATION_FAILED"
+        && error.cause?.code === "SESSION_RESTORE_FAILED"
+    );
+
+    assert.deepEqual(JSON.parse(await readFile(bindingPath, "utf8")), priorActive);
+    assert.equal(supervisor.state, "READY");
+    assert.equal(supervisor.starts, 3);
+    assert.equal(supervisor.restores, 3, "candidate failure must be followed by prior-session revalidation");
+    assert.equal(supervisor.context.projectId, prior.projectId);
+    assert.equal((await bridge.getBoundProject()).projectId, prior.projectId);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("ACC-C1-01 binding rename failure never commits candidate and recovers prior generation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-activation-rename-fail-"));
+  try {
+    const supervisor = stubSupervisor();
+    const bindingPath = productBindingPath(dir);
+    const bridge = new ProductBridge(
+      supervisor,
+      stubStore(),
+      new ProductBindingStore(bindingPath, bindingFileOps({ failRenameAt: 2 }))
+    );
+    const prior = { projectId: "prj_prior03", projectContextRevisionId: "pcr_prior03" };
+    const candidate = { projectId: "prj_candidate03", projectContextRevisionId: "pcr_candidate03" };
+    await bridge.connectExistingProject(prior);
+    const priorActive = JSON.parse(await readFile(bindingPath, "utf8"));
+
+    await assert.rejects(
+      () => bridge.connectExistingProject(candidate),
+      (error) => error.code === "BINDING_ACTIVATION_FAILED"
+        && error.cause?.code === "BINDING_COMMIT_RENAME_FAILED"
+        && error.cause?.cause?.code === "EACCES"
+    );
+
+    assert.deepEqual(JSON.parse(await readFile(bindingPath, "utf8")), priorActive);
+    assert.equal(supervisor.starts, 3);
+    assert.equal(supervisor.context.projectId, prior.projectId);
+    assert.equal((await bridge.getBoundProject()).projectId, prior.projectId);
+    await assert.rejects(() => readFile(`${bindingPath}.pending`, "utf8"), (error) => error.code === "ENOENT");
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("ACC-C1-01 crash before rename isolates pending and starts from prior active", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-crash-before-rename-"));
+  try {
+    const bindingPath = productBindingPath(dir);
+    const priorStore = new ProductBindingStore(bindingPath);
+    const prior = await priorStore.persist({ ...REFS, projectId: "prj_prior04", projectContextRevisionId: "pcr_prior04" });
+    await priorStore.stage({ ...REFS, projectId: "prj_candidate04", projectContextRevisionId: "pcr_candidate04" });
+
+    const recoveredStore = new ProductBindingStore(bindingPath);
+    const recovered = await recoveredStore.load();
+    assert.equal(recovered.projectId, prior.projectId);
+    assert.equal(recovered.sessionId, prior.sessionId);
+    assert.equal(recoveredStore.current.projectId, prior.projectId);
+    const names = await readdir(dir);
+    assert.equal(names.includes("v3-product-binding.json.pending"), false);
+    assert.equal(names.filter((name) => name.startsWith("v3-product-binding.json.pending.orphaned.")).length, 1);
+    const supervisor = stubSupervisor();
+    supervisor.setProjectContext({
+      projectId: recovered.projectId,
+      projectContextRevisionId: recovered.projectContextRevisionId,
+      lastDurableProjectEventSequence: 0
+    });
+    await supervisor.start();
+    const bridge = new ProductBridge(supervisor, stubStore(), recoveredStore);
+    const restored = await bridge.restoreSession();
+    bridge.recordBindingOutcome({ state: "PROJECT_BOUND" });
+    assert.equal(restored.projectId, prior.projectId);
+    assert.equal(supervisor.calls.at(-1).payload.session_id, prior.sessionId);
+    assert.equal(supervisor.starts, 1);
+    assert.equal((await bridge.getBoundProject()).projectId, prior.projectId);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("ACC-C1-01 crash after rename recovers candidate because active is the commit marker", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-crash-after-rename-"));
+  try {
+    const bindingPath = productBindingPath(dir);
+    const store = new ProductBindingStore(bindingPath);
+    await store.persist({ ...REFS, projectId: "prj_prior05", projectContextRevisionId: "pcr_prior05" });
+    const candidate = await store.stage({ ...REFS, projectId: "prj_candidate05", projectContextRevisionId: "pcr_candidate05" });
+    await store.commit(candidate);
+
+    const recoveredStore = new ProductBindingStore(bindingPath);
+    const recovered = await recoveredStore.load();
+    assert.equal(recovered.projectId, candidate.projectId);
+    assert.equal(recovered.projectContextRevisionId, candidate.projectContextRevisionId);
+    assert.equal(recovered.sessionId, candidate.sessionId);
+    assert.equal((await readdir(dir)).some((name) => name.includes(".pending")), false);
+    const supervisor = stubSupervisor();
+    supervisor.setProjectContext({
+      projectId: recovered.projectId,
+      projectContextRevisionId: recovered.projectContextRevisionId,
+      lastDurableProjectEventSequence: 0
+    });
+    await supervisor.start();
+    const bridge = new ProductBridge(supervisor, stubStore(), recoveredStore);
+    const restored = await bridge.restoreSession();
+    bridge.recordBindingOutcome({ state: "PROJECT_BOUND" });
+    assert.equal(restored.projectId, candidate.projectId);
+    assert.equal(supervisor.calls.at(-1).payload.session_id, candidate.sessionId);
+    assert.equal(supervisor.starts, 1);
+    assert.equal((await bridge.getBoundProject()).projectId, candidate.projectId);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -213,7 +408,7 @@ test("submitResearch uses the exact Product Entry operation and main-owned close
   }
 });
 
-test("run-spec discovery reads page two without missing or duplicate artifacts", async () => {
+test("run-spec discovery exposes an explicit next page without bridge auto-looping", async () => {
   const dir = await mkdtemp(join(tmpdir(), "v3-run-spec-pages-"));
   try {
     const runSpecRows = Array.from({ length: 51 }, (_, index) => ({
@@ -231,18 +426,111 @@ test("run-spec discovery reads page two without missing or duplicate artifacts",
     const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
     await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
 
-    const listing = await bridge.listBacktestRunSpecs();
-    assert.deepEqual(listing.specs.map((spec) => spec.artifactId), runSpecRows.map((row) => row.artifact_id));
-    assert.equal(new Set(listing.specs.map((spec) => spec.artifactId)).size, 51);
-    assert.equal(listing.hasMore, false);
-    assert.equal(listing.nextAfterArtifactId, null);
+    const first = await bridge.listBacktestRunSpecs();
+    assert.deepEqual(first.specs.map((spec) => spec.artifactId), runSpecRows.slice(0, 50).map((row) => row.artifact_id));
+    assert.equal(first.hasMore, true);
+    assert.match(first.nextCursor, /^[A-Za-z0-9_-]+$/);
+    assert.notEqual(first.nextCursor, runSpecRows[49].artifact_id, "renderer cursor must not expose the backend artifact cursor");
+    const second = await bridge.listBacktestRunSpecs({ cursor: first.nextCursor, pageSize: 50 });
+    assert.deepEqual(second.specs.map((spec) => spec.artifactId), [runSpecRows[50].artifact_id]);
+    assert.equal(second.hasMore, false);
+    assert.equal(second.nextCursor, null);
     const requests = supervisor.calls.filter((call) => call.operationId === "ProductEntryService.v1.listBacktestRunSpecs");
     assert.equal(requests.length, 2);
     assert.equal(requests[0].payload.page.after_artifact_id, undefined);
     assert.equal(requests[1].payload.page.after_artifact_id, runSpecRows[49].artifact_id);
+    await bridge.connectExistingProject({ projectId: "prj_smoke02", projectContextRevisionId: "pcr_smoke02" });
+    await assert.rejects(
+      () => bridge.listBacktestRunSpecs({ cursor: first.nextCursor }),
+      /project owner or sort binding is invalid/
+    );
+    assert.equal(supervisor.calls.filter((call) => call.operationId === "ProductEntryService.v1.listBacktestRunSpecs").length, 2);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
+});
+
+test("run-spec and import adapters reject coercible contract drift", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-coercion-"));
+  try {
+    const runSpecRows = [{
+      run_spec_id: RUN_SPEC_ID,
+      artifact_id: 42,
+      content_sha256: "a".repeat(64),
+      project_context_revision_id: `pcr_${"A".repeat(26)}`,
+      engine_version: "v3.a_share_daily_eod_engine/0.2.0",
+      created_at: "2026-08-18T00:00:00Z",
+      execution_adapter_version_id: "v3.a_share_daily_eod_engine/0.2.0",
+      status: "EXECUTABLE",
+      diagnostic: null
+    }];
+    const bridge = new ProductBridge(stubSupervisor({ runSpecRows }), stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
+    await assert.rejects(() => bridge.listBacktestRunSpecs(), /malformed artifact identity/);
+
+    const valid = {
+      read_model: {
+        read_model_version: "v3.product-entry/1.0",
+        run_spec_id: RUN_SPEC_ID,
+        run_spec_artifact_id: `art_sha256_${"b".repeat(64)}`,
+        context_artifact_id: `art_sha256_${"c".repeat(64)}`,
+        already_imported: false,
+        source_project_id: `prj_${"A".repeat(26)}`,
+        imported_at: "2026-08-23T00:00:00Z"
+      }
+    };
+    assert.equal(adaptImportResearchPackageOutcome(valid).alreadyImported, false);
+    for (const [field, drift] of [
+      ["run_spec_id", 7],
+      ["run_spec_artifact_id", 8],
+      ["context_artifact_id", 9],
+      ["already_imported", "false"],
+      ["source_project_id", 10],
+      ["imported_at", 11]
+    ]) {
+      const response = structuredClone(valid);
+      response.read_model[field] = drift;
+      assert.throws(() => adaptImportResearchPackageOutcome(response), { code: "PRODUCT_BRIDGE_ERROR" });
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("project discovery exposes one validated keyset page and an explicit next cursor", async () => {
+  const rows = Array.from({ length: 51 }, (_, index) => ({
+    project_id: `prj_${String(index + 1).padStart(26, "0")}`,
+    project_context_revision_id: `pcr_${String(index + 1).padStart(26, "0")}`,
+    display_name: `项目 ${index + 1}`,
+    created_at: "2026-08-18T00:00:00Z"
+  }));
+  const supervisor = stubSupervisor();
+  const controls = [];
+  supervisor.productEntryControl = async (frame) => {
+    controls.push(frame);
+    const start = frame.after_project_id === null
+      ? 0
+      : rows.findIndex((row) => row.project_id === frame.after_project_id) + 1;
+    const projects = rows.slice(start, start + frame.limit);
+    return { projects, has_more: start + projects.length < rows.length };
+  };
+  const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore("unused-for-project-list.json"));
+  const first = await bridge.listProjects();
+  assert.equal(first.projects.length, 50);
+  assert.equal(first.hasMore, true);
+  assert.match(first.nextCursor, /^[A-Za-z0-9_-]+$/);
+  assert.notEqual(first.nextCursor, rows[49].project_id, "renderer cursor must not expose the backend project cursor");
+  const second = await bridge.listProjects({ cursor: first.nextCursor });
+  assert.deepEqual(second.projects.map((item) => item.projectId), [rows[50].project_id]);
+  assert.equal(second.hasMore, false);
+  assert.equal(second.nextCursor, null);
+  assert.equal(controls.length, 2);
+  assert.equal(controls[1].after_project_id, rows[49].project_id);
+  await assert.rejects(
+    () => bridge.listProjects({ cursor: `art_sha256_${"a".repeat(64)}` }),
+    /valid opaque product cursor/
+  );
+  assert.equal(controls.length, 2, "invalid opaque cursor must fail before backend control dispatch");
 });
 
 test("UNAVAILABLE run-spec with null metadata is readable and never fabricated", async () => {
@@ -287,6 +575,35 @@ test("product IPC channel set is closed and typed", () => {
   assert.equal(channels.length, 18);
   assert.ok(new Set(channels).size === 18);
   for (const channel of channels) assert.ok(channel.startsWith("productRuntime:"));
+});
+
+test("product IPC rejects numeric strings instead of coercing pagination", async () => {
+  const handlers = new Map();
+  const ipcMain = {
+    handle(channel, listener) { handlers.set(channel, listener); },
+    removeHandler(channel) { handlers.delete(channel); }
+  };
+  const bridge = {
+    async listProjects(request) { return request; },
+    async listTasks(request) { return request; }
+  };
+  const unregister = registerProductRuntimeIpc(ipcMain, () => undefined, bridge);
+  try {
+    await assert.rejects(
+      () => handlers.get(PRODUCT_RUNTIME_CHANNELS.listProjects)({}, { pageSize: "50" }),
+      /INVALID_ARGUMENT/
+    );
+    await assert.rejects(
+      () => handlers.get(PRODUCT_RUNTIME_CHANNELS.listTasks)({}, { filter: {}, pageSize: "50" }),
+      /INVALID_ARGUMENT/
+    );
+    assert.deepEqual(
+      await handlers.get(PRODUCT_RUNTIME_CHANNELS.listProjects)({}, { pageSize: 50 }),
+      { pageSize: 50 }
+    );
+  } finally {
+    unregister();
+  }
 });
 
 test("errorToView keeps structured codes without leaking stack details", () => {
@@ -385,12 +702,12 @@ test("listTasks uses only the bounded admitted discovery filter over the existin
     const supervisor = stubSupervisor({ taskRows });
     const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
     await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
-    const tasks = await bridge.listTasks({ service: "ProductEntryService", state: "SUCCEEDED" });
-    assert.equal(tasks[0].taskId, "tsk_research");
+    const tasks = await bridge.listTasks({ filter: { service: "ProductEntryService", state: "SUCCEEDED" } });
+    assert.equal(tasks.tasks[0].taskId, "tsk_research");
     const listCall = supervisor.calls.find((call) => call.operationId === "TaskService.v1.listTasks");
     assert.deepEqual(listCall.payload.filter, { service: "ProductEntryService", state: "SUCCEEDED" });
-    assert.equal(listCall.payload.page_size, 200);
-    await assert.rejects(() => bridge.listTasks({ service: "BacktestService" }), (error) => error.code === "INVALID_ARGUMENT");
+    assert.equal(listCall.payload.page_size, 50);
+    await assert.rejects(() => bridge.listTasks({ filter: { service: "BacktestService" } }), (error) => error.code === "INVALID_ARGUMENT");
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }

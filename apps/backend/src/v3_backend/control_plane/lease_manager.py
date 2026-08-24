@@ -76,12 +76,15 @@ class LeaseManager:
         self, lease_id: str, attempt_id: str, grant: ResourceGrant, *, lease_token: str
     ) -> WorkerLease:
         now = self.clock()
+        expiry_seconds = grant.lease_expiry_seconds or grant.heartbeat_interval_seconds * 3
+        if expiry_seconds < grant.heartbeat_interval_seconds:
+            raise ValueError("lease expiry must not be shorter than heartbeat interval")
         lease = WorkerLease(
             lease_id,
             attempt_id,
             grant,
             now,
-            now + timedelta(seconds=grant.heartbeat_interval_seconds * 3),
+            now + timedelta(seconds=expiry_seconds),
             lease_token,
         )
         self.persistence.save(lease)
@@ -106,7 +109,11 @@ class LeaseManager:
         lease.last_heartbeat_sequence = sequence
         lease.last_heartbeat_at = now
         lease.state = LeaseState.RENEWED
-        lease.expires_at = now + timedelta(seconds=lease.grant.heartbeat_interval_seconds * 3)
+        expiry_seconds = (
+            lease.grant.lease_expiry_seconds
+            or lease.grant.heartbeat_interval_seconds * 3
+        )
+        lease.expires_at = now + timedelta(seconds=expiry_seconds)
         self.persistence.save(lease)
         return lease
 

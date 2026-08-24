@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 
 
-EXPECTED_USER_VERSION = 4
+EXPECTED_USER_VERSION = 5
 EXPECTED_TABLES = frozenset(
     {
         "artifact",
@@ -40,6 +40,7 @@ EXPECTED_TABLES = frozenset(
         "prediction_signal_version",
         "project",
         "project_context_revision",
+        "publication_intent",
         "provenance_edge",
         "provenance_entity",
         "raw_capture",
@@ -62,6 +63,7 @@ EXPECTED_TABLES = frozenset(
         "task_attempt",
         "task_dependency",
         "task_event",
+        "task_output",
         "trial",
         "universe_definition",
         "universe_version",
@@ -220,6 +222,7 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
         "0002_data_truth",
         "0003_portfolio_riskpolicy_owner",
         "0004_risk_application_publication",
+        "0005_task_execution_deadline",
     ):
         raise SchemaValidationError(f"unexpected applied migration sequence: {applied!r}")
 

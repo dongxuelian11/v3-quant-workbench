@@ -169,7 +169,7 @@ async function runProviderUnavailable(window: BrowserWindow): Promise<Record<str
     "const projects = await bridge.listProjects();" +
     "const tasks = await bridge.listTasks();" +
     "if (status.backendState !== \"READY\" || status.bindingState !== \"PROJECT_BOUND\") throw new Error(\"application was not usable after provider failure\");" +
-    "if (!Array.isArray(tasks) || tasks.length !== 0) throw new Error(\"provider failure minted a canonical Task\");" +
+    "if (!Array.isArray(tasks.tasks) || tasks.tasks.length !== 0 || tasks.hasMore !== false || tasks.nextCursor !== null) throw new Error(\"provider failure minted a canonical Task\");" +
     "return { phase: \"provider-unavailable\", status, projectContext, projects, tasks, rendererEvidence: evidence, retry_later: true, successful_canonical_chain_count: 0 };"
   );
 }

@@ -4,7 +4,7 @@ import {
   type CanonicalEvidenceProjectionV1,
   type Round3EvidenceKind,
   type Round3ResearchEvidenceBundleV1
-} from "../../../../packages/contracts/src/round3Evidence";
+} from "../../../../packages/contracts/src/round3Evidence.ts";
 import type {
   BackendRuntimeReadOnlyBridge,
   RuntimeConnectionState,
@@ -18,7 +18,7 @@ import {
   type ArtifactPayload,
   type EvidenceView,
   type TimelineState
-} from "./agentWorkspace";
+} from "./agentWorkspace.ts";
 
 declare global {
   interface Window {

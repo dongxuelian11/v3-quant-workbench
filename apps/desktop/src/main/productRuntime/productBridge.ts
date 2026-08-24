@@ -14,6 +14,9 @@ import type {
   ProductStatusView,
   ProductTaskEventsView,
   ProductTaskListFilter,
+  ProductTaskPageRequest,
+  ProductTasksListView,
+  ProductPageRequest,
   ProductTaskView,
   ProjectContextView,
   ProjectCreatedView,
@@ -38,7 +41,11 @@ import {
   adaptTaskList,
   ProductAdapterError
 } from "./adapters";
-import type { ProductBindingStore } from "./bindingStore";
+import {
+  ProductBindingStoreError,
+  type PersistedProductBinding,
+  type ProductBindingStore
+} from "./bindingStore";
 import {
   CreateProjectIntentStore,
   createProjectIntentPath,
@@ -59,6 +66,7 @@ const ADMITTED_EXECUTION_ADAPTER_VERSION_ID = "v3.a_share_daily_eod_engine/0.2.0
 const RUN_SPEC_ID_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
 const ARTIFACT_ID_PATTERN = /^art_sha256_[0-9a-f]{64}$/;
 const CONTENT_SHA_PATTERN = /^[0-9a-f]{64}$/;
+const PROJECT_ID_PATTERN = /^prj_[0-9A-HJKMNP-TV-Z]{26}$/;
 const PROJECT_CONTEXT_REVISION_PATTERN = /^pcr_[0-9A-HJKMNP-TV-Z]{26}$/;
 const CANONICAL_ID_PATTERN = /^[A-Za-z0-9_\-]{1,200}$/;
 const PROJECT_LOCATOR_PREFIX = "v3:";
@@ -68,11 +76,81 @@ const MAX_PACKAGE_FILE_BYTES = transportContract.max_package_file_bytes;
 const MAX_PACKAGE_FILE_COUNT = transportContract.max_package_file_count;
 const MAX_PACKAGE_TOTAL_BYTES = transportContract.max_package_total_bytes;
 const MAX_PACKAGE_MANIFEST_BYTES = transportContract.max_package_manifest_bytes;
-const MAX_RUN_SPEC_AUTO_PAGES = 20;
 const PACKAGE_PATH_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const RESEARCH_SYMBOL_PATTERN = /^[0-9]{6}$/;
 const RESEARCH_DATE_PATTERN = /^[0-9]{8}$/;
-const MAX_TASK_LIST_PAGE_SIZE = 200;
+const DEFAULT_PRODUCT_PAGE_SIZE = 50;
+const MAX_PRODUCT_PAGE_SIZE = 100;
+const PRODUCT_CURSOR_VERSION = 1;
+const PROJECT_CURSOR_SORT = "project_id ASC";
+const RUN_SPEC_CURSOR_SORT = "artifact_id ASC";
+
+type ProductCursorPayload =
+  | {
+      readonly v: typeof PRODUCT_CURSOR_VERSION;
+      readonly owner: "projects";
+      readonly sort: typeof PROJECT_CURSOR_SORT;
+      readonly after: string;
+    }
+  | {
+      readonly v: typeof PRODUCT_CURSOR_VERSION;
+      readonly owner: "run_specs";
+      readonly sort: typeof RUN_SPEC_CURSOR_SORT;
+      readonly projectId: string;
+      readonly projectContextRevisionId: string;
+      readonly after: string;
+    };
+
+function encodeProductCursor(payload: ProductCursorPayload): string {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function decodeProductCursor(cursor: string): Record<string, unknown> {
+  if (!/^[A-Za-z0-9_-]+$/.test(cursor)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "cursor must be canonical base64url");
+  }
+  try {
+    const bytes = Buffer.from(cursor, "base64url");
+    if (bytes.toString("base64url") !== cursor) throw new Error("non-canonical base64url");
+    const value: unknown = JSON.parse(bytes.toString("utf8"));
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("non-object cursor");
+    return value as Record<string, unknown>;
+  } catch (error) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "cursor is not a valid opaque product cursor", error);
+  }
+}
+
+function decodeProjectCursor(cursor: string): string {
+  const value = decodeProductCursor(cursor);
+  if (
+    Object.keys(value).sort().join(",") !== "after,owner,sort,v"
+    || value.v !== PRODUCT_CURSOR_VERSION
+    || value.owner !== "projects"
+    || value.sort !== PROJECT_CURSOR_SORT
+    || typeof value.after !== "string"
+    || !PROJECT_ID_PATTERN.test(value.after)
+  ) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "project cursor owner or sort binding is invalid");
+  }
+  return value.after;
+}
+
+function decodeRunSpecCursor(cursor: string, refs: ProductBindingRefs): string {
+  const value = decodeProductCursor(cursor);
+  if (
+    Object.keys(value).sort().join(",") !== "after,owner,projectContextRevisionId,projectId,sort,v"
+    || value.v !== PRODUCT_CURSOR_VERSION
+    || value.owner !== "run_specs"
+    || value.sort !== RUN_SPEC_CURSOR_SORT
+    || value.projectId !== refs.projectId
+    || value.projectContextRevisionId !== refs.projectContextRevisionId
+    || typeof value.after !== "string"
+    || !ARTIFACT_ID_PATTERN.test(value.after)
+  ) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "run-spec cursor project owner or sort binding is invalid");
+  }
+  return value.after;
+}
 
 function assertResearchIntent(request: ProductResearchSubmitIntent): void {
   if (!RESEARCH_SYMBOL_PATTERN.test(request.symbol)) {
@@ -161,9 +239,12 @@ function validateRunSpecStatusSemantics(entry: RunSpecEntryView): void {
 }
 
 function adaptRunSpecEntry(rawEntry: unknown, seenArtifacts: Set<string>): RunSpecEntryView {
+  if (rawEntry === null || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "run-spec discovery returned a non-object entry");
+  }
   const row = rawEntry as Record<string, unknown>;
-  const artifactId = String(row.artifact_id ?? "");
-  if (!ARTIFACT_ID_PATTERN.test(artifactId)) {
+  const artifactId = row.artifact_id;
+  if (typeof artifactId !== "string" || !ARTIFACT_ID_PATTERN.test(artifactId)) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "run-spec discovery returned a malformed artifact identity");
   }
   if (seenArtifacts.has(artifactId)) {
@@ -183,6 +264,48 @@ function adaptRunSpecEntry(rawEntry: unknown, seenArtifacts: Set<string>): RunSp
   };
   validateRunSpecStatusSemantics(entry);
   return entry;
+}
+
+function requiredImportString(
+  readModel: Record<string, unknown>,
+  name: string,
+  pattern: RegExp,
+): string {
+  const value = readModel[name];
+  if (typeof value !== "string" || !pattern.test(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", `research package import returned invalid ${name}`);
+  }
+  return value;
+}
+
+/** Fail-closed adapter kept exported for contract-drift regression coverage. */
+export function adaptImportResearchPackageOutcome(response: unknown): ImportResearchPackageOutcomeView {
+  if (response === null || typeof response !== "object" || Array.isArray(response)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "research package import returned a non-object response");
+  }
+  const readModel = (response as Record<string, unknown>).read_model;
+  if (readModel === null || typeof readModel !== "object" || Array.isArray(readModel)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "research package import returned a non-object read_model");
+  }
+  const record = readModel as Record<string, unknown>;
+  if (record.read_model_version !== "v3.product-entry/1.0") {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "research package import returned an unsupported read_model_version");
+  }
+  if (typeof record.already_imported !== "boolean") {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "research package import returned invalid already_imported");
+  }
+  const importedAt = record.imported_at;
+  if (typeof importedAt !== "string" || !importedAt.endsWith("Z") || Number.isNaN(Date.parse(importedAt))) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "research package import returned invalid imported_at");
+  }
+  return Object.freeze({
+    runSpecId: requiredImportString(record, "run_spec_id", RUN_SPEC_ID_PATTERN),
+    runSpecArtifactId: requiredImportString(record, "run_spec_artifact_id", ARTIFACT_ID_PATTERN),
+    contextArtifactId: requiredImportString(record, "context_artifact_id", ARTIFACT_ID_PATTERN),
+    alreadyImported: record.already_imported,
+    sourceProjectId: requiredImportString(record, "source_project_id", PROJECT_ID_PATTERN),
+    importedAt,
+  });
 }
 
 function adaptRunSpecPage(
@@ -261,9 +384,27 @@ function assertTaskListFilter(filter: ProductTaskListFilter | undefined): Produc
   });
 }
 
+function assertProductPageRequest(request: ProductPageRequest | undefined): Required<Pick<ProductPageRequest, "pageSize">> & Pick<ProductPageRequest, "cursor"> {
+  const candidate = request ?? {};
+  if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "page request must be an object");
+  }
+  const unknown = Object.keys(candidate).filter((key) => key !== "cursor" && key !== "pageSize");
+  if (unknown.length > 0) throw new ProductAdapterError("INVALID_ARGUMENT", `unknown page request fields: ${unknown.join(", ")}`);
+  const pageSize = candidate.pageSize ?? DEFAULT_PRODUCT_PAGE_SIZE;
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > MAX_PRODUCT_PAGE_SIZE) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", `pageSize must be an integer in [1, ${MAX_PRODUCT_PAGE_SIZE}]`);
+  }
+  if (candidate.cursor !== undefined && (typeof candidate.cursor !== "string" || candidate.cursor.length < 1 || candidate.cursor.length > 2048)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "cursor must be a bounded opaque string");
+  }
+  return Object.freeze({ pageSize, ...(candidate.cursor === undefined ? {} : { cursor: candidate.cursor }) });
+}
+
 export class ProductBridge {
   private inflightSubmit = new Map<string, Promise<BacktestSubmitOutcomeView>>();
   private inflightResearch = new Map<string, Promise<ProductResearchSubmitOutcomeView>>();
+  private bindingActivationInProgress = false;
   private bindingOutcome: ProductBindingOutcome = { state: "NO_CANONICAL_PROJECT_BOUND" };
   private readonly supervisor: BackendSupervisor;
   private readonly store: WorkspaceStore;
@@ -373,63 +514,112 @@ export class ProductBridge {
   }
 
   /**
-   * Connect an existing canonical project through candidate refs supplied by
-   * the product UI. The backend validates the refs (require_project + current
-   * revision precondition); invalid refs are never persisted. On success the
-   * backend is restarted under the bound context so durable event replay runs
-   * with the correct lifecycle.
+   * Connect an existing canonical project through an atomic activation. The
+   * pending file is durable before the prior generation exits; only an exact
+   * open/restore under the candidate generation may replace the active commit
+   * marker. Any pre-commit failure restarts and revalidates the prior binding.
    */
   async connectExistingProject(candidate: { projectId: string; projectContextRevisionId: string }): Promise<ProjectContextView> {
+    if (this.bindingActivationInProgress) {
+      throw new ProductAdapterError("BINDING_ACTIVATION_IN_PROGRESS", "another canonical project activation is already in progress");
+    }
+    this.bindingActivationInProgress = true;
+    try {
+      return await this.activateExistingProject(candidate);
+    } finally {
+      this.bindingActivationInProgress = false;
+    }
+  }
+
+  private async activateExistingProject(candidate: { projectId: string; projectContextRevisionId: string }): Promise<ProjectContextView> {
     assertCanonicalId(candidate.projectId, "projectId");
     assertCanonicalId(candidate.projectContextRevisionId, "projectContextRevisionId");
     const sessionId = uuidV4();
-    const priorContext = this.storedBindingRefs();
+    const priorBinding = this.storedBindingRefs();
     const cursor = this.store.getProjectEventCursor(candidate.projectId);
-    this.supervisor.setProjectContext({
+    const candidateBinding = {
       projectId: candidate.projectId,
       projectContextRevisionId: candidate.projectContextRevisionId,
-      lastDurableProjectEventSequence: cursor
-    });
+      sessionId
+    };
+    let staged: PersistedProductBinding;
     try {
+      staged = await this.bindings.stage(candidateBinding);
+    } catch (error) {
+      throw new ProductAdapterError("BINDING_ACTIVATION_FAILED", "candidate binding could not be durably staged", error);
+    }
+    try {
+      await this.supervisor.shutdown();
+      this.supervisor.setProjectContext({
+        projectId: candidate.projectId,
+        projectContextRevisionId: candidate.projectContextRevisionId,
+        lastDurableProjectEventSequence: cursor
+      });
+      await this.supervisor.start();
       const response = await this.supervisor.request("ProjectSessionService.v1.openProject", {
         project_locator: `${PROJECT_LOCATOR_PREFIX}${candidate.projectId}`,
         session_id: sessionId
       });
       const context = adaptProjectContext(response);
-      await this.bindings.persist({
-        projectId: context.projectId,
-        projectContextRevisionId: context.projectContextRevisionId,
-        sessionId
-      });
+      this.assertExactBindingContext(candidateBinding, context);
+      await this.restoreAndVerify(candidateBinding);
+      await this.bindings.commit(staged);
       this.bindingOutcome = { state: "PROJECT_BOUND" };
-      // Rebind lifecycle: restart under the bound context so durable replay
-      // covers the project history from the durable cursor.
-      await this.restartUnderBinding();
-      return await this.getProjectContext();
+      return context;
     } catch (error) {
-      if (priorContext === null) {
-        this.supervisor.setProjectContext({ projectId: "", projectContextRevisionId: "", lastDurableProjectEventSequence: 0 });
-        this.clearContext();
-      } else {
-        this.supervisor.setProjectContext({
-          projectId: priorContext.projectId,
-          projectContextRevisionId: priorContext.projectContextRevisionId,
-          lastDurableProjectEventSequence: this.store.getProjectEventCursor(priorContext.projectId)
-        });
+      if (error instanceof ProductBindingStoreError && error.code === "BINDING_COMMIT_DURABILITY_UNCERTAIN") {
+        this.bindingOutcome = {
+          state: "BINDING_STALE",
+          code: error.code,
+          message: error.message
+        };
+        throw new ProductAdapterError(
+          "BINDING_ACTIVATION_DURABILITY_UNCERTAIN",
+          "candidate runtime matches the active binding but durable commit could not be confirmed; restart is required",
+          error
+        );
       }
-      throw error;
+      try {
+        await this.bindings.abortStaged();
+        await this.rollbackToPriorBinding(priorBinding);
+      } catch (rollbackError) {
+        this.bindingOutcome = priorBinding === null
+          ? { state: "NO_CANONICAL_PROJECT_BOUND" }
+          : {
+              state: "BINDING_STALE",
+              code: "BINDING_ACTIVATION_ROLLBACK_FAILED",
+              message: rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+            };
+        throw new ProductAdapterError(
+          "BINDING_ACTIVATION_ROLLBACK_FAILED",
+          "candidate activation failed and the prior binding could not be revalidated",
+          rollbackError
+        );
+      }
+      throw new ProductAdapterError(
+        "BINDING_ACTIVATION_FAILED",
+        "candidate binding activation failed; the prior binding remains active",
+        error
+      );
     }
   }
 
-  async listTasks(filter?: ProductTaskListFilter): Promise<readonly ProductTaskView[]> {
+  async listTasks(request?: ProductTaskPageRequest): Promise<ProductTasksListView> {
     this.requireBinding();
-    const admittedFilter = assertTaskListFilter(filter);
-    // The canonical backend orders this existing read operation by created_at DESC, task_id.
-    // A bounded 200-row window is sufficient for the admitted service/state query:
-    // the first matching row is the latest research task, and no incidental array order is used.
+    const candidate = request ?? {};
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "task page request must be an object");
+    }
+    const unknown = Object.keys(candidate).filter((key) => key !== "filter" && key !== "cursor" && key !== "pageSize");
+    if (unknown.length > 0) throw new ProductAdapterError("INVALID_ARGUMENT", `unknown task page request fields: ${unknown.join(", ")}`);
+    const admittedFilter = assertTaskListFilter(candidate.filter);
+    const page = assertProductPageRequest({
+      ...(candidate.cursor === undefined ? {} : { cursor: candidate.cursor }),
+      ...(candidate.pageSize === undefined ? {} : { pageSize: candidate.pageSize })
+    });
     const response = await this.supervisor.request("TaskService.v1.listTasks", {
-      filter: admittedFilter,
-      page_size: MAX_TASK_LIST_PAGE_SIZE
+      filter: { ...admittedFilter, ...(page.cursor === undefined ? {} : { cursor: page.cursor }) },
+      page_size: page.pageSize
     });
     return adaptTaskList(response);
   }
@@ -549,52 +739,63 @@ export class ProductBridge {
   }
 
   /** Durable project discovery (works before any project is bound). */
-  async listProjects(): Promise<ProjectsListView> {
+  async listProjects(request?: ProductPageRequest): Promise<ProjectsListView> {
+    const page = assertProductPageRequest(request);
+    const afterProjectId = page.cursor === undefined ? null : decodeProjectCursor(page.cursor);
     const response = await this.supervisor.productEntryControl({
       kind: "productEntry.listProjects",
       protocol_version: PRODUCT_ENTRY_PROTOCOL_VERSION,
-      limit: 50,
-      after_project_id: null
+      limit: page.pageSize,
+      after_project_id: afterProjectId
     });
     const record = response as { projects?: unknown; has_more?: unknown };
     const projects = Array.isArray(record.projects)
       ? record.projects.map((item) => {
           const row = item as Record<string, unknown>;
-          return {
-            projectId: String(row.project_id ?? ""),
-            projectContextRevisionId: String(row.project_context_revision_id ?? ""),
-            displayName: String(row.display_name ?? ""),
-            createdAt: String(row.created_at ?? "")
-          };
+          const projectId = row.project_id;
+          const revisionId = row.project_context_revision_id;
+          const displayName = row.display_name;
+          const createdAt = row.created_at;
+          if (typeof projectId !== "string" || !PROJECT_ID_PATTERN.test(projectId)) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project page returned an invalid project identity");
+          if (typeof revisionId !== "string" || !PROJECT_CONTEXT_REVISION_PATTERN.test(revisionId)) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project page returned an invalid context revision identity");
+          if (typeof displayName !== "string" || displayName.length < 1 || displayName.length > 200) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project page returned an invalid display name");
+          if (typeof createdAt !== "string" || !createdAt.endsWith("Z") || Number.isNaN(Date.parse(createdAt))) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project page returned an invalid created_at");
+          return { projectId, projectContextRevisionId: revisionId, displayName, createdAt };
         })
       : [];
-    return Object.freeze({ projects, hasMore: record.has_more === true });
+    const hasMore = record.has_more === true;
+    const nextProjectId = hasMore ? projects.at(-1)?.projectId ?? null : null;
+    const nextCursor = nextProjectId === null
+      ? null
+      : encodeProductCursor({ v: PRODUCT_CURSOR_VERSION, owner: "projects", sort: PROJECT_CURSOR_SORT, after: nextProjectId });
+    if (hasMore && nextCursor === null) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "non-terminal project page did not provide a usable cursor row");
+    return Object.freeze({ projects, hasMore, nextCursor });
   }
 
   /** Durable run-spec discovery with actual-artifact verification. */
-  async listBacktestRunSpecs(): Promise<RunSpecsListView> {
-    this.requireBinding();
-    const specs: RunSpecEntryView[] = [];
-    const seenArtifacts = new Set<string>();
-    let afterArtifactId: string | null = null;
-    for (let pageNumber = 0; pageNumber < MAX_RUN_SPEC_AUTO_PAGES; pageNumber += 1) {
-      const response = await this.supervisor.request("ProductEntryService.v1.listBacktestRunSpecs", {
-        page: afterArtifactId === null
-          ? { limit: 50 }
-          : { limit: 50, after_artifact_id: afterArtifactId }
-      });
-      const page = adaptRunSpecPage(response, seenArtifacts, afterArtifactId);
-      specs.push(...page.specs);
-      if (!page.hasMore) {
-        return Object.freeze({ specs, hasMore: false, nextAfterArtifactId: null });
-      }
-      afterArtifactId = page.nextAfterArtifactId;
-    }
-    return Object.freeze({
-      specs,
-      hasMore: true,
-      nextAfterArtifactId: afterArtifactId,
+  async listBacktestRunSpecs(request?: ProductPageRequest): Promise<RunSpecsListView> {
+    const refs = this.requireBinding();
+    const pageRequest = assertProductPageRequest(request);
+    const afterArtifactId = pageRequest.cursor === undefined
+      ? null
+      : decodeRunSpecCursor(pageRequest.cursor, refs);
+    const response = await this.supervisor.request("ProductEntryService.v1.listBacktestRunSpecs", {
+      page: afterArtifactId === null
+        ? { limit: pageRequest.pageSize }
+        : { limit: pageRequest.pageSize, after_artifact_id: afterArtifactId }
     });
+    const page = adaptRunSpecPage(response, new Set<string>(), afterArtifactId);
+    const nextCursor = page.nextAfterArtifactId === null
+      ? null
+      : encodeProductCursor({
+          v: PRODUCT_CURSOR_VERSION,
+          owner: "run_specs",
+          sort: RUN_SPEC_CURSOR_SORT,
+          projectId: refs.projectId,
+          projectContextRevisionId: refs.projectContextRevisionId,
+          after: page.nextAfterArtifactId,
+        });
+    return Object.freeze({ specs: page.specs, hasMore: page.hasMore, nextCursor });
   }
 
   /**
@@ -615,15 +816,7 @@ export class ProductBridge {
       { manifest, files, idempotency_key: `v3-desktop:${uuidV4()}` },
       { timeoutMs: 120_000 }
     );
-    const readModel = (response as { read_model?: Record<string, unknown> }).read_model ?? {};
-    return Object.freeze({
-      runSpecId: String(readModel.run_spec_id ?? ""),
-      runSpecArtifactId: String(readModel.run_spec_artifact_id ?? ""),
-      contextArtifactId: String(readModel.context_artifact_id ?? ""),
-      alreadyImported: readModel.already_imported === true,
-      sourceProjectId: String(readModel.source_project_id ?? ""),
-      importedAt: String(readModel.imported_at ?? "")
-    });
+    return adaptImportResearchPackageOutcome(response);
   }
 
   /**
@@ -693,23 +886,37 @@ export class ProductBridge {
     this.supervisor.clearProjectContext();
   }
 
-  private async restartUnderBinding(): Promise<void> {
-    const refs = this.requireBinding();
+  private assertExactBindingContext(refs: ProductBindingRefs, context: ProjectContextView): void {
+    if (context.projectId !== refs.projectId || context.projectContextRevisionId !== refs.projectContextRevisionId) {
+      throw new ProductAdapterError("BINDING_CONTEXT_MISMATCH", "candidate project context did not exactly match the requested binding");
+    }
+  }
+
+  private async restoreAndVerify(refs: ProductBindingRefs): Promise<SessionRestoreView> {
+    const response = await this.supervisor.request("ProjectSessionService.v1.restoreSession", { session_id: refs.sessionId });
+    const restored = adaptSessionRestore(response);
+    if (restored.projectId !== refs.projectId || restored.projectContextRevisionId !== refs.projectContextRevisionId) {
+      throw new ProductAdapterError("BINDING_SESSION_MISMATCH", "restored session did not exactly match the candidate binding");
+    }
+    return restored;
+  }
+
+  private async rollbackToPriorBinding(prior: ProductBindingRefs | null): Promise<void> {
     await this.supervisor.shutdown();
+    if (prior === null) {
+      this.clearContext();
+      await this.supervisor.start();
+      this.bindingOutcome = { state: "NO_CANONICAL_PROJECT_BOUND" };
+      return;
+    }
     this.supervisor.setProjectContext({
-      projectId: refs.projectId,
-      projectContextRevisionId: refs.projectContextRevisionId,
-      lastDurableProjectEventSequence: this.store.getProjectEventCursor(refs.projectId)
+      projectId: prior.projectId,
+      projectContextRevisionId: prior.projectContextRevisionId,
+      lastDurableProjectEventSequence: this.store.getProjectEventCursor(prior.projectId)
     });
     await this.supervisor.start();
-    // Session restore after rebind is best-effort: the session row exists
-    // (openProject upserted it), but a restore failure must not mask the
-    // successful canonical bind.
-    try {
-      await this.restoreSession();
-    } catch {
-      /* honest degradation: bound project stays valid; UI re-queries state */
-    }
+    await this.restoreAndVerify(prior);
+    this.bindingOutcome = { state: "PROJECT_BOUND" };
   }
 }
 

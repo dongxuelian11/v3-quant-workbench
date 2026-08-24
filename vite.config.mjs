@@ -8,7 +8,6 @@ export default defineConfig({
     outDir: resolve(import.meta.dirname, "dist/apps/desktop/src/renderer"),
     emptyOutDir: false,
     sourcemap: true,
-    target: "chrome142",
-    rollupOptions: { output: { manualChunks: { monaco: ["monaco-editor"], charts: ["echarts"], workbench: ["dockview-react", "@xyflow/react"] } } }
+    target: "chrome142"
   }
 });

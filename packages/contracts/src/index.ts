@@ -166,7 +166,7 @@ export const DEFAULT_WORKSPACE: PersistedWorkspace = {
   executedCommands: {},
   projectEventCursors: {},
   persistenceRevision: 0,
-  runtimeMeta: { storeSchemaVersion: 1 },
+  runtimeMeta: { storeSchemaVersion: 2 },
   savedAt: null
 };
 
@@ -252,6 +252,22 @@ export interface ProductTaskAttemptView {
 export interface ProductTaskListFilter {
   readonly service?: "ProductEntryService";
   readonly state?: "SUCCEEDED";
+}
+
+export interface ProductPageRequest {
+  /** Opaque owner-issued keyset cursor; callers must not parse or mint it. */
+  readonly cursor?: string;
+  readonly pageSize?: number;
+}
+
+export interface ProductTaskPageRequest extends ProductPageRequest {
+  readonly filter?: ProductTaskListFilter;
+}
+
+export interface ProductTasksListView {
+  readonly tasks: readonly ProductTaskView[];
+  readonly hasMore: boolean;
+  readonly nextCursor: string | null;
 }
 
 export interface ProductTaskView {
@@ -355,6 +371,7 @@ export interface ProjectListItemView {
 export interface ProjectsListView {
   readonly projects: readonly ProjectListItemView[];
   readonly hasMore: boolean;
+  readonly nextCursor: string | null;
 }
 
 export interface RunSpecEntryView {
@@ -372,7 +389,7 @@ export interface RunSpecEntryView {
 export interface RunSpecsListView {
   readonly specs: readonly RunSpecEntryView[];
   readonly hasMore: boolean;
-  readonly nextAfterArtifactId: string | null;
+  readonly nextCursor: string | null;
 }
 
 /** Target-canonical-authority research package reuse outcome. */
@@ -422,7 +439,7 @@ export interface V3ProductRuntimeBridge {
   getProjectContext(): Promise<ProjectContextView>;
   restoreSession(): Promise<SessionRestoreView>;
   connectExistingProject(request: ConnectExistingProjectRequest): Promise<ProjectContextView>;
-  listTasks(filter?: ProductTaskListFilter): Promise<readonly ProductTaskView[]>;
+  listTasks(request?: ProductTaskPageRequest): Promise<ProductTasksListView>;
   getTask(taskId: string): Promise<ProductTaskView>;
   getTaskEvents(afterSequence: number, limit: number): Promise<ProductTaskEventsView>;
   getResult(resultId: string): Promise<ProductResultView>;
@@ -431,9 +448,9 @@ export interface V3ProductRuntimeBridge {
   submitExistingBacktestRunSpec(runSpecId: string): Promise<BacktestSubmitOutcomeView>;
   /** Projectless clean-start entry: backend mints all canonical identities. */
   createProject(request: CreateProjectRequest): Promise<ProjectCreatedView>;
-  listProjects(): Promise<ProjectsListView>;
+  listProjects(request?: ProductPageRequest): Promise<ProjectsListView>;
   /** Durable run-spec discovery with actual-artifact verification. */
-  listBacktestRunSpecs(): Promise<RunSpecsListView>;
+  listBacktestRunSpecs(request?: ProductPageRequest): Promise<RunSpecsListView>;
   /**
    * Target-authority reuse: the Electron main process owns the file chooser and
    * reads the selected V3 research package; the renderer never receives or

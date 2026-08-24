@@ -173,10 +173,10 @@ class OwnerFoundationFixture(unittest.TestCase):
 
 
 class MigrationOwnerFoundationTests(OwnerFoundationFixture):
-    def test_0003_owns_only_upstream_and_0004_owns_only_downstream(self) -> None:
+    def test_0003_and_0004_owner_boundaries_remain_scoped_after_0005(self) -> None:
         connection = connect_catalog(self.database)
         try:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
             migrations = tuple(
                 row[0]
                 for row in connection.execute(
@@ -190,6 +190,7 @@ class MigrationOwnerFoundationTests(OwnerFoundationFixture):
                     "0002_data_truth",
                     "0003_portfolio_riskpolicy_owner",
                     "0004_risk_application_publication",
+                    "0005_task_execution_deadline",
                 ),
             )
             tables = {
@@ -224,10 +225,20 @@ class MigrationOwnerFoundationTests(OwnerFoundationFixture):
         application_sql = (
             versions / "0004_risk_application_publication.sql"
         ).read_text(encoding="utf-8")
+        deadline_sql = (versions / "0005_task_execution_deadline.sql").read_text(
+            encoding="utf-8"
+        )
         self.assertNotIn("CREATE TABLE risk_application_receipt_publication", owner_sql)
         self.assertNotIn("CREATE TABLE risk_adjusted_weight_vector_publication", owner_sql)
         self.assertNotIn("CREATE TABLE target_weight_vector_publication", application_sql)
         self.assertNotIn("CREATE TABLE risk_policy_set_publication", application_sql)
+        for owner_table in (
+            "target_weight_vector_publication",
+            "risk_policy_set_publication",
+            "risk_application_receipt_publication",
+            "risk_adjusted_weight_vector_publication",
+        ):
+            self.assertNotIn(f"CREATE TABLE {owner_table}", deadline_sql)
 
     def test_0003_applies_after_exact_0001_0002_prefix(self) -> None:
         root = self.root / "prefix-upgrade"

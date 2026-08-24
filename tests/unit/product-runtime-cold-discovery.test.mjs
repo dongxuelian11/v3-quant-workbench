@@ -94,7 +94,9 @@ function resetStore() {
     task: null,
     result: null,
     artifactDescriptor: null,
-    errorMessage: null
+    errorMessage: null,
+    projectScope: null,
+    bindingGeneration: 0
   });
 }
 
@@ -104,8 +106,8 @@ function bridgeFor(tasks, { missingResult = false, missingArtifact = false } = {
   return {
     calls,
     async getProductStatus() { return STATUS; },
-    async listBacktestRunSpecs() { return { specs: [], hasMore: false, nextAfterArtifactId: null }; },
-    async listTasks(filter) { calls.listTasks.push(filter); return tasks; },
+    async listBacktestRunSpecs() { return { specs: [], hasMore: false, nextCursor: null }; },
+    async listTasks(filter) { calls.listTasks.push(filter); return { tasks, hasMore: false, nextCursor: null }; },
     async getTask(taskId) { calls.getTask.push(taskId); return byId.get(taskId); },
     async getResult(resultId) {
       calls.getResult.push(resultId);
@@ -206,7 +208,7 @@ test("fresh store keeps lastResearch null and recovers the latest canonical Task
     assert.equal(cold.artifactDescriptor, null);
     await cold.refresh();
     const state = useProductRuntime.getState();
-    assert.deepEqual(bridge.calls.listTasks, [{ service: "ProductEntryService", state: "SUCCEEDED" }]);
+    assert.deepEqual(bridge.calls.listTasks, [{ filter: { service: "ProductEntryService", state: "SUCCEEDED" } }]);
     assert.equal(state.lastResearch, null);
     assert.equal(state.researchDiscoveryState, "RECOVERED");
     assert.equal(state.recoveredResearchTaskId, "latest");
@@ -291,6 +293,159 @@ test("stale binding clears previously visible canonical research state", async (
     assert.equal(state.recoveredResearchTaskId, null);
     assert.equal(state.surface, "CAPABILITY_UNAVAILABLE");
   } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("ACC-C1-02 delayed Project A completion is dropped after atomic activation of Project B", async () => {
+  resetStore();
+  const warnings = [];
+  const priorWarn = console.warn;
+  console.warn = (line) => { warnings.push(JSON.parse(String(line))); };
+  let resolveTask;
+  let markTaskRequested;
+  const taskRequested = new Promise((resolve) => { markTaskRequested = resolve; });
+  const delayedTask = new Promise((resolve) => { resolveTask = resolve; });
+  const projectATask = task({ taskId: "late-project-a", projectId: PROJECT });
+  let downstreamReads = 0;
+  globalThis.window = {
+    v3ProductRuntime: {
+      async submitResearch() {
+        return {
+          taskId: projectATask.taskId,
+          runId: projectATask.runId,
+          acceptedState: "QUEUED",
+          idempotencyKey: "renderer-owned-by-main",
+          eventCursor: 1,
+          truthState: "DEMO",
+          maturity: "PRODUCT_CONNECTED_CANDIDATE",
+          researchProfileId: "RESEARCH_FREE_DATA_V1",
+          strategyProfileId: "RESEARCH_CLOSE_RANK_TOP1_V1",
+          researchClassification: ["RESEARCH_ONLY"],
+          truthAdmission: { truth: "NOT_FORMAL", admission: "PRE_ALPHA" }
+        };
+      },
+      async getTask() { markTaskRequested(); return delayedTask; },
+      async getResult() { downstreamReads += 1; throw new Error("late A result must not be queried in B scope"); },
+      async getArtifactDescriptor() { downstreamReads += 1; throw new Error("late A artifact must not be queried in B scope"); }
+    }
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(BOUND_REFS);
+    const generationA = useProductRuntime.getState().projectScope.bindingGeneration;
+    const pending = useProductRuntime.getState().submitResearch({ symbol: "000001", startDate: "20260101", endDate: "20260131" });
+    await taskRequested;
+    useProductRuntime.setState({
+      runSpecs: { specs: [], hasMore: false, nextCursor: null },
+      runSpecId: `btrs_sha256_${"a".repeat(64)}`,
+      lastSubmit: { marker: "project-a-submit" },
+      lastImport: { marker: "project-a-import" },
+      researchDiscoveryState: "RECOVERED",
+      recoveredResearchTaskId: "project-a-recovered",
+      entryBusy: true,
+      errorMessage: "project-a-error"
+    });
+
+    useProductRuntime.getState().activateProjectScope({ projectId: OTHER_PROJECT, projectContextRevisionId: "pcr_other", sessionId: "ses_other" });
+    const switched = useProductRuntime.getState();
+    assert.equal(switched.projectScope.projectId, OTHER_PROJECT);
+    assert.equal(switched.projectScope.bindingGeneration, generationA + 1);
+    assert.equal(switched.lastResearch, null);
+    assert.equal(switched.lastSubmit, null);
+    assert.equal(switched.lastImport, null);
+    assert.equal(switched.runSpecs, null);
+    assert.equal(switched.runSpecId, "");
+    assert.equal(switched.researchDiscoveryState, "NOT_RUN");
+    assert.equal(switched.recoveredResearchTaskId, null);
+    assert.equal(switched.entryBusy, false);
+    assert.equal(switched.task, null);
+    assert.equal(switched.result, null);
+    assert.equal(switched.artifactDescriptor, null);
+    assert.equal(switched.inflight, false);
+    assert.equal(switched.errorMessage, null);
+
+    resolveTask(projectATask);
+    await pending;
+    const afterLateA = useProductRuntime.getState();
+    assert.equal(afterLateA.projectScope.projectId, OTHER_PROJECT);
+    assert.equal(afterLateA.lastResearch, null);
+    assert.equal(afterLateA.task, null);
+    assert.equal(afterLateA.result, null);
+    assert.equal(afterLateA.artifactDescriptor, null);
+    assert.equal(afterLateA.surface, "PROJECT_BOUND");
+    assert.equal(afterLateA.errorMessage, null);
+    assert.equal(downstreamReads, 0, "scope fence must stop the A read chain at the delayed Task boundary");
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].code, "LATE_SCOPE_RESULT_DROPPED");
+    assert.equal(warnings[0].project_id, PROJECT);
+    assert.equal(warnings[0].binding_generation, generationA);
+    assert.match(warnings[0].request_id, /^renderer_request_[1-9][0-9]*$/);
+  } finally {
+    console.warn = priorWarn;
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("explicit project pagination reports a bounded UI error instead of rejecting its click promise", async () => {
+  resetStore();
+  const current = {
+    projects: [{ projectId: PROJECT, projectContextRevisionId: "pcr_cold", displayName: "项目 A", createdAt: "2026-08-23T00:00:00Z" }],
+    hasMore: true,
+    nextCursor: PROJECT
+  };
+  useProductRuntime.setState({ projects: current, surface: "BACKEND_READY" });
+  globalThis.window = {
+    v3ProductRuntime: {
+      async listProjects() { throw new Error("project page unavailable"); }
+    }
+  };
+  try {
+    await useProductRuntime.getState().loadNextProjectPage();
+    const state = useProductRuntime.getState();
+    assert.equal(state.projects, current);
+    assert.equal(state.surface, "ERROR");
+    assert.match(state.errorMessage, /project page unavailable/);
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("late run-spec page is dropped after project activation changes", async () => {
+  resetStore();
+  const warnings = [];
+  const priorWarn = console.warn;
+  console.warn = (line) => { warnings.push(JSON.parse(String(line))); };
+  let resolvePage;
+  const delayedPage = new Promise((resolve) => { resolvePage = resolve; });
+  globalThis.window = {
+    v3ProductRuntime: {
+      async listBacktestRunSpecs() { return delayedPage; }
+    }
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(BOUND_REFS);
+    const current = { specs: [], hasMore: true, nextCursor: `art_sha256_${"a".repeat(64)}` };
+    useProductRuntime.setState({ runSpecs: current });
+    const pending = useProductRuntime.getState().loadNextRunSpecPage();
+    useProductRuntime.getState().activateProjectScope({ projectId: OTHER_PROJECT, projectContextRevisionId: "pcr_other", sessionId: "ses_other" });
+    resolvePage({
+      specs: [{ artifactId: `art_sha256_${"b".repeat(64)}`, runSpecId: null, status: "UNAVAILABLE", diagnostic: "not executable" }],
+      hasMore: false,
+      nextCursor: null
+    });
+    await pending;
+    const state = useProductRuntime.getState();
+    assert.equal(state.projectScope.projectId, OTHER_PROJECT);
+    assert.equal(state.runSpecs, null);
+    assert.equal(state.errorMessage, null);
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].code, "LATE_SCOPE_RESULT_DROPPED");
+    assert.equal(warnings[0].project_id, PROJECT);
+  } finally {
+    console.warn = priorWarn;
     delete globalThis.window;
     resetStore();
   }

@@ -9,24 +9,20 @@ content-addressed artifact published by the canonical execution path.
 from __future__ import annotations
 
 import json
+import base64
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from v3_backend.adapters.sqlite.connection import connect_catalog
 from v3_backend.adapters.sqlite.repositories import SQLiteRepositoryRegistry
 from v3_backend.adapters.sqlite.unit_of_work import SQLiteUnitOfWork
-from v3_backend.domain.tasks.entities import TaskState
 from v3_backend.domain.tasks.events import PendingTaskEvent
-from v3_backend.domain.tasks.state_machine import (
-    TaskTransitionContext,
-    transition_attempt,
-    transition_task,
-)
 from v3_backend.errors.exceptions import (
     ConflictError,
     IdempotencyConflictError,
     InvalidArgumentError,
     NotFoundError,
+    ResourceRejectedError,
     TruthPreconditionFailedError,
 )
 from v3_backend.provenance.canonical_hash import canonical_sha256
@@ -64,6 +60,7 @@ def _session_row_id(session_id: str) -> str:
 _ACCEPTED_STATE = "QUEUED"
 CONTEXT_ALLOW_LIST = ("notes", "benchmark_universe_version_id")
 STREAM_TICKET_TTL_SECONDS = 300
+MAX_STREAM_TICKETS = 4096
 
 
 def _response(request: Mapping[str, Any], read_model: Mapping[str, Any]) -> dict[str, Any]:
@@ -356,21 +353,56 @@ class TaskFacade:
         project_id = str(request["project_id"])
         filter_wire = dict(request["filter"])
         page_size = int(request["page_size"])
-        allowed = {"service", "state"}
+        allowed = {"service", "state", "cursor"}
         unknown = set(filter_wire) - allowed
         if unknown:
             raise InvalidArgumentError(f"task filter fields unsupported: {sorted(unknown)}")
+        service = filter_wire.get("service")
+        state = filter_wire.get("state")
+        cursor = filter_wire.get("cursor")
+        cursor_created_at: str | None = None
+        cursor_task_id: str | None = None
+        if cursor is not None:
+            if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048:
+                raise InvalidArgumentError("task cursor must be a bounded opaque string")
+            try:
+                padding = "=" * (-len(cursor) % 4)
+                decoded = json.loads(base64.urlsafe_b64decode(cursor + padding).decode("utf-8"))
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise InvalidArgumentError("task cursor is malformed") from exc
+            expected_keys = {"v", "project_id", "service", "state", "created_at", "task_id", "sort"}
+            if not isinstance(decoded, dict) or set(decoded) != expected_keys:
+                raise InvalidArgumentError("task cursor shape is invalid")
+            if (
+                decoded["v"] != 1
+                or decoded["project_id"] != project_id
+                or decoded["service"] != service
+                or decoded["state"] != state
+                or decoded["sort"] != "created_at_desc_task_id_asc"
+                or not isinstance(decoded["created_at"], str)
+                or not isinstance(decoded["task_id"], str)
+            ):
+                raise InvalidArgumentError("task cursor does not match the current project/filter/sort scope")
+            cursor_created_at = decoded["created_at"]
+            cursor_task_id = decoded["task_id"]
         sql = (
-            "SELECT task_id FROM task WHERE project_id=? "
-            + ("AND service_name=? " if filter_wire.get("service") else "")
-            + ("AND state=? " if filter_wire.get("state") else "")
+            "SELECT task_id, created_at FROM task WHERE project_id=? "
+            + ("AND service_name=? " if service else "")
+            + ("AND state=? " if state else "")
+            + (
+                "AND (created_at < ? OR (created_at = ? AND task_id > ?)) "
+                if cursor_created_at is not None
+                else ""
+            )
             + "ORDER BY created_at DESC, task_id LIMIT ?"
         )
         params: list[Any] = [project_id]
-        if filter_wire.get("service"):
-            params.append(str(filter_wire["service"]))
-        if filter_wire.get("state"):
-            params.append(str(filter_wire["state"]))
+        if service:
+            params.append(str(service))
+        if state:
+            params.append(str(state))
+        if cursor_created_at is not None:
+            params.extend((cursor_created_at, cursor_created_at, cursor_task_id))
         params.append(page_size + 1)
         connection = self.product._connection(read_only=True)
         try:
@@ -378,9 +410,23 @@ class TaskFacade:
         finally:
             connection.close()
         truncated = len(rows) > page_size
-        items = [
-            _task_read_model(self.product, str(row["task_id"])) for row in rows[:page_size]
-        ]
+        page_rows = rows[:page_size]
+        items = [_task_read_model(self.product, str(row["task_id"])) for row in page_rows]
+        next_cursor = None
+        if truncated:
+            last = page_rows[-1]
+            cursor_wire = {
+                "v": 1,
+                "project_id": project_id,
+                "service": service,
+                "state": state,
+                "created_at": str(last["created_at"]),
+                "task_id": str(last["task_id"]),
+                "sort": "created_at_desc_task_id_asc",
+            }
+            next_cursor = base64.urlsafe_b64encode(
+                json.dumps(cursor_wire, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            ).decode("ascii").rstrip("=")
         return _response(
             request,
             {
@@ -388,6 +434,8 @@ class TaskFacade:
                 "items": items,
                 "page_size": page_size,
                 "truncated": truncated,
+                "has_more": truncated,
+                "next_cursor": next_cursor,
             },
         )
 
@@ -438,46 +486,12 @@ class TaskFacade:
 
     def cancel_task(self, request: Mapping[str, Any]) -> dict[str, Any]:
         task_id = str(request["task_id"])
-        expected_state_version = int(request["expected_state_version"])
-        reason = str(request["reason"])
-        task = self.product.task_persistence.read_task(task_id)
-        if task.project_id != str(request["project_id"]):
-            raise TruthPreconditionFailedError("task belongs to a different project")
-        if task.state in {TaskState.SUCCEEDED, TaskState.FAILED, TaskState.CANCELLED, TaskState.PARTIAL}:
-            raise ConflictError("terminal Task cannot be cancelled")
-        if task.state_version != expected_state_version:
-            raise ConflictError("Task state version is stale")
-        with self.product.task_persistence.begin() as unit:
-            current_task = unit.require_task(task_id)
-            current_task.state = transition_task(
-                current_task.state,
-                "CANCEL_REQUESTED",
-                TaskTransitionContext(),
-            )
-            unit.save_task(current_task, expected_version=current_task.state_version)
-            current_attempt = unit.require_attempt(_latest_attempt_id(unit, task_id))
-            current_attempt.state = transition_attempt(current_attempt.state, "ATTEMPT_CANCELLED")
-            unit.save_attempt(current_attempt, expected_version=current_attempt.state_version)
-            current_task.state = transition_task(
-                current_task.state,
-                "WORKER_CANCELLED_OR_TERMINATED",
-                TaskTransitionContext(cleanup_complete=True),
-            )
-            unit.save_task(current_task, expected_version=current_task.state_version)
-            unit.append_event(
-                PendingTaskEvent(
-                    event_id=mint_v3_id("tev_"),
-                    event_version="1.0.0",
-                    project_id=current_task.project_id,
-                    task_id=task_id,
-                    event_type="TASK_CANCELLED",
-                    occurred_at=datetime.now(timezone.utc),
-                    payload={"reason": reason},
-                    run_id=current_task.active_run_id,
-                    attempt_id=current_attempt.attempt_id,
-                )
-            )
-            unit.commit()
+        self.product.cancel_research_task(
+            task_id,
+            project_id=str(request["project_id"]),
+            expected_state_version=int(request["expected_state_version"]),
+            reason=str(request["reason"]),
+        )
         return _response(request, _task_read_model(self.product, task_id))
 
     def retry_task(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -525,9 +539,32 @@ def _artifact_descriptor_read_model(row: Mapping[str, Any]) -> dict[str, Any]:
 class ArtifactFacade:
     SERVICE = "ArtifactService"
 
-    def __init__(self, product: ProductRuntime) -> None:
+    def __init__(
+        self,
+        product: ProductRuntime,
+        *,
+        clock=None,
+        ticket_limit: int = MAX_STREAM_TICKETS,
+    ) -> None:
+        if not 1 <= ticket_limit <= MAX_STREAM_TICKETS:
+            raise ValueError(
+                f"ticket_limit must be between 1 and {MAX_STREAM_TICKETS}"
+            )
         self.product = product
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._ticket_limit = ticket_limit
         self._tickets: dict[str, dict[str, Any]] = {}
+
+    @property
+    def retained_ticket_count(self) -> int:
+        return len(self._tickets)
+
+    def _prune_expired_tickets(self, now: datetime) -> None:
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("Artifact stream ticket clock must be timezone-aware")
+        for ticket_id, ticket in tuple(self._tickets.items()):
+            if ticket["expires_at"] <= now:
+                del self._tickets[ticket_id]
 
     def handlers(self) -> dict[str, Any]:
         return {
@@ -654,8 +691,18 @@ class ArtifactFacade:
             range_end_exclusive = int(range_wire["end_exclusive"])
             if range_start < 0 or range_end_exclusive <= range_start:
                 raise InvalidArgumentError("invalid stream byte range")
+        now = self._clock()
+        self._prune_expired_tickets(now)
+        if len(self._tickets) >= self._ticket_limit:
+            raise ResourceRejectedError(
+                "Artifact stream ticket capacity is exhausted",
+                details={
+                    "reason_code": "STREAM_TICKET_CAPACITY_EXCEEDED",
+                    "max_tickets": self._ticket_limit,
+                },
+            )
         ticket_id = mint_v3_id("stk_")
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=STREAM_TICKET_TTL_SECONDS)
+        expires_at = now + timedelta(seconds=STREAM_TICKET_TTL_SECONDS)
         self._tickets[ticket_id] = {
             "artifact_id": artifact_id,
             "project_id": str(request["project_id"]),
@@ -995,6 +1042,8 @@ class ProductEntryFacade:
         )
 
     def submit_research(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .request_router import current_request_deadline_at
+
         outcome = self.product.execution.submit_research(
             ProductResearchSubmission(
                 project_id=str(request["project_id"]),
@@ -1003,6 +1052,7 @@ class ProductEntryFacade:
                 strategy_profile_id=str(request["strategy_profile_id"]),
                 source=request["source"],
                 idempotency_key=str(request["idempotency_key"]),
+                execution_deadline_at=current_request_deadline_at(),
             )
         )
         return {
