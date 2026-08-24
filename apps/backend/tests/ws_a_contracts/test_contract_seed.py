@@ -32,7 +32,7 @@ class ContractSeedConformanceTests(unittest.TestCase):
 
     def test_registry_counts_and_frozen_seventeen_service_subset(self) -> None:
         # Product Entry expansion (task-authorized, non-P0): 17->18 services,
-        # 64->70 operations.  The original frozen v1 registry and the first
+        # 64->74 operations.  The original frozen v1 registry and the first
         # three Product Entry 1.0 wire methods remain an EXACT subset; the
         # fourth and fifth operations are additive 1.1 and may not collide.
         legacy_services = [
@@ -40,14 +40,14 @@ class ContractSeedConformanceTests(unittest.TestCase):
         ]
         self.assertEqual(len(legacy_services), 17)
         self.assertEqual(len(SERVICE_CONTRACTS), 18)
-        self.assertEqual(OPERATION_COUNT, 70)
+        self.assertEqual(OPERATION_COUNT, 74)
         self.assertEqual(len(OPERATIONS), len(set(OPERATIONS)))
         for item in legacy_services:
             contract = SERVICE_CONTRACTS[item["service"]]
             self.assertEqual(contract.contract_id, item["contract_id"])
             self.assertEqual(tuple(op.operation_id for op in contract.operations), tuple(item["method_operation_ids"]))
         product_entry = SERVICE_CONTRACTS["ProductEntryService"]
-        self.assertEqual(len(product_entry.operations), 6)
+        self.assertEqual(len(product_entry.operations), 10)
         self.assertEqual(product_entry.api_version, "1.1.0")
         self.assertEqual(
             tuple(operation.version for operation in product_entry.operations[:3]),
@@ -73,9 +73,29 @@ class ContractSeedConformanceTests(unittest.TestCase):
         self.assertEqual(product_entry.operations[4].version, "1.1.0")
         self.assertEqual(
             product_entry.operations[5].operation_id,
-            "ProductEntryService.v1.getProjectHome",
+            "ProductEntryService.v1.previewResearchStrategy",
         )
         self.assertEqual(product_entry.operations[5].version, "1.1.0")
+        self.assertEqual(
+            product_entry.operations[6].operation_id,
+            "ProductEntryService.v1.publishResearchStrategy",
+        )
+        self.assertEqual(product_entry.operations[6].version, "1.1.0")
+        self.assertEqual(
+            product_entry.operations[7].operation_id,
+            "ProductEntryService.v1.previewResearchBacktest",
+        )
+        self.assertEqual(product_entry.operations[7].version, "1.1.0")
+        self.assertEqual(
+            product_entry.operations[8].operation_id,
+            "ProductEntryService.v1.submitResearchBacktest",
+        )
+        self.assertEqual(product_entry.operations[8].version, "1.1.0")
+        self.assertEqual(
+            product_entry.operations[9].operation_id,
+            "ProductEntryService.v1.getProjectHome",
+        )
+        self.assertEqual(product_entry.operations[9].version, "1.1.0")
         legacy_operation_ids = {
             operation_id
             for item in legacy_services

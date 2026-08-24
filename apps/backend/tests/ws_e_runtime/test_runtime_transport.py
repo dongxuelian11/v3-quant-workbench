@@ -21,6 +21,8 @@ HEALTH_CONTROL_ID = "01890f3c-7b5a-7000-8000-000000000003"
 PREPARE_CONTROL_ID = "01890f3c-7b5a-7000-8000-000000000004"
 COMMIT_CONTROL_ID = "01890f3c-7b5a-7000-8000-000000000005"
 PRODUCT_CONTROL_ID = "01890f3c-7b5a-7000-8000-000000000006"
+ARTIFACT_CONTROL_ID = "01890f3c-7b5a-7000-8000-000000000007"
+EXPORT_CONTROL_ID = "01890f3c-7b5a-7000-8000-000000000008"
 PROJECT_ID = "prj_00000000000000000000000000"
 REVISION_ID = "pcr_00000000000000000000000000"
 TASK_ID = "tsk_00000000000000000000000000"
@@ -322,6 +324,137 @@ class EventAndShutdownTests(unittest.TestCase):
             "limit": 50,
             "after_project_id": None,
         }])
+
+    def test_artifact_stream_consume_emits_correlated_chunks_and_terminal(self) -> None:
+        fixed_hello = create_hello("backend", 1, "0.1.0", [], nonce="bc" * 32)
+        accept = {
+            "kind": "supervisor.accept",
+            "token_proof": token_proof(TOKEN, fixed_hello["nonce"]),
+            "requested_protocol": "v3.local/1.0",
+            "requested_asl_versions": {name: "1.0" for name in SERVICE_CONTRACTS},
+            "desktop_version": "0.1.0",
+            "project_id": PROJECT_ID,
+            "project_context_revision_id": REVISION_ID,
+            "last_project_event_sequence": 0,
+        }
+        owner_messages: list[dict[str, object]] = []
+
+        def artifact_stream(kind: str, message: object):
+            owner_messages.append(dict(message))
+            yield {
+                "kind": "artifactStream.chunk",
+                "ticket_id": "stk_01ARZ3NDEKTSV4RRFFQ69G5FAX",
+                "artifact_id": "art_sha256_" + "a" * 64,
+                "offset": 0,
+                "payload_base64": "eA==",
+                "chunk_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+            }
+            yield {
+                "kind": "artifactStream.complete",
+                "ticket_id": "stk_01ARZ3NDEKTSV4RRFFQ69G5FAX",
+                "artifact_id": "art_sha256_" + "a" * 64,
+                "total_byte_count": 1,
+                "artifact_sha256": "a" * 64,
+                "range_start": 0,
+                "range_end_exclusive": 1,
+            }
+
+        request_message = {
+            "kind": "artifactStream.consume",
+            "protocol_version": "v3.artifact-stream/1.0.0",
+            "ticket_id": "stk_01ARZ3NDEKTSV4RRFFQ69G5FAX",
+            "project_id": PROJECT_ID,
+            "project_context_revision_id": REVISION_ID,
+            "control_request_id": ARTIFACT_CONTROL_ID,
+            "runtime_generation": 7,
+            "deadline_at": "2026-08-24T12:00:00Z",
+        }
+        source = io.BytesIO(encode_frame(accept) + encode_frame(request_message))
+        sink = io.BytesIO()
+        session = RuntimeSession(
+            RuntimePorts(artifact_stream_control=artifact_stream),
+            TOKEN,
+            "0.1.0",
+            backend_instance_id="backend",
+        )
+        with patch("v3_backend.runtime.composition_root.create_hello", return_value=fixed_hello):
+            session.run(source, sink)
+        decoded = FrameDecoder().feed(sink.getvalue())
+        self.assertEqual(
+            [item["kind"] for item in decoded],
+            ["backend.hello", "backend.ready", "artifactStream.chunk", "artifactStream.complete"],
+        )
+        for frame in decoded[2:]:
+            self.assertEqual(frame["control_request_id"], ARTIFACT_CONTROL_ID)
+            self.assertEqual(frame["runtime_generation"], 7)
+        self.assertEqual(owner_messages, [{
+            "kind": "artifactStream.consume",
+            "protocol_version": "v3.artifact-stream/1.0.0",
+            "ticket_id": "stk_01ARZ3NDEKTSV4RRFFQ69G5FAX",
+            "project_id": PROJECT_ID,
+            "project_context_revision_id": REVISION_ID,
+            "runtime_generation": 7,
+        }])
+
+    def test_artifact_export_completion_receipt_is_closed_and_correlated(self) -> None:
+        fixed_hello = create_hello("backend", 1, "0.1.0", [], nonce="bd" * 32)
+        accept = {
+            "kind": "supervisor.accept",
+            "token_proof": token_proof(TOKEN, fixed_hello["nonce"]),
+            "requested_protocol": "v3.local/1.0",
+            "requested_asl_versions": {name: "1.0" for name in SERVICE_CONTRACTS},
+            "desktop_version": "0.1.0",
+            "project_id": PROJECT_ID,
+            "project_context_revision_id": REVISION_ID,
+            "last_project_event_sequence": 0,
+        }
+        owner_messages: list[tuple[str, dict[str, object]]] = []
+
+        def artifact_export(kind: str, message: object) -> dict[str, object]:
+            owner_messages.append((kind, dict(message)))
+            return {
+                "kind": "artifactExport.completed",
+                "task_id": TASK_ID,
+                "manifest_artifact_id": "art_sha256_" + "c" * 64,
+            }
+
+        request_message = {
+            "kind": "artifactExport.complete",
+            "protocol_version": "v3.artifact-export/1.0.0",
+            "project_id": PROJECT_ID,
+            "project_context_revision_id": REVISION_ID,
+            "task_id": TASK_ID,
+            "destination_token": "edc_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "display_name": "result.json",
+            "artifact_id": "art_sha256_" + "a" * 64,
+            "sha256": "a" * 64,
+            "byte_size": 1,
+            "completed_at": "2026-08-24T12:00:00Z",
+            "control_request_id": EXPORT_CONTROL_ID,
+            "runtime_generation": 7,
+            "deadline_at": "2026-08-24T12:00:30Z",
+        }
+        source = io.BytesIO(encode_frame(accept) + encode_frame(request_message))
+        sink = io.BytesIO()
+        session = RuntimeSession(
+            RuntimePorts(artifact_export_control=artifact_export),
+            TOKEN,
+            "0.1.0",
+            backend_instance_id="backend",
+        )
+        with patch("v3_backend.runtime.composition_root.create_hello", return_value=fixed_hello):
+            session.run(source, sink)
+        decoded = FrameDecoder().feed(sink.getvalue())
+        self.assertEqual(
+            [item["kind"] for item in decoded],
+            ["backend.hello", "backend.ready", "artifactExport.completed"],
+        )
+        self.assertEqual(decoded[2]["control_request_id"], EXPORT_CONTROL_ID)
+        self.assertEqual(decoded[2]["runtime_generation"], 7)
+        expected_owner = dict(request_message)
+        for field in ("control_request_id", "runtime_generation", "deadline_at"):
+            expected_owner.pop(field)
+        self.assertEqual(owner_messages, [("artifactExport.complete", expected_owner)])
 
     def test_runtime_graceful_shutdown_sequence(self) -> None:
         prepared: list[str | None] = []

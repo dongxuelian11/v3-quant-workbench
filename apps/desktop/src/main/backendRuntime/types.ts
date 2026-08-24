@@ -145,3 +145,25 @@ export interface OpenArtifactStreamInput {
   readonly artifactId: string;
   readonly range?: Readonly<Record<string, unknown>>;
 }
+
+export interface ConsumeArtifactStreamInput {
+  readonly ticketId: string;
+  readonly artifactId: string;
+  readonly expectedSha256: string;
+  readonly expectedByteSize: number;
+}
+
+export interface ArtifactStreamBytes {
+  readonly artifactId: string;
+  readonly sha256: string;
+  readonly byteSize: number;
+  readonly bytes: Uint8Array;
+}
+
+export interface ArtifactStreamReceipt {
+  readonly artifactId: string;
+  readonly sha256: string;
+  readonly byteSize: number;
+}
+
+export type ArtifactStreamSink = (chunk: Uint8Array, offset: number) => Promise<void>;

@@ -7,7 +7,14 @@ import type {
   ProductLocalDataImportOutcomeView,
   ProductFactorStudyIntent,
   ProductFactorStudyOutcomeView,
+  ProductLatestResultDetailsView,
   ProductProjectHomeView,
+  ProductResearchBacktestIntent,
+  ProductResearchBacktestOutcomeView,
+  ProductResearchBacktestPreviewView,
+  ProductResearchStrategyIntent,
+  ProductResearchStrategyOutcomeView,
+  ProductResearchStrategyPreviewView,
   ProductResearchSubmitIntent,
   ProductResearchSubmitOutcomeView,
   ProductBindingRefs,
@@ -15,6 +22,7 @@ import type {
   ProductResultView,
   ProductStatusView,
   ProductTaskView,
+  ProductTaskProgressView,
   ProjectsListView,
   RunSpecsListView,
   V3ProductRuntimeBridge
@@ -75,6 +83,17 @@ interface ProductRuntimeState {
   localDataImport: ProductLocalDataImportOutcomeView | null;
   factorStudy: ProductFactorStudyOutcomeView | null;
   factorTask: ProductTaskView | null;
+  strategySubmission: ProductResearchStrategyOutcomeView | null;
+  strategyPreview: ProductResearchStrategyPreviewView | null;
+  strategyPreviewIntent: ProductResearchStrategyIntent | null;
+  strategyTask: ProductTaskView | null;
+  backtestSubmission: ProductResearchBacktestOutcomeView | null;
+  backtestPreview: ProductResearchBacktestPreviewView | null;
+  backtestPreviewIntent: ProductResearchBacktestIntent | null;
+  backtestTask: ProductTaskView | null;
+  backtestProgress: ProductTaskProgressView | null;
+  latestProductResult: ProductLatestResultDetailsView | null;
+  latestProductResultError: string | null;
   researchDiscoveryState: ProductResearchDiscoveryState;
   recoveredResearchTaskId: string | null;
   task: ProductTaskView | null;
@@ -94,12 +113,35 @@ interface ProductRuntimeState {
   importResearchPackage(): Promise<void>;
   importLocalData(volumeUnit: "SHARES" | "HANDS"): Promise<void>;
   submitFactorStudy(intent: ProductFactorStudyIntent): Promise<void>;
+  previewResearchStrategy(intent: ProductResearchStrategyIntent): Promise<void>;
+  publishResearchStrategy(intent: ProductResearchStrategyIntent): Promise<void>;
+  previewResearchBacktest(intent: ProductResearchBacktestIntent): Promise<void>;
+  submitResearchBacktest(intent: ProductResearchBacktestIntent): Promise<void>;
+  retryResearchBacktest(): Promise<void>;
+  loadLatestProductResult(): Promise<void>;
   submitResearch(intent: ProductResearchSubmitIntent): Promise<void>;
 }
 
 const RUN_SPEC_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
 const DATA_TASK_POLL_TIMEOUT_MS = 5 * 60_000;
+const RETRYABLE_PRODUCT_BACKTEST_CATEGORIES = new Set([
+  "TRANSIENT_IO",
+  "WORKER_LOST",
+  "PROVIDER_THROTTLED",
+  "RETRYABLE_ADAPTER",
+  "WORKER_OOM"
+]);
 let rendererRequestOrdinal = 0;
+
+export function isRetryableProductBacktestTask(task: ProductTaskView | null): boolean {
+  return task !== null
+    && task.operationId === "ProductEntryService.v1.submitResearchBacktest"
+    && (task.state === "FAILED" || task.state === "PARTIAL")
+    && task.attempt.attemptId !== null
+    && task.attempt.state === "FAILED"
+    && task.attempt.errorCategory !== null
+    && RETRYABLE_PRODUCT_BACKTEST_CATEGORIES.has(task.attempt.errorCategory);
+}
 
 class LateScopeResultDropped extends Error {
   constructor() {
@@ -137,6 +179,31 @@ function recordLateScopeResult(token: ProjectScopeToken): void {
     binding_generation: token.bindingGeneration,
     request_id: token.requestId
   }));
+}
+
+function latestTaskProgress(
+  events: Awaited<ReturnType<V3ProductRuntimeBridge["getTaskEvents"]>>,
+  taskId: string,
+): ProductTaskProgressView | null {
+  for (let index = events.items.length - 1; index >= 0; index -= 1) {
+    const event = events.items[index];
+    if (event?.taskId === taskId && event.progress !== null) return event.progress;
+  }
+  return null;
+}
+
+function sameStrategyIntent(
+  left: ProductResearchStrategyIntent | null,
+  right: ProductResearchStrategyIntent,
+): boolean {
+  return left !== null
+    && left.entrySignalFactorVersionId === right.entrySignalFactorVersionId
+    && left.exitSignalFactorVersionId === right.exitSignalFactorVersionId
+    && left.positionSizing === right.positionSizing
+    && left.maxPositions === right.maxPositions
+    && left.grossExposure === right.grossExposure
+    && left.initialCash === right.initialCash
+    && left.assumptionProfileId === right.assumptionProfileId;
 }
 
 export function executableRunSpecSelection(
@@ -300,6 +367,17 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
   localDataImport: null,
   factorStudy: null,
   factorTask: null,
+  strategySubmission: null,
+  strategyPreview: null,
+  strategyPreviewIntent: null,
+  strategyTask: null,
+  backtestSubmission: null,
+  backtestPreview: null,
+  backtestPreviewIntent: null,
+  backtestTask: null,
+  backtestProgress: null,
+  latestProductResult: null,
+  latestProductResultError: null,
   researchDiscoveryState: "NOT_RUN",
   recoveredResearchTaskId: null,
   task: null,
@@ -350,6 +428,17 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       localDataImport: null,
       factorStudy: null,
       factorTask: null,
+      strategySubmission: null,
+      strategyPreview: null,
+      strategyPreviewIntent: null,
+      strategyTask: null,
+      backtestSubmission: null,
+      backtestPreview: null,
+      backtestPreviewIntent: null,
+      backtestTask: null,
+      backtestProgress: null,
+      latestProductResult: null,
+      latestProductResultError: null,
       researchDiscoveryState: "NOT_RUN" as const,
       recoveredResearchTaskId: null,
       task: null,
@@ -384,6 +473,8 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       const current = get();
       let dataHome: ProductProjectHomeView | null = null;
       let dataHomeError: unknown = null;
+      let latestProductResult: ProductLatestResultDetailsView | null = null;
+      let latestProductResultError: string | null = null;
       if (!stale && status.boundProject !== null && typeof bridge.getProjectHome === "function") {
         try {
           dataHome = await bridge.getProjectHome();
@@ -393,6 +484,14 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
             || dataHome.projectContextRevisionId !== status.boundProject.projectContextRevisionId
           ) {
             throw new Error("project home does not match the active project scope");
+          }
+          if (dataHome.backtestState === "AVAILABLE" && typeof bridge.getLatestProductResultDetails === "function") {
+            try {
+              latestProductResult = await bridge.getLatestProductResultDetails();
+              if (refreshToken !== null) guardProjectScope(refreshToken);
+            } catch (error) {
+              latestProductResultError = describeError(error) ?? "VALID Result artifact readback unavailable";
+            }
           }
         } catch (error) {
           dataHomeError = error;
@@ -449,7 +548,9 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
           boundProject: status.boundProject,
           projects,
           runSpecs,
-          dataHome
+          dataHome,
+          latestProductResult,
+          latestProductResultError
         };
         if (stale) {
           return {
@@ -753,7 +854,18 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
           localDataSelection: null,
           localDataImport: null,
           factorStudy: null,
-          factorTask: null
+          factorTask: null,
+          strategySubmission: null,
+          strategyPreview: null,
+          strategyPreviewIntent: null,
+          strategyTask: null,
+          backtestSubmission: null,
+          backtestPreview: null,
+          backtestPreviewIntent: null,
+          backtestTask: null,
+          backtestProgress: null,
+          latestProductResult: null,
+          latestProductResultError: null
         }
       : state);
     try {
@@ -852,7 +964,24 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       return;
     }
     set((state) => isCurrentProjectScope(state, token)
-      ? { ...state, entryBusy: true, errorMessage: null, factorStudy: null, factorTask: null }
+      ? {
+          ...state,
+          entryBusy: true,
+          errorMessage: null,
+          factorStudy: null,
+          factorTask: null,
+          strategySubmission: null,
+          strategyPreview: null,
+          strategyPreviewIntent: null,
+          strategyTask: null,
+          backtestSubmission: null,
+          backtestPreview: null,
+          backtestPreviewIntent: null,
+          backtestTask: null,
+          backtestProgress: null,
+          latestProductResult: null,
+          latestProductResultError: null
+        }
       : state);
     try {
       const outcome = await bridge.submitFactorStudy(intent);
@@ -912,6 +1041,301 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
     } finally {
       set((state) => isCurrentProjectScope(state, token)
         ? { ...state, entryBusy: false }
+        : state);
+    }
+  },
+
+  previewResearchStrategy: async (intent) => {
+    const bridge = window.v3ProductRuntime;
+    const token = captureProjectScope(get());
+    if (!bridge || token === null) return;
+    const currentHome = get().dataHome;
+    if (currentHome?.factorState !== "AVAILABLE" || currentHome.factor === null) {
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: "STRATEGY_REQUIRES_AVAILABLE_FACTOR" }
+        : state);
+      return;
+    }
+    set((state) => isCurrentProjectScope(state, token)
+      ? { ...state, entryBusy: true, errorMessage: null, strategyPreview: null, strategyPreviewIntent: null }
+      : state);
+    try {
+      const preview = await bridge.previewResearchStrategy(intent);
+      guardProjectScope(token);
+      if (
+        preview.projectId !== token.projectId
+        || preview.projectContextRevisionId !== token.projectContextRevisionId
+        || preview.snapshotId !== currentHome.data?.snapshotId
+        || preview.entrySignalFactorVersionId !== intent.entrySignalFactorVersionId
+        || preview.exitSignalFactorVersionId !== intent.exitSignalFactorVersionId
+        || preview.sideEffects !== "NONE"
+      ) {
+        throw new Error("STRATEGY_PREVIEW_SCOPE_OR_INPUT_DRIFT");
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? {
+            ...state,
+            strategyPreview: preview,
+            strategyPreviewIntent: Object.freeze({ ...intent }),
+            surface: "PROJECT_BOUND",
+            errorMessage: null
+          }
+        : state);
+    } catch (error) {
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: describeError(error) ?? "策略验证预览失败" }
+        : state);
+    } finally {
+      set((state) => isCurrentProjectScope(state, token) ? { ...state, entryBusy: false } : state);
+    }
+  },
+
+  publishResearchStrategy: async (intent) => {
+    const bridge = window.v3ProductRuntime;
+    const token = captureProjectScope(get());
+    if (!bridge || token === null) return;
+    const currentHome = get().dataHome;
+    if (currentHome?.factorState !== "AVAILABLE" || currentHome.factor === null) {
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: "STRATEGY_REQUIRES_AVAILABLE_FACTOR" }
+        : state);
+      return;
+    }
+    if (get().strategyPreview === null || !sameStrategyIntent(get().strategyPreviewIntent, intent)) {
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: "STRATEGY_PREVIEW_REQUIRED" }
+        : state);
+      return;
+    }
+    set((state) => isCurrentProjectScope(state, token)
+      ? { ...state, entryBusy: true, errorMessage: null, strategySubmission: null, strategyTask: null, backtestPreview: null, backtestPreviewIntent: null, latestProductResult: null, latestProductResultError: null }
+      : state);
+    try {
+      const outcome = await bridge.publishResearchStrategy(intent);
+      guardProjectScope(token);
+      set((state) => isCurrentProjectScope(state, token) ? { ...state, strategySubmission: outcome } : state);
+      const deadline = Date.now() + DATA_TASK_POLL_TIMEOUT_MS;
+      let task: ProductTaskView;
+      while (true) {
+        task = await bridge.getTask(outcome.taskId);
+        guardProjectScope(token);
+        set((state) => isCurrentProjectScope(state, token) ? { ...state, strategyTask: task } : state);
+        if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(task.state)) break;
+        if (Date.now() >= deadline) throw new Error("STRATEGY_PUBLICATION_TASK_TIMEOUT");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      if (task.projectId !== token.projectId || task.operationId !== "ProductEntryService.v1.publishResearchStrategy") {
+        throw new Error("Strategy Task scope or operation does not match acceptance");
+      }
+      if (task.state !== "SUCCEEDED") throw new Error(`STRATEGY_PUBLICATION_${task.state}`);
+      const home = await bridge.getProjectHome();
+      guardProjectScope(token);
+      if (home.projectId !== token.projectId || home.projectContextRevisionId !== token.projectContextRevisionId
+        || home.strategyState !== "AVAILABLE" || home.strategy?.researchStrategySpecId !== outcome.researchStrategySpecId) {
+        throw new Error("canonical Strategy readback does not match the accepted Task");
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, dataHome: home, strategySubmission: outcome, strategyTask: task, strategyPreview: null, strategyPreviewIntent: null, backtestSubmission: null, backtestPreview: null, backtestPreviewIntent: null, backtestTask: null, backtestProgress: null, latestProductResult: null, latestProductResultError: null, surface: "PROJECT_BOUND", errorMessage: null }
+        : state);
+    } catch (error) {
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: describeError(error) ?? "发布研究策略失败" }
+        : state);
+    } finally {
+      set((state) => isCurrentProjectScope(state, token) ? { ...state, entryBusy: false } : state);
+    }
+  },
+
+  previewResearchBacktest: async (intent) => {
+    const bridge = window.v3ProductRuntime;
+    const token = captureProjectScope(get());
+    if (!bridge || token === null) return;
+    set((state) => isCurrentProjectScope(state, token)
+      ? { ...state, entryBusy: true, errorMessage: null, backtestPreview: null, backtestPreviewIntent: null }
+      : state);
+    try {
+      const preview = await bridge.previewResearchBacktest(intent);
+      guardProjectScope(token);
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, backtestPreview: preview, backtestPreviewIntent: Object.freeze({ ...intent }), surface: "PROJECT_BOUND", errorMessage: null }
+        : state);
+    } catch (error) {
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, backtestPreview: null, backtestPreviewIntent: null, surface: "ERROR", errorMessage: describeError(error) ?? "回测预检失败" }
+        : state);
+    } finally {
+      set((state) => isCurrentProjectScope(state, token) ? { ...state, entryBusy: false } : state);
+    }
+  },
+
+  submitResearchBacktest: async (intent) => {
+    const bridge = window.v3ProductRuntime;
+    const token = captureProjectScope(get());
+    if (!bridge || token === null) return;
+    if (get().dataHome?.strategyState !== "AVAILABLE") {
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: "BACKTEST_REQUIRES_AVAILABLE_STRATEGY" }
+        : state);
+      return;
+    }
+    set((state) => isCurrentProjectScope(state, token)
+      ? { ...state, entryBusy: true, errorMessage: null, backtestSubmission: null, backtestTask: null, backtestProgress: null, latestProductResult: null, latestProductResultError: null }
+      : state);
+    try {
+      const outcome = await bridge.submitResearchBacktest(intent);
+      guardProjectScope(token);
+      set((state) => isCurrentProjectScope(state, token) ? { ...state, backtestSubmission: outcome } : state);
+      const deadline = Date.now() + DATA_TASK_POLL_TIMEOUT_MS;
+      let eventAfter = Math.max(0, (outcome.eventCursor ?? 0) - 1000);
+      let task: ProductTaskView;
+      while (true) {
+        task = await bridge.getTask(outcome.taskId);
+        guardProjectScope(token);
+        const events = await bridge.getTaskEvents(eventAfter, 1000);
+        guardProjectScope(token);
+        eventAfter = events.highWatermark;
+        const observedProgress = latestTaskProgress(events, outcome.taskId);
+        set((state) => isCurrentProjectScope(state, token)
+          ? { ...state, backtestTask: task, backtestProgress: observedProgress ?? state.backtestProgress }
+          : state);
+        if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(task.state)) break;
+        if (Date.now() >= deadline) throw new Error("RESEARCH_BACKTEST_TASK_TIMEOUT");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      if (task.projectId !== token.projectId || task.operationId !== "ProductEntryService.v1.submitResearchBacktest") {
+        throw new Error("Backtest Task scope or operation does not match acceptance");
+      }
+      if (task.state !== "SUCCEEDED") throw new Error(`RESEARCH_BACKTEST_${task.state}`);
+      const home = await bridge.getProjectHome();
+      guardProjectScope(token);
+      if (home.projectId !== token.projectId || home.projectContextRevisionId !== token.projectContextRevisionId
+        || home.backtestState !== "AVAILABLE" || home.backtest === null || home.backtest.resultState !== "VALID") {
+        throw new Error("canonical VALID Result is unavailable after Backtest Task success");
+      }
+      const details = await bridge.getLatestProductResultDetails();
+      guardProjectScope(token);
+      if (details.resultId !== home.backtest.resultId || details.backtestResultId !== home.backtest.backtestResultId) {
+        throw new Error("Result details do not match the latest VALID Home summary");
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, dataHome: home, backtestSubmission: outcome, backtestTask: task, backtestProgress: state.backtestProgress, latestProductResult: details, latestProductResultError: null, surface: "PROJECT_BOUND", errorMessage: null }
+        : state);
+    } catch (error) {
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: describeError(error) ?? "研究回测失败" }
+        : state);
+    } finally {
+      set((state) => isCurrentProjectScope(state, token) ? { ...state, entryBusy: false } : state);
+    }
+  },
+
+  retryResearchBacktest: async () => {
+    const bridge = window.v3ProductRuntime;
+    const token = captureProjectScope(get());
+    const failedTask = get().backtestTask;
+    if (!bridge || token === null || failedTask === null || !isRetryableProductBacktestTask(failedTask)) return;
+    set((state) => isCurrentProjectScope(state, token)
+      ? { ...state, entryBusy: true, errorMessage: null, backtestProgress: null, latestProductResult: null, latestProductResultError: null }
+      : state);
+    try {
+      let task = await bridge.retryResearchBacktest(failedTask.taskId);
+      guardProjectScope(token);
+      if (
+        task.taskId !== failedTask.taskId
+        || task.runId !== failedTask.runId
+        || task.projectId !== token.projectId
+        || task.operationId !== "ProductEntryService.v1.submitResearchBacktest"
+        || task.attempt.ordinal !== failedTask.attempt.ordinal + 1
+      ) {
+        throw new Error("Backtest retry identity does not match the persisted failed Task");
+      }
+      const deadline = Date.now() + DATA_TASK_POLL_TIMEOUT_MS;
+      let eventAfter = 0;
+      while (true) {
+        const events = await bridge.getTaskEvents(eventAfter, 1000);
+        guardProjectScope(token);
+        eventAfter = events.highWatermark;
+        const observedProgress = latestTaskProgress(events, task.taskId);
+        set((state) => isCurrentProjectScope(state, token)
+          ? { ...state, backtestTask: task, backtestProgress: observedProgress ?? state.backtestProgress }
+          : state);
+        if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(task.state)) break;
+        if (Date.now() >= deadline) throw new Error("RESEARCH_BACKTEST_RETRY_TIMEOUT");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        task = await bridge.getTask(task.taskId);
+        guardProjectScope(token);
+      }
+      set((state) => isCurrentProjectScope(state, token) ? { ...state, backtestTask: task } : state);
+      if (task.state !== "SUCCEEDED") throw new Error(`RESEARCH_BACKTEST_RETRY_${task.state}`);
+      const home = await bridge.getProjectHome();
+      guardProjectScope(token);
+      if (
+        home.projectId !== token.projectId
+        || home.projectContextRevisionId !== token.projectContextRevisionId
+        || home.backtestState !== "AVAILABLE"
+        || home.backtest === null
+        || home.backtest.resultState !== "VALID"
+        || home.backtest.runId !== task.runId
+      ) {
+        throw new Error("canonical VALID Result is unavailable after Backtest retry success");
+      }
+      const details = await bridge.getLatestProductResultDetails();
+      guardProjectScope(token);
+      if (details.resultId !== home.backtest.resultId || details.backtestResultId !== home.backtest.backtestResultId) {
+        throw new Error("retried Result details do not match the latest VALID Home summary");
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, dataHome: home, backtestTask: task, latestProductResult: details, latestProductResultError: null, surface: "PROJECT_BOUND", errorMessage: null }
+        : state);
+    } catch (error) {
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: describeError(error) ?? "研究回测从头重试失败" }
+        : state);
+    } finally {
+      set((state) => isCurrentProjectScope(state, token) ? { ...state, entryBusy: false } : state);
+    }
+  },
+
+  loadLatestProductResult: async () => {
+    const bridge = window.v3ProductRuntime;
+    const token = captureProjectScope(get());
+    if (!bridge || token === null) return;
+    set((state) => isCurrentProjectScope(state, token)
+      ? { ...state, latestProductResultError: null }
+      : state);
+    try {
+      const details = await bridge.getLatestProductResultDetails();
+      guardProjectScope(token);
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, latestProductResult: details, latestProductResultError: null }
+        : state);
+    } catch (error) {
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, latestProductResult: null, latestProductResultError: describeError(error) ?? "VALID Result artifact readback unavailable" }
         : state);
     }
   },

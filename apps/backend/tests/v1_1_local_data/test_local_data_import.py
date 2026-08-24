@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import unittest
 from datetime import date
 from decimal import Decimal
@@ -46,6 +47,9 @@ class LocalDataImportTests(unittest.TestCase):
         self.assertEqual(rows_by_symbol["600519"].volume_shares, 10_000)
         self.assertEqual(rows_by_symbol["600519"].amount_cny, Decimal("14100000"))
         self.assertNotIn(b"NaN", result.normalized_payload)
+        manifest = json.loads(result.normalized_payload.decode("utf-8"))
+        self.assertEqual(manifest["schema_version"], "v3.local-a-share-eod-manifest/1.1.0")
+        self.assertEqual(manifest["corporate_action_ref_count"], 0)
         self.assertEqual(result.raw_byte_size, len(CSV_SHARES))
 
         unknown = CSV_SHARES.replace(
@@ -85,6 +89,17 @@ class LocalDataImportTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(LocalDataImportError, "volume_unit"):
             intent(media_type="text/csv", volume_unit="UNKNOWN")
+        invalid_action = CSV_SHARES.replace(
+            b"symbol,date,open,high,low,close,volume,amount",
+            b"symbol,date,open,high,low,close,volume,amount,corporate_action_ref",
+        ).replace(b"14100000\n", b"14100000,not-canonical\n").replace(
+            b"204000\n", b"204000,\n"
+        )
+        with self.assertRaisesRegex(LocalDataImportError, "canonical cax_sha256"):
+            import_csv_stream(
+                io.BytesIO(invalid_action),
+                intent=intent(media_type="text/csv", volume_unit="SHARES"),
+            )
 
     def test_shares_and_hands_have_identical_canonical_rows_and_mj(self) -> None:
         shares = import_csv_stream(

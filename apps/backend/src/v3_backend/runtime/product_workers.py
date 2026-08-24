@@ -65,6 +65,22 @@ _PRODUCT_WORK_PROFILES = {
         "ProductEntryService.v1.submitFactorStudy",
         "PRODUCT_FACTOR_CPU",
     ),
+    "STRATEGY_AUTHORING": (
+        "ProductEntryService.v1.publishResearchStrategy",
+        "PRODUCT_STRATEGY_CPU",
+    ),
+    "RESEARCH_BACKTEST": (
+        "ProductEntryService.v1.submitResearchBacktest",
+        "PRODUCT_BACKTEST_CPU",
+    ),
+    "RESULT_RECONCILE_VERIFY": (
+        "ResultService.v1.reconcileLedger",
+        "PRODUCT_RESULT_RECONCILE_CPU",
+    ),
+    "RESULT_FINALIZE_VERIFY": (
+        "ResultService.v1.finalizeResult",
+        "PRODUCT_RESULT_FINALIZE_CPU",
+    ),
 }
 
 
@@ -226,6 +242,46 @@ def _product_worker_main(
             ):
                 raise ValueError("Product Factor worker operation binding drifted")
             product.factor.execute_accepted(launch.prepared_request, handles)
+        elif launch.work_kind == "STRATEGY_AUTHORING":
+            if (
+                launch.operation_id
+                != _PRODUCT_WORK_PROFILES["STRATEGY_AUTHORING"][0]
+                or launch.worker_request.operation_id != launch.operation_id
+            ):
+                raise ValueError("Product Strategy worker operation binding drifted")
+            product.strategy.execute_accepted(launch.prepared_request, handles)
+        elif launch.work_kind == "RESEARCH_BACKTEST":
+            if (
+                launch.operation_id
+                != _PRODUCT_WORK_PROFILES["RESEARCH_BACKTEST"][0]
+                or launch.worker_request.operation_id != launch.operation_id
+            ):
+                raise ValueError("Product Backtest worker operation binding drifted")
+            product.backtest.execute_accepted(launch.prepared_request, handles)
+        elif launch.work_kind == "RESULT_RECONCILE_VERIFY":
+            if (
+                launch.operation_id
+                != _PRODUCT_WORK_PROFILES["RESULT_RECONCILE_VERIFY"][0]
+                or launch.worker_request.operation_id != launch.operation_id
+            ):
+                raise ValueError(
+                    "Product Result reconcile worker operation binding drifted"
+                )
+            product.results.execute_reconcile_accepted(
+                launch.prepared_request, handles
+            )
+        elif launch.work_kind == "RESULT_FINALIZE_VERIFY":
+            if (
+                launch.operation_id
+                != _PRODUCT_WORK_PROFILES["RESULT_FINALIZE_VERIFY"][0]
+                or launch.worker_request.operation_id != launch.operation_id
+            ):
+                raise ValueError(
+                    "Product Result finalize worker operation binding drifted"
+                )
+            product.results.execute_finalize_accepted(
+                launch.prepared_request, handles
+            )
         else:
             raise ValueError(f"unsupported Product worker kind: {launch.work_kind}")
         stop_heartbeat()

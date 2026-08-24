@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping
@@ -49,7 +50,11 @@ if TYPE_CHECKING:
     from .product_runtime import ProductRuntime
 
 
-_MANIFEST_SCHEMA = "v3.local-a-share-eod-manifest/1.0.0"
+_MANIFEST_SCHEMAS = {
+    "v3.local-a-share-eod-manifest/1.0.0",
+    "v3.local-a-share-eod-manifest/1.1.0",
+    "v3.local-a-share-eod-manifest/1.2.0",
+}
 _PARTITION_SCHEMA = "v3.local-a-share-eod-partition/1.0.0"
 _DATA_SCHEMA = "v3.local-a-share-eod/1.0.0"
 _MAX_MANIFEST_BYTES = 16 * 1024 * 1024
@@ -69,6 +74,19 @@ _FACTOR_CONTEXT_SCHEMA = "v3.product-factor-study-context/1.1.0"
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedLocalMarketRow:
+    session_date: date
+    instrument_id: str
+    is_suspended: bool | None
+    is_st: bool | None
+    tradable: bool | None
+    price_limit_up: float | None
+    price_limit_down: float | None
+    no_price_limit_session: bool | None
+    corporate_action_ref: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedLocalSnapshotPanel:
     project_id: str
     snapshot_id: str
@@ -77,6 +95,7 @@ class ResolvedLocalSnapshotPanel:
     manifest_sha256: str
     membership: tuple[str, ...]
     rows: tuple[PanelInputRow, ...]
+    market_rows: tuple[ResolvedLocalMarketRow, ...]
 
 
 def _closed(value: object, expected: set[str], label: str) -> Mapping[str, Any]:
@@ -181,16 +200,21 @@ class ManifestAwareLocalSnapshotReader:
         ):
             raise TruthPreconditionFailedError("Snapshot manifest descriptor binding mismatch")
         manifest = self._read_json(manifest_artifact_id, _MAX_MANIFEST_BYTES, "Snapshot manifest")
-        manifest = _closed(
-            manifest,
-            {
-                "schema_version", "data_schema_version", "adjustment", "amount_unit",
-                "timezone", "volume_unit", "row_count", "instrument_count", "partitions",
-            },
-            "Snapshot manifest",
-        )
+        manifest_schema = manifest.get("schema_version") if isinstance(manifest, dict) else None
+        manifest_keys = {
+            "schema_version", "data_schema_version", "adjustment", "amount_unit",
+            "timezone", "volume_unit", "row_count", "instrument_count", "partitions",
+        }
+        if manifest_schema in {
+            "v3.local-a-share-eod-manifest/1.1.0",
+            "v3.local-a-share-eod-manifest/1.2.0",
+        }:
+            manifest_keys.add("corporate_action_ref_count")
+        if manifest_schema == "v3.local-a-share-eod-manifest/1.2.0":
+            manifest_keys.add("corporate_action_refs")
+        manifest = _closed(manifest, manifest_keys, "Snapshot manifest")
         if (
-            manifest["schema_version"] != _MANIFEST_SCHEMA
+            manifest["schema_version"] not in _MANIFEST_SCHEMAS
             or manifest["data_schema_version"] != _DATA_SCHEMA
             or manifest["adjustment"] != "UNADJUSTED"
             or manifest["amount_unit"] != "CNY"
@@ -198,6 +222,33 @@ class ManifestAwareLocalSnapshotReader:
             or manifest["volume_unit"] != "SHARES"
         ):
             raise TruthPreconditionFailedError("Snapshot manifest semantics are not admitted")
+        declared_action_count = manifest.get("corporate_action_ref_count")
+        if declared_action_count is not None and (
+            not isinstance(declared_action_count, int)
+            or isinstance(declared_action_count, bool)
+            or declared_action_count < 0
+            or declared_action_count > manifest["row_count"]
+        ):
+            raise TruthPreconditionFailedError(
+                "Snapshot manifest corporate-action summary is invalid"
+            )
+        declared_action_refs = manifest.get("corporate_action_refs")
+        valid_declared_action_refs = (
+            isinstance(declared_action_refs, list)
+            and bool(declared_action_refs)
+            and all(
+                isinstance(value, str)
+                and re.fullmatch(r"cax_sha256_[0-9a-f]{64}", value) is not None
+                for value in declared_action_refs
+            )
+        )
+        if manifest_schema == "v3.local-a-share-eod-manifest/1.2.0" and (
+            not valid_declared_action_refs
+            or declared_action_refs != sorted(set(declared_action_refs))
+        ):
+            raise TruthPreconditionFailedError(
+                "Snapshot manifest Corporate Action refs are invalid"
+            )
 
         membership_artifact_id = str(owner[3])
         if membership_artifact_id not in reachable_artifacts:
@@ -222,6 +273,7 @@ class ManifestAwareLocalSnapshotReader:
         if not isinstance(declared, list) or len(declared) != len(partition_rows):
             raise TruthPreconditionFailedError("Snapshot partition count differs from manifest")
         resolved: list[PanelInputRow] = []
+        market_rows: list[ResolvedLocalMarketRow] = []
         for ordinal, (declared_item, persisted) in enumerate(zip(declared, partition_rows, strict=True)):
             declaration = _closed(
                 declared_item,
@@ -266,10 +318,12 @@ class ManifestAwareLocalSnapshotReader:
                 or len(partition["rows"]) != int(persisted[2])
             ):
                 raise TruthPreconditionFailedError("Snapshot partition semantics mismatch")
-            resolved.extend(
-                self._row(value, artifact_id=artifact_id, partition_hash=partition_hash)
-                for value in partition["rows"]
-            )
+            for value in partition["rows"]:
+                factor_row, market_row = self._row(
+                    value, artifact_id=artifact_id, partition_hash=partition_hash
+                )
+                resolved.append(factor_row)
+                market_rows.append(market_row)
 
         keys = tuple((row.session_date, row.instrument_id) for row in resolved)
         if keys != tuple(sorted(keys)) or len(keys) != len(set(keys)):
@@ -278,6 +332,23 @@ class ManifestAwareLocalSnapshotReader:
             raise TruthPreconditionFailedError("Snapshot rows do not equal exact Universe membership")
         if len(resolved) != manifest["row_count"]:
             raise TruthPreconditionFailedError("Snapshot manifest row_count mismatch")
+        if declared_action_count is not None and declared_action_count != sum(
+            row.corporate_action_ref is not None for row in market_rows
+        ):
+            raise TruthPreconditionFailedError(
+                "Snapshot corporate-action summary does not match verified rows"
+            )
+        observed_action_refs = sorted(
+            {
+                row.corporate_action_ref
+                for row in market_rows
+                if row.corporate_action_ref is not None
+            }
+        )
+        if declared_action_refs is not None and declared_action_refs != observed_action_refs:
+            raise TruthPreconditionFailedError(
+                "Snapshot Corporate Action refs do not match verified rows"
+            )
         return ResolvedLocalSnapshotPanel(
             project_id,
             snapshot_id,
@@ -286,6 +357,7 @@ class ManifestAwareLocalSnapshotReader:
             manifest_hash,
             tuple(members),
             tuple(resolved),
+            tuple(market_rows),
         )
 
     def _read_json(self, artifact_id: str, max_bytes: int, label: str) -> object:
@@ -301,7 +373,7 @@ class ManifestAwareLocalSnapshotReader:
         *,
         artifact_id: str,
         partition_hash: str,
-    ) -> PanelInputRow:
+    ) -> tuple[PanelInputRow, ResolvedLocalMarketRow]:
         row = _closed(
             value,
             {
@@ -330,6 +402,35 @@ class ManifestAwareLocalSnapshotReader:
             not isinstance(volume, int) or isinstance(volume, bool) or volume < 0
         ):
             raise TruthPreconditionFailedError("Snapshot row volume_shares is invalid")
+        optional_bools: dict[str, bool | None] = {}
+        for key in (
+            "is_suspended",
+            "is_st",
+            "tradable",
+            "no_price_limit_session",
+        ):
+            observed = row[key]
+            if observed is not None and type(observed) is not bool:
+                raise TruthPreconditionFailedError(
+                    f"Snapshot row {key} must be boolean or null"
+                )
+            optional_bools[key] = observed
+        action_ref = row["corporate_action_ref"]
+        if action_ref is not None and (
+            not isinstance(action_ref, str)
+            or re.fullmatch(r"cax_sha256_[0-9a-f]{64}", action_ref) is None
+        ):
+            raise TruthPreconditionFailedError(
+                "Snapshot row corporate_action_ref must be a canonical action ref or null"
+            )
+        limit_up = _finite_number(row["price_limit_up"], "price_limit_up")
+        limit_down = _finite_number(row["price_limit_down"], "price_limit_down")
+        if (limit_up is not None and limit_up <= 0) or (
+            limit_down is not None and limit_down <= 0
+        ):
+            raise TruthPreconditionFailedError(
+                "Snapshot row price limits must be positive when present"
+            )
         features = {
             "open": _finite_number(row["open"], "open"),
             "high": _finite_number(row["high"], "high"),
@@ -342,13 +443,24 @@ class ManifestAwareLocalSnapshotReader:
             "volume": missing.get("volume_shares", "SOURCE_VALUE_MISSING"),
             "amount": missing.get("amount_cny", "SOURCE_VALUE_MISSING"),
         }
-        return PanelInputRow(
+        factor_row = PanelInputRow(
             session_date=session_date,
             instrument_id=instrument_id,
             features=features,
             missing_reasons=missing_reasons,
             source_partition_artifact_id=artifact_id,
             source_partition_sha256=partition_hash,
+        )
+        return factor_row, ResolvedLocalMarketRow(
+            session_date=session_date,
+            instrument_id=instrument_id,
+            is_suspended=optional_bools["is_suspended"],
+            is_st=optional_bools["is_st"],
+            tradable=optional_bools["tradable"],
+            price_limit_up=limit_up,
+            price_limit_down=limit_down,
+            no_price_limit_session=optional_bools["no_price_limit_session"],
+            corporate_action_ref=action_ref,
         )
 
 
@@ -738,6 +850,7 @@ class ProductFactorStudyService:
         project_id: str,
         project_context_revision_id: str,
         snapshot_id: str,
+        factor_definition_version_id: str | None = None,
     ) -> dict[str, Any]:
         self.product.require_project(project_id)
         self.product.require_project_context_ownership(
@@ -803,6 +916,19 @@ class ProductFactorStudyService:
                 and payload.get("project_context_revision_id")
                 == project_context_revision_id
                 and payload.get("snapshot_id") == snapshot_id
+                and (
+                    factor_definition_version_id is None
+                    or any(
+                        isinstance(output, dict)
+                        and output.get("factor_definition_version_id")
+                        == factor_definition_version_id
+                        for output in (
+                            payload.get("outputs", {}).values()
+                            if isinstance(payload.get("outputs"), dict)
+                            else ()
+                        )
+                    )
+                )
             ):
                 self._verify_recovered_study_links(
                     payload=payload,
@@ -837,7 +963,10 @@ class ProductFactorStudyService:
             source_manifest = json.loads(source_manifest_raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise TruthPreconditionFailedError("Factor source manifest bytes are invalid") from error
-        if not isinstance(source_manifest, dict) or source_manifest.get("schema_version") != _MANIFEST_SCHEMA:
+        if (
+            not isinstance(source_manifest, dict)
+            or source_manifest.get("schema_version") not in _MANIFEST_SCHEMAS
+        ):
             raise TruthPreconditionFailedError("Factor source manifest schema drifted")
 
         formula_raw = self._verify_reachable_artifact(

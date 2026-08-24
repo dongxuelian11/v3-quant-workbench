@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import base64
-from datetime import datetime, timedelta, timezone
+import hashlib
+from datetime import date, datetime, timedelta, timezone
+from collections.abc import Iterator
 from typing import Any, Mapping
 
 from v3_backend.adapters.sqlite.connection import connect_catalog
@@ -18,6 +20,7 @@ from v3_backend.adapters.sqlite.repositories import SQLiteRepositoryRegistry
 from v3_backend.adapters.sqlite.unit_of_work import SQLiteUnitOfWork
 from v3_backend.domain.tasks.events import PendingTaskEvent
 from v3_backend.errors.exceptions import (
+    CapabilityUnavailableError,
     ConflictError,
     IdempotencyConflictError,
     InvalidArgumentError,
@@ -32,6 +35,7 @@ from .product_runtime import (
     ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
     BUILD_MANIFEST_ID,
     DEFAULT_RETENTION_PROFILE,
+    FORMAL_BACKTEST_UNAVAILABLE_REASON,
     MAX_EXPERIMENT_CELLS,
     ProductResearchSubmission,
     RUN_RESULT_REFERENCE_ROLE,
@@ -61,6 +65,7 @@ _ACCEPTED_STATE = "QUEUED"
 CONTEXT_ALLOW_LIST = ("notes", "benchmark_universe_version_id")
 STREAM_TICKET_TTL_SECONDS = 300
 MAX_STREAM_TICKETS = 4096
+STREAM_CHUNK_MAX_BYTES = 256 * 1024
 
 
 def _response(request: Mapping[str, Any], read_model: Mapping[str, Any]) -> dict[str, Any]:
@@ -447,7 +452,7 @@ class TaskFacade:
         try:
             rows = connection.execute(
                 """
-                SELECT task_event_id, project_id, project_sequence, event_type,
+                SELECT task_event_id, project_id, task_id, project_sequence, event_type,
                        occurred_at, payload_json
                 FROM task_event
                 WHERE project_id=? AND project_sequence>? AND project_sequence<=?
@@ -466,6 +471,7 @@ class TaskFacade:
         items = [
             {
                 "event_id": str(row["task_event_id"]),
+                "task_id": str(row["task_id"]),
                 "project_sequence": int(row["project_sequence"]),
                 "event_type": str(row["event_type"]),
                 "occurred_at": str(row["occurred_at"]),
@@ -545,6 +551,7 @@ class ArtifactFacade:
         *,
         clock=None,
         ticket_limit: int = MAX_STREAM_TICKETS,
+        runtime_generation: int | None = None,
     ) -> None:
         if not 1 <= ticket_limit <= MAX_STREAM_TICKETS:
             raise ValueError(
@@ -553,6 +560,13 @@ class ArtifactFacade:
         self.product = product
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._ticket_limit = ticket_limit
+        if runtime_generation is not None and (
+            isinstance(runtime_generation, bool)
+            or not isinstance(runtime_generation, int)
+            or runtime_generation < 1
+        ):
+            raise ValueError("runtime_generation must be a positive integer or null")
+        self._runtime_generation = runtime_generation
         self._tickets: dict[str, dict[str, Any]] = {}
 
     @property
@@ -641,7 +655,7 @@ class ArtifactFacade:
                             owner_id=project_id,
                             artifact_id=publication_result.descriptor.artifact_id,
                             role=declared_role,
-                            created_at=wire_time(published_at),
+                            created_at=published_at,
                             state="ACTIVE",
                         ),
                     ),
@@ -672,12 +686,16 @@ class ArtifactFacade:
         return _response(request, _artifact_descriptor_read_model(row))
 
     def get_artifact_descriptor(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        row = self.product.require_published_artifact(str(request["artifact_id"]))
+        row = self.product.require_project_reachable_artifact(
+            str(request["project_id"]), str(request["artifact_id"])
+        )
         return _response(request, _artifact_descriptor_read_model(row))
 
     def open_artifact_stream(self, request: Mapping[str, Any]) -> dict[str, Any]:
         artifact_id = str(request["artifact_id"])
-        self.product.require_published_artifact(artifact_id)
+        descriptor = self.product.require_project_reachable_artifact(
+            str(request["project_id"]), artifact_id
+        )
         range_wire = request.get("range")
         range_start = None
         range_end_exclusive = None
@@ -691,6 +709,8 @@ class ArtifactFacade:
             range_end_exclusive = int(range_wire["end_exclusive"])
             if range_start < 0 or range_end_exclusive <= range_start:
                 raise InvalidArgumentError("invalid stream byte range")
+            if range_end_exclusive > int(descriptor["byte_size"]):
+                raise InvalidArgumentError("stream byte range exceeds artifact size")
         now = self._clock()
         self._prune_expired_tickets(now)
         if len(self._tickets) >= self._ticket_limit:
@@ -709,6 +729,7 @@ class ArtifactFacade:
             "expires_at": expires_at,
             "range_start": range_start,
             "range_end_exclusive": range_end_exclusive,
+            "runtime_generation": self._runtime_generation,
         }
         read_model: dict[str, Any] = {
             "read_model_version": "v3.artifact-stream-ticket/1.0",
@@ -722,6 +743,120 @@ class ArtifactFacade:
         }
         return _response(request, read_model)
 
+    def consume_artifact_stream(
+        self,
+        *,
+        ticket_id: str,
+        project_id: str,
+        project_context_revision_id: str,
+        runtime_generation: int,
+    ) -> Iterator[dict[str, Any]]:
+        """Consume one ticket exactly once and lazily emit verified chunks."""
+
+        if (
+            isinstance(runtime_generation, bool)
+            or not isinstance(runtime_generation, int)
+            or runtime_generation < 1
+        ):
+            raise InvalidArgumentError("runtime_generation must be a positive integer")
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("Artifact stream ticket clock must be timezone-aware")
+        ticket = self._tickets.get(ticket_id)
+        if ticket is None:
+            raise TruthPreconditionFailedError(
+                "Artifact stream ticket is not available",
+                details={"reason_code": "STREAM_TICKET_NOT_AVAILABLE"},
+            )
+        if ticket["expires_at"] <= now:
+            del self._tickets[ticket_id]
+            self._prune_expired_tickets(now)
+            raise TruthPreconditionFailedError(
+                "Artifact stream ticket has expired",
+                details={"reason_code": "STREAM_TICKET_EXPIRED"},
+            )
+        self._prune_expired_tickets(now)
+        if str(ticket["project_id"]) != project_id:
+            raise TruthPreconditionFailedError(
+                "Artifact stream ticket belongs to another project",
+                details={"reason_code": "STREAM_TICKET_PROJECT_MISMATCH"},
+            )
+        self.product.require_project_context_ownership(
+            project_id, project_context_revision_id
+        )
+        bound_generation = ticket["runtime_generation"]
+        if bound_generation is not None and bound_generation != runtime_generation:
+            raise TruthPreconditionFailedError(
+                "Artifact stream ticket belongs to another runtime generation",
+                details={"reason_code": "STREAM_TICKET_GENERATION_MISMATCH"},
+            )
+        ticket["runtime_generation"] = runtime_generation
+        artifact_id = str(ticket["artifact_id"])
+        descriptor = self.product.require_project_reachable_artifact(
+            project_id, artifact_id
+        )
+        range_start = (
+            0 if ticket["range_start"] is None else int(ticket["range_start"])
+        )
+        range_end_exclusive = (
+            int(descriptor["byte_size"])
+            if ticket["range_end_exclusive"] is None
+            else int(ticket["range_end_exclusive"])
+        )
+        # Consumption starts only after every reusable scope/generation check;
+        # any byte or integrity failure after this point burns the ticket.
+        del self._tickets[ticket_id]
+        with self.product.artifact_store.open_verified(
+            artifact_id,
+            expected_sha256=str(descriptor["sha256"]),
+            expected_byte_size=int(descriptor["byte_size"]),
+        ) as handle:
+            handle.seek(range_start)
+            offset = range_start
+            remaining = range_end_exclusive - range_start
+            while remaining > 0:
+                chunk = handle.read(min(STREAM_CHUNK_MAX_BYTES, remaining))
+                if not chunk:
+                    raise TruthPreconditionFailedError(
+                        "Artifact stream ended before the admitted range",
+                        details={"reason_code": "ARTIFACT_STREAM_TRUNCATED"},
+                    )
+                remaining -= len(chunk)
+                yield {
+                    "kind": "artifactStream.chunk",
+                    "ticket_id": ticket_id,
+                    "artifact_id": artifact_id,
+                    "offset": offset,
+                    "payload_base64": base64.b64encode(chunk).decode("ascii"),
+                    "chunk_sha256": hashlib.sha256(chunk).hexdigest(),
+                }
+                offset += len(chunk)
+        yield {
+            "kind": "artifactStream.complete",
+            "ticket_id": ticket_id,
+            "artifact_id": artifact_id,
+            "total_byte_count": range_end_exclusive - range_start,
+            "artifact_sha256": str(descriptor["sha256"]),
+            "range_start": range_start,
+            "range_end_exclusive": range_end_exclusive,
+        }
+
+    def handle_stream_control(
+        self, kind: str, message: Mapping[str, Any]
+    ) -> Iterator[dict[str, Any]]:
+        if kind != "artifactStream.consume":
+            raise InvalidArgumentError("unknown artifact-stream control kind")
+        if message.get("protocol_version") != "v3.artifact-stream/1.0.0":
+            raise InvalidArgumentError("unsupported artifact-stream protocol version")
+        return self.consume_artifact_stream(
+            ticket_id=str(message["ticket_id"]),
+            project_id=str(message["project_id"]),
+            project_context_revision_id=str(
+                message["project_context_revision_id"]
+            ),
+            runtime_generation=message["runtime_generation"],
+        )
+
     def export_artifact(self, request: Mapping[str, Any]) -> dict[str, Any]:
         outcome = self.product.execution.export_artifacts(
             project_id=str(request["project_id"]),
@@ -732,6 +867,35 @@ class ArtifactFacade:
             idempotency_key=str(request["idempotency_key"]),
         )
         return _accepted(request, outcome.task_id, outcome.run_id, outcome.event_cursor)
+
+    def handle_export_control(
+        self, kind: str, message: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        if message.get("protocol_version") != "v3.artifact-export/1.0.0":
+            raise InvalidArgumentError("unsupported artifact-export protocol version")
+        common = {
+            "project_id": str(message["project_id"]),
+            "project_context_revision_id": str(
+                message["project_context_revision_id"]
+            ),
+            "task_id": str(message["task_id"]),
+            "destination_token": str(message["destination_token"]),
+        }
+        if kind == "artifactExport.complete":
+            return self.product.execution.complete_artifact_export(
+                **common,
+                display_name=str(message["display_name"]),
+                artifact_id=str(message["artifact_id"]),
+                sha256=str(message["sha256"]),
+                byte_size=message["byte_size"],
+                completed_at=str(message["completed_at"]),
+            )
+        if kind == "artifactExport.fail":
+            return self.product.execution.fail_artifact_export(
+                **common,
+                reason_code=str(message["reason_code"]),
+            )
+        raise InvalidArgumentError("unknown artifact-export control kind")
 
     def plan_garbage_collection(self, request: Mapping[str, Any]) -> dict[str, Any]:
         retention_profile_id = str(request["retention_profile_id"])
@@ -802,7 +966,6 @@ class BacktestFacade:
             "BacktestService.v1.getExperiment": self.get_experiment,
             "BacktestService.v1.expandExperiment": self.expand_experiment,
         }
-
     def submit_backtest(self, request: Mapping[str, Any]) -> dict[str, Any]:
         outcome = self.product.execution.submit_backtest(
             project_id=str(request["project_id"]),
@@ -928,6 +1091,30 @@ class BacktestFacade:
         return _accepted(request, outcome.task_id, outcome.run_id, outcome.event_cursor)
 
 
+class UnavailableBacktestFacade:
+    """Wire-compatible production denial for the unclosed formal contract.
+
+    The frozen operations remain DTO-validated, but normal product composition
+    must not execute the legacy synchronous/checkpoint-promising implementation.
+    The additive ProductEntry research backtest is the V1.1 product path.
+    """
+
+    def handlers(self) -> dict[str, Any]:
+        return {
+            "BacktestService.v1.submitBacktest": self._unavailable,
+            "BacktestService.v1.createExperiment": self._unavailable,
+            "BacktestService.v1.getExperiment": self._unavailable,
+            "BacktestService.v1.expandExperiment": self._unavailable,
+        }
+
+    @staticmethod
+    def _unavailable(_request: Mapping[str, Any]) -> dict[str, Any]:
+        raise CapabilityUnavailableError(
+            "formal BacktestService execution contract is not closed",
+            details={"reason_code": FORMAL_BACKTEST_UNAVAILABLE_REASON},
+        )
+
+
 class ResultFacade:
     SERVICE = "ResultService"
 
@@ -936,28 +1123,132 @@ class ResultFacade:
 
     def handlers(self) -> dict[str, Any]:
         return {
+            "ResultService.v1.reconcileLedger": self.reconcile_ledger,
+            "ResultService.v1.finalizeResult": self.finalize_result,
             "ResultService.v1.getResult": self.get_result,
+            "ResultService.v1.compareResults": self.compare_results,
         }
 
+    def reconcile_ledger(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .product_results import ResultReconcileSubmission
+        from .request_router import current_request_deadline_at
+
+        outcome = self.product.results.submit_reconcile(
+            ResultReconcileSubmission(
+                project_id=str(request["project_id"]),
+                project_context_revision_id=str(
+                    request["project_context_revision_id"]
+                ),
+                backtest_run_id=str(request["backtest_run_id"]),
+                ledger_manifest_artifact_id=str(
+                    request["ledger_manifest_artifact_id"]
+                ),
+                reconciliation_profile_id=str(
+                    request["reconciliation_profile_id"]
+                ),
+                idempotency_key=str(request["idempotency_key"]),
+                execution_deadline_at=current_request_deadline_at(),
+            )
+        )
+        return _accepted(
+            request,
+            str(outcome["task_id"]),
+            str(outcome["run_id"]),
+            outcome.get("event_cursor"),
+        )
+
+    def finalize_result(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .product_results import ResultFinalizeSubmission
+        from .request_router import current_request_deadline_at
+
+        analytics_spec = request.get("analytics_spec")
+        if not isinstance(analytics_spec, Mapping):
+            raise InvalidArgumentError("analytics_spec must be an object")
+        outcome = self.product.results.submit_finalize(
+            ResultFinalizeSubmission(
+                project_id=str(request["project_id"]),
+                project_context_revision_id=str(
+                    request["project_context_revision_id"]
+                ),
+                backtest_run_id=str(request["backtest_run_id"]),
+                reconciliation_artifact_id=str(
+                    request["reconciliation_artifact_id"]
+                ),
+                analytics_spec=analytics_spec,
+                idempotency_key=str(request["idempotency_key"]),
+                execution_deadline_at=current_request_deadline_at(),
+            )
+        )
+        return _accepted(
+            request,
+            str(outcome["task_id"]),
+            str(outcome["run_id"]),
+            outcome.get("event_cursor"),
+        )
+
     def get_result(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        page = request.get("page")
+        if not isinstance(page, Mapping):
+            raise InvalidArgumentError("page must be an object")
         result_id = str(request["result_id"])
-        section = str(request["section"])
-        if section != "summary":
-            raise InvalidArgumentError("only the summary section is product-available")
-        row = self.product.require_result(result_id)
-        if str(row["project_id"]) != str(request["project_id"]):
-            raise TruthPreconditionFailedError("result belongs to a different project")
-        result_artifact = None
+        result = self.product.require_result(result_id)
+        if str(result["project_id"]) != str(request["project_id"]):
+            raise TruthPreconditionFailedError(
+                "result belongs to a different project"
+            )
+        connection = self.product._connection(read_only=True)
+        try:
+            product_intent_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM publication_intent "
+                    "WHERE project_id=? AND run_id=?",
+                    (
+                        str(result["project_id"]),
+                        str(result["backtest_run_id"]),
+                    ),
+                ).fetchone()[0]
+            )
+        finally:
+            connection.close()
+        if product_intent_count == 0:
+            return self._legacy_summary(request, result)
+        read_model = self.product.results.get_result(
+            project_id=str(request["project_id"]),
+            project_context_revision_id=str(
+                request["project_context_revision_id"]
+            ),
+            result_id=result_id,
+            section=str(request["section"]),
+            page=page,
+        )
+        return {
+            "request_id": request["request_id"],
+            # The bounded Product projection is usable, but the frozen service
+            # remains incomplete because comparison and checkpoint/resume
+            # promises are not closed.
+            "truth_state": "UNAVAILABLE",
+            "read_model": read_model,
+        }
+
+    def _legacy_summary(
+        self, request: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Preserve internal V1.0 read compatibility without Product promotion."""
+        if str(request["section"]) != "summary":
+            raise InvalidArgumentError(
+                "legacy Result projection supports only the summary section"
+            )
         connection = self.product._connection(read_only=True)
         try:
             run_row = connection.execute(
                 "SELECT code_version FROM run WHERE run_id=?",
-                (str(row["backtest_run_id"]),),
+                (str(result["backtest_run_id"]),),
             ).fetchone()
         finally:
             connection.close()
+        result_artifact = None
         references = self.product.references(
-            str(row["backtest_run_id"]), RUN_RESULT_REFERENCE_ROLE
+            str(result["backtest_run_id"]), RUN_RESULT_REFERENCE_ROLE
         )
         if references:
             artifact_id = str(references[0]["artifact_id"])
@@ -967,24 +1258,38 @@ class ResultFacade:
             request,
             {
                 "read_model_version": "v3.result/1.0",
-                "result_id": result_id,
-                "project_id": str(row["project_id"]),
-                "backtest_run_id": str(row["backtest_run_id"]),
-                "code_version": None if run_row is None else str(run_row["code_version"]),
+                "result_id": str(result["result_id"]),
+                "project_id": str(result["project_id"]),
+                "backtest_run_id": str(result["backtest_run_id"]),
+                "code_version": (
+                    None if run_row is None else str(run_row["code_version"])
+                ),
                 "build_manifest_id": BUILD_MANIFEST_ID,
-                "state": str(row["state"]),
-                "ledger_manifest_artifact_id": str(row["ledger_manifest_artifact_id"]),
+                "state": str(result["state"]),
+                "ledger_manifest_artifact_id": str(
+                    result["ledger_manifest_artifact_id"]
+                ),
                 "reconciliation_artifact_id": (
-                    None if row["reconciliation_artifact_id"] is None
-                    else str(row["reconciliation_artifact_id"])
+                    None
+                    if result["reconciliation_artifact_id"] is None
+                    else str(result["reconciliation_artifact_id"])
                 ),
                 "result_artifact": result_artifact,
-                "lineage_hash": str(row["lineage_hash"]),
-                "created_at": str(row["created_at"]),
+                "lineage_hash": str(result["lineage_hash"]),
+                "created_at": str(result["created_at"]),
                 "finalized_at": (
-                    None if row.get("finalized_at") is None else str(row["finalized_at"])
+                    None
+                    if result.get("finalized_at") is None
+                    else str(result["finalized_at"])
                 ),
             },
+        )
+
+    @staticmethod
+    def compare_results(_request: Mapping[str, Any]) -> dict[str, Any]:
+        raise CapabilityUnavailableError(
+            "Result comparison is not available in V1.1",
+            details={"reason_code": "RESULT_COMPARISON_NOT_AVAILABLE"},
         )
 
 
@@ -1008,6 +1313,10 @@ class ProductEntryFacade:
             "ProductEntryService.v1.submitResearch": self.submit_research,
             "ProductEntryService.v1.importLocalDataset": self.import_local_dataset,
             "ProductEntryService.v1.submitFactorStudy": self.submit_factor_study,
+            "ProductEntryService.v1.previewResearchStrategy": self.preview_research_strategy,
+            "ProductEntryService.v1.publishResearchStrategy": self.publish_research_strategy,
+            "ProductEntryService.v1.previewResearchBacktest": self.preview_research_backtest,
+            "ProductEntryService.v1.submitResearchBacktest": self.submit_research_backtest,
             "ProductEntryService.v1.getProjectHome": self.get_project_home,
         }
 
@@ -1093,7 +1402,9 @@ class ProductEntryFacade:
 
     def get_project_home(self, request: Mapping[str, Any]) -> dict[str, Any]:
         from .product_data import ProductDataService
+        from .product_backtest import ProductResearchBacktestService
         from .product_factor import ProductFactorStudyService
+        from .product_strategy import ProductStrategyService
 
         project_id = str(request["project_id"])
         supplied_revision_id = str(request["project_context_revision_id"])
@@ -1115,6 +1426,12 @@ class ProductEntryFacade:
             "data_unavailable_reason": "NO_SNAPSHOT",
             "factor_state": "EMPTY",
             "factor_unavailable_reason": "NO_SNAPSHOT",
+            "strategy_authoring_profile": ProductStrategyService.bounded_authoring_profile(),
+            "backtest_policy_coverage": ProductResearchBacktestService.bounded_policy_coverage(),
+            "strategy_state": "EMPTY",
+            "strategy_unavailable_reason": "NO_FACTOR_STUDY",
+            "backtest_state": "EMPTY",
+            "backtest_unavailable_reason": "NO_RESEARCH_STRATEGY",
         }
         snapshot_id = current.get("snapshot_id")
         if snapshot_id is not None:
@@ -1260,6 +1577,109 @@ class ProductEntryFacade:
                         },
                     },
                 )
+                try:
+                    strategy = ProductStrategyService(self.product).get_latest_strategy(
+                        project_id=project_id,
+                        project_context_revision_id=current_revision_id,
+                    )
+                except NotFoundError:
+                    read_model.update(
+                        strategy_state="EMPTY",
+                        strategy_unavailable_reason="NO_RESEARCH_STRATEGY",
+                    )
+                except TruthPreconditionFailedError:
+                    read_model.update(
+                        strategy_state="UNAVAILABLE",
+                        strategy_unavailable_reason="STRATEGY_READ_MODEL_NOT_AVAILABLE",
+                    )
+                else:
+                    read_model.update(
+                        strategy_state="AVAILABLE",
+                        strategy_unavailable_reason="NONE",
+                        strategy={
+                            "schema_version": "v3.project-strategy-summary/1.0.0",
+                            "truth": strategy["truth"],
+                            "admission": strategy["admission"],
+                            "project_id": strategy["project_id"],
+                            "project_context_revision_id": strategy[
+                                "project_context_revision_id"
+                            ],
+                            "snapshot_id": strategy["snapshot_id"],
+                            "universe_version_id": strategy["universe_version_id"],
+                            "research_strategy_spec_id": strategy[
+                                "research_strategy_spec_id"
+                            ],
+                            "strategy_version_id": strategy["strategy_version_id"],
+                            "entry_signal_factor_version_id": strategy[
+                                "entry_signal_ref"
+                            ]["factor_definition_version_id"],
+                            "exit_signal_factor_version_id": strategy[
+                                "exit_signal_ref"
+                            ]["factor_definition_version_id"],
+                            "profile_refs": strategy["profile_refs"],
+                            "transition_count": strategy["transition_count"],
+                            "decision_chain_count": strategy["decision_chain_count"],
+                        },
+                    )
+                    try:
+                        backtest = ProductResearchBacktestService(
+                            self.product
+                        ).get_latest_backtest(
+                            project_id=project_id,
+                            project_context_revision_id=current_revision_id,
+                        )
+                    except NotFoundError:
+                        read_model.update(
+                            backtest_state="EMPTY",
+                            backtest_unavailable_reason="NO_VALID_BACKTEST",
+                        )
+                    except TruthPreconditionFailedError:
+                        read_model.update(
+                            backtest_state="UNAVAILABLE",
+                            backtest_unavailable_reason="BACKTEST_READ_MODEL_NOT_AVAILABLE",
+                        )
+                    else:
+                        read_model.update(
+                            backtest_state="AVAILABLE",
+                            backtest_unavailable_reason="NONE",
+                            backtest={
+                                "schema_version": "v3.project-backtest-summary/1.0.0",
+                                **{
+                                    key: backtest[key]
+                                    for key in (
+                                        "maturity",
+                                        "truth",
+                                        "admission",
+                                        "project_id",
+                                        "project_context_revision_id",
+                                        "research_backtest_request_id",
+                                        "research_strategy_spec_id",
+                                        "snapshot_id",
+                                        "universe_version_id",
+                                        "run_id",
+                                        "run_spec_id",
+                                        "result_id",
+                                        "backtest_result_id",
+                                        "result_artifact_id",
+                                        "analytics_id",
+                                        "analytics_artifact_id",
+                                        "summary_export_artifact_id",
+                                        "orders_export_artifact_id",
+                                        "fills_export_artifact_id",
+                                        "result_lineage_id",
+                                        "lineage_artifact_id",
+                                        "result_state",
+                                        "engine_version",
+                                        "order_count",
+                                        "fill_count",
+                                        "diagnostic_count",
+                                        "first_fill_session_date",
+                                        "first_effective_session_date",
+                                        "assumption_mode",
+                                    )
+                                },
+                            },
+                        )
         return {
             "request_id": request["request_id"],
             "truth_state": "NOT_FORMAL",
@@ -1291,6 +1711,236 @@ class ProductEntryFacade:
             },
         }
 
+    def publish_research_strategy(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .product_strategy import ProductStrategySubmission
+        from .request_router import current_request_deadline_at
+
+        text_keys = (
+            "project_id",
+            "project_context_revision_id",
+            "universe_version_id",
+            "entry_signal_factor_version_id",
+            "exit_signal_factor_version_id",
+            "position_sizing",
+            "gross_exposure",
+            "rebalance",
+            "cost_policy_version_id",
+            "execution_policy_version_id",
+            "risk_policy_set_version_id",
+            "initial_cash",
+            "assumption_profile_id",
+            "idempotency_key",
+        )
+        values: dict[str, str] = {}
+        for key in text_keys:
+            value = request.get(key)
+            if not isinstance(value, str):
+                raise InvalidArgumentError(f"{key} must be text")
+            values[key] = value
+        max_positions = request.get("max_positions")
+        if not isinstance(max_positions, int) or isinstance(max_positions, bool):
+            raise InvalidArgumentError("max_positions must be an integer")
+        outcome = self.product.strategy.submit(
+            ProductStrategySubmission(
+                project_id=values["project_id"],
+                project_context_revision_id=values["project_context_revision_id"],
+                universe_version_id=values["universe_version_id"],
+                entry_signal_factor_version_id=values[
+                    "entry_signal_factor_version_id"
+                ],
+                exit_signal_factor_version_id=values[
+                    "exit_signal_factor_version_id"
+                ],
+                position_sizing=values["position_sizing"],
+                max_positions=max_positions,
+                gross_exposure=values["gross_exposure"],
+                rebalance=values["rebalance"],
+                cost_policy_version_id=values["cost_policy_version_id"],
+                execution_policy_version_id=values[
+                    "execution_policy_version_id"
+                ],
+                risk_policy_set_version_id=values["risk_policy_set_version_id"],
+                initial_cash=values["initial_cash"],
+                assumption_profile_id=values["assumption_profile_id"],
+                idempotency_key=values["idempotency_key"],
+                execution_deadline_at=current_request_deadline_at(),
+            )
+        )
+        return {
+            "request_id": request["request_id"],
+            "truth_state": "NOT_FORMAL",
+            "read_model": {
+                "read_model_version": "v3.product-entry-research-strategy/1.1",
+                **outcome,
+            },
+        }
+
+    def preview_research_strategy(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .product_strategy import ProductStrategySubmission
+
+        text_keys = (
+            "project_id",
+            "project_context_revision_id",
+            "universe_version_id",
+            "entry_signal_factor_version_id",
+            "exit_signal_factor_version_id",
+            "position_sizing",
+            "gross_exposure",
+            "rebalance",
+            "cost_policy_version_id",
+            "execution_policy_version_id",
+            "risk_policy_set_version_id",
+            "initial_cash",
+            "assumption_profile_id",
+        )
+        values: dict[str, str] = {}
+        for key in text_keys:
+            value = request.get(key)
+            if not isinstance(value, str):
+                raise InvalidArgumentError(f"{key} must be text")
+            values[key] = value
+        max_positions = request.get("max_positions")
+        if not isinstance(max_positions, int) or isinstance(max_positions, bool):
+            raise InvalidArgumentError("max_positions must be an integer")
+        preview = self.product.strategy.preview(
+            ProductStrategySubmission(
+                project_id=values["project_id"],
+                project_context_revision_id=values["project_context_revision_id"],
+                universe_version_id=values["universe_version_id"],
+                entry_signal_factor_version_id=values["entry_signal_factor_version_id"],
+                exit_signal_factor_version_id=values["exit_signal_factor_version_id"],
+                position_sizing=values["position_sizing"],
+                max_positions=max_positions,
+                gross_exposure=values["gross_exposure"],
+                rebalance=values["rebalance"],
+                cost_policy_version_id=values["cost_policy_version_id"],
+                execution_policy_version_id=values["execution_policy_version_id"],
+                risk_policy_set_version_id=values["risk_policy_set_version_id"],
+                initial_cash=values["initial_cash"],
+                assumption_profile_id=values["assumption_profile_id"],
+                idempotency_key="preview:" + str(request["request_id"]),
+            )
+        )
+        return {
+            "request_id": request["request_id"],
+            "truth_state": "NOT_FORMAL",
+            "read_model": preview,
+        }
+
+    def submit_research_backtest(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .product_backtest import ProductResearchBacktestSubmission
+        from .request_router import current_request_deadline_at
+
+        text_keys = (
+            "project_id",
+            "project_context_revision_id",
+            "research_strategy_spec_id",
+            "session_start",
+            "session_end",
+            "slippage_bps",
+            "daily_volume_participation_rate",
+            "idempotency_key",
+        )
+        values: dict[str, str] = {}
+        for key in text_keys:
+            value = request.get(key)
+            if not isinstance(value, str):
+                raise InvalidArgumentError(f"{key} must be text")
+            values[key] = value
+        try:
+            session_start = date.fromisoformat(values["session_start"])
+            session_end = date.fromisoformat(values["session_end"])
+        except ValueError as error:
+            raise InvalidArgumentError(
+                "session_start and session_end must be ISO calendar dates"
+            ) from error
+        if (
+            session_start.isoformat() != values["session_start"]
+            or session_end.isoformat() != values["session_end"]
+        ):
+            raise InvalidArgumentError(
+                "session_start and session_end must be canonical ISO dates"
+            )
+        outcome = self.product.backtest.submit(
+            ProductResearchBacktestSubmission(
+                project_id=values["project_id"],
+                project_context_revision_id=values[
+                    "project_context_revision_id"
+                ],
+                research_strategy_spec_id=values["research_strategy_spec_id"],
+                session_start=session_start,
+                session_end=session_end,
+                slippage_bps=values["slippage_bps"],
+                daily_volume_participation_rate=values[
+                    "daily_volume_participation_rate"
+                ],
+                idempotency_key=values["idempotency_key"],
+                execution_deadline_at=current_request_deadline_at(),
+            )
+        )
+        return {
+            "request_id": request["request_id"],
+            "truth_state": "NOT_FORMAL",
+            "read_model": {
+                "read_model_version": "v3.product-entry-research-backtest/1.1",
+                **outcome,
+            },
+        }
+
+    def preview_research_backtest(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .product_backtest import ProductResearchBacktestSubmission
+
+        text_keys = (
+            "project_id",
+            "project_context_revision_id",
+            "research_strategy_spec_id",
+            "session_start",
+            "session_end",
+            "slippage_bps",
+            "daily_volume_participation_rate",
+        )
+        values: dict[str, str] = {}
+        for key in text_keys:
+            value = request.get(key)
+            if not isinstance(value, str):
+                raise InvalidArgumentError(f"{key} must be text")
+            values[key] = value
+        try:
+            session_start = date.fromisoformat(values["session_start"])
+            session_end = date.fromisoformat(values["session_end"])
+        except ValueError as error:
+            raise InvalidArgumentError(
+                "session_start and session_end must be ISO calendar dates"
+            ) from error
+        if (
+            session_start.isoformat() != values["session_start"]
+            or session_end.isoformat() != values["session_end"]
+        ):
+            raise InvalidArgumentError(
+                "session_start and session_end must be canonical ISO dates"
+            )
+        preview = self.product.backtest.preview(
+            ProductResearchBacktestSubmission(
+                project_id=values["project_id"],
+                project_context_revision_id=values[
+                    "project_context_revision_id"
+                ],
+                research_strategy_spec_id=values["research_strategy_spec_id"],
+                session_start=session_start,
+                session_end=session_end,
+                slippage_bps=values["slippage_bps"],
+                daily_volume_participation_rate=values[
+                    "daily_volume_participation_rate"
+                ],
+                idempotency_key="preview:" + str(request["request_id"]),
+            )
+        )
+        return {
+            "request_id": request["request_id"],
+            "truth_state": "NOT_FORMAL",
+            "read_model": preview,
+        }
+
 
 def _product_entry():
     from .product_entry import (
@@ -1312,7 +1962,7 @@ def build_product_facades(product: ProductRuntime) -> tuple[Any, ...]:
         ProjectSessionFacade(product),
         TaskFacade(product),
         ArtifactFacade(product),
-        BacktestFacade(product),
+        UnavailableBacktestFacade(),
         ResultFacade(product),
         ProductEntryFacade(product),
     )
@@ -1321,6 +1971,7 @@ def build_product_facades(product: ProductRuntime) -> tuple[Any, ...]:
 __all__ = [
     "ArtifactFacade",
     "BacktestFacade",
+    "UnavailableBacktestFacade",
     "ProductEntryFacade",
     "ProjectSessionFacade",
     "ResultFacade",

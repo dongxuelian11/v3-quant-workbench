@@ -319,7 +319,11 @@ class FoundationIntegrationTests(unittest.TestCase):
             for _, value in inspect.getmembers(module, inspect.isclass):
                 if value.__module__ != name:
                     continue
-                if value.__name__.endswith("Registry"):
+                # This guard owns the persistence repository boundary. Domain
+                # registries (operators, components, providers, execution
+                # policies) are closed catalogs/resolvers, not alternate
+                # repository owners.
+                if value.__name__.endswith("RepositoryRegistry"):
                     registry_classes.add(value)
                 if value.__name__.endswith("Launcher") or value.__name__ == "BacktestCore":
                     launcher_or_core_classes.add(value)

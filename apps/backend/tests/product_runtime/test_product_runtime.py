@@ -8,6 +8,8 @@ every response passes the frozen operation DTO validation on the way out.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import inspect
 import tempfile
@@ -18,6 +20,11 @@ from pathlib import Path
 from v3_backend.contracts.registry import OPERATIONS, SERVICE_CONTRACTS
 from v3_backend.errors.codes import ErrorCode
 from v3_backend.errors import ResourceRejectedError
+from v3_backend.errors.exceptions import (
+    InvalidArgumentError,
+    TruthPreconditionFailedError,
+    V3ContractError,
+)
 from v3_backend.runtime.bootstrap import _build_ports
 from v3_backend.runtime.composition_root import (
     RuntimePorts,
@@ -27,6 +34,7 @@ from v3_backend.runtime.composition_root import (
 from v3_backend.runtime.product_runtime import (
     ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
     PRODUCT_EXECUTION_CONTEXT_ROLE,
+    ProductArtifactBatch,
     ProductRuntime,
     build_product_ports,
     build_product_runtime,
@@ -35,7 +43,8 @@ from v3_backend.runtime.product_runtime import (
 from v3_backend.runtime import product_runtime as product_runtime_module
 from v3_backend.runtime import product_research as product_research_module
 from v3_backend.domain.tasks.entities import TaskState
-from v3_backend.runtime.product_facades import ArtifactFacade
+from v3_backend.runtime.product_facades import ArtifactFacade, BacktestFacade
+from v3_backend.runtime.product_entry import create_project
 
 from .helpers import build_product_golden_project
 
@@ -47,12 +56,21 @@ class _PortsCase(unittest.TestCase):
         self.setup = build_product_golden_project(self.storage_root)
         self.product = build_product_runtime(self.storage_root)
         self.ports: RuntimePorts = build_product_ports(self.storage_root)
-        self.router = RequestRouter(self.ports.operation_handlers)
+        self.production_router = RequestRouter(self.ports.operation_handlers)
+        internal_handlers = dict(self.ports.operation_handlers)
+        internal_handlers.update(BacktestFacade(self.product).handlers())
+        self.router = RequestRouter(internal_handlers)
 
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
     def route(self, operation_id: str, **body_fields):
+        return self._route_with(self.router, operation_id, **body_fields)
+
+    def route_production(self, operation_id: str, **body_fields):
+        return self._route_with(self.production_router, operation_id, **body_fields)
+
+    def _route_with(self, router: RequestRouter, operation_id: str, **body_fields):
         project_id = body_fields.pop("_project_id", self.setup.project_id)
         pcr_id = body_fields.pop("_pcr_id", self.setup.project_context_revision_id)
         request_id = mint_uuid7()
@@ -72,7 +90,7 @@ class _PortsCase(unittest.TestCase):
             "project_context_revision_id": pcr_id,
             "body": body,
         }
-        return self.router.route(wire)
+        return router.route(wire)
 
     def assert_error(self, response: dict, code: str) -> dict:
         self.assertEqual(response["kind"], "response")
@@ -99,7 +117,6 @@ class NormalBootstrapTests(unittest.TestCase):
                 {
                     "ProjectSessionService",
                     "ArtifactService",
-                    "BacktestService",
                     "ProductEntryService",
                 },
             )
@@ -163,17 +180,21 @@ class CapabilityMatrixTests(_PortsCase):
             else:
                 self.assertEqual(capability.truth_state, "UNAVAILABLE")
                 self.assertLessEqual(len(bound_ops), len(frozen_ops))
-                if bound_ops:
+                if service == "BacktestService":
+                    self.assertEqual(
+                        capability.reason_code,
+                        "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED",
+                    )
+                elif bound_ops:
                     self.assertEqual(
                         capability.reason_code, "PRODUCT_OPERATION_SET_INCOMPLETE"
                     )
         self.assertEqual(
             {service for service, capability in capabilities.items() if capability.truth_state == "FORMAL"},
             {
-                service
-                for service in SERVICE_CONTRACTS
-                if {op.operation_id for op in SERVICE_CONTRACTS[service].operations}
-                <= set(self.ports.operation_handlers)
+                "ProjectSessionService",
+                "ArtifactService",
+                "ProductEntryService",
             },
         )
 
@@ -183,9 +204,16 @@ class CapabilityMatrixTests(_PortsCase):
         }["ResultService"]
         self.assertEqual(capability.truth_state, "UNAVAILABLE")
         self.assertEqual(capability.reason_code, "PRODUCT_OPERATION_SET_INCOMPLETE")
-        self.assertIn("ResultService.v1.getResult", self.ports.operation_handlers)
-        self.assertNotIn(
-            "ResultService.v1.reconcileLedger", self.ports.operation_handlers
+        self.assertEqual(
+            {
+                operation.operation_id
+                for operation in SERVICE_CONTRACTS["ResultService"].operations
+            },
+            set(self.ports.operation_handlers)
+            & {
+                operation.operation_id
+                for operation in SERVICE_CONTRACTS["ResultService"].operations
+            },
         )
 
     def test_task_service_reports_incomplete_honestly(self) -> None:
@@ -203,6 +231,28 @@ class CapabilityMatrixTests(_PortsCase):
         self.assertEqual(
             frozen_ops - bound_ops,
             {"TaskService.v1.resumeTask"},
+        )
+
+    def test_legacy_backtest_service_is_unavailable_until_formal_contract_closes(self) -> None:
+        capability = {
+            item.code: item for item in self.ports.capabilities
+        }["BacktestService"]
+        self.assertEqual(capability.truth_state, "UNAVAILABLE")
+        self.assertEqual(
+            capability.reason_code,
+            "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED",
+        )
+
+        response = self.route_production(
+            "BacktestService.v1.submitBacktest",
+            run_spec_id=self.setup.run_spec_id,
+            execution_adapter_version_id=ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
+            idempotency_key="legacy-backtest-must-stay-unavailable",
+        )
+        error = self.assert_error(response, ErrorCode.CAPABILITY_UNAVAILABLE.value)
+        self.assertEqual(
+            error["error"]["details"]["reason_code"],
+            "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED",
         )
 
 
@@ -584,6 +634,14 @@ class RestartRecoveryTests(_PortsCase):
 
 
 class NegativePathTests(_PortsCase):
+    def test_artifact_batch_rejects_malformed_payload_before_staging(self) -> None:
+        with self.assertRaisesRegex(V3ContractError, "payload tuple is invalid"):
+            ProductArtifactBatch(
+                store=self.product.artifact_store,
+                payloads=(("prv_incomplete",),),
+                published_at=datetime.now(timezone.utc),
+            )
+
     def test_unknown_operation_fails(self) -> None:
         request_id = mint_uuid7()
         response = self.router.route(
@@ -703,6 +761,52 @@ class NegativePathTests(_PortsCase):
 
 
 class ArtifactServiceTests(_PortsCase):
+    def _publish_large_stream_artifact(
+        self, facade: ArtifactFacade, payload: bytes
+    ) -> str:
+        staged = self.product.artifact_store.stage_bytes(payload)
+        published = facade.publish_artifact(
+            {
+                "request_id": mint_uuid7(),
+                "project_id": self.setup.project_id,
+                "project_context_revision_id": self.product.current_revision(
+                    self.setup.project_id
+                )["project_context_revision_id"],
+                "staging_token": staged.staging_token,
+                "declared_media_type": "application/json",
+                "declared_role": "PRODUCT_RESEARCH_BACKTEST_READ_MODEL",
+                "expected_sha256": staged.sha256,
+                "idempotency_key": "artifact-stream-large-publish",
+            }
+        )
+        return str(published["read_model"]["artifact_id"])
+
+    def test_acc_c3_09_stream_open_rejects_cross_project_artifact(self) -> None:
+        submitted = self.route(
+            "BacktestService.v1.submitBacktest",
+            run_spec_id=self.setup.run_spec_id,
+            execution_adapter_version_id=ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
+            idempotency_key="artifact-cross-project-key",
+        )
+        artifact_id = self.route(
+            "TaskService.v1.getTask", task_id=submitted["body"]["task_id"]
+        )["body"]["read_model"]["outputs"]["BACKTEST_RUN_RESULT"]
+        other = create_project(
+            self.product,
+            display_name="Other project",
+            notes=None,
+            idempotency_key="artifact-cross-project-other",
+        )
+        with self.assertRaises(TruthPreconditionFailedError):
+            ArtifactFacade(self.product).open_artifact_stream(
+                {
+                    "request_id": mint_uuid7(),
+                    "project_id": other["project_id"],
+                    "artifact_id": artifact_id,
+                    "range": None,
+                }
+            )
+
     def test_acc_c1_07_stream_ticket_capacity_and_expiry_are_bounded(self) -> None:
         submitted = self.route(
             "BacktestService.v1.submitBacktest",
@@ -735,6 +839,120 @@ class ArtifactServiceTests(_PortsCase):
         facade.open_artifact_stream(request_wire)
         self.assertEqual(facade.retained_ticket_count, 1)
 
+    def test_acc_c3_09_stream_consume_chunks_and_reassembles_exact_bytes(self) -> None:
+        payload = json.dumps(
+            {"payload": "x" * (600 * 1024)}, separators=(",", ":")
+        ).encode("utf-8")
+        facade = ArtifactFacade(self.product, runtime_generation=7)
+        artifact_id = self._publish_large_stream_artifact(facade, payload)
+        ticket = facade.open_artifact_stream(
+            {
+                "request_id": mint_uuid7(),
+                "project_id": self.setup.project_id,
+                "artifact_id": artifact_id,
+                "range": None,
+            }
+        )["read_model"]
+
+        frames = tuple(
+            facade.consume_artifact_stream(
+                ticket_id=ticket["ticket_id"],
+                project_id=self.setup.project_id,
+                project_context_revision_id=self.product.current_revision(
+                    self.setup.project_id
+                )["project_context_revision_id"],
+                runtime_generation=7,
+            )
+        )
+        chunks = frames[:-1]
+        complete = frames[-1]
+        self.assertGreaterEqual(len(chunks), 3)
+        assembled = bytearray()
+        for chunk in chunks:
+            self.assertEqual(chunk["kind"], "artifactStream.chunk")
+            decoded = base64.b64decode(chunk["payload_base64"], validate=True)
+            self.assertLessEqual(len(decoded), 256 * 1024)
+            self.assertEqual(chunk["offset"], len(assembled))
+            self.assertEqual(hashlib.sha256(decoded).hexdigest(), chunk["chunk_sha256"])
+            assembled.extend(decoded)
+        self.assertEqual(bytes(assembled), payload)
+        self.assertEqual(complete["kind"], "artifactStream.complete")
+        self.assertEqual(complete["total_byte_count"], len(payload))
+        self.assertEqual(complete["artifact_sha256"], hashlib.sha256(payload).hexdigest())
+
+    def test_acc_c3_09_stream_ticket_expiry_replay_and_generation_fail_closed(self) -> None:
+        now = [datetime(2026, 8, 24, tzinfo=timezone.utc)]
+        facade = ArtifactFacade(
+            self.product,
+            clock=lambda: now[0],
+            runtime_generation=7,
+        )
+        payload = b'{"stream":"lifecycle"}'
+        artifact_id = self._publish_large_stream_artifact(facade, payload)
+        request = {
+            "request_id": mint_uuid7(),
+            "project_id": self.setup.project_id,
+            "artifact_id": artifact_id,
+            "range": None,
+        }
+        context_id = self.product.current_revision(self.setup.project_id)[
+            "project_context_revision_id"
+        ]
+
+        wrong_generation = facade.open_artifact_stream(request)["read_model"][
+            "ticket_id"
+        ]
+        with self.assertRaises(TruthPreconditionFailedError):
+            tuple(
+                facade.consume_artifact_stream(
+                    ticket_id=wrong_generation,
+                    project_id=self.setup.project_id,
+                    project_context_revision_id=context_id,
+                    runtime_generation=8,
+                )
+            )
+        self.assertTrue(
+            tuple(
+                facade.consume_artifact_stream(
+                    ticket_id=wrong_generation,
+                    project_id=self.setup.project_id,
+                    project_context_revision_id=context_id,
+                    runtime_generation=7,
+                )
+            )
+        )
+
+        consumed = facade.open_artifact_stream(request)["read_model"]["ticket_id"]
+        tuple(
+            facade.consume_artifact_stream(
+                ticket_id=consumed,
+                project_id=self.setup.project_id,
+                project_context_revision_id=context_id,
+                runtime_generation=7,
+            )
+        )
+        with self.assertRaises(TruthPreconditionFailedError):
+            tuple(
+                facade.consume_artifact_stream(
+                    ticket_id=consumed,
+                    project_id=self.setup.project_id,
+                    project_context_revision_id=context_id,
+                    runtime_generation=7,
+                )
+            )
+
+        expired = facade.open_artifact_stream(request)["read_model"]["ticket_id"]
+        now[0] += timedelta(seconds=301)
+        with self.assertRaises(TruthPreconditionFailedError):
+            tuple(
+                facade.consume_artifact_stream(
+                    ticket_id=expired,
+                    project_id=self.setup.project_id,
+                    project_context_revision_id=context_id,
+                    runtime_generation=7,
+                )
+            )
+
     def test_stream_ticket_and_gc_plan(self) -> None:
         submitted = self.route(
             "BacktestService.v1.submitBacktest",
@@ -763,7 +981,7 @@ class ArtifactServiceTests(_PortsCase):
         for candidate in plan_model["candidates"]:
             self.assertNotEqual(candidate["artifact_id"], artifact_id)
 
-    def test_export_artifact_produces_manifest_task(self) -> None:
+    def test_acc_c3_10_export_task_finishes_only_after_native_completion_receipt(self) -> None:
         submitted = self.route(
             "BacktestService.v1.submitBacktest",
             run_spec_id=self.setup.run_spec_id,
@@ -778,20 +996,89 @@ class ArtifactServiceTests(_PortsCase):
             "ArtifactService.v1.exportArtifact",
             artifact_ids=[artifact_id],
             export_profile_id="LIGHT_REVIEW",
-            destination_token="dest-token-1",
+            destination_token="edc_01ARZ3NDEKTSV4RRFFQ69G5FAV",
             idempotency_key="export-key-0002",
         )
         self.assertEqual(exported["status"], "OK", exported)
+        export_task_id = exported["body"]["task_id"]
         export_task = self.route(
-            "TaskService.v1.getTask", task_id=exported["body"]["task_id"]
+            "TaskService.v1.getTask", task_id=export_task_id
         )
+        self.assertEqual(export_task["body"]["read_model"]["state"], "RUNNING")
+        self.assertNotIn("EXPORT_MANIFEST", export_task["body"]["read_model"]["outputs"])
+        descriptor = self.product.require_project_reachable_artifact(
+            self.setup.project_id, artifact_id
+        )
+        with self.assertRaises(InvalidArgumentError):
+            self.product.execution.complete_artifact_export(
+                project_id=self.setup.project_id,
+                project_context_revision_id=self.product.current_revision(
+                    self.setup.project_id
+                )["project_context_revision_id"],
+                task_id=export_task_id,
+                destination_token="edc_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                display_name="result.json",
+                artifact_id=artifact_id,
+                sha256=descriptor["sha256"],
+                byte_size=True,
+                completed_at="2026-08-24T00:00:00.000Z",
+            )
+        ArtifactFacade(self.product).handle_export_control(
+            "artifactExport.complete",
+            {
+                "protocol_version": "v3.artifact-export/1.0.0",
+                "project_id": self.setup.project_id,
+                "project_context_revision_id": self.product.current_revision(
+                    self.setup.project_id
+                )["project_context_revision_id"],
+                "task_id": export_task_id,
+                "destination_token": "edc_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "display_name": "result.json",
+                "artifact_id": artifact_id,
+                "sha256": descriptor["sha256"],
+                "byte_size": descriptor["byte_size"],
+                "completed_at": "2026-08-24T00:00:00.000Z",
+            },
+        )
+        export_task = self.route("TaskService.v1.getTask", task_id=export_task_id)
         self.assertEqual(export_task["body"]["read_model"]["state"], "SUCCEEDED")
         manifest_id = export_task["body"]["read_model"]["outputs"]["EXPORT_MANIFEST"]
         manifest_wire = json.loads(
             self.product.read_verified_bytes(manifest_id).decode("utf-8")
         )
         self.assertEqual(manifest_wire["artifacts"][0]["artifact_id"], artifact_id)
-        self.assertEqual(manifest_wire["destination_token"], "dest-token-1")
+        self.assertNotIn("destination_token", manifest_wire)
+        self.assertEqual(manifest_wire["display_name"], "result.json")
+        self.assertEqual(manifest_wire["completed_at"], "2026-08-24T00:00:00Z")
+
+    def test_acc_c3_10_export_failure_receipt_fails_task_without_manifest(self) -> None:
+        artifact_id = self._publish_large_stream_artifact(
+            ArtifactFacade(self.product), b'{"export":"failure"}'
+        )
+        exported = self.route(
+            "ArtifactService.v1.exportArtifact",
+            artifact_ids=[artifact_id],
+            export_profile_id="LIGHT_REVIEW",
+            destination_token="edc_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            idempotency_key="export-failure-key",
+        )
+        task_id = exported["body"]["task_id"]
+        ArtifactFacade(self.product).handle_export_control(
+            "artifactExport.fail",
+            {
+                "protocol_version": "v3.artifact-export/1.0.0",
+                "project_id": self.setup.project_id,
+                "project_context_revision_id": self.product.current_revision(
+                    self.setup.project_id
+                )["project_context_revision_id"],
+                "task_id": task_id,
+                "destination_token": "edc_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+                "reason_code": "ARTIFACT_EXPORT_WRITE_FAILED",
+            },
+        )
+        task = self.route("TaskService.v1.getTask", task_id=task_id)["body"]["read_model"]
+        self.assertEqual(task["state"], "FAILED")
+        self.assertNotIn("EXPORT_MANIFEST", task["outputs"])
 
 
 class BacktestServiceExperimentTests(_PortsCase):

@@ -24,6 +24,7 @@ import {
   ProductBindingStore,
   ProductBridge,
   LocalDataSourceBroker,
+  ArtifactExportBroker,
   productBindingPath,
   registerProductRuntimeIpc,
   registerUnavailableProductRuntimeIpc
@@ -247,6 +248,20 @@ async function chooseLocalDataSource(): Promise<string | null> {
   return selection.filePaths[0] ?? null;
 }
 
+async function chooseArtifactDestination(suggestedName: string): Promise<string | null> {
+  const window = mainWindow !== null ? (BrowserWindow.fromWebContents(mainWindow.webContents) ?? mainWindow) : null;
+  const options = {
+    title: "导出已验证 Artifact",
+    defaultPath: suggestedName,
+    buttonLabel: "导出"
+  };
+  const selection = window !== null
+    ? await dialog.showSaveDialog(window, options)
+    : await dialog.showSaveDialog(options);
+  if (selection.canceled || typeof selection.filePath !== "string") return null;
+  return selection.filePath;
+}
+
 function registerBackendRuntime(): void {
   if (!mainWindow || !backendSupervisor) throw new Error("BACKEND_RUNTIME_REGISTRATION_NOT_READY");
   backendRelay = new BackendRuntimeEventRelay(backendSupervisor, mainWindow.webContents);
@@ -260,7 +275,8 @@ function registerBackendRuntime(): void {
     productBindings,
     chooseResearchPackage,
     undefined,
-    new LocalDataSourceBroker({ chooseFile: chooseLocalDataSource })
+    new LocalDataSourceBroker({ chooseFile: chooseLocalDataSource }),
+    new ArtifactExportBroker({ chooseDestination: chooseArtifactDestination })
   );
   registerProductRuntimeIpc(ipcMain, trusted, productBridge);
 }

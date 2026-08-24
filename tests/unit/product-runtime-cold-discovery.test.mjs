@@ -21,6 +21,16 @@ const STATUS = {
 };
 const IMPORT_CONTEXT = "pcr_imported";
 const IMPORT_BOUND_REFS = { projectId: PROJECT, projectContextRevisionId: IMPORT_CONTEXT, sessionId: "ses_imported" };
+const BACKTEST_POLICY_COVERAGE = {
+  schemaVersion: "v3.product-backtest-policy-coverage/1.0.0",
+  truth: "NOT_FORMAL",
+  admission: "PRE_ALPHA",
+  coverageStart: "2026-01-01",
+  coverageEnd: null,
+  ruleProfileId: `atrp_sha256_${"1".repeat(64)}`,
+  costPolicyId: `cost_sha256_${"2".repeat(64)}`,
+  executionTimingProfileId: `timing_sha256_${"3".repeat(64)}`
+};
 const DATA_HOME = {
   readModelVersion: "v3.project-home/1.1",
   projectId: PROJECT,
@@ -34,6 +44,7 @@ const DATA_HOME = {
   factorState: "EMPTY",
   factorUnavailableReason: "NO_FACTOR_STUDY",
   factor: null,
+  backtestPolicyCoverage: BACKTEST_POLICY_COVERAGE,
   data: {
     schemaVersion: "v3.product-data-read-model/1.0.0",
     projectId: PROJECT,
@@ -71,6 +82,32 @@ const DATA_HOME = {
   }
 };
 const FACTOR_DOCUMENT_ID = `fdoc_sha256_${"d".repeat(64)}`;
+const ENTRY_FACTOR_VERSION_ID = `fver_sha256_${"e".repeat(64)}`;
+const EXIT_FACTOR_VERSION_ID = `fver_sha256_${"f".repeat(64)}`;
+const STRATEGY_SPEC_ID = `rstrat_sha256_${"1".repeat(64)}`;
+const STRATEGY_VERSION_ID = `sgv_sha256_${"2".repeat(64)}`;
+const PROFILE_REFS = {
+  costPolicyVersionId: `cpv_sha256_${"3".repeat(64)}`,
+  executionPolicyVersionId: `epv_sha256_${"4".repeat(64)}`,
+  riskPolicySetVersionId: `rpsv_sha256_${"5".repeat(64)}`,
+  assumptionProfileId: `assumption_sha256_${"6".repeat(64)}`
+};
+const STRATEGY_AUTHORING_PROFILE = {
+  schemaVersion: "v3.product-strategy-authoring-profile/1.0.0",
+  truth: "NOT_FORMAL",
+  admission: "PRE_ALPHA",
+  positionSizingOptions: ["SINGLE_ASSET_FULL_WEIGHT", "EQUAL_WEIGHT_ACTIVE_SIGNALS"],
+  maxPositionsMin: 1,
+  maxPositionsMax: 20,
+  grossExposureMin: "0",
+  grossExposureMax: "1",
+  rebalance: "NEXT_OPEN_AFTER_SIGNAL",
+  profileRefs: PROFILE_REFS,
+  assumptionProfiles: [
+    { mode: "RESEARCH_APPROXIMATE", assumptionProfileId: PROFILE_REFS.assumptionProfileId },
+    { mode: "STRICT_FAIL_CLOSED", assumptionProfileId: `assumption_sha256_${"7".repeat(64)}` }
+  ]
+};
 const FACTOR_HOME = {
   ...DATA_HOME,
   factorState: "AVAILABLE",
@@ -84,6 +121,113 @@ const FACTOR_HOME = {
     snapshotId: DATA_HOME.data.snapshotId,
     universeVersionId: DATA_HOME.data.universeVersionId,
     formulaDocumentVersionId: FACTOR_DOCUMENT_ID
+  },
+  strategyAuthoringProfile: STRATEGY_AUTHORING_PROFILE,
+  strategyState: "EMPTY",
+  strategyUnavailableReason: "NO_RESEARCH_STRATEGY",
+  strategy: null,
+  backtestState: "EMPTY",
+  backtestUnavailableReason: "NO_RESEARCH_STRATEGY",
+  backtest: null
+};
+const STRATEGY_HOME = {
+  ...FACTOR_HOME,
+  strategyState: "AVAILABLE",
+  strategyUnavailableReason: "NONE",
+  strategy: {
+    schemaVersion: "v3.project-strategy-summary/1.0.0",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    projectId: PROJECT,
+    projectContextRevisionId: IMPORT_CONTEXT,
+    snapshotId: DATA_HOME.data.snapshotId,
+    universeVersionId: DATA_HOME.data.universeVersionId,
+    researchStrategySpecId: STRATEGY_SPEC_ID,
+    strategyVersionId: STRATEGY_VERSION_ID,
+    entrySignalFactorVersionId: ENTRY_FACTOR_VERSION_ID,
+    exitSignalFactorVersionId: EXIT_FACTOR_VERSION_ID,
+    profileRefs: PROFILE_REFS,
+    transitionCount: 2,
+    decisionChainCount: 2
+  },
+  backtestState: "EMPTY",
+  backtestUnavailableReason: "NO_VALID_BACKTEST",
+  backtest: null
+};
+const BACKTEST_SUMMARY = {
+  schemaVersion: "v3.project-backtest-summary/1.0.0",
+  maturity: "PRODUCT_CONNECTED",
+  truth: "NOT_FORMAL",
+  admission: "PRE_ALPHA",
+  projectId: PROJECT,
+  projectContextRevisionId: IMPORT_CONTEXT,
+  researchBacktestRequestId: `rbtr_sha256_${"7".repeat(64)}`,
+  researchStrategySpecId: STRATEGY_SPEC_ID,
+  snapshotId: DATA_HOME.data.snapshotId,
+  universeVersionId: DATA_HOME.data.universeVersionId,
+  runId: `run_${"8".repeat(32)}`,
+  runSpecId: `btrs_sha256_${"9".repeat(64)}`,
+  resultId: `res_${"a".repeat(32)}`,
+  backtestResultId: `btr_sha256_${"b".repeat(64)}`,
+  resultArtifactId: `art_sha256_${"c".repeat(64)}`,
+  analyticsId: `ran_sha256_${"d".repeat(64)}`,
+  analyticsArtifactId: `art_sha256_${"e".repeat(64)}`,
+  resultLineageId: `rln_sha256_${"f".repeat(64)}`,
+  lineageArtifactId: `art_sha256_${"1".repeat(64)}`,
+  resultState: "VALID",
+  engineVersion: "v3.ashare-backtest/0.3-research",
+  orderCount: 2,
+  fillCount: 2,
+  diagnosticCount: 0,
+  firstFillSessionDate: "2026-01-06",
+  firstEffectiveSessionDate: "2026-01-06",
+  assumptionMode: "RESEARCH_APPROXIMATE"
+};
+const BACKTEST_HOME = {
+  ...STRATEGY_HOME,
+  backtestState: "AVAILABLE",
+  backtestUnavailableReason: "NONE",
+  backtest: BACKTEST_SUMMARY
+};
+const RESULT_DETAILS = {
+  schemaVersion: "v3.product-result-details/1.0.0",
+  maturity: "PRODUCT_CONNECTED",
+  truth: "NOT_FORMAL",
+  admission: "PRE_ALPHA",
+  resultState: "VALID",
+  resultId: BACKTEST_SUMMARY.resultId,
+  backtestResultId: BACKTEST_SUMMARY.backtestResultId,
+  analyticsId: BACKTEST_SUMMARY.analyticsId,
+  resultLineageId: BACKTEST_SUMMARY.resultLineageId,
+  runId: BACKTEST_SUMMARY.runId,
+  runSpecId: BACKTEST_SUMMARY.runSpecId,
+  engineVersion: BACKTEST_SUMMARY.engineVersion,
+  assumptionMode: BACKTEST_SUMMARY.assumptionMode,
+  metrics: Object.fromEntries([
+    "startNav", "endNav", "totalReturn", "annualizedReturn", "annualizedVolatility",
+    "maxDrawdown", "sharpe", "sortino", "calmar"
+  ].map((name) => [name, { status: "AVAILABLE", value: "1", reason: null }])),
+  navSeries: [],
+  drawdownSeries: [],
+  exposureSeries: [],
+  orders: { rowCount: 0, preview: [], truncated: false, sourceArtifactId: BACKTEST_SUMMARY.resultArtifactId },
+  fills: { rowCount: 0, preview: [], truncated: false, sourceArtifactId: BACKTEST_SUMMARY.resultArtifactId },
+  diagnostics: { rowCount: 0, preview: [], truncated: false, sourceArtifactId: BACKTEST_SUMMARY.resultArtifactId },
+  holdings: { rowCount: 0, preview: [], truncated: false, sourceArtifactId: BACKTEST_SUMMARY.resultArtifactId },
+  lineage: {
+    rawCaptureId: DATA_HOME.data.rawCaptureId,
+    rawArtifactId: DATA_HOME.data.rawArtifactId,
+    snapshotId: DATA_HOME.data.snapshotId,
+    universeVersionId: DATA_HOME.data.universeVersionId,
+    entryFactorVersionId: ENTRY_FACTOR_VERSION_ID,
+    exitFactorVersionId: EXIT_FACTOR_VERSION_ID,
+    researchStrategySpecId: STRATEGY_SPEC_ID,
+    strategyVersionId: STRATEGY_VERSION_ID,
+    riskPolicySetVersionId: PROFILE_REFS.riskPolicySetVersionId,
+    runSpecArtifactId: BACKTEST_SUMMARY.runSpecId,
+    resultArtifactId: BACKTEST_SUMMARY.resultArtifactId,
+    analyticsArtifactId: BACKTEST_SUMMARY.analyticsArtifactId,
+    lineageArtifactId: BACKTEST_SUMMARY.lineageArtifactId
   }
 };
 
@@ -162,6 +306,12 @@ function resetStore() {
     localDataImport: null,
     factorStudy: null,
     factorTask: null,
+    strategySubmission: null,
+    strategyTask: null,
+    backtestSubmission: null,
+    backtestTask: null,
+    latestProductResult: null,
+    latestProductResultError: null,
     researchDiscoveryState: "NOT_RUN",
     recoveredResearchTaskId: null,
     task: null,
@@ -365,6 +515,345 @@ test("late Factor acceptance from Project A is dropped after project activation 
     assert.equal(state.projectScope.projectId, OTHER_PROJECT);
     assert.equal(state.factorStudy, null);
     assert.equal(state.factorTask, null);
+    assert.equal(state.dataHome, null);
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("ACC-C3-13 Strategy and Backtest adopt only exact terminal Tasks and canonical Home/Result readback", async () => {
+  resetStore();
+  const calls = [];
+  const strategyTask = task({
+    taskId: "strategy-authoring",
+    operationId: "ProductEntryService.v1.publishResearchStrategy",
+    resultId: null,
+    outputId: null
+  });
+  const backtestTask = task({
+    taskId: "research-backtest",
+    operationId: "ProductEntryService.v1.submitResearchBacktest",
+    resultId: BACKTEST_SUMMARY.resultId,
+    runId: BACKTEST_SUMMARY.runId,
+    outputId: BACKTEST_SUMMARY.resultArtifactId
+  });
+  const strategyOutcome = {
+    taskId: strategyTask.taskId,
+    runId: strategyTask.runId,
+    acceptedState: "QUEUED",
+    maturity: "PRODUCT_CONNECTED",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    checkpointResume: "UNAVAILABLE",
+    retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
+    researchStrategySpecId: STRATEGY_SPEC_ID
+  };
+  const backtestOutcome = {
+    taskId: backtestTask.taskId,
+    runId: backtestTask.runId,
+    acceptedState: "QUEUED",
+    maturity: "PRODUCT_CONNECTED",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    checkpointResume: "UNAVAILABLE",
+    retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
+    researchBacktestRequestId: BACKTEST_SUMMARY.researchBacktestRequestId
+  };
+  const strategyIntent = {
+    entrySignalFactorVersionId: ENTRY_FACTOR_VERSION_ID,
+    exitSignalFactorVersionId: EXIT_FACTOR_VERSION_ID,
+    positionSizing: "SINGLE_ASSET_FULL_WEIGHT",
+    maxPositions: 1,
+    grossExposure: "1",
+    initialCash: "1000000",
+    assumptionProfileId: PROFILE_REFS.assumptionProfileId
+  };
+  const strategyPreview = {
+    schemaVersion: "v3.product-strategy-preview/1.0.0",
+    maturity: "PRODUCT_CONNECTED",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    projectId: PROJECT,
+    projectContextRevisionId: IMPORT_CONTEXT,
+    snapshotId: DATA_HOME.data.snapshotId,
+    universeVersionId: DATA_HOME.data.universeVersionId,
+    researchStrategySpecId: STRATEGY_SPEC_ID,
+    strategyDefinitionVersionId: `sdv_sha256_${"9".repeat(64)}`,
+    entrySignalFactorVersionId: ENTRY_FACTOR_VERSION_ID,
+    exitSignalFactorVersionId: EXIT_FACTOR_VERSION_ID,
+    profileRefs: PROFILE_REFS,
+    assumptionMode: "RESEARCH_APPROXIMATE",
+    transitionCount: 2,
+    plannedDecisionChainCount: 2,
+    sideEffects: "NONE"
+  };
+  let home = FACTOR_HOME;
+  globalThis.window = {
+    v3ProductRuntime: {
+      async previewResearchStrategy(intent) {
+        calls.push("preview-strategy");
+        assert.deepEqual(intent, strategyIntent);
+        return strategyPreview;
+      },
+      async publishResearchStrategy(intent) {
+        calls.push("publish-strategy");
+        assert.deepEqual(intent, strategyIntent);
+        return strategyOutcome;
+      },
+      async submitResearchBacktest(intent) {
+        calls.push("submit-backtest");
+        assert.deepEqual(intent, {
+          sessionStart: "2026-01-05",
+          sessionEnd: "2026-01-06",
+          slippageBps: "5",
+          dailyVolumeParticipationRate: "0.1"
+        });
+        return backtestOutcome;
+      },
+      async previewResearchBacktest(intent) {
+        calls.push("preview-backtest");
+        return {
+          schemaVersion: "v3.product-backtest-preflight/1.0.0",
+          maturity: "PRODUCT_CONNECTED",
+          truth: "NOT_FORMAL",
+          admission: "PRE_ALPHA",
+          status: "PASS",
+          projectId: PROJECT,
+          projectContextRevisionId: IMPORT_CONTEXT,
+          researchStrategySpecId: STRATEGY_SPEC_ID,
+          researchBacktestRequestId: BACKTEST_SUMMARY.researchBacktestRequestId,
+          snapshotId: DATA_HOME.data.snapshotId,
+          universeVersionId: DATA_HOME.data.universeVersionId,
+          sessionStart: intent.sessionStart,
+          sessionEnd: intent.sessionEnd,
+          slippageBps: intent.slippageBps,
+          dailyVolumeParticipationRate: intent.dailyVolumeParticipationRate,
+          commissionRate: "0.0003",
+          minimumCommissionCny: "5",
+          stampDutySellRate: "0.0005",
+          assumptionMode: "RESEARCH_APPROXIMATE",
+          policyRefs: {
+            ruleProfileId: `atrp_sha256_${"4".repeat(64)}`,
+            costPolicyId: PROFILE_REFS.costPolicyVersionId,
+            executionTimingProfileId: PROFILE_REFS.executionPolicyVersionId,
+            riskPolicySetVersionId: PROFILE_REFS.riskPolicySetVersionId
+          },
+          resourceEstimate: {
+            resourceClass: "PRODUCT_BACKTEST_CPU",
+            cpuSlots: 1,
+            memoryLimitBytes: 1073741824,
+            scratchLimitBytes: 1073741824,
+            checkpointResume: "UNAVAILABLE"
+          },
+          sideEffects: "NONE"
+        };
+      },
+      async getTask(taskId) {
+        calls.push(`task:${taskId}`);
+        return taskId === strategyTask.taskId ? strategyTask : backtestTask;
+      },
+      async getTaskEvents() {
+        calls.push("events");
+        return {
+          highWatermark: 40,
+          items: [{
+            eventId: "progress-1",
+            taskId: backtestTask.taskId,
+            projectSequence: 39,
+            eventType: "TASK_PROGRESS",
+            occurredAt: "2026-08-24T00:00:00Z",
+            resultId: null,
+            progress: {
+              phase: "RECONCILING",
+              completedUnits: 3,
+              totalUnits: 4,
+              workUnit: "RESULT_RECONCILIATION"
+            }
+          }]
+        };
+      },
+      async getProjectHome() {
+        calls.push("home");
+        return home;
+      },
+      async getLatestProductResultDetails() {
+        calls.push("result-details");
+        return RESULT_DETAILS;
+      }
+    }
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(IMPORT_BOUND_REFS);
+    useProductRuntime.setState({ dataHome: FACTOR_HOME });
+    await useProductRuntime.getState().publishResearchStrategy(strategyIntent);
+    assert.equal(useProductRuntime.getState().errorMessage, "STRATEGY_PREVIEW_REQUIRED");
+    assert.deepEqual(calls, []);
+    await useProductRuntime.getState().previewResearchStrategy(strategyIntent);
+    assert.equal(useProductRuntime.getState().strategyPreview.sideEffects, "NONE");
+    await useProductRuntime.getState().publishResearchStrategy({ ...strategyIntent, maxPositions: 2 });
+    assert.equal(useProductRuntime.getState().errorMessage, "STRATEGY_PREVIEW_REQUIRED");
+    assert.deepEqual(calls, ["preview-strategy"]);
+    home = STRATEGY_HOME;
+    await useProductRuntime.getState().publishResearchStrategy(strategyIntent);
+    assert.equal(useProductRuntime.getState().strategyTask.taskId, strategyTask.taskId);
+    assert.equal(useProductRuntime.getState().dataHome.strategy.researchStrategySpecId, STRATEGY_SPEC_ID);
+    assert.equal(useProductRuntime.getState().backtestPreview, null);
+
+    home = BACKTEST_HOME;
+    const backtestIntent = {
+      sessionStart: "2026-01-05",
+      sessionEnd: "2026-01-06",
+      slippageBps: "5",
+      dailyVolumeParticipationRate: "0.1"
+    };
+    await useProductRuntime.getState().previewResearchBacktest(backtestIntent);
+    assert.equal(useProductRuntime.getState().backtestPreview.sideEffects, "NONE");
+    assert.deepEqual(useProductRuntime.getState().backtestPreviewIntent, backtestIntent);
+    await useProductRuntime.getState().submitResearchBacktest(backtestIntent);
+    const state = useProductRuntime.getState();
+    assert.deepEqual(calls, [
+      "preview-strategy", "publish-strategy", `task:${strategyTask.taskId}`, "home",
+      "preview-backtest", "submit-backtest", `task:${backtestTask.taskId}`, "events", "home", "result-details"
+    ]);
+    assert.equal(state.backtestTask.taskId, backtestTask.taskId);
+    assert.equal(state.dataHome.backtest.resultState, "VALID");
+    assert.equal(state.latestProductResult.resultId, BACKTEST_SUMMARY.resultId);
+    assert.deepEqual(state.backtestProgress, {
+      phase: "RECONCILING",
+      completedUnits: 3,
+      totalUnits: 4,
+      workUnit: "RESULT_RECONCILIATION"
+    });
+    assert.equal(state.surface, "PROJECT_BOUND");
+    useProductRuntime.getState().activateProjectScope({
+      projectId: OTHER_PROJECT,
+      projectContextRevisionId: "pcr_other",
+      sessionId: "ses_other"
+    });
+    assert.equal(useProductRuntime.getState().backtestPreview, null);
+    assert.equal(useProductRuntime.getState().backtestPreviewIntent, null);
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("Task feedback retries only a persisted retry-admitted Product Backtest and rebuilds VALID result truth", async () => {
+  resetStore();
+  const calls = [];
+  const failed = task({
+    taskId: "research-backtest-retry",
+    operationId: "ProductEntryService.v1.submitResearchBacktest",
+    state: "FAILED",
+    resultId: null,
+    runId: BACKTEST_SUMMARY.runId,
+    outputId: null
+  });
+  failed.stateVersion = 7;
+  failed.attempt = { attemptId: "att_retry_1", ordinal: 1, state: "FAILED", errorCategory: "TRANSIENT_IO" };
+  const queued = {
+    ...failed,
+    state: "QUEUED",
+    stateVersion: 8,
+    terminalAt: null,
+    attempt: { attemptId: "att_retry_2", ordinal: 2, state: "QUEUED", errorCategory: null }
+  };
+  const succeeded = {
+    ...queued,
+    state: "SUCCEEDED",
+    stateVersion: 11,
+    resultId: BACKTEST_SUMMARY.resultId,
+    terminalAt: "2026-08-25T00:00:03Z",
+    attempt: { ...queued.attempt, state: "SUCCEEDED" }
+  };
+  globalThis.window = {
+    v3ProductRuntime: {
+      async retryResearchBacktest(taskId) {
+        calls.push("retry");
+        assert.equal(taskId, failed.taskId);
+        return queued;
+      },
+      async getTask(taskId) { calls.push("task"); assert.equal(taskId, failed.taskId); return succeeded; },
+      async getTaskEvents() { calls.push("events"); return { highWatermark: 50, items: [] }; },
+      async getProjectHome() { calls.push("home"); return BACKTEST_HOME; },
+      async getLatestProductResultDetails() { calls.push("details"); return RESULT_DETAILS; }
+    }
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(IMPORT_BOUND_REFS);
+    useProductRuntime.setState({ dataHome: STRATEGY_HOME, backtestTask: failed, surface: "ERROR", errorMessage: "TRANSIENT_IO" });
+    await useProductRuntime.getState().retryResearchBacktest();
+    const state = useProductRuntime.getState();
+    assert.deepEqual(calls, ["retry", "events", "task", "events", "home", "details"]);
+    assert.equal(state.backtestTask.attempt.ordinal, 2);
+    assert.equal(state.backtestTask.state, "SUCCEEDED");
+    assert.equal(state.dataHome.backtest.resultState, "VALID");
+    assert.equal(state.latestProductResult.resultId, BACKTEST_SUMMARY.resultId);
+    assert.equal(state.errorMessage, null);
+
+    calls.length = 0;
+    useProductRuntime.setState({
+      backtestTask: { ...failed, attempt: { ...failed.attempt, errorCategory: "INVALID_ARGUMENT" } },
+      errorMessage: "INVALID_ARGUMENT"
+    });
+    await useProductRuntime.getState().retryResearchBacktest();
+    assert.deepEqual(calls, []);
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("ACC-C3-13 cold restart reconstructs the latest VALID Product Result without prior renderer cache", async () => {
+  resetStore();
+  const calls = [];
+  useProductRuntime.setState({ latestProductResult: { ...RESULT_DETAILS, resultId: "stale-renderer-cache" } });
+  globalThis.window = {
+    v3ProductRuntime: {
+      async getProductStatus() { calls.push("status"); return { ...STATUS, boundProject: IMPORT_BOUND_REFS }; },
+      async listBacktestRunSpecs() { calls.push("run-specs"); return { specs: [], hasMore: false, nextCursor: null }; },
+      async listTasks() { calls.push("tasks"); return { tasks: [], hasMore: false, nextCursor: null }; },
+      async getProjectHome() { calls.push("home"); return BACKTEST_HOME; },
+      async getLatestProductResultDetails() { calls.push("result-details"); return RESULT_DETAILS; }
+    }
+  };
+  try {
+    await useProductRuntime.getState().refresh();
+    const state = useProductRuntime.getState();
+    assert.equal(state.latestProductResult.resultId, BACKTEST_SUMMARY.resultId);
+    assert.notEqual(state.latestProductResult.resultId, "stale-renderer-cache");
+    assert.deepEqual(calls, ["status", "run-specs", "home", "result-details", "tasks"]);
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("ACC-C3-13 late Product Result from Project A is dropped after Project B activation", async () => {
+  resetStore();
+  let resolveDetails;
+  const delayedDetails = new Promise((resolve) => { resolveDetails = resolve; });
+  globalThis.window = {
+    v3ProductRuntime: {
+      async getLatestProductResultDetails() { return delayedDetails; }
+    }
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(IMPORT_BOUND_REFS);
+    useProductRuntime.setState({ dataHome: BACKTEST_HOME });
+    const pending = useProductRuntime.getState().loadLatestProductResult();
+    useProductRuntime.getState().activateProjectScope({
+      projectId: OTHER_PROJECT,
+      projectContextRevisionId: "pcr_other",
+      sessionId: "ses_other"
+    });
+    resolveDetails(RESULT_DETAILS);
+    await pending;
+    const state = useProductRuntime.getState();
+    assert.equal(state.projectScope.projectId, OTHER_PROJECT);
+    assert.equal(state.latestProductResult, null);
+    assert.equal(state.latestProductResultError, null);
     assert.equal(state.dataHome, null);
   } finally {
     delete globalThis.window;

@@ -18,7 +18,11 @@ from .model import (
     DrawdownEpisode,
     DrawdownRecoveryStatus,
     DrawdownSeriesRow,
+    ExposureSeriesRow,
+    MetricStatus,
     PeriodReturnRow,
+    PositionConcentrationSummary,
+    ProductBacktestResultAnalytics,
     RelativeReturnRow,
     ResultAnalyticsError,
     ResultAnalyticsPolicyVersion,
@@ -26,11 +30,14 @@ from .model import (
     SourceResultBinding,
     TurnoverAnalytics,
     _create_backtest_result_analytics,
+    _create_product_backtest_result_analytics,
     exact_decimal_text,
 )
 
 
 class DeterministicResultAnalyticsEngine:
+    product_engine_version = "v3.result_analytics_engine/1.1.0"
+
     def analyze(
         self,
         result: BacktestRunResult,
@@ -126,6 +133,114 @@ class DeterministicResultAnalyticsEngine:
             benchmark=benchmark_analytics,
             truth_admission=truth,
         )
+
+    def analyze_product_v1_1(
+        self,
+        result: BacktestRunResult,
+        source_binding: SourceResultBinding,
+        policy: ResultAnalyticsPolicyVersion,
+        benchmark: BenchmarkSeriesVersion | None = None,
+    ) -> ProductBacktestResultAnalytics:
+        """Derive the additive V1.1 product projection without changing V0 IDs."""
+
+        core = self.analyze(result, source_binding, policy, benchmark)
+        calmar = self._calmar(core, policy)
+        exposure_series, concentration = self._exposure_and_concentration(
+            result, policy
+        )
+        return _create_product_backtest_result_analytics(
+            engine_version=self.product_engine_version,
+            core=core,
+            calmar=calmar,
+            exposure_series=exposure_series,
+            concentration=concentration,
+            order_count=len(result.orders),
+            fill_count=len(result.fills),
+            diagnostic_count=len(result.diagnostics),
+            truth_admission=core.truth_admission,
+        )
+
+    def _calmar(
+        self,
+        core: BacktestResultAnalytics,
+        policy: ResultAnalyticsPolicyVersion,
+    ) -> AnalyticsMetric:
+        if core.annualized_return.status is not MetricStatus.AVAILABLE:
+            return core.annualized_return
+        if core.max_drawdown.status is not MetricStatus.AVAILABLE:
+            return core.max_drawdown
+        drawdown = abs(Decimal(core.max_drawdown.value))
+        if drawdown == 0:
+            return AnalyticsMetric.not_available("ZERO_DRAWDOWN")
+        return self._metric(Decimal(core.annualized_return.value) / drawdown, policy)
+
+    def _exposure_and_concentration(
+        self,
+        result: BacktestRunResult,
+        policy: ResultAnalyticsPolicyVersion,
+    ) -> tuple[tuple[ExposureSeriesRow, ...], PositionConcentrationSummary]:
+        nav_by_date = {row.session_date: row for row in result.nav}
+        holdings_by_date: dict[date, list[tuple[str, Decimal]]] = {
+            session_date: [] for session_date in nav_by_date
+        }
+        seen: set[tuple[date, str]] = set()
+        for holding in result.holdings:
+            key = (holding.session_date, holding.instrument_id)
+            if key in seen or holding.session_date not in nav_by_date:
+                raise ResultAnalyticsError("holding rows must be unique and NAV-bound")
+            seen.add(key)
+            raw_close = self._decimal(holding.raw_close, "holding raw_close", positive=True)
+            market_value = self._decimal(
+                holding.market_value, "holding market_value", non_negative=True
+            )
+            if holding.quantity <= 0 or market_value != raw_close * holding.quantity:
+                raise ResultAnalyticsError("holding quantity/value is inconsistent")
+            holdings_by_date[holding.session_date].append(
+                (holding.instrument_id, market_value)
+            )
+
+        exposure_rows: list[ExposureSeriesRow] = []
+        peak: tuple[Decimal, date, str] | None = None
+        counts: list[int] = []
+        for nav_row in result.nav:
+            nav = self._decimal(nav_row.nav, "NAV", positive=True)
+            expected_holdings = self._decimal(
+                nav_row.holdings_value, "NAV holdings_value", non_negative=True
+            )
+            rows = sorted(holdings_by_date[nav_row.session_date])
+            observed_holdings = sum((value for _, value in rows), Decimal(0))
+            if observed_holdings != expected_holdings:
+                raise ResultAnalyticsError("holding values do not reconcile to daily NAV")
+            gross = sum((abs(value) for _, value in rows), Decimal(0)) / nav
+            net = observed_holdings / nav
+            counts.append(len(rows))
+            exposure_rows.append(
+                ExposureSeriesRow(
+                    nav_row.session_date,
+                    self._metric(gross, policy),
+                    self._metric(net, policy),
+                    len(rows),
+                )
+            )
+            for instrument_id, value in rows:
+                candidate = (value / nav, nav_row.session_date, instrument_id)
+                if peak is None or candidate[0] > peak[0]:
+                    peak = candidate
+
+        concentration = PositionConcentrationSummary(
+            peak_single_position_weight=(
+                AnalyticsMetric.not_available("NO_POSITIONS")
+                if peak is None
+                else self._metric(peak[0], policy)
+            ),
+            peak_session_date=None if peak is None else peak[1],
+            peak_instrument_id=None if peak is None else peak[2],
+            average_held_instrument_count=self._metric(
+                Decimal(sum(counts)) / Decimal(len(counts)), policy
+            ),
+            maximum_held_instrument_count=max(counts, default=0),
+        )
+        return tuple(exposure_rows), concentration
 
     def assert_output(
         self,
@@ -392,8 +507,15 @@ class DeterministicResultAnalyticsEngine:
             consideration = self._decimal(
                 fill.consideration, "fill consideration", non_negative=True
             )
-            raw_price = self._decimal(fill.raw_price, "fill price", positive=True)
-            if fill.quantity <= 0 or consideration != raw_price * Decimal(fill.quantity):
+            execution_price = self._decimal(
+                fill.execution_price or fill.raw_price,
+                "fill execution price",
+                positive=True,
+            )
+            if (
+                fill.quantity <= 0
+                or consideration != execution_price * Decimal(fill.quantity)
+            ):
                 raise ResultAnalyticsError("fill consideration/quantity/price mismatch")
             trade_kind = LedgerKind.BUY if fill.side is Side.BUY else LedgerKind.SELL
             trade_entries = tuple(

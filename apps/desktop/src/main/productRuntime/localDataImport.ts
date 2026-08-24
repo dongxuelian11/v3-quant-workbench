@@ -48,6 +48,7 @@ interface OpenCapability {
   readonly mediaType: LocalDataMediaType;
   readonly byteSize: number;
   readonly identity: string;
+  readonly contentSha256: string;
   readonly handle: FileHandle;
   readonly expiresAt: number;
 }
@@ -67,6 +68,30 @@ function fileIdentity(value: BigIntStats): string {
   return [value.dev, value.ino, value.size, value.mtimeNs, value.ctimeNs]
     .map((part) => part.toString())
     .join(":");
+}
+
+async function hashOpenFile(handle: FileHandle, byteSize: number): Promise<string> {
+  const digest = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(Math.min(MAX_LOCAL_DATA_CHUNK_BYTES, byteSize));
+  let offset = 0;
+  while (offset < byteSize) {
+    const read = await handle.read(
+      buffer,
+      0,
+      Math.min(buffer.length, byteSize - offset),
+      offset
+    );
+    if (read.bytesRead < 1) {
+      throw sourceError("LOCAL_DATA_SOURCE_CHANGED", "本地数据源在内容校验期间提前结束");
+    }
+    digest.update(buffer.subarray(0, read.bytesRead));
+    offset += read.bytesRead;
+  }
+  const trailing = await handle.read(Buffer.alloc(1), 0, 1, offset);
+  if (trailing.bytesRead !== 0) {
+    throw sourceError("LOCAL_DATA_SOURCE_CHANGED", "本地数据源在内容校验期间增长");
+  }
+  return digest.digest("hex");
 }
 
 function mediaTypeForPath(path: string): LocalDataMediaType {
@@ -171,6 +196,7 @@ export class LocalDataSourceBroker {
       ) {
         throw sourceError("LOCAL_DATA_SOURCE_CHANGED", "本地数据源在安全打开期间发生变化");
       }
+      const contentSha256 = await hashOpenFile(handle, byteSize);
       const capabilityToken = this.tokenFactory();
       if (typeof capabilityToken !== "string" || capabilityToken.length < 16 || capabilityToken.length > 128 || this.capabilities.has(capabilityToken)) {
         throw sourceError("LOCAL_DATA_CAPABILITY_INVALID", "无法生成唯一的本地数据能力 token");
@@ -183,6 +209,7 @@ export class LocalDataSourceBroker {
         mediaType,
         byteSize,
         identity: fileIdentity(before),
+        contentSha256,
         handle,
         expiresAt: now + CAPABILITY_TTL_MS
       });
@@ -229,6 +256,9 @@ export class LocalDataSourceBroker {
       }
       if (!opened.isFile() || fileIdentity(opened) !== capability.identity) {
         throw sourceError("LOCAL_DATA_SOURCE_CHANGED", "已打开的本地数据源身份发生变化");
+      }
+      if (await hashOpenFile(capability.handle, capability.byteSize) !== capability.contentSha256) {
+        throw sourceError("LOCAL_DATA_SOURCE_CHANGED", "本地数据源内容在传输前发生变化");
       }
       const ready = requiredRecord(await control({
         kind: "localData.beginTransfer",
@@ -284,6 +314,9 @@ export class LocalDataSourceBroker {
         throw sourceError("LOCAL_DATA_SOURCE_CHANGED", "本地数据源超过选择时声明的大小");
       }
       const expectedSha256 = digest.digest("hex");
+      if (expectedSha256 !== capability.contentSha256) {
+        throw sourceError("LOCAL_DATA_SOURCE_CHANGED", "本地数据源内容在传输期间发生变化");
+      }
       const published = requiredRecord(await control({
         kind: "localData.finishTransfer",
         protocol_version: LOCAL_DATA_TRANSFER_PROTOCOL,

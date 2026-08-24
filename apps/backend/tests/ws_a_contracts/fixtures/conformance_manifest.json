@@ -2,7 +2,7 @@
   "schema_id": "urn:v3:ws-a:contract-conformance-fixtures:1.0.0",
   "source_package": "V3_OSS_REBUILD_BR1_WS_A_CONTRACTS_FOUNDATION_SOL_HIGH_01_TASK_PACKAGE_V1_0",
   "service_count": 18,
-  "operation_count": 69,
+  "operation_count": 74,
   "files": [
     {
       "path": "00_SOURCE_AUTHORITY_DIGESTS.json",
@@ -46,8 +46,8 @@
     },
     {
       "path": "asl/index.json",
-      "bytes": 7188,
-      "sha256": "552659cecc68b0df74afa063f0253f0855dce4a2809c4dd8a9debf040b4fa908"
+      "bytes": 7420,
+      "sha256": "059da2170ad69d2c5d2f2ac738072d490063754cd73e30143169fab96a26e00c"
     },
     {
       "path": "asl/instrument.contract.json",
@@ -111,8 +111,8 @@
     },
     {
       "path": "asl/product_entry.contract.json",
-      "bytes": 86042,
-      "sha256": "114349a932be7722102a600a064400863bfaf7d135fa3cc8162095a9a292b3e1"
+      "bytes": 129825,
+      "sha256": "bba81358587da4fdbdc7ad5d5a9bdd3f7261e1fbb8abf8226a237e6b66357d85"
     }
   ]
 }

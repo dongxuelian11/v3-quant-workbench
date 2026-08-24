@@ -3,16 +3,30 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
   ArtifactDescriptorView,
+  ArtifactStreamBytesView,
   ArtifactStreamTicketView,
   BacktestSubmitOutcomeView,
   ImportResearchPackageOutcomeView,
   LocalDataSourceSelectionView,
   ProductLocalDataImportIntent,
   ProductLocalDataImportOutcomeView,
+  ProductLatestResultDetailsView,
+  ProductArtifactExportIntent,
+  ProductArtifactExportOutcomeView,
   ProductFactorStudyIntent,
   ProductFactorStudyOutcomeView,
   ProductFactorSummaryView,
   ProductProjectHomeView,
+  ProductResearchBacktestIntent,
+  ProductResearchBacktestOutcomeView,
+  ProductResearchBacktestPreviewView,
+  ProductResearchStrategyIntent,
+  ProductResearchStrategyOutcomeView,
+  ProductResearchStrategyPreviewView,
+  ProductStrategyAuthoringProfileView,
+  ProductStrategyProfileRefsView,
+  ProductStrategySummaryView,
+  ProductBacktestSummaryView,
   ProductResearchSubmitIntent,
   ProductResearchSubmitOutcomeView,
   ProductBindingRefs,
@@ -59,6 +73,7 @@ import {
   runCreateProjectIntent,
 } from "./createProjectIntentStore";
 import { LocalDataSourceBroker } from "./localDataImport";
+import { ArtifactExportBroker } from "./artifactExport";
 import transportContract from "../../../../../packages/contracts/research_package_transport_v1.json";
 
 /**
@@ -76,6 +91,8 @@ const ARTIFACT_ID_PATTERN = /^art_sha256_[0-9a-f]{64}$/;
 const CONTENT_SHA_PATTERN = /^[0-9a-f]{64}$/;
 const PROJECT_ID_PATTERN = /^prj_[0-9A-HJKMNP-TV-Z]{26}$/;
 const PROJECT_CONTEXT_REVISION_PATTERN = /^pcr_[0-9A-HJKMNP-TV-Z]{26}$/;
+const TASK_ID_PATTERN = /^tsk_[0-9A-HJKMNP-TV-Z]{26}$/;
+const RUN_ID_PATTERN = /^run_[0-9A-HJKMNP-TV-Z]{26}$/;
 const CANONICAL_ID_PATTERN = /^[A-Za-z0-9_\-]{1,200}$/;
 const PROJECT_LOCATOR_PREFIX = "v3:";
 const PRODUCT_ENTRY_PROTOCOL_VERSION = "v3.product-entry/1.0.0";
@@ -92,6 +109,14 @@ const MAX_PRODUCT_PAGE_SIZE = 100;
 const PRODUCT_CURSOR_VERSION = 1;
 const PROJECT_CURSOR_SORT = "project_id ASC";
 const RUN_SPEC_CURSOR_SORT = "artifact_id ASC";
+const PRODUCT_RESEARCH_BACKTEST_OPERATION = "ProductEntryService.v1.submitResearchBacktest";
+const RETRYABLE_PRODUCT_TASK_CATEGORIES = new Set([
+  "TRANSIENT_IO",
+  "WORKER_LOST",
+  "PROVIDER_THROTTLED",
+  "RETRYABLE_ADAPTER",
+  "WORKER_OOM"
+]);
 
 type ProductCursorPayload =
   | {
@@ -186,6 +211,47 @@ function assertLocalDataImportIntent(request: ProductLocalDataImportIntent): voi
   if (request.amountUnit !== "CNY" || request.timezone !== "Asia/Shanghai" || request.adjustment !== "UNADJUSTED") {
     throw new ProductAdapterError("INVALID_ARGUMENT", "local-data amount/timezone/adjustment semantics are not admitted");
   }
+}
+
+function assertArtifactExportIntent(request: ProductArtifactExportIntent): void {
+  if (request === null || typeof request !== "object" || Array.isArray(request)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "artifact export intent must be an object");
+  }
+  if (Object.keys(request).sort().join(",") !== "artifactId,suggestedName") {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "artifact export intent fields do not match the closed shape");
+  }
+  if (!ARTIFACT_ID_PATTERN.test(request.artifactId)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "artifactId must be a canonical Artifact identity");
+  }
+  if (typeof request.suggestedName !== "string" || request.suggestedName.length < 1 || request.suggestedName.length > 255) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "suggestedName must be a bounded filename");
+  }
+}
+
+function adaptArtifactExportAccepted(value: unknown): { taskId: string; runId: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "artifact export acceptance is not an object");
+  }
+  const record = value as Record<string, unknown>;
+  const allowed = new Set(["request_id", "task_id", "run_id", "accepted_state", "event_cursor"]);
+  if (Object.keys(record).some((key) => !allowed.has(key)) || record.accepted_state !== "QUEUED") {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "artifact export acceptance fields are invalid");
+  }
+  if (typeof record.task_id !== "string" || !TASK_ID_PATTERN.test(record.task_id)
+    || typeof record.run_id !== "string" || !RUN_ID_PATTERN.test(record.run_id)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "artifact export acceptance identities are invalid");
+  }
+  if (record.event_cursor !== undefined && (!Number.isSafeInteger(record.event_cursor) || Number(record.event_cursor) < 1)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "artifact export event cursor is invalid");
+  }
+  return { taskId: record.task_id, runId: record.run_id };
+}
+
+function exportFailureReason(error: unknown): string {
+  const code = error !== null && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "ARTIFACT_EXPORT_FAILED";
+  return /^[A-Z][A-Z0-9_]{0,127}$/.test(code) ? code : "ARTIFACT_EXPORT_FAILED";
 }
 
 function adaptLocalDataImportOutcome(response: unknown): ProductLocalDataImportOutcomeView {
@@ -305,6 +371,207 @@ function adaptFactorStudyOutcome(response: unknown): ProductFactorStudyOutcomeVi
     formulaDocumentVersionId: model.formula_document_version_id,
     analysisOutputName: model.analysis_output_name,
     ...(model.event_cursor === undefined ? {} : { eventCursor: Number(model.event_cursor) })
+  });
+}
+
+function assertResearchStrategyIntent(request: ProductResearchStrategyIntent): void {
+  if (request === null || typeof request !== "object" || Array.isArray(request)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Strategy intent must be an object");
+  }
+  const keys = [
+    "assumptionProfileId", "entrySignalFactorVersionId", "exitSignalFactorVersionId",
+    "grossExposure", "initialCash", "maxPositions", "positionSizing"
+  ];
+  if (Object.keys(request).sort().join(",") !== keys.sort().join(",")) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Strategy intent fields do not match the closed shape");
+  }
+  if (!/^fdv_sha256_[0-9a-f]{64}$/.test(request.entrySignalFactorVersionId)
+    || !/^fdv_sha256_[0-9a-f]{64}$/.test(request.exitSignalFactorVersionId)
+    || !/^assumption_sha256_[0-9a-f]{64}$/.test(request.assumptionProfileId)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Strategy Factor refs are not canonical");
+  }
+  if (!['SINGLE_ASSET_FULL_WEIGHT', 'EQUAL_WEIGHT_ACTIVE_SIGNALS'].includes(request.positionSizing)
+    || !Number.isInteger(request.maxPositions) || request.maxPositions < 1 || request.maxPositions > 20
+    || (request.positionSizing === "SINGLE_ASSET_FULL_WEIGHT" && request.maxPositions !== 1)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Strategy sizing is outside the admitted profile");
+  }
+  if (!/^(?:0(?:\.[0-9]+)?|1(?:\.0+)?)$/.test(request.grossExposure)
+    || !/^(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9][0-9]*)$/.test(request.initialCash)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Strategy exposure or initial cash is not canonical decimal text");
+  }
+}
+
+function assertResearchBacktestIntent(request: ProductResearchBacktestIntent): void {
+  if (request === null || typeof request !== "object" || Array.isArray(request)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Backtest intent must be an object");
+  }
+  if (Object.keys(request).sort().join(",") !== "dailyVolumeParticipationRate,sessionEnd,sessionStart,slippageBps") {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Backtest intent fields do not match the closed shape");
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(request.sessionStart)
+    || !/^\d{4}-\d{2}-\d{2}$/.test(request.sessionEnd)
+    || request.sessionEnd < request.sessionStart) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Backtest session range is invalid");
+  }
+  const decimal = /^(?:0\.[0-9]*[1-9][0-9]*|[1-9][0-9]*(?:\.[0-9]+)?)$/;
+  if (!decimal.test(request.slippageBps) || Number(request.slippageBps) > 10_000
+    || !decimal.test(request.dailyVolumeParticipationRate) || Number(request.dailyVolumeParticipationRate) > 1) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Backtest execution profile is outside the admitted range");
+  }
+}
+
+function adaptQueuedC3Outcome(
+  response: unknown,
+  schemaVersion: "v3.product-entry-research-strategy/1.1" | "v3.product-entry-research-backtest/1.1",
+  identityKey: "research_strategy_spec_id" | "research_backtest_request_id"
+): Readonly<Record<string, unknown>> {
+  if (response === null || typeof response !== "object" || Array.isArray(response)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "product C3 submission returned a non-object response");
+  }
+  const top = response as Record<string, unknown>;
+  if (top.truth_state !== "NOT_FORMAL" || top.read_model === null || typeof top.read_model !== "object" || Array.isArray(top.read_model)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "product C3 submission truth or read model is invalid");
+  }
+  const model = top.read_model as Record<string, unknown>;
+  const required = [
+    "accepted_state", "admission", "checkpoint_resume", identityKey, "maturity",
+    "read_model_version", "retry", "run_id", "task_id", "truth"
+  ];
+  const allowed = new Set([...required, "event_cursor"]);
+  if (
+    required.some((key) => !(key in model)) || Object.keys(model).some((key) => !allowed.has(key))
+    || model.read_model_version !== schemaVersion || model.accepted_state !== "QUEUED"
+    || model.maturity !== "PRODUCT_CONNECTED" || model.truth !== "NOT_FORMAL" || model.admission !== "PRE_ALPHA"
+    || model.checkpoint_resume !== "UNAVAILABLE" || model.retry !== "NEW_ATTEMPT_SAME_RUN_FROM_START"
+    || typeof model.task_id !== "string" || !CANONICAL_ID_PATTERN.test(model.task_id)
+    || typeof model.run_id !== "string" || !CANONICAL_ID_PATTERN.test(model.run_id)
+    || typeof model[identityKey] !== "string" || !CANONICAL_ID_PATTERN.test(model[identityKey])
+    || (model.event_cursor !== undefined && (!Number.isSafeInteger(model.event_cursor) || Number(model.event_cursor) < 1))
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "product C3 submission identity or truth drifted");
+  }
+  return model;
+}
+
+function adaptResearchStrategyOutcome(response: unknown): ProductResearchStrategyOutcomeView {
+  const model = adaptQueuedC3Outcome(response, "v3.product-entry-research-strategy/1.1", "research_strategy_spec_id");
+  return Object.freeze({
+    taskId: model.task_id as string, runId: model.run_id as string, acceptedState: "QUEUED",
+    maturity: "PRODUCT_CONNECTED", truth: "NOT_FORMAL", admission: "PRE_ALPHA",
+    checkpointResume: "UNAVAILABLE", retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
+    researchStrategySpecId: model.research_strategy_spec_id as string,
+    ...(model.event_cursor === undefined ? {} : { eventCursor: Number(model.event_cursor) })
+  });
+}
+
+function adaptResearchStrategyPreview(response: unknown): ProductResearchStrategyPreviewView {
+  const top = closedRecord(response, ["read_model", "request_id", "truth_state"], "Strategy preview response");
+  if (top.truth_state !== "NOT_FORMAL") {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy preview truth drifted");
+  }
+  const model = closedRecord(top.read_model, [
+    "admission", "assumption_mode", "entry_signal_factor_version_id", "exit_signal_factor_version_id",
+    "maturity", "planned_decision_chain_count", "profile_refs", "project_context_revision_id",
+    "project_id", "research_strategy_spec_id", "schema_version", "side_effects", "snapshot_id",
+    "strategy_definition_version_id", "transition_count", "truth", "universe_version_id"
+  ], "Strategy preview");
+  if (
+    model.schema_version !== "v3.product-strategy-preview/1.0.0"
+    || model.maturity !== "PRODUCT_CONNECTED" || model.truth !== "NOT_FORMAL" || model.admission !== "PRE_ALPHA"
+    || model.side_effects !== "NONE"
+    || typeof model.project_id !== "string" || !PROJECT_ID_PATTERN.test(model.project_id)
+    || typeof model.project_context_revision_id !== "string" || !PROJECT_CONTEXT_REVISION_PATTERN.test(model.project_context_revision_id)
+    || typeof model.snapshot_id !== "string" || !CANONICAL_ID_PATTERN.test(model.snapshot_id)
+    || typeof model.universe_version_id !== "string" || !CANONICAL_ID_PATTERN.test(model.universe_version_id)
+    || typeof model.research_strategy_spec_id !== "string" || !/^rssv_sha256_[0-9a-f]{64}$/.test(model.research_strategy_spec_id)
+    || typeof model.strategy_definition_version_id !== "string" || !/^sdv_sha256_[0-9a-f]{64}$/.test(model.strategy_definition_version_id)
+    || typeof model.entry_signal_factor_version_id !== "string" || !CANONICAL_ID_PATTERN.test(model.entry_signal_factor_version_id)
+    || typeof model.exit_signal_factor_version_id !== "string" || !CANONICAL_ID_PATTERN.test(model.exit_signal_factor_version_id)
+    || (model.assumption_mode !== "RESEARCH_APPROXIMATE" && model.assumption_mode !== "STRICT_FAIL_CLOSED")
+    || !Number.isSafeInteger(model.transition_count) || Number(model.transition_count) < 0
+    || !Number.isSafeInteger(model.planned_decision_chain_count) || Number(model.planned_decision_chain_count) < 0
+    || model.transition_count !== model.planned_decision_chain_count
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy preview identity or counts drifted");
+  }
+  return Object.freeze({
+    schemaVersion: "v3.product-strategy-preview/1.0.0",
+    maturity: "PRODUCT_CONNECTED",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    projectId: model.project_id,
+    projectContextRevisionId: model.project_context_revision_id,
+    snapshotId: model.snapshot_id,
+    universeVersionId: model.universe_version_id,
+    researchStrategySpecId: model.research_strategy_spec_id,
+    strategyDefinitionVersionId: model.strategy_definition_version_id,
+    entrySignalFactorVersionId: model.entry_signal_factor_version_id,
+    exitSignalFactorVersionId: model.exit_signal_factor_version_id,
+    profileRefs: adaptStrategyProfileRefs(model.profile_refs, "Strategy preview"),
+    assumptionMode: model.assumption_mode,
+    transitionCount: Number(model.transition_count),
+    plannedDecisionChainCount: Number(model.planned_decision_chain_count),
+    sideEffects: "NONE"
+  });
+}
+
+function adaptResearchBacktestOutcome(response: unknown): ProductResearchBacktestOutcomeView {
+  const model = adaptQueuedC3Outcome(response, "v3.product-entry-research-backtest/1.1", "research_backtest_request_id");
+  return Object.freeze({
+    taskId: model.task_id as string, runId: model.run_id as string, acceptedState: "QUEUED",
+    maturity: "PRODUCT_CONNECTED", truth: "NOT_FORMAL", admission: "PRE_ALPHA",
+    checkpointResume: "UNAVAILABLE", retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
+    researchBacktestRequestId: model.research_backtest_request_id as string,
+    ...(model.event_cursor === undefined ? {} : { eventCursor: Number(model.event_cursor) })
+  });
+}
+
+function adaptResearchBacktestPreview(response: unknown): ProductResearchBacktestPreviewView {
+  const top = closedRecord(response, ["read_model", "request_id", "truth_state"], "Backtest preflight response");
+  if (top.truth_state !== "NOT_FORMAL") throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Backtest preflight truth drifted");
+  const model = closedRecord(top.read_model, [
+    "admission", "assumption_mode", "commission_rate", "daily_volume_participation_rate",
+    "maturity", "minimum_commission_cny", "policy_refs", "project_context_revision_id",
+    "project_id", "research_backtest_request_id", "research_strategy_spec_id", "resource_estimate",
+    "schema_version", "session_end", "session_start", "side_effects", "slippage_bps", "snapshot_id",
+    "stamp_duty_sell_rate", "status", "truth", "universe_version_id"
+  ], "Backtest preflight");
+  const policies = closedRecord(model.policy_refs, ["cost_policy_id", "execution_timing_profile_id", "risk_policy_set_version_id", "rule_profile_id"], "Backtest preflight policies");
+  const resource = closedRecord(model.resource_estimate, ["checkpoint_resume", "cpu_slots", "memory_limit_bytes", "resource_class", "scratch_limit_bytes"], "Backtest preflight resource estimate");
+  if (
+    model.schema_version !== "v3.product-backtest-preflight/1.0.0" || model.maturity !== "PRODUCT_CONNECTED"
+    || model.truth !== "NOT_FORMAL" || model.admission !== "PRE_ALPHA" || model.status !== "PASS" || model.side_effects !== "NONE"
+    || typeof model.project_id !== "string" || !PROJECT_ID_PATTERN.test(model.project_id)
+    || typeof model.project_context_revision_id !== "string" || !PROJECT_CONTEXT_REVISION_PATTERN.test(model.project_context_revision_id)
+    || typeof model.research_strategy_spec_id !== "string" || !/^rssv_sha256_[0-9a-f]{64}$/.test(model.research_strategy_spec_id)
+    || typeof model.research_backtest_request_id !== "string" || !CANONICAL_ID_PATTERN.test(model.research_backtest_request_id)
+    || typeof model.snapshot_id !== "string" || !CANONICAL_ID_PATTERN.test(model.snapshot_id)
+    || typeof model.universe_version_id !== "string" || !CANONICAL_ID_PATTERN.test(model.universe_version_id)
+    || typeof model.session_start !== "string" || typeof model.session_end !== "string" || model.session_end < model.session_start
+    || (model.assumption_mode !== "RESEARCH_APPROXIMATE" && model.assumption_mode !== "STRICT_FAIL_CLOSED")
+    || typeof policies.rule_profile_id !== "string" || !/^atrp_sha256_[0-9a-f]{64}$/.test(policies.rule_profile_id)
+    || typeof policies.cost_policy_id !== "string" || !/^cost_sha256_[0-9a-f]{64}$/.test(policies.cost_policy_id)
+    || typeof policies.execution_timing_profile_id !== "string" || !/^timing_sha256_[0-9a-f]{64}$/.test(policies.execution_timing_profile_id)
+    || typeof policies.risk_policy_set_version_id !== "string" || !CANONICAL_ID_PATTERN.test(policies.risk_policy_set_version_id)
+    || resource.resource_class !== "PRODUCT_BACKTEST_CPU" || resource.cpu_slots !== 1
+    || resource.memory_limit_bytes !== 1_073_741_824 || resource.scratch_limit_bytes !== 1_073_741_824
+    || resource.checkpoint_resume !== "UNAVAILABLE"
+  ) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Backtest preflight binding drifted");
+  return Object.freeze({
+    schemaVersion: "v3.product-backtest-preflight/1.0.0", maturity: "PRODUCT_CONNECTED", truth: "NOT_FORMAL", admission: "PRE_ALPHA", status: "PASS",
+    projectId: model.project_id, projectContextRevisionId: model.project_context_revision_id,
+    researchStrategySpecId: model.research_strategy_spec_id, researchBacktestRequestId: model.research_backtest_request_id,
+    snapshotId: model.snapshot_id, universeVersionId: model.universe_version_id,
+    sessionStart: model.session_start, sessionEnd: model.session_end,
+    slippageBps: decimalText(model.slippage_bps, "preflight.slippage_bps"),
+    dailyVolumeParticipationRate: decimalText(model.daily_volume_participation_rate, "preflight.daily_volume_participation_rate"),
+    commissionRate: decimalText(model.commission_rate, "preflight.commission_rate"),
+    minimumCommissionCny: decimalText(model.minimum_commission_cny, "preflight.minimum_commission_cny"),
+    stampDutySellRate: decimalText(model.stamp_duty_sell_rate, "preflight.stamp_duty_sell_rate"),
+    assumptionMode: model.assumption_mode,
+    policyRefs: Object.freeze({ ruleProfileId: policies.rule_profile_id, costPolicyId: policies.cost_policy_id, executionTimingProfileId: policies.execution_timing_profile_id, riskPolicySetVersionId: policies.risk_policy_set_version_id }),
+    resourceEstimate: Object.freeze({ resourceClass: "PRODUCT_BACKTEST_CPU", cpuSlots: 1, memoryLimitBytes: 1_073_741_824, scratchLimitBytes: 1_073_741_824, checkpointResume: "UNAVAILABLE" }),
+    sideEffects: "NONE"
   });
 }
 
@@ -541,6 +808,688 @@ function adaptProjectFactor(value: unknown, projectId: string, contextId: string
   });
 }
 
+function adaptStrategyProfileRefs(value: unknown, label: string): ProductStrategyProfileRefsView {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", `${label} profile refs are invalid`);
+  }
+  const refs = value as Record<string, unknown>;
+  if (
+    Object.keys(refs).sort().join(",") !== "assumption_profile_id,cost_policy_version_id,execution_policy_version_id,risk_policy_set_version_id"
+    || typeof refs.cost_policy_version_id !== "string" || !/^cost_sha256_[0-9a-f]{64}$/.test(refs.cost_policy_version_id)
+    || typeof refs.execution_policy_version_id !== "string" || !/^timing_sha256_[0-9a-f]{64}$/.test(refs.execution_policy_version_id)
+    || typeof refs.risk_policy_set_version_id !== "string" || !/^rpsv_sha256_[0-9a-f]{64}$/.test(refs.risk_policy_set_version_id)
+    || typeof refs.assumption_profile_id !== "string" || !/^assumption_sha256_[0-9a-f]{64}$/.test(refs.assumption_profile_id)
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", `${label} profile refs drifted`);
+  }
+  return Object.freeze({
+    costPolicyVersionId: refs.cost_policy_version_id,
+    executionPolicyVersionId: refs.execution_policy_version_id,
+    riskPolicySetVersionId: refs.risk_policy_set_version_id,
+    assumptionProfileId: refs.assumption_profile_id
+  });
+}
+
+function adaptStrategyAuthoringProfile(value: unknown): ProductStrategyAuthoringProfileView {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy authoring profile is absent");
+  }
+  const profile = value as Record<string, unknown>;
+  const keys = [
+    "admission", "assumption_profiles", "gross_exposure_max", "gross_exposure_min", "max_positions_max",
+    "max_positions_min", "position_sizing_options", "profile_refs", "rebalance",
+    "schema_version", "truth"
+  ];
+  if (
+    Object.keys(profile).sort().join(",") !== keys.sort().join(",")
+    || profile.schema_version !== "v3.product-strategy-authoring-profile/1.0.0"
+    || profile.truth !== "NOT_FORMAL" || profile.admission !== "PRE_ALPHA"
+    || !Array.isArray(profile.position_sizing_options)
+    || profile.position_sizing_options.length !== 2
+    || profile.position_sizing_options[0] !== "SINGLE_ASSET_FULL_WEIGHT"
+    || profile.position_sizing_options[1] !== "EQUAL_WEIGHT_ACTIVE_SIGNALS"
+    || profile.max_positions_min !== 1 || profile.max_positions_max !== 20
+    || profile.gross_exposure_min !== "0" || profile.gross_exposure_max !== "1"
+    || profile.rebalance !== "NEXT_OPEN_AFTER_SIGNAL"
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy authoring profile drifted");
+  }
+  if (!Array.isArray(profile.assumption_profiles) || profile.assumption_profiles.length !== 2) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy assumption profiles are absent");
+  }
+  const assumptionProfiles = profile.assumption_profiles.map((value, index) => {
+    const item = closedRecord(
+      value,
+      ["assumption_profile_id", "mode"],
+      `strategy_assumption_profiles[${index}]`
+    );
+    if ((item.mode !== "RESEARCH_APPROXIMATE" && item.mode !== "STRICT_FAIL_CLOSED")
+      || typeof item.assumption_profile_id !== "string"
+      || !/^assumption_sha256_[0-9a-f]{64}$/.test(item.assumption_profile_id)) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy assumption profile drifted");
+    }
+    return Object.freeze({
+      mode: item.mode,
+      assumptionProfileId: item.assumption_profile_id
+    });
+  });
+  if (new Set(assumptionProfiles.map((item) => item.mode)).size !== 2
+    || new Set(assumptionProfiles.map((item) => item.assumptionProfileId)).size !== 2) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy assumption profiles are not unique");
+  }
+  const refs = adaptStrategyProfileRefs(profile.profile_refs, "authoring");
+  if (!assumptionProfiles.some((item) => item.mode === "RESEARCH_APPROXIMATE"
+    && item.assumptionProfileId === refs.assumptionProfileId)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Default assumption profile is not RESEARCH_APPROXIMATE");
+  }
+  return Object.freeze({
+    schemaVersion: "v3.product-strategy-authoring-profile/1.0.0",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    positionSizingOptions: Object.freeze([
+      "SINGLE_ASSET_FULL_WEIGHT" as const,
+      "EQUAL_WEIGHT_ACTIVE_SIGNALS" as const
+    ]),
+    maxPositionsMin: 1,
+    maxPositionsMax: 20,
+    grossExposureMin: "0",
+    grossExposureMax: "1",
+    rebalance: "NEXT_OPEN_AFTER_SIGNAL",
+    profileRefs: refs,
+    assumptionProfiles: Object.freeze(assumptionProfiles)
+  });
+}
+
+function adaptProjectStrategy(
+  value: unknown,
+  projectId: string,
+  contextId: string,
+  profile: ProductStrategyAuthoringProfileView
+): ProductStrategySummaryView {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "available Strategy summary is absent");
+  }
+  const strategy = value as Record<string, unknown>;
+  const keys = [
+    "admission", "decision_chain_count", "entry_signal_factor_version_id",
+    "exit_signal_factor_version_id", "profile_refs", "project_context_revision_id",
+    "project_id", "research_strategy_spec_id", "schema_version", "snapshot_id",
+    "strategy_version_id", "transition_count", "truth", "universe_version_id"
+  ];
+  const refs = adaptStrategyProfileRefs(strategy.profile_refs, "Strategy");
+  if (
+    Object.keys(strategy).sort().join(",") !== keys.sort().join(",")
+    || strategy.schema_version !== "v3.project-strategy-summary/1.0.0"
+    || strategy.truth !== "NOT_FORMAL" || strategy.admission !== "PRE_ALPHA"
+    || strategy.project_id !== projectId || strategy.project_context_revision_id !== contextId
+    || typeof strategy.snapshot_id !== "string" || !CANONICAL_ID_PATTERN.test(strategy.snapshot_id)
+    || typeof strategy.universe_version_id !== "string" || !/^unv_sha256_[0-9a-f]{64}$/.test(strategy.universe_version_id)
+    || typeof strategy.research_strategy_spec_id !== "string" || !/^rssv_sha256_[0-9a-f]{64}$/.test(strategy.research_strategy_spec_id)
+    || typeof strategy.strategy_version_id !== "string" || !CANONICAL_ID_PATTERN.test(strategy.strategy_version_id)
+    || typeof strategy.entry_signal_factor_version_id !== "string" || !/^fdv_sha256_[0-9a-f]{64}$/.test(strategy.entry_signal_factor_version_id)
+    || typeof strategy.exit_signal_factor_version_id !== "string" || !/^fdv_sha256_[0-9a-f]{64}$/.test(strategy.exit_signal_factor_version_id)
+    || !Number.isSafeInteger(strategy.transition_count) || Number(strategy.transition_count) < 0 || Number(strategy.transition_count) > 3_000
+    || !Number.isSafeInteger(strategy.decision_chain_count) || Number(strategy.decision_chain_count) < 0 || Number(strategy.decision_chain_count) > 3_000
+    || refs.costPolicyVersionId !== profile.profileRefs.costPolicyVersionId
+    || refs.executionPolicyVersionId !== profile.profileRefs.executionPolicyVersionId
+    || refs.riskPolicySetVersionId !== profile.profileRefs.riskPolicySetVersionId
+    || !profile.assumptionProfiles.some(
+      (item) => item.assumptionProfileId === refs.assumptionProfileId
+    )
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy summary identity or authority drifted");
+  }
+  return Object.freeze({
+    schemaVersion: "v3.project-strategy-summary/1.0.0",
+    truth: "NOT_FORMAL", admission: "PRE_ALPHA", projectId, projectContextRevisionId: contextId,
+    snapshotId: strategy.snapshot_id, universeVersionId: strategy.universe_version_id,
+    researchStrategySpecId: strategy.research_strategy_spec_id,
+    strategyVersionId: strategy.strategy_version_id,
+    entrySignalFactorVersionId: strategy.entry_signal_factor_version_id,
+    exitSignalFactorVersionId: strategy.exit_signal_factor_version_id,
+    profileRefs: refs,
+    transitionCount: Number(strategy.transition_count),
+    decisionChainCount: Number(strategy.decision_chain_count)
+  });
+}
+
+function adaptProjectBacktest(
+  value: unknown,
+  projectId: string,
+  contextId: string,
+  strategy: ProductStrategySummaryView,
+  profile: ProductStrategyAuthoringProfileView
+): ProductBacktestSummaryView {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "available Backtest summary is absent");
+  }
+  const item = value as Record<string, unknown>;
+  const keys = [
+    "admission", "analytics_artifact_id", "analytics_id", "assumption_mode", "backtest_result_id",
+    "diagnostic_count", "engine_version", "fill_count", "first_effective_session_date",
+    "fills_export_artifact_id", "first_fill_session_date", "lineage_artifact_id", "maturity", "order_count",
+    "orders_export_artifact_id",
+    "project_context_revision_id", "project_id", "research_backtest_request_id",
+    "research_strategy_spec_id", "result_artifact_id", "result_id", "result_lineage_id",
+    "result_state", "run_id", "run_spec_id", "schema_version", "snapshot_id",
+    "summary_export_artifact_id", "truth", "universe_version_id"
+  ];
+  const dateOrNull = (candidate: unknown): boolean => candidate === null
+    || (typeof candidate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(candidate));
+  if (
+    Object.keys(item).sort().join(",") !== keys.sort().join(",")
+    || item.schema_version !== "v3.project-backtest-summary/1.0.0"
+    || item.maturity !== "PRODUCT_CONNECTED" || item.truth !== "NOT_FORMAL" || item.admission !== "PRE_ALPHA"
+    || item.project_id !== projectId || item.project_context_revision_id !== contextId
+    || item.research_strategy_spec_id !== strategy.researchStrategySpecId
+    || item.snapshot_id !== strategy.snapshotId || item.universe_version_id !== strategy.universeVersionId
+    || typeof item.research_backtest_request_id !== "string" || !CANONICAL_ID_PATTERN.test(item.research_backtest_request_id)
+    || typeof item.run_id !== "string" || !RUN_ID_PATTERN.test(item.run_id)
+    || typeof item.run_spec_id !== "string" || !RUN_SPEC_ID_PATTERN.test(item.run_spec_id)
+    || typeof item.result_id !== "string" || !CANONICAL_ID_PATTERN.test(item.result_id)
+    || typeof item.backtest_result_id !== "string" || !CANONICAL_ID_PATTERN.test(item.backtest_result_id)
+    || typeof item.result_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(item.result_artifact_id)
+    || typeof item.analytics_id !== "string" || !CANONICAL_ID_PATTERN.test(item.analytics_id)
+    || typeof item.analytics_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(item.analytics_artifact_id)
+    || typeof item.summary_export_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(item.summary_export_artifact_id)
+    || typeof item.orders_export_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(item.orders_export_artifact_id)
+    || typeof item.fills_export_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(item.fills_export_artifact_id)
+    || typeof item.result_lineage_id !== "string" || !CANONICAL_ID_PATTERN.test(item.result_lineage_id)
+    || typeof item.lineage_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(item.lineage_artifact_id)
+    || item.result_state !== "VALID"
+    || (item.assumption_mode !== "RESEARCH_APPROXIMATE" && item.assumption_mode !== "STRICT_FAIL_CLOSED")
+    || !profile.assumptionProfiles.some((candidate) =>
+      candidate.mode === item.assumption_mode
+      && candidate.assumptionProfileId === strategy.profileRefs.assumptionProfileId
+    )
+    || typeof item.engine_version !== "string" || item.engine_version.length < 1 || item.engine_version.length > 200
+    || !Number.isSafeInteger(item.order_count) || Number(item.order_count) < 0 || Number(item.order_count) > 2_000_000
+    || !Number.isSafeInteger(item.fill_count) || Number(item.fill_count) < 0 || Number(item.fill_count) > 2_000_000
+    || !Number.isSafeInteger(item.diagnostic_count) || Number(item.diagnostic_count) < 0 || Number(item.diagnostic_count) > 2_000_000
+    || !dateOrNull(item.first_fill_session_date) || !dateOrNull(item.first_effective_session_date)
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Backtest summary identity or truth drifted");
+  }
+  return Object.freeze({
+    schemaVersion: "v3.project-backtest-summary/1.0.0",
+    maturity: "PRODUCT_CONNECTED", truth: "NOT_FORMAL", admission: "PRE_ALPHA",
+    projectId, projectContextRevisionId: contextId,
+    researchBacktestRequestId: item.research_backtest_request_id,
+    researchStrategySpecId: item.research_strategy_spec_id,
+    snapshotId: item.snapshot_id, universeVersionId: item.universe_version_id,
+    runId: item.run_id, runSpecId: item.run_spec_id, resultId: item.result_id,
+    backtestResultId: item.backtest_result_id, resultArtifactId: item.result_artifact_id,
+    analyticsId: item.analytics_id, analyticsArtifactId: item.analytics_artifact_id,
+    summaryExportArtifactId: item.summary_export_artifact_id,
+    ordersExportArtifactId: item.orders_export_artifact_id,
+    fillsExportArtifactId: item.fills_export_artifact_id,
+    resultLineageId: item.result_lineage_id, lineageArtifactId: item.lineage_artifact_id,
+    resultState: "VALID", engineVersion: item.engine_version,
+    orderCount: Number(item.order_count), fillCount: Number(item.fill_count), diagnosticCount: Number(item.diagnostic_count),
+    firstFillSessionDate: item.first_fill_session_date as string | null,
+    firstEffectiveSessionDate: item.first_effective_session_date as string | null,
+    assumptionMode: item.assumption_mode
+  });
+}
+
+const RESULT_TABLE_PREVIEW_LIMIT = 200;
+const EXACT_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
+const CONTENT_SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+function closedRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} is not an object`);
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join(",") !== [...keys].sort().join(",")) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} fields do not match the closed shape`);
+  }
+  return record;
+}
+
+function closedRecordOneOf(value: unknown, shapes: readonly (readonly string[])[], label: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} is not an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const actual = Object.keys(record).sort().join(",");
+  if (!shapes.some((shape) => [...shape].sort().join(",") === actual)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} fields do not match an admitted closed shape`);
+  }
+  return record;
+}
+
+function decimalText(value: unknown, label: string): string {
+  if (typeof value !== "string" || !EXACT_DECIMAL_PATTERN.test(value)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} is not exact decimal text`);
+  }
+  return value;
+}
+
+function resultMetric(value: unknown, label: string) {
+  const metric = closedRecord(value, ["status", "value", "reason"], label);
+  if (!['AVAILABLE', 'INSUFFICIENT_SAMPLE', 'NOT_AVAILABLE'].includes(String(metric.status))) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} status is invalid`);
+  }
+  if (metric.status === "AVAILABLE") {
+    if (metric.reason !== null) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} available metric carries a reason`);
+    return Object.freeze({ status: "AVAILABLE" as const, value: decimalText(metric.value, `${label}.value`), reason: null });
+  }
+  if (metric.value !== null || typeof metric.reason !== "string" || metric.reason.length < 1 || metric.reason.length > 500) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} unavailable metric is invalid`);
+  }
+  return Object.freeze({
+    status: metric.status as "INSUFFICIENT_SAMPLE" | "NOT_AVAILABLE",
+    value: null,
+    reason: metric.reason
+  });
+}
+
+function assertPreAlphaTruth(value: unknown, label: string): void {
+  const truth = closedRecord(value, ["canonical_truth_state", "canonical_admission_state"], label);
+  if (truth.canonical_truth_state !== "NOT_FORMAL" || truth.canonical_admission_state !== "PRE_ALPHA") {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} exceeds the admitted truth ceiling`);
+  }
+}
+
+function decodeArtifactJson(bytes: Uint8Array, label: string): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch (error) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} bytes are not strict UTF-8 JSON`, error);
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} root is not an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function adaptLatestProductResultArtifacts(
+  home: ProductProjectHomeView,
+  resultBytes: ArtifactStreamBytesView,
+  analyticsBytes: ArtifactStreamBytesView,
+  lineageBytes: ArtifactStreamBytesView
+): ProductLatestResultDetailsView {
+  const summary = home.backtest;
+  if (home.backtestState !== "AVAILABLE" || summary === null || summary.resultState !== "VALID") {
+    throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "latest VALID Backtest is unavailable");
+  }
+  if (resultBytes.artifactId !== summary.resultArtifactId
+    || analyticsBytes.artifactId !== summary.analyticsArtifactId
+    || lineageBytes.artifactId !== summary.lineageArtifactId) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "Result artifact readback does not match Project Home");
+  }
+  const result = closedRecord(decodeArtifactJson(resultBytes.bytes, "Result"), [
+    "artifact_type", "cash_ledger", "content_sha256", "diagnostics", "fills", "holdings",
+    "nav", "orders", "position_ledger", "result_id", "run_spec_id",
+    "target_quantity_vectors", "truth_admission"
+  ], "Result");
+  if (
+    result.artifact_type !== "BacktestRunResult"
+    || result.result_id !== summary.backtestResultId
+    || typeof result.content_sha256 !== "string" || !CONTENT_SHA256_PATTERN.test(result.content_sha256)
+    || summary.backtestResultId !== `btrr_sha256_${result.content_sha256}`
+    || result.run_spec_id !== summary.runSpecId
+  ) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "Result identity does not match the VALID summary");
+  }
+  assertPreAlphaTruth(result.truth_admission, "Result truth");
+  if (!Array.isArray(result.orders) || !Array.isArray(result.fills) || !Array.isArray(result.diagnostics)
+    || !Array.isArray(result.holdings) || !Array.isArray(result.nav)
+    || result.orders.length !== summary.orderCount || result.fills.length !== summary.fillCount
+    || result.diagnostics.length !== summary.diagnosticCount) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "Result table counts drifted from Project Home");
+  }
+  const date = (value: unknown, label: string): string => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} is not an ISO date`);
+    }
+    return value;
+  };
+  const nonNegativeInt = (value: unknown, label: string): number => {
+    if (!Number.isSafeInteger(value) || Number(value) < 0) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} is not a non-negative integer`);
+    }
+    return Number(value);
+  };
+  const side = (value: unknown, label: string): "BUY" | "SELL" => {
+    if (value !== "BUY" && value !== "SELL") throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} side is invalid`);
+    return value;
+  };
+  const orderRows = result.orders.map((raw, index) => {
+    const row = closedRecord(raw, [
+      "instrument_id", "order_id", "raw_limit_price", "requested_quantity", "session_date",
+      "side", "source_target_quantity_vector_id"
+    ], `orders[${index}]`);
+    if (typeof row.order_id !== "string" || !CANONICAL_ID_PATTERN.test(row.order_id)
+      || typeof row.instrument_id !== "string" || !CANONICAL_ID_PATTERN.test(row.instrument_id)
+      || typeof row.source_target_quantity_vector_id !== "string" || !CANONICAL_ID_PATTERN.test(row.source_target_quantity_vector_id)) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `orders[${index}] identities are invalid`);
+    }
+    return Object.freeze({
+      orderId: row.order_id, sessionDate: date(row.session_date, `orders[${index}]`), instrumentId: row.instrument_id,
+      side: side(row.side, `orders[${index}]`), requestedQuantity: nonNegativeInt(row.requested_quantity, `orders[${index}]`),
+      rawLimitPrice: decimalText(row.raw_limit_price, `orders[${index}].raw_limit_price`)
+    });
+  });
+  const fillRows = result.fills.map((raw, index) => {
+    const baseFillKeys = [
+      "consideration", "costs", "fill_id", "instrument_id", "order_id",
+      "quantity", "raw_price", "session_date", "side"
+    ] as const;
+    const row = closedRecordOneOf(raw, [baseFillKeys, [
+      ...baseFillKeys, "execution_price", "participation_cap", "slippage_bps"
+    ]], `fills[${index}]`);
+    const costs = closedRecord(row.costs, ["commission", "exchange_fee", "stamp_duty", "total", "transfer_fee"], `fills[${index}].costs`);
+    if (typeof row.fill_id !== "string" || !CANONICAL_ID_PATTERN.test(row.fill_id)
+      || typeof row.order_id !== "string" || !CANONICAL_ID_PATTERN.test(row.order_id)
+      || typeof row.instrument_id !== "string" || !CANONICAL_ID_PATTERN.test(row.instrument_id)) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `fills[${index}] identities are invalid`);
+    }
+    return Object.freeze({
+      fillId: row.fill_id, orderId: row.order_id, sessionDate: date(row.session_date, `fills[${index}]`), instrumentId: row.instrument_id,
+      side: side(row.side, `fills[${index}]`), quantity: nonNegativeInt(row.quantity, `fills[${index}]`),
+      rawPrice: decimalText(row.raw_price, `fills[${index}].raw_price`),
+      executionPrice: row.execution_price === undefined || row.execution_price === null ? null : decimalText(row.execution_price, `fills[${index}].execution_price`),
+      consideration: decimalText(row.consideration, `fills[${index}].consideration`),
+      commission: decimalText(costs.commission, `fills[${index}].costs.commission`),
+      stampDuty: decimalText(costs.stamp_duty, `fills[${index}].costs.stamp_duty`),
+      transferFee: decimalText(costs.transfer_fee, `fills[${index}].costs.transfer_fee`),
+      exchangeFee: decimalText(costs.exchange_fee, `fills[${index}].costs.exchange_fee`),
+      totalFees: decimalText(costs.total, `fills[${index}].costs.total`),
+      participationCap: row.participation_cap === undefined || row.participation_cap === null ? null : nonNegativeInt(row.participation_cap, `fills[${index}].participation_cap`),
+      slippageBps: row.slippage_bps === undefined || row.slippage_bps === null ? null : decimalText(row.slippage_bps, `fills[${index}].slippage_bps`)
+    });
+  });
+  const diagnosticRows = result.diagnostics.map((raw, index) => {
+    const baseDiagnosticKeys = ["code", "detail", "filled_quantity", "order_id", "requested_quantity"] as const;
+    const row = closedRecordOneOf(raw, [baseDiagnosticKeys, [
+      ...baseDiagnosticKeys, "eligible_quantity", "participation_cap", "unfilled_quantity"
+    ]], `diagnostics[${index}]`);
+    if (typeof row.order_id !== "string" || !CANONICAL_ID_PATTERN.test(row.order_id)
+      || typeof row.code !== "string" || row.code.length < 1 || typeof row.detail !== "string") {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `diagnostics[${index}] identity is invalid`);
+    }
+    const optionalInt = (value: unknown, label: string) => value === null ? null : nonNegativeInt(value, label);
+    return Object.freeze({
+      orderId: row.order_id, code: row.code,
+      requestedQuantity: nonNegativeInt(row.requested_quantity, `diagnostics[${index}]`),
+      eligibleQuantity: optionalInt(row.eligible_quantity ?? null, `diagnostics[${index}].eligible_quantity`),
+      filledQuantity: nonNegativeInt(row.filled_quantity, `diagnostics[${index}]`),
+      unfilledQuantity: optionalInt(row.unfilled_quantity ?? null, `diagnostics[${index}].unfilled_quantity`),
+      participationCap: optionalInt(row.participation_cap ?? null, `diagnostics[${index}].participation_cap`),
+      detail: row.detail
+    });
+  });
+  const holdingRows = result.holdings.map((raw, index) => {
+    const row = closedRecord(raw, ["instrument_id", "market_value", "quantity", "raw_close", "sellable_quantity", "session_date"], `holdings[${index}]`);
+    if (typeof row.instrument_id !== "string" || !CANONICAL_ID_PATTERN.test(row.instrument_id)) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `holdings[${index}] instrument is invalid`);
+    }
+    return Object.freeze({
+      sessionDate: date(row.session_date, `holdings[${index}]`), instrumentId: row.instrument_id,
+      quantity: nonNegativeInt(row.quantity, `holdings[${index}]`), sellableQuantity: nonNegativeInt(row.sellable_quantity, `holdings[${index}]`),
+      rawClose: decimalText(row.raw_close, `holdings[${index}].raw_close`), marketValue: decimalText(row.market_value, `holdings[${index}].market_value`)
+    });
+  });
+
+  const analytics = closedRecord(decodeArtifactJson(analyticsBytes.bytes, "Analytics"), [
+    "analytics_id", "artifact_type", "concentration", "content_sha256", "core_analytics",
+    "engine_version", "exposure_series", "schema_version", "supplemental_metrics",
+    "table_summary", "truth_admission"
+  ], "Analytics");
+  if (analytics.artifact_type !== "ProductBacktestResultAnalytics"
+    || analytics.schema_version !== "v3.backtest_result_analytics/1.1.0"
+    || analytics.analytics_id !== summary.analyticsId
+    || typeof analytics.content_sha256 !== "string" || !CONTENT_SHA256_PATTERN.test(analytics.content_sha256)
+    || summary.analyticsId !== `bra_sha256_${analytics.content_sha256}`
+    || analytics.engine_version !== summary.engineVersion) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "Analytics identity does not match Project Home");
+  }
+  assertPreAlphaTruth(analytics.truth_admission, "Analytics truth");
+  const core = closedRecord(analytics.core_analytics, [
+    "analytics_id", "analytics_policy", "artifact_type", "benchmark", "benchmark_binding",
+    "content_sha256", "costs", "drawdown_episode", "drawdown_series", "metrics",
+    "monthly_returns", "return_series", "schema_version", "source_result", "truth_admission",
+    "turnover", "yearly_returns"
+  ], "core analytics");
+  const sourceResult = closedRecord(core.source_result, ["content_sha256", "result_id"], "analytics source Result");
+  if (core.artifact_type !== "BacktestResultAnalytics" || core.schema_version !== "v3.backtest_result_analytics/1.0.0"
+    || typeof sourceResult.content_sha256 !== "string" || !CONTENT_SHA256_PATTERN.test(sourceResult.content_sha256)
+    || sourceResult.result_id !== summary.backtestResultId || sourceResult.content_sha256 !== result.content_sha256) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "Analytics source Result binding drifted");
+  }
+  assertPreAlphaTruth(core.truth_admission, "core analytics truth");
+  const metrics = closedRecord(core.metrics, [
+    "annualized_return", "annualized_volatility", "end_nav", "max_drawdown",
+    "sharpe", "sortino", "start_nav", "total_return"
+  ], "analytics metrics");
+  const supplemental = closedRecord(analytics.supplemental_metrics, ["calmar"], "supplemental metrics");
+  if (!Array.isArray(core.return_series) || !Array.isArray(core.drawdown_series) || !Array.isArray(analytics.exposure_series)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "Result chart series are invalid");
+  }
+  const navSeries = core.return_series.map((raw, index) => {
+    const row = closedRecord(raw, ["cumulative_return", "nav", "session_date", "session_return"], `return_series[${index}]`);
+    return Object.freeze({
+      sessionDate: date(row.session_date, `return_series[${index}]`), nav: decimalText(row.nav, `return_series[${index}].nav`),
+      sessionReturn: resultMetric(row.session_return, `return_series[${index}].session_return`),
+      cumulativeReturn: resultMetric(row.cumulative_return, `return_series[${index}].cumulative_return`)
+    });
+  });
+  const resultNavSeries = result.nav.map((raw, index) => {
+    const row = closedRecord(raw, ["cash", "holdings_value", "nav", "session_date"], `result.nav[${index}]`);
+    return Object.freeze({
+      sessionDate: date(row.session_date, `result.nav[${index}]`),
+      nav: decimalText(row.nav, `result.nav[${index}].nav`)
+    });
+  });
+  const drawdownSeries = core.drawdown_series.map((raw, index) => {
+    const row = closedRecord(raw, ["drawdown", "session_date"], `drawdown_series[${index}]`);
+    return Object.freeze({ sessionDate: date(row.session_date, `drawdown_series[${index}]`), drawdown: resultMetric(row.drawdown, `drawdown_series[${index}].drawdown`) });
+  });
+  const exposureSeries = analytics.exposure_series.map((raw, index) => {
+    const row = closedRecord(raw, ["gross_exposure", "held_instrument_count", "net_exposure", "session_date"], `exposure_series[${index}]`);
+    return Object.freeze({
+      sessionDate: date(row.session_date, `exposure_series[${index}]`),
+      grossExposure: resultMetric(row.gross_exposure, `exposure_series[${index}].gross_exposure`),
+      netExposure: resultMetric(row.net_exposure, `exposure_series[${index}].net_exposure`),
+      heldInstrumentCount: nonNegativeInt(row.held_instrument_count, `exposure_series[${index}]`)
+    });
+  });
+  const periodReturnRows = (value: unknown, periodKind: "MONTHLY" | "YEARLY", label: string) => {
+    if (!Array.isArray(value)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} is not an array`);
+    return Object.freeze(value.map((raw, index) => {
+      const row = closedRecord(raw, ["end_date", "period_kind", "period_label", "period_return", "start_date"], `${label}[${index}]`);
+      if (row.period_kind !== periodKind || typeof row.period_label !== "string" || row.period_label.length < 1 || row.period_label.length > 20) {
+        throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label}[${index}] period identity is invalid`);
+      }
+      const startDate = date(row.start_date, `${label}[${index}].start_date`);
+      const endDate = date(row.end_date, `${label}[${index}].end_date`);
+      if (startDate > endDate) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label}[${index}] date range is reversed`);
+      return Object.freeze({
+        periodLabel: row.period_label,
+        startDate,
+        endDate,
+        periodReturn: resultMetric(row.period_return, `${label}[${index}].period_return`)
+      });
+    }));
+  };
+  const monthlyReturns = periodReturnRows(core.monthly_returns, "MONTHLY", "monthly_returns");
+  const yearlyReturns = periodReturnRows(core.yearly_returns, "YEARLY", "yearly_returns");
+  const costs = closedRecord(core.costs, [
+    "buy_traded_notional", "fee_breakdown", "fee_over_traded_notional", "fill_count",
+    "gross_traded_notional", "observed_fee_load_over_start_nav", "sell_traded_notional", "total_fees"
+  ], "analytics costs");
+  closedRecord(costs.fee_breakdown, ["commission", "exchange_fee", "stamp_duty", "transfer_fee"], "analytics costs fee breakdown");
+  const turnover = closedRecord(core.turnover, ["average_daily_nav", "convention", "gross_traded_notional", "turnover"], "analytics turnover");
+  if (typeof turnover.convention !== "string" || turnover.convention.length < 1
+    || costs.fill_count !== summary.fillCount || costs.gross_traded_notional !== turnover.gross_traded_notional) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "cost/turnover summary does not bind the current Result");
+  }
+  const concentration = closedRecord(analytics.concentration, [
+    "average_held_instrument_count", "maximum_held_instrument_count", "peak_instrument_id",
+    "peak_session_date", "peak_single_position_weight"
+  ], "analytics concentration");
+  const peakSessionDate = concentration.peak_session_date === null ? null : date(concentration.peak_session_date, "concentration.peak_session_date");
+  const peakInstrumentId = concentration.peak_instrument_id;
+  if ((peakSessionDate === null) !== (peakInstrumentId === null)
+    || (peakInstrumentId !== null && (typeof peakInstrumentId !== "string" || !CANONICAL_ID_PATTERN.test(peakInstrumentId)))) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "concentration peak binding is invalid");
+  }
+  const benchmark = closedRecord(core.benchmark, [
+    "aligned_benchmark_total_return", "alpha", "benchmark_content_sha256", "benchmark_name",
+    "benchmark_series_id", "beta", "relative_returns", "status", "tracking_difference", "tracking_error"
+  ], "analytics benchmark");
+  if (benchmark.status !== "AVAILABLE" && benchmark.status !== "BENCHMARK_NOT_AVAILABLE") {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "benchmark status is invalid");
+  }
+  if (benchmark.status === "BENCHMARK_NOT_AVAILABLE"
+    && (benchmark.benchmark_series_id !== null || benchmark.benchmark_content_sha256 !== null || benchmark.benchmark_name !== null)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "unavailable benchmark carries an identity");
+  }
+  if (benchmark.status === "AVAILABLE"
+    && (typeof benchmark.benchmark_series_id !== "string" || !CANONICAL_ID_PATTERN.test(benchmark.benchmark_series_id)
+      || typeof benchmark.benchmark_content_sha256 !== "string" || !CONTENT_SHA256_PATTERN.test(benchmark.benchmark_content_sha256)
+      || typeof benchmark.benchmark_name !== "string" || benchmark.benchmark_name.length < 1)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "available benchmark identity is invalid");
+  }
+  if (navSeries.length !== drawdownSeries.length || navSeries.length !== exposureSeries.length
+    || navSeries.length !== resultNavSeries.length
+    || navSeries.some((row, index) => row.sessionDate !== drawdownSeries[index]?.sessionDate
+      || row.sessionDate !== exposureSeries[index]?.sessionDate
+      || row.sessionDate !== resultNavSeries[index]?.sessionDate
+      || row.nav !== resultNavSeries[index]?.nav)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "NAV/drawdown/exposure dates are not exactly aligned");
+  }
+  const tableSummary = closedRecord(analytics.table_summary, ["diagnostic_count", "fill_count", "order_count"], "analytics table summary");
+  if (tableSummary.order_count !== summary.orderCount || tableSummary.fill_count !== summary.fillCount || tableSummary.diagnostic_count !== summary.diagnosticCount) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "Analytics table counts drifted");
+  }
+
+  const lineage = closedRecord(decodeArtifactJson(lineageBytes.bytes, "Lineage"), [
+    "admission", "artifact_type", "content_sha256", "data", "execution", "factors",
+    "project_context_revision_id", "project_id", "result", "result_lineage_id",
+    "schema_version", "strategy", "truth"
+  ], "Lineage");
+  if (lineage.artifact_type !== "ProductResultLineage" || lineage.schema_version !== "v3.product-result-lineage/1.0.0"
+    || lineage.result_lineage_id !== summary.resultLineageId || typeof lineage.content_sha256 !== "string"
+    || !CONTENT_SHA256_PATTERN.test(lineage.content_sha256)
+    || summary.resultLineageId !== `rln_sha256_${lineage.content_sha256}`
+    || lineage.project_id !== home.projectId || lineage.project_context_revision_id !== home.projectContextRevisionId
+    || lineage.truth !== "NOT_FORMAL" || lineage.admission !== "PRE_ALPHA") {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "Result lineage identity or truth drifted");
+  }
+  const lineageData = closedRecord(lineage.data, [
+    "raw_artifact_id", "raw_capture_id", "snapshot_id", "snapshot_manifest_artifact_id",
+    "universe_membership_artifact_id", "universe_version_id"
+  ], "Lineage.data");
+  const lineageFactors = closedRecord(lineage.factors, ["entry", "exit"], "Lineage.factors");
+  const entryFactor = closedRecord(lineageFactors.entry, [
+    "factor_definition_version_id", "materialization_artifact_id", "materialization_id"
+  ], "Lineage.factors.entry");
+  const exitFactor = closedRecord(lineageFactors.exit, [
+    "factor_definition_version_id", "materialization_artifact_id", "materialization_id"
+  ], "Lineage.factors.exit");
+  const lineageStrategy = closedRecord(lineage.strategy, [
+    "decision_chains", "research_strategy_spec_artifact_id", "research_strategy_spec_id",
+    "risk_policy_set_version_id", "strategy_definition_artifact_id",
+    "strategy_definition_version_id", "strategy_version_id"
+  ], "Lineage.strategy");
+  const lineageExecution = closedRecord(lineage.execution, [
+    "fills", "orders", "run_id", "run_spec_artifact_id", "run_spec_id", "target_quantity_vectors"
+  ], "Lineage.execution");
+  const lineageResult = closedRecord(lineage.result, [
+    "analytics_artifact_id", "analytics_id", "backtest_result_id", "backtest_result_sha256",
+    "result_artifact_id", "result_id"
+  ], "Lineage.result");
+  const canonicalLineageId = (value: unknown, label: string): string => {
+    if (typeof value !== "string" || !CANONICAL_ID_PATTERN.test(value)) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} is not a canonical identity`);
+    }
+    return value;
+  };
+  const lineageArtifactId = (value: unknown, label: string): string => {
+    if (typeof value !== "string" || !ARTIFACT_ID_PATTERN.test(value)) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} is not an Artifact identity`);
+    }
+    return value;
+  };
+  const projectedLineage = {
+    rawCaptureId: canonicalLineageId(lineageData.raw_capture_id, "Lineage.data.raw_capture_id"),
+    rawArtifactId: lineageArtifactId(lineageData.raw_artifact_id, "Lineage.data.raw_artifact_id"),
+    snapshotId: canonicalLineageId(lineageData.snapshot_id, "Lineage.data.snapshot_id"),
+    universeVersionId: canonicalLineageId(lineageData.universe_version_id, "Lineage.data.universe_version_id"),
+    entryFactorVersionId: canonicalLineageId(entryFactor.factor_definition_version_id, "Lineage.factors.entry.factor_definition_version_id"),
+    exitFactorVersionId: canonicalLineageId(exitFactor.factor_definition_version_id, "Lineage.factors.exit.factor_definition_version_id"),
+    researchStrategySpecId: canonicalLineageId(lineageStrategy.research_strategy_spec_id, "Lineage.strategy.research_strategy_spec_id"),
+    strategyVersionId: canonicalLineageId(lineageStrategy.strategy_version_id, "Lineage.strategy.strategy_version_id"),
+    riskPolicySetVersionId: canonicalLineageId(lineageStrategy.risk_policy_set_version_id, "Lineage.strategy.risk_policy_set_version_id"),
+    runSpecArtifactId: lineageArtifactId(lineageExecution.run_spec_artifact_id, "Lineage.execution.run_spec_artifact_id")
+  };
+  if (lineageData.snapshot_id !== summary.snapshotId || lineageData.universe_version_id !== summary.universeVersionId
+    || lineageStrategy.research_strategy_spec_id !== summary.researchStrategySpecId
+    || lineageStrategy.strategy_version_id !== home.strategy?.strategyVersionId
+    || lineageStrategy.risk_policy_set_version_id !== home.strategy?.profileRefs.riskPolicySetVersionId
+    || lineageExecution.run_id !== summary.runId || lineageExecution.run_spec_id !== summary.runSpecId
+    || lineageResult.result_id !== summary.resultId || lineageResult.backtest_result_id !== summary.backtestResultId
+    || lineageResult.backtest_result_sha256 !== result.content_sha256
+    || lineageResult.result_artifact_id !== summary.resultArtifactId || lineageResult.analytics_id !== summary.analyticsId
+    || lineageResult.analytics_artifact_id !== summary.analyticsArtifactId
+    || entryFactor.factor_definition_version_id !== home.strategy?.entrySignalFactorVersionId
+    || exitFactor.factor_definition_version_id !== home.strategy?.exitSignalFactorVersionId) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "Result lineage refs do not close over the current VALID result");
+  }
+  const table = <T>(rows: readonly T[], sourceArtifactId: string) => Object.freeze({
+    rowCount: rows.length,
+    preview: Object.freeze(rows.slice(0, RESULT_TABLE_PREVIEW_LIMIT)),
+    truncated: rows.length > RESULT_TABLE_PREVIEW_LIMIT,
+    sourceArtifactId
+  });
+  return Object.freeze({
+    schemaVersion: "v3.product-result-details/1.0.0",
+    maturity: "PRODUCT_CONNECTED", truth: "NOT_FORMAL", admission: "PRE_ALPHA", resultState: "VALID",
+    resultId: summary.resultId, backtestResultId: summary.backtestResultId, analyticsId: summary.analyticsId,
+    resultLineageId: summary.resultLineageId, runId: summary.runId, runSpecId: summary.runSpecId, engineVersion: summary.engineVersion,
+    assumptionMode: summary.assumptionMode,
+    metrics: Object.freeze({
+      startNav: resultMetric(metrics.start_nav, "metrics.start_nav"), endNav: resultMetric(metrics.end_nav, "metrics.end_nav"),
+      totalReturn: resultMetric(metrics.total_return, "metrics.total_return"), annualizedReturn: resultMetric(metrics.annualized_return, "metrics.annualized_return"),
+      annualizedVolatility: resultMetric(metrics.annualized_volatility, "metrics.annualized_volatility"), maxDrawdown: resultMetric(metrics.max_drawdown, "metrics.max_drawdown"),
+      sharpe: resultMetric(metrics.sharpe, "metrics.sharpe"), sortino: resultMetric(metrics.sortino, "metrics.sortino"),
+      calmar: resultMetric(supplemental.calmar, "metrics.calmar")
+    }),
+    navSeries: Object.freeze(navSeries), drawdownSeries: Object.freeze(drawdownSeries), exposureSeries: Object.freeze(exposureSeries),
+    periodReturns: Object.freeze({ monthly: monthlyReturns, yearly: yearlyReturns }),
+    costSummary: Object.freeze({
+      fillCount: nonNegativeInt(costs.fill_count, "costs.fill_count"),
+      grossTradedNotional: decimalText(costs.gross_traded_notional, "costs.gross_traded_notional"),
+      totalFees: decimalText(costs.total_fees, "costs.total_fees"),
+      turnover: resultMetric(turnover.turnover, "turnover.turnover")
+    }),
+    concentration: Object.freeze({
+      peakSinglePositionWeight: resultMetric(concentration.peak_single_position_weight, "concentration.peak_single_position_weight"),
+      peakSessionDate,
+      peakInstrumentId: peakInstrumentId as string | null,
+      averageHeldInstrumentCount: resultMetric(concentration.average_held_instrument_count, "concentration.average_held_instrument_count"),
+      maximumHeldInstrumentCount: nonNegativeInt(concentration.maximum_held_instrument_count, "concentration.maximum_held_instrument_count")
+    }),
+    benchmarkStatus: benchmark.status as "AVAILABLE" | "BENCHMARK_NOT_AVAILABLE",
+    orders: table(orderRows, summary.resultArtifactId), fills: table(fillRows, summary.resultArtifactId),
+    diagnostics: table(diagnosticRows, summary.resultArtifactId), holdings: table(holdingRows, summary.resultArtifactId),
+    lineage: Object.freeze({
+      ...projectedLineage,
+      resultArtifactId: summary.resultArtifactId, analyticsArtifactId: summary.analyticsArtifactId, lineageArtifactId: summary.lineageArtifactId
+    }),
+    exports: Object.freeze({
+      summaryJsonArtifactId: summary.summaryExportArtifactId,
+      ordersCsvArtifactId: summary.ordersExportArtifactId,
+      fillsCsvArtifactId: summary.fillsExportArtifactId,
+      analyticsJsonArtifactId: summary.analyticsArtifactId
+    })
+  });
+}
+
 function adaptProjectHome(response: unknown): ProductProjectHomeView {
   if (response === null || typeof response !== "object" || Array.isArray(response)) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project home returned a non-object response");
@@ -553,9 +1502,12 @@ function adaptProjectHome(response: unknown): ProductProjectHomeView {
   const required = [
     "admission", "data_state", "data_unavailable_reason", "local_import_state",
     "factor_state", "factor_unavailable_reason", "maturity",
-    "project_context_revision_id", "project_id", "read_model_version", "truth"
+    "project_context_revision_id", "project_id", "read_model_version", "truth",
+    "strategy_authoring_profile", "strategy_state", "strategy_unavailable_reason",
+    "backtest_policy_coverage",
+    "backtest_state", "backtest_unavailable_reason"
   ];
-  const allowed = new Set([...required, "data", "factor"]);
+  const allowed = new Set([...required, "data", "factor", "strategy", "backtest"]);
   if (required.some((key) => !(key in model)) || Object.keys(model).some((key) => !allowed.has(key))) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project home fields do not match the closed shape");
   }
@@ -571,6 +1523,10 @@ function adaptProjectHome(response: unknown): ProductProjectHomeView {
     || !["NONE", "NO_SNAPSHOT", "DATA_READ_MODEL_NOT_AVAILABLE"].includes(String(model.data_unavailable_reason))
     || !["EMPTY", "AVAILABLE", "UNAVAILABLE"].includes(String(model.factor_state))
     || !["NONE", "NO_SNAPSHOT", "NO_FACTOR_STUDY", "FACTOR_READ_MODEL_NOT_AVAILABLE"].includes(String(model.factor_unavailable_reason))
+    || !["EMPTY", "AVAILABLE", "UNAVAILABLE"].includes(String(model.strategy_state))
+    || !["NONE", "NO_FACTOR_STUDY", "NO_RESEARCH_STRATEGY", "STRATEGY_READ_MODEL_NOT_AVAILABLE"].includes(String(model.strategy_unavailable_reason))
+    || !["EMPTY", "AVAILABLE", "UNAVAILABLE"].includes(String(model.backtest_state))
+    || !["NONE", "NO_RESEARCH_STRATEGY", "NO_VALID_BACKTEST", "BACKTEST_READ_MODEL_NOT_AVAILABLE"].includes(String(model.backtest_unavailable_reason))
   ) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project home identity or truth fields are invalid");
   }
@@ -583,8 +1539,92 @@ function adaptProjectHome(response: unknown): ProductProjectHomeView {
       throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "unavailable Factor state is inconsistent");
     }
   }
+  const strategyAuthoringProfile = adaptStrategyAuthoringProfile(model.strategy_authoring_profile);
+  const coverage = closedRecord(
+    model.backtest_policy_coverage,
+    ["admission", "commission_rate", "cost_policy_id", "coverage_end", "coverage_start", "execution_timing_profile_id", "minimum_commission_cny", "resource_estimate", "rule_profile_id", "schema_version", "stamp_duty_sell_rate", "truth"],
+    "backtest_policy_coverage"
+  );
+  if (
+    coverage.schema_version !== "v3.product-backtest-policy-coverage/1.0.0"
+    || coverage.truth !== "NOT_FORMAL" || coverage.admission !== "PRE_ALPHA"
+    || typeof coverage.coverage_start !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(coverage.coverage_start)
+    || (coverage.coverage_end !== null && (typeof coverage.coverage_end !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(coverage.coverage_end)))
+    || (typeof coverage.coverage_end === "string" && coverage.coverage_end < coverage.coverage_start)
+    || typeof coverage.rule_profile_id !== "string" || !/^atrp_sha256_[0-9a-f]{64}$/.test(coverage.rule_profile_id)
+    || typeof coverage.cost_policy_id !== "string" || !/^cost_sha256_[0-9a-f]{64}$/.test(coverage.cost_policy_id)
+    || typeof coverage.execution_timing_profile_id !== "string" || !/^timing_sha256_[0-9a-f]{64}$/.test(coverage.execution_timing_profile_id)
+    || typeof coverage.commission_rate !== "string" || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(coverage.commission_rate)
+    || typeof coverage.minimum_commission_cny !== "string" || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(coverage.minimum_commission_cny)
+    || typeof coverage.stamp_duty_sell_rate !== "string" || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(coverage.stamp_duty_sell_rate)
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Backtest policy coverage drifted");
+  }
+  const backtestPolicyCoverage = Object.freeze({
+    schemaVersion: "v3.product-backtest-policy-coverage/1.0.0" as const,
+    truth: "NOT_FORMAL" as const,
+    admission: "PRE_ALPHA" as const,
+    coverageStart: coverage.coverage_start,
+    coverageEnd: coverage.coverage_end as string | null,
+    ruleProfileId: coverage.rule_profile_id,
+    costPolicyId: coverage.cost_policy_id,
+    executionTimingProfileId: coverage.execution_timing_profile_id,
+    commissionRate: coverage.commission_rate,
+    minimumCommissionCny: coverage.minimum_commission_cny,
+    stampDutySellRate: coverage.stamp_duty_sell_rate,
+    resourceEstimate: (() => {
+      const estimate = closedRecord(
+        coverage.resource_estimate,
+        ["checkpoint_resume", "cpu_slots", "memory_limit_bytes", "resource_class", "scratch_limit_bytes"],
+        "backtest_policy_coverage.resource_estimate"
+      );
+      if (
+        estimate.resource_class !== "PRODUCT_BACKTEST_CPU"
+        || estimate.cpu_slots !== 1
+        || estimate.memory_limit_bytes !== 1_073_741_824
+        || estimate.scratch_limit_bytes !== 1_073_741_824
+        || estimate.checkpoint_resume !== "UNAVAILABLE"
+      ) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Backtest resource estimate drifted");
+      return Object.freeze({
+        resourceClass: "PRODUCT_BACKTEST_CPU" as const,
+        cpuSlots: 1 as const,
+        memoryLimitBytes: 1_073_741_824 as const,
+        scratchLimitBytes: 1_073_741_824 as const,
+        checkpointResume: "UNAVAILABLE" as const
+      });
+    })()
+  });
+  let strategy: ProductStrategySummaryView | null = null;
+  if (model.strategy_state === "AVAILABLE") {
+    if (model.strategy_unavailable_reason !== "NONE") throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "available Strategy carries an unavailable reason");
+    strategy = adaptProjectStrategy(
+      model.strategy,
+      model.project_id,
+      model.project_context_revision_id,
+      strategyAuthoringProfile
+    );
+  } else if ("strategy" in model || model.strategy_unavailable_reason === "NONE") {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "unavailable Strategy state is inconsistent");
+  }
+  let backtest: ProductBacktestSummaryView | null = null;
+  if (model.backtest_state === "AVAILABLE") {
+    if (model.backtest_unavailable_reason !== "NONE" || strategy === null) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "available Backtest has no exact Strategy authority");
+    }
+    backtest = adaptProjectBacktest(
+      model.backtest,
+      model.project_id,
+      model.project_context_revision_id,
+      strategy,
+      strategyAuthoringProfile
+    );
+  } else if ("backtest" in model || model.backtest_unavailable_reason === "NONE") {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "unavailable Backtest state is inconsistent");
+  }
   if (model.data_state !== "AVAILABLE") {
-    if ("data" in model) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "unavailable project home must not carry data");
+    if ("data" in model || factor !== null || strategy !== null || backtest !== null) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "unavailable project data cannot authorize downstream summaries");
+    }
     return Object.freeze({
       readModelVersion: "v3.project-home/1.1",
       projectId: model.project_id,
@@ -598,7 +1638,15 @@ function adaptProjectHome(response: unknown): ProductProjectHomeView {
       data: null,
       factorState: model.factor_state as "EMPTY" | "AVAILABLE" | "UNAVAILABLE",
       factorUnavailableReason: model.factor_unavailable_reason as "NONE" | "NO_SNAPSHOT" | "NO_FACTOR_STUDY" | "FACTOR_READ_MODEL_NOT_AVAILABLE",
-      factor
+      factor,
+      strategyAuthoringProfile,
+      backtestPolicyCoverage,
+      strategyState: model.strategy_state as "EMPTY" | "UNAVAILABLE",
+      strategyUnavailableReason: model.strategy_unavailable_reason as "NO_FACTOR_STUDY" | "NO_RESEARCH_STRATEGY" | "STRATEGY_READ_MODEL_NOT_AVAILABLE",
+      strategy,
+      backtestState: model.backtest_state as "EMPTY" | "UNAVAILABLE",
+      backtestUnavailableReason: model.backtest_unavailable_reason as "NO_RESEARCH_STRATEGY" | "NO_VALID_BACKTEST" | "BACKTEST_READ_MODEL_NOT_AVAILABLE",
+      backtest
     });
   }
   if (model.data_unavailable_reason !== "NONE" || model.data === null || typeof model.data !== "object" || Array.isArray(model.data)) {
@@ -642,6 +1690,22 @@ function adaptProjectHome(response: unknown): ProductProjectHomeView {
     || typeof data.raw_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(data.raw_artifact_id)
   ) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project data identity, bounds or truth fields are invalid");
+  }
+  if (
+    (factor !== null && (factor.snapshotId !== data.snapshot_id || factor.universeVersionId !== data.universe_version_id))
+    || (strategy !== null && (strategy.snapshotId !== data.snapshot_id || strategy.universeVersionId !== data.universe_version_id))
+    || (backtest !== null && (backtest.snapshotId !== data.snapshot_id || backtest.universeVersionId !== data.universe_version_id))
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project downstream summary does not bind the current Data authority");
+  }
+  if (strategy !== null) {
+    if (factor === null) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy requires the current Factor summary");
+    const booleanFactorIds = new Set(
+      factor.outputs.filter((output) => output.outputType === "BOOLEAN_SERIES").map((output) => output.factorDefinitionVersionId)
+    );
+    if (!booleanFactorIds.has(strategy.entrySignalFactorVersionId) || !booleanFactorIds.has(strategy.exitSignalFactorVersionId)) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy signal refs are absent from current BOOLEAN Factor outputs");
+    }
   }
   const capabilityReasons = data.capability_reasons;
   if (
@@ -701,7 +1765,15 @@ function adaptProjectHome(response: unknown): ProductProjectHomeView {
     }),
     factorState: model.factor_state as "EMPTY" | "AVAILABLE" | "UNAVAILABLE",
     factorUnavailableReason: model.factor_unavailable_reason as "NONE" | "NO_SNAPSHOT" | "NO_FACTOR_STUDY" | "FACTOR_READ_MODEL_NOT_AVAILABLE",
-    factor
+    factor,
+    strategyAuthoringProfile,
+    backtestPolicyCoverage,
+    strategyState: model.strategy_state as "EMPTY" | "AVAILABLE" | "UNAVAILABLE",
+    strategyUnavailableReason: model.strategy_unavailable_reason as "NONE" | "NO_FACTOR_STUDY" | "NO_RESEARCH_STRATEGY" | "STRATEGY_READ_MODEL_NOT_AVAILABLE",
+    strategy,
+    backtestState: model.backtest_state as "EMPTY" | "AVAILABLE" | "UNAVAILABLE",
+    backtestUnavailableReason: model.backtest_unavailable_reason as "NONE" | "NO_RESEARCH_STRATEGY" | "NO_VALID_BACKTEST" | "BACKTEST_READ_MODEL_NOT_AVAILABLE",
+    backtest
   });
 }
 
@@ -949,6 +2021,8 @@ export class ProductBridge {
   private inflightSubmit = new Map<string, Promise<BacktestSubmitOutcomeView>>();
   private inflightResearch = new Map<string, Promise<ProductResearchSubmitOutcomeView>>();
   private inflightFactor = new Map<string, Promise<ProductFactorStudyOutcomeView>>();
+  private inflightStrategy = new Map<string, Promise<ProductResearchStrategyOutcomeView>>();
+  private inflightResearchBacktest = new Map<string, Promise<ProductResearchBacktestOutcomeView>>();
   private bindingActivationInProgress = false;
   private bindingOutcome: ProductBindingOutcome = { state: "NO_CANONICAL_PROJECT_BOUND" };
   private readonly supervisor: BackendSupervisor;
@@ -956,6 +2030,7 @@ export class ProductBridge {
   private readonly bindings: ProductBindingStore;
   private readonly createProjectIntents: CreateProjectIntentStore;
   private readonly localDataSources: LocalDataSourceBroker | null;
+  private readonly artifactExports: ArtifactExportBroker | null;
 
   constructor(
     supervisor: BackendSupervisor,
@@ -965,7 +2040,8 @@ export class ProductBridge {
     createProjectIntents: CreateProjectIntentStore = new CreateProjectIntentStore(
       createProjectIntentPath(dirname(bindings.path))
     ),
-    localDataSources: LocalDataSourceBroker | null = null
+    localDataSources: LocalDataSourceBroker | null = null,
+    artifactExports: ArtifactExportBroker | null = null
   ) {
     this.supervisor = supervisor;
     this.store = store;
@@ -973,6 +2049,7 @@ export class ProductBridge {
     this.chooseResearchPackage = chooseResearchPackage;
     this.createProjectIntents = createProjectIntents;
     this.localDataSources = localDataSources;
+    this.artifactExports = artifactExports;
   }
 
   private readonly chooseResearchPackage: ResearchPackageChooser;
@@ -1063,6 +2140,20 @@ export class ProductBridge {
       { contractVersion: "1.1.0", expectedApiVersion: "1.1" }
     );
     return adaptProjectHome(response);
+  }
+
+  async getLatestProductResultDetails(): Promise<ProductLatestResultDetailsView> {
+    this.requireBinding();
+    const home = await this.getProjectHome();
+    if (home.backtestState !== "AVAILABLE" || home.backtest === null || home.backtest.resultState !== "VALID") {
+      throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "latest VALID research Result is unavailable");
+    }
+    const [resultBytes, analyticsBytes, lineageBytes] = await Promise.all([
+      this.readArtifactBytes(home.backtest.resultArtifactId),
+      this.readArtifactBytes(home.backtest.analyticsArtifactId),
+      this.readArtifactBytes(home.backtest.lineageArtifactId)
+    ]);
+    return adaptLatestProductResultArtifacts(home, resultBytes, analyticsBytes, lineageBytes);
   }
 
   async restoreSession(): Promise<SessionRestoreView> {
@@ -1189,6 +2280,45 @@ export class ProductBridge {
     return adaptTask(response);
   }
 
+  async retryResearchBacktest(taskId: string): Promise<ProductTaskView> {
+    const refs = this.requireBinding();
+    assertCanonicalId(taskId, "taskId");
+    const current = await this.getTask(taskId);
+    if (current.projectId !== refs.projectId || current.operationId !== PRODUCT_RESEARCH_BACKTEST_OPERATION) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "Task is not the current project's Product research Backtest");
+    }
+    if (current.state !== "FAILED" && current.state !== "PARTIAL") {
+      throw new ProductAdapterError("CONFLICT", "Product research Backtest is not in a retryable terminal state");
+    }
+    if (
+      current.attempt.attemptId === null
+      || current.attempt.state !== "FAILED"
+      || current.attempt.errorCategory === null
+      || !RETRYABLE_PRODUCT_TASK_CATEGORIES.has(current.attempt.errorCategory)
+    ) {
+      throw new ProductAdapterError("CONFLICT", "persisted Product research Backtest failure is not retry-admitted");
+    }
+    const response = await this.supervisor.request("TaskService.v1.retryTask", {
+      task_id: current.taskId,
+      failed_attempt_id: current.attempt.attemptId,
+      expected_state_version: current.stateVersion
+    });
+    const retried = adaptTask(response);
+    if (
+      retried.taskId !== current.taskId
+      || retried.projectId !== current.projectId
+      || retried.operationId !== current.operationId
+      || retried.runId !== current.runId
+      || retried.attempt.ordinal !== current.attempt.ordinal + 1
+      || retried.attempt.attemptId === null
+      || retried.attempt.attemptId === current.attempt.attemptId
+      || !["QUEUED", "RUNNING", "SUCCEEDED"].includes(retried.state)
+    ) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "retry response does not preserve immutable Product Backtest identity");
+    }
+    return retried;
+  }
+
   async getTaskEvents(afterSequence: number, limit: number): Promise<ProductTaskEventsView> {
     this.requireBinding();
     if (!Number.isInteger(afterSequence) || afterSequence < 0) throw new ProductAdapterError("INVALID_ARGUMENT", "afterSequence must be a non-negative integer");
@@ -1219,16 +2349,150 @@ export class ProductBridge {
     return adaptStreamTicket(response);
   }
 
+  async readArtifactBytes(artifactId: string): Promise<ArtifactStreamBytesView> {
+    const descriptor = await this.getArtifactDescriptor(artifactId);
+    const ticket = await this.openArtifactStream(artifactId);
+    if (ticket.artifactId !== descriptor.artifactId) {
+      throw new ProductAdapterError(
+        "PRODUCT_READ_MODEL_INVALID",
+        "artifact stream ticket does not match the verified descriptor"
+      );
+    }
+    const consumed = await this.supervisor.consumeArtifactStream({
+      ticketId: ticket.ticketId,
+      artifactId: descriptor.artifactId,
+      expectedSha256: descriptor.sha256,
+      expectedByteSize: descriptor.byteSize
+    });
+    if (
+      consumed.artifactId !== descriptor.artifactId
+      || consumed.sha256 !== descriptor.sha256
+      || consumed.byteSize !== descriptor.byteSize
+    ) {
+      throw new ProductAdapterError(
+        "PRODUCT_READ_MODEL_INVALID",
+        "consumed artifact bytes do not match the verified descriptor"
+      );
+    }
+    return Object.freeze({
+      artifactId: consumed.artifactId,
+      sha256: consumed.sha256,
+      byteSize: consumed.byteSize,
+      bytes: Uint8Array.from(consumed.bytes)
+    });
+  }
+
+  async exportArtifact(request: ProductArtifactExportIntent): Promise<ProductArtifactExportOutcomeView> {
+    const refs = this.requireBinding();
+    if (this.artifactExports === null) {
+      throw new ProductAdapterError("ARTIFACT_EXPORT_NOT_AVAILABLE", "Artifact 导出尚未绑定原生保存能力");
+    }
+    assertArtifactExportIntent(request);
+    const descriptor = await this.getArtifactDescriptor(request.artifactId);
+    const selection = await this.artifactExports.chooseDestination(request.suggestedName);
+    if (selection === null) return Object.freeze({ state: "NOT_RUN" });
+
+    const idempotencyKey = `v3-desktop:${uuidV4()}`;
+    let accepted: { taskId: string; runId: string } | null = null;
+    try {
+      accepted = adaptArtifactExportAccepted(await this.supervisor.request(
+        "ArtifactService.v1.exportArtifact",
+        {
+          artifact_ids: [descriptor.artifactId],
+          export_profile_id: "LIGHT_REVIEW",
+          destination_token: selection.capabilityToken,
+          idempotency_key: idempotencyKey
+        },
+        { idempotencyKey, timeoutMs: 30_000 }
+      ));
+      const ticket = await this.openArtifactStream(descriptor.artifactId);
+      if (ticket.artifactId !== descriptor.artifactId) {
+        throw new ProductAdapterError(
+          "PRODUCT_READ_MODEL_INVALID",
+          "artifact export stream ticket does not match the verified descriptor"
+        );
+      }
+      const receipt = await this.artifactExports.writeDestination(
+        {
+          capabilityToken: selection.capabilityToken,
+          artifactId: descriptor.artifactId,
+          expectedSha256: descriptor.sha256,
+          expectedByteSize: descriptor.byteSize
+        },
+        (sink) => this.supervisor.streamArtifactToSink({
+          ticketId: ticket.ticketId,
+          artifactId: descriptor.artifactId,
+          expectedSha256: descriptor.sha256,
+          expectedByteSize: descriptor.byteSize
+        }, sink)
+      );
+      const finalized = await this.supervisor.artifactExportControl({
+        kind: "artifactExport.complete",
+        protocol_version: "v3.artifact-export/1.0.0",
+        project_id: refs.projectId,
+        project_context_revision_id: refs.projectContextRevisionId,
+        task_id: accepted.taskId,
+        destination_token: receipt.destinationToken,
+        display_name: receipt.displayName,
+        artifact_id: receipt.artifactId,
+        sha256: receipt.sha256,
+        byte_size: receipt.byteSize,
+        completed_at: receipt.completedAt
+      });
+      if (
+        finalized.kind !== "artifactExport.completed"
+        || finalized.task_id !== accepted.taskId
+        || typeof finalized.manifest_artifact_id !== "string"
+        || !ARTIFACT_ID_PATTERN.test(finalized.manifest_artifact_id)
+        || Object.keys(finalized).sort().join(",") !== "kind,manifest_artifact_id,task_id"
+      ) {
+        throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "artifact export completion receipt is invalid");
+      }
+      return Object.freeze({
+        state: "COMPLETED",
+        taskId: accepted.taskId,
+        runId: accepted.runId,
+        artifactId: receipt.artifactId,
+        manifestArtifactId: finalized.manifest_artifact_id,
+        displayName: receipt.displayName,
+        sha256: receipt.sha256,
+        byteSize: receipt.byteSize,
+        completedAt: receipt.completedAt
+      });
+    } catch (error) {
+      this.artifactExports.discardDestination(selection.capabilityToken);
+      if (accepted !== null) {
+        await this.supervisor.artifactExportControl({
+          kind: "artifactExport.fail",
+          protocol_version: "v3.artifact-export/1.0.0",
+          project_id: refs.projectId,
+          project_context_revision_id: refs.projectContextRevisionId,
+          task_id: accepted.taskId,
+          destination_token: selection.capabilityToken,
+          reason_code: exportFailureReason(error)
+        }).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
   /**
-   * Execute an existing canonical BacktestRunSpec. The renderer supplies only
-   * the canonical run spec identity; numeric observations/returns/weights are
-   * not part of the frozen DTO and cannot be injected. The idempotency key is
-   * main-process owned; concurrent duplicate clicks collapse into one request.
-   * submitBacktest remains a bounded synchronous in-process executor: this
-   * bridge never claims live progress, cancel, or resume.
+   * Preserve the frozen legacy Backtest DTO without claiming it is executable.
+   * Normal V1.1 product composition advertises this service as UNAVAILABLE and
+   * uses the additive ProductEntry research-backtest path instead.
    */
   async submitExistingBacktestRunSpec(runSpecId: string): Promise<BacktestSubmitOutcomeView> {
     this.requireBinding();
+    const capability = this.supervisor.capabilities.find(
+      (item) => item.code === "BacktestService"
+    );
+    if (capability?.truth_state !== "FORMAL") {
+      const reason = capability?.reason_code ?? "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED";
+      throw new ProductAdapterError(
+        "CAPABILITY_UNAVAILABLE",
+        `BacktestService is unavailable: ${reason}`
+      );
+    }
     if (typeof runSpecId !== "string" || !RUN_SPEC_ID_PATTERN.test(runSpecId)) {
       throw new ProductAdapterError("INVALID_ARGUMENT", "runSpecId must be a canonical btrs_sha256_ identifier");
     }
@@ -1485,6 +2749,209 @@ export class ProductBridge {
     ).then(adaptFactorStudyOutcome).finally(() => this.inflightFactor.delete(key));
     this.inflightFactor.set(key, pending);
     return pending;
+  }
+
+  async publishResearchStrategy(request: ProductResearchStrategyIntent): Promise<ProductResearchStrategyOutcomeView> {
+    this.requireBinding();
+    assertResearchStrategyIntent(request);
+    const home = await this.getProjectHome();
+    if (home.dataState !== "AVAILABLE" || home.data === null || home.factorState !== "AVAILABLE" || home.factor === null) {
+      throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "Strategy publication requires current available Data and Factor summaries");
+    }
+    if (!home.strategyAuthoringProfile.positionSizingOptions.includes(request.positionSizing)
+      || request.maxPositions < home.strategyAuthoringProfile.maxPositionsMin
+      || request.maxPositions > home.strategyAuthoringProfile.maxPositionsMax
+      || !home.strategyAuthoringProfile.assumptionProfiles.some(
+        (item) => item.assumptionProfileId === request.assumptionProfileId
+      )) {
+      throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "Strategy intent is outside the current backend authoring profile");
+    }
+    const booleanFactorIds = new Set(
+      home.factor.outputs
+        .filter((output) => output.outputType === "BOOLEAN_SERIES")
+        .map((output) => output.factorDefinitionVersionId)
+    );
+    if (!booleanFactorIds.has(request.entrySignalFactorVersionId)
+      || !booleanFactorIds.has(request.exitSignalFactorVersionId)) {
+      throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "Strategy signals must reference current BOOLEAN Factor outputs");
+    }
+    const key = createHash("sha256")
+      .update(JSON.stringify({
+        projectContextRevisionId: home.projectContextRevisionId,
+        universeVersionId: home.data.universeVersionId,
+        request
+      }), "utf8")
+      .digest("hex");
+    const existing = this.inflightStrategy.get(key);
+    if (existing !== undefined) return existing;
+    const idempotencyKey = `v3-desktop:${uuidV4()}`;
+    const refs = home.strategyAuthoringProfile.profileRefs;
+    const pending = this.supervisor.request(
+      "ProductEntryService.v1.publishResearchStrategy",
+      {
+        idempotency_key: idempotencyKey,
+        universe_version_id: home.data.universeVersionId,
+        entry_signal_factor_version_id: request.entrySignalFactorVersionId,
+        exit_signal_factor_version_id: request.exitSignalFactorVersionId,
+        position_sizing: request.positionSizing,
+        max_positions: request.maxPositions,
+        gross_exposure: request.grossExposure,
+        rebalance: home.strategyAuthoringProfile.rebalance,
+        cost_policy_version_id: refs.costPolicyVersionId,
+        execution_policy_version_id: refs.executionPolicyVersionId,
+        risk_policy_set_version_id: refs.riskPolicySetVersionId,
+        initial_cash: request.initialCash,
+        assumption_profile_id: request.assumptionProfileId
+      },
+      {
+        contractVersion: "1.1.0",
+        expectedApiVersion: "1.1",
+        idempotencyKey,
+        timeoutMs: 30_000
+      }
+    ).then(adaptResearchStrategyOutcome).finally(() => this.inflightStrategy.delete(key));
+    this.inflightStrategy.set(key, pending);
+    return pending;
+  }
+
+  async previewResearchStrategy(request: ProductResearchStrategyIntent): Promise<ProductResearchStrategyPreviewView> {
+    this.requireBinding();
+    assertResearchStrategyIntent(request);
+    const home = await this.getProjectHome();
+    if (home.dataState !== "AVAILABLE" || home.data === null || home.factorState !== "AVAILABLE" || home.factor === null) {
+      throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "Strategy preview requires current available Data and Factor summaries");
+    }
+    if (!home.strategyAuthoringProfile.positionSizingOptions.includes(request.positionSizing)
+      || request.maxPositions < home.strategyAuthoringProfile.maxPositionsMin
+      || request.maxPositions > home.strategyAuthoringProfile.maxPositionsMax
+      || !home.strategyAuthoringProfile.assumptionProfiles.some(
+        (item) => item.assumptionProfileId === request.assumptionProfileId
+      )) {
+      throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "Strategy preview intent is outside the current backend authoring profile");
+    }
+    const booleanFactorIds = new Set(
+      home.factor.outputs
+        .filter((output) => output.outputType === "BOOLEAN_SERIES")
+        .map((output) => output.factorDefinitionVersionId)
+    );
+    if (!booleanFactorIds.has(request.entrySignalFactorVersionId)
+      || !booleanFactorIds.has(request.exitSignalFactorVersionId)) {
+      throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "Strategy preview signals must reference current BOOLEAN Factor outputs");
+    }
+    const refs = home.strategyAuthoringProfile.profileRefs;
+    const response = await this.supervisor.request(
+      "ProductEntryService.v1.previewResearchStrategy",
+      {
+        universe_version_id: home.data.universeVersionId,
+        entry_signal_factor_version_id: request.entrySignalFactorVersionId,
+        exit_signal_factor_version_id: request.exitSignalFactorVersionId,
+        position_sizing: request.positionSizing,
+        max_positions: request.maxPositions,
+        gross_exposure: request.grossExposure,
+        rebalance: home.strategyAuthoringProfile.rebalance,
+        cost_policy_version_id: refs.costPolicyVersionId,
+        execution_policy_version_id: refs.executionPolicyVersionId,
+        risk_policy_set_version_id: refs.riskPolicySetVersionId,
+        initial_cash: request.initialCash,
+        assumption_profile_id: request.assumptionProfileId
+      },
+      { contractVersion: "1.1.0", expectedApiVersion: "1.1", timeoutMs: 30_000 }
+    );
+    const preview = adaptResearchStrategyPreview(response);
+    if (
+      preview.projectId !== home.projectId
+      || preview.projectContextRevisionId !== home.projectContextRevisionId
+      || preview.snapshotId !== home.data.snapshotId
+      || preview.universeVersionId !== home.data.universeVersionId
+      || preview.entrySignalFactorVersionId !== request.entrySignalFactorVersionId
+      || preview.exitSignalFactorVersionId !== request.exitSignalFactorVersionId
+      || preview.profileRefs.costPolicyVersionId !== refs.costPolicyVersionId
+      || preview.profileRefs.executionPolicyVersionId !== refs.executionPolicyVersionId
+      || preview.profileRefs.riskPolicySetVersionId !== refs.riskPolicySetVersionId
+      || preview.profileRefs.assumptionProfileId !== request.assumptionProfileId
+    ) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Strategy preview does not match current Home intent");
+    }
+    return preview;
+  }
+
+  async submitResearchBacktest(request: ProductResearchBacktestIntent): Promise<ProductResearchBacktestOutcomeView> {
+    this.requireBinding();
+    assertResearchBacktestIntent(request);
+    const home = await this.getProjectHome();
+    if (home.dataState !== "AVAILABLE" || home.data === null || home.strategyState !== "AVAILABLE" || home.strategy === null) {
+      throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "Backtest requires the latest available Strategy and Data summaries");
+    }
+    const allowedStart = home.data.dateCoverageStart > home.backtestPolicyCoverage.coverageStart
+      ? home.data.dateCoverageStart : home.backtestPolicyCoverage.coverageStart;
+    const allowedEnd = home.backtestPolicyCoverage.coverageEnd !== null
+      && home.backtestPolicyCoverage.coverageEnd < home.data.dateCoverageEnd
+      ? home.backtestPolicyCoverage.coverageEnd : home.data.dateCoverageEnd;
+    if (request.sessionStart < allowedStart || request.sessionEnd > allowedEnd) {
+      throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "Backtest session range exceeds current Data or execution-policy coverage");
+    }
+    const preview = await this.previewResearchBacktest(request);
+    if (preview.researchStrategySpecId !== home.strategy.researchStrategySpecId) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Backtest preflight no longer matches current Strategy");
+    }
+    const key = createHash("sha256")
+      .update(JSON.stringify({ researchStrategySpecId: home.strategy.researchStrategySpecId, request }), "utf8")
+      .digest("hex");
+    const existing = this.inflightResearchBacktest.get(key);
+    if (existing !== undefined) return existing;
+    const idempotencyKey = `v3-desktop:${uuidV4()}`;
+    const pending = this.supervisor.request(
+      "ProductEntryService.v1.submitResearchBacktest",
+      {
+        idempotency_key: idempotencyKey,
+        research_strategy_spec_id: home.strategy.researchStrategySpecId,
+        session_start: request.sessionStart,
+        session_end: request.sessionEnd,
+        slippage_bps: request.slippageBps,
+        daily_volume_participation_rate: request.dailyVolumeParticipationRate
+      },
+      {
+        contractVersion: "1.1.0",
+        expectedApiVersion: "1.1",
+        idempotencyKey,
+        timeoutMs: 30_000
+      }
+    ).then(adaptResearchBacktestOutcome).finally(() => this.inflightResearchBacktest.delete(key));
+    this.inflightResearchBacktest.set(key, pending);
+    return pending;
+  }
+
+  async previewResearchBacktest(request: ProductResearchBacktestIntent): Promise<ProductResearchBacktestPreviewView> {
+    this.requireBinding();
+    assertResearchBacktestIntent(request);
+    const home = await this.getProjectHome();
+    if (home.dataState !== "AVAILABLE" || home.data === null || home.strategyState !== "AVAILABLE" || home.strategy === null) {
+      throw new ProductAdapterError("TRUTH_PRECONDITION_FAILED", "Backtest preflight requires current Data and Strategy owners");
+    }
+    const response = await this.supervisor.request(
+      "ProductEntryService.v1.previewResearchBacktest",
+      {
+        research_strategy_spec_id: home.strategy.researchStrategySpecId,
+        session_start: request.sessionStart,
+        session_end: request.sessionEnd,
+        slippage_bps: request.slippageBps,
+        daily_volume_participation_rate: request.dailyVolumeParticipationRate
+      },
+      { contractVersion: "1.1.0", expectedApiVersion: "1.1", timeoutMs: 30_000 }
+    );
+    const preview = adaptResearchBacktestPreview(response);
+    if (
+      preview.projectId !== home.projectId
+      || preview.projectContextRevisionId !== home.projectContextRevisionId
+      || preview.researchStrategySpecId !== home.strategy.researchStrategySpecId
+      || preview.snapshotId !== home.data.snapshotId
+      || preview.universeVersionId !== home.data.universeVersionId
+      || preview.sessionStart !== request.sessionStart
+      || preview.sessionEnd !== request.sessionEnd
+      || preview.slippageBps !== request.slippageBps
+      || preview.dailyVolumeParticipationRate !== request.dailyVolumeParticipationRate
+    ) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Backtest preflight does not match current Home intent");
+    return preview;
   }
 
   async dispose(): Promise<void> {

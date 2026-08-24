@@ -2373,7 +2373,14 @@ class PortfolioRiskFinalClosureRDTests(PortfolioRiskAgentFixture):
             self.cost_policy,
             engine_version="v3.a_share_daily_eod_engine/9.9.9",
         )
-        right = self._request_with_spec(spec2)
+
+        class AlternateVersionEngine(DeterministicAshareBacktestEngine):
+            legacy_engine_version = "v3.a_share_daily_eod_engine/9.9.9"
+
+        right = self._request_with_spec(
+            spec2,
+            result=AlternateVersionEngine().run(spec2),
+        )
         self._assert_incomparable(left, right, "engine_version")
 
     def test_final_rd_13_different_analytics_policy_incomparable(self):

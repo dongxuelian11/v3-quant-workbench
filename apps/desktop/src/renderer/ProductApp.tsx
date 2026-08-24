@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ProductDataWorkspace } from "./components/ProductDataWorkspace";
+import { ProductBacktestWorkspace } from "./components/ProductBacktestWorkspace";
 import { ProductFactorWorkspace } from "./components/ProductFactorWorkspace";
+import { ProductResultsWorkspace } from "./components/ProductResultsWorkspace";
 import { ProductRuntimePanel } from "./components/ProductRuntimePanel";
 import { WindowControls } from "./components/WindowControls";
 import { useProductRuntime } from "./productRuntimeStore";
@@ -10,7 +12,7 @@ export function ProductApp() {
   const boundProject = useProductRuntime((state) => state.boundProject);
   const projects = useProductRuntime((state) => state.projects);
   const dataHome = useProductRuntime((state) => state.dataHome);
-  const [activePage, setActivePage] = useState<"home" | "data" | "research">("home");
+  const [activePage, setActivePage] = useState<"home" | "data" | "research" | "backtest" | "results">("home");
   const currentProjectLabel = selectCurrentProjectLabel(boundProject, projects?.projects ?? []);
   const navigation = useMemo(() => productNavigationFor(
     boundProject !== null
@@ -20,7 +22,13 @@ export function ProductApp() {
       && typeof window.v3ProductRuntime?.getProjectHome === "function",
     dataHome?.dataState === "AVAILABLE"
       && typeof window.v3ProductRuntime?.submitFactorStudy === "function"
-      && typeof window.v3ProductRuntime?.getProjectHome === "function"
+      && typeof window.v3ProductRuntime?.getProjectHome === "function",
+    dataHome?.factorState === "AVAILABLE"
+      && typeof window.v3ProductRuntime?.publishResearchStrategy === "function"
+      && typeof window.v3ProductRuntime?.submitResearchBacktest === "function",
+    dataHome?.backtestState === "AVAILABLE"
+      && dataHome.backtest?.resultState === "VALID"
+      && typeof window.v3ProductRuntime?.getLatestProductResultDetails === "function"
   ), [boundProject, dataHome]);
   useEffect(() => {
     if (activePage !== "home" && !navigation.find((item) => item.id === activePage)?.available) setActivePage("home");
@@ -42,7 +50,7 @@ export function ProductApp() {
           className={item.id === activePage ? "active" : undefined}
           aria-current={item.id === activePage ? "page" : undefined}
           disabled={!item.available}
-          onClick={() => { if (item.id === "home" || item.id === "data" || item.id === "research") setActivePage(item.id); }}
+          onClick={() => { if (item.available) setActivePage(item.id); }}
           title={item.reason ?? item.label}
           aria-label={item.reason === null ? item.label : `${item.label}，${item.reason}`}
           data-product-page={item.id}
@@ -60,7 +68,10 @@ export function ProductApp() {
 
     {activePage === "home"
       ? <main className="product-home" data-product-page="home"><ProductRuntimePanel /></main>
-      : activePage === "data" ? <ProductDataWorkspace /> : <ProductFactorWorkspace />}
+      : activePage === "data" ? <ProductDataWorkspace />
+        : activePage === "research" ? <ProductFactorWorkspace />
+          : activePage === "backtest" ? <ProductBacktestWorkspace />
+            : <ProductResultsWorkspace />}
 
     <footer className="product-truth-footer">
       <span>正式能力以 canonical backend read model 为准</span>

@@ -199,22 +199,49 @@ export function adaptTaskEvents(raw: unknown): ProductTaskEventsView {
     const item = record(entry, "task event");
     const eventType = stringField(item, "event_type");
     let resultId: string | null = null;
+    let progress: ProductTaskEventView["progress"] = null;
     if (eventType === "TASK_SUCCEEDED") {
-      const body = item.body;
-      if (body !== null && typeof body === "object" && !Array.isArray(body)) {
-        const outputs = (body as Record<string, unknown>).outputs;
+      const eventBody = item.body;
+      if (eventBody !== null && typeof eventBody === "object" && !Array.isArray(eventBody)) {
+        const direct = (eventBody as Record<string, unknown>).result_id;
+        if (typeof direct === "string" && direct.length > 0) resultId = direct;
+        const outputs = (eventBody as Record<string, unknown>).outputs;
         if (outputs !== null && typeof outputs === "object" && !Array.isArray(outputs)) {
           const candidate = (outputs as Record<string, unknown>).result_id;
           if (typeof candidate === "string" && candidate.length > 0) resultId = candidate;
         }
       }
+    } else if (eventType === "TASK_PROGRESS") {
+      const eventBody = record(item.body, "task progress body");
+      const keys = Object.keys(eventBody).sort().join(",");
+      const phase = eventBody.phase;
+      const completedUnits = eventBody.completed_units;
+      const totalUnits = eventBody.total_units;
+      const workUnit = eventBody.work_unit;
+      if (
+        keys !== "completed_units,phase,total_units,work_unit"
+        || !["ACQUIRING", "VALIDATING", "COMPUTING", "PUBLISHING", "RECONCILING"].includes(String(phase))
+        || !Number.isSafeInteger(completedUnits) || Number(completedUnits) < 0
+        || !Number.isSafeInteger(totalUnits) || Number(totalUnits) < 1 || Number(completedUnits) > Number(totalUnits)
+        || typeof workUnit !== "string" || workUnit.length < 1 || workUnit.length > 128
+      ) {
+        throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "task progress event is invalid");
+      }
+      progress = Object.freeze({
+        phase: phase as NonNullable<ProductTaskEventView["progress"]>["phase"],
+        completedUnits: Number(completedUnits),
+        totalUnits: Number(totalUnits),
+        workUnit
+      });
     }
     return Object.freeze({
       eventId: stringField(item, "event_id"),
+      taskId: stringField(item, "task_id"),
       projectSequence: intField(item, "project_sequence"),
       eventType,
       occurredAt: stringField(item, "occurred_at"),
-      resultId
+      resultId,
+      progress
     });
   });
   return Object.freeze({ items: Object.freeze(items), highWatermark: intField(model, "high_watermark") });

@@ -136,7 +136,10 @@ test("ACC-C2-01 cancel, non-regular, reparse and replacement race fail before tr
     );
 
     const file = join(dir, "bars.csv");
-    await writeFile(file, "symbol,date,open,high,low,close,volume,amount\n");
+    const originalBytes = "symbol,date,open,high,low,close,volume,amount\n";
+    const replacementBytes = "replacement changes the exact source identity\n";
+    assert.equal(Buffer.byteLength(replacementBytes), Buffer.byteLength(originalBytes));
+    await writeFile(file, originalBytes);
     await assert.rejects(
       () => new LocalDataSourceBroker({
         chooseFile: async () => file,
@@ -147,7 +150,7 @@ test("ACC-C2-01 cancel, non-regular, reparse and replacement race fail before tr
 
     const broker = new LocalDataSourceBroker({ chooseFile: async () => file });
     const selection = await broker.chooseSource();
-    await writeFile(file, "replacement changes the exact source identity\n");
+    await writeFile(file, replacementBytes);
     let controlCalls = 0;
     await assert.rejects(
       () => broker.transferSource({

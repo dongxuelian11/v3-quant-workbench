@@ -16,6 +16,7 @@ from v3_backend.domain.tasks.retry_policy import ErrorCategory, RetryPolicy
 from v3_backend.errors.exceptions import InvalidArgumentError
 from v3_backend.runtime.composition_root import RequestRouter
 from v3_backend.runtime.product_entry import _decode_files
+from v3_backend.runtime.product_facades import BacktestFacade
 from v3_backend.runtime.product_runtime import (
     ADMITTED_EXECUTION_ADAPTER_VERSION_ID,
     BUILD_MANIFEST,
@@ -122,7 +123,9 @@ class TaskResultTruthTests(unittest.TestCase):
         self.storage_root = Path(self.temporary.name)
         self.setup = build_product_golden_project(self.storage_root)
         self.product = build_product_runtime(self.storage_root)
-        self.router = RequestRouter(build_product_ports(self.storage_root).operation_handlers)
+        handlers = dict(build_product_ports(self.storage_root).operation_handlers)
+        handlers.update(BacktestFacade(self.product).handlers())
+        self.router = RequestRouter(handlers)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()

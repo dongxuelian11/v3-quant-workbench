@@ -70,8 +70,11 @@ test("real Python bootstrap completes framed authenticated handshake and gracefu
     // incomplete service stay honestly UNAVAILABLE on the normal path.
     assert.deepEqual(
       supervisor.capabilities.filter((item) => item.truth_state === "FORMAL").map((item) => item.code).sort(),
-      ["ArtifactService", "BacktestService", "ProductEntryService", "ProjectSessionService"]
+      ["ArtifactService", "ProductEntryService", "ProjectSessionService"]
     );
+    const backtestCapability = supervisor.capabilities.find((item) => item.code === "BacktestService");
+    assert.equal(backtestCapability?.truth_state, "UNAVAILABLE");
+    assert.equal(backtestCapability?.reason_code, "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED");
     const taskCapability = supervisor.capabilities.find((item) => item.code === "TaskService");
     assert.equal(taskCapability?.truth_state, "UNAVAILABLE");
     assert.equal(taskCapability?.reason_code, "PRODUCT_OPERATION_SET_INCOMPLETE");

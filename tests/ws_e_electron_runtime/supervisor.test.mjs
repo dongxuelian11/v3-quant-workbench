@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
@@ -97,6 +98,10 @@ class MockBackend {
   queuedProductEntryRequests = [];
   localDataMode = "ok";
   queuedLocalDataRequests = [];
+  artifactStreamMode = "ok";
+  queuedArtifactStreamRequests = [];
+  artifactExportMode = "ok";
+  queuedArtifactExportRequests = [];
 
   constructor(process, index, protocol = "v3.local/1.0") {
     this.process = process;
@@ -177,6 +182,18 @@ class MockBackend {
         return;
       }
       this.respondLocalData(message);
+    } else if (message.kind === "artifactStream.consume") {
+      if (this.artifactStreamMode === "queue") {
+        this.queuedArtifactStreamRequests.push(message);
+        return;
+      }
+      this.respondArtifactStream(message, Buffer.from("artifact-stream", "utf8"));
+    } else if (message.kind === "artifactExport.complete" || message.kind === "artifactExport.fail") {
+      if (this.artifactExportMode === "queue") {
+        this.queuedArtifactExportRequests.push(message);
+        return;
+      }
+      this.respondArtifactExport(message);
     } else if (message.kind === "runtime.prepareShutdown") {
       this.send({
         kind: "runtime.shutdownReady",
@@ -236,6 +253,53 @@ class MockBackend {
       max_chunk_bytes: 262144,
       control_request_id: request.control_request_id,
       runtime_generation: request.runtime_generation
+    });
+  }
+
+  respondArtifactStream(request, payload, overrides = {}) {
+    const artifactSha = createHash("sha256").update(payload).digest("hex");
+    const artifactId = `art_sha256_${artifactSha}`;
+    let offset = 0;
+    for (let start = 0; start < payload.byteLength; start += 128 * 1024) {
+      const part = payload.subarray(start, Math.min(payload.byteLength, start + 128 * 1024));
+      this.send({
+        kind: "artifactStream.chunk",
+        ticket_id: request.ticket_id,
+        artifact_id: artifactId,
+        offset,
+        payload_base64: part.toString("base64"),
+        chunk_sha256: createHash("sha256").update(part).digest("hex"),
+        control_request_id: request.control_request_id,
+        runtime_generation: request.runtime_generation,
+        ...overrides
+      });
+      offset += part.byteLength;
+    }
+    this.send({
+      kind: "artifactStream.complete",
+      ticket_id: request.ticket_id,
+      artifact_id: artifactId,
+      total_byte_count: payload.byteLength,
+      artifact_sha256: artifactSha,
+      range_start: 0,
+      range_end_exclusive: payload.byteLength,
+      control_request_id: request.control_request_id,
+      runtime_generation: request.runtime_generation
+    });
+  }
+
+  respondArtifactExport(request, overrides = {}) {
+    this.send({
+      kind: request.kind === "artifactExport.complete"
+        ? "artifactExport.completed"
+        : "artifactExport.failed",
+      task_id: request.task_id,
+      ...(request.kind === "artifactExport.complete"
+        ? { manifest_artifact_id: `art_sha256_${"c".repeat(64)}` }
+        : {}),
+      control_request_id: request.control_request_id,
+      runtime_generation: request.runtime_generation,
+      ...overrides
     });
   }
 
@@ -499,6 +563,166 @@ test("local-data control is correlated, generation-fenced and rejects every path
   } finally {
     supervisor.stopNow();
   }
+});
+
+test("ACC-C3-09 artifact stream verifies correlated chunks and exact complete identity", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  const payload = Buffer.alloc(300 * 1024 + 17, 0x61);
+  const sha256 = createHash("sha256").update(payload).digest("hex");
+  const artifactId = `art_sha256_${sha256}`;
+  backend.artifactStreamMode = "queue";
+  try {
+    const pending = supervisor.consumeArtifactStream({
+      ticketId: `stk_${"0".repeat(26)}`,
+      artifactId,
+      expectedSha256: sha256,
+      expectedByteSize: payload.byteLength
+    }, 500);
+    await waitFor(() => backend.queuedArtifactStreamRequests.length === 1);
+    const request = backend.queuedArtifactStreamRequests[0];
+    assert.equal(request.project_id, PROJECT_ID);
+    assert.equal(request.project_context_revision_id, REVISION_ID);
+    backend.respondArtifactStream(request, payload);
+    const result = await pending;
+    assert.equal(result.artifactId, artifactId);
+    assert.equal(result.sha256, sha256);
+    assert.deepEqual(Buffer.from(result.bytes), payload);
+  } finally {
+    supervisor.stopNow();
+  }
+});
+
+test("ACC-C3-10 artifact stream writes through a bounded sink before resolving its receipt", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  const payload = Buffer.alloc(300 * 1024 + 17, 0x62);
+  const sha256 = createHash("sha256").update(payload).digest("hex");
+  const artifactId = `art_sha256_${sha256}`;
+  const written = [];
+  backend.artifactStreamMode = "queue";
+  try {
+    const pending = supervisor.streamArtifactToSink({
+      ticketId: `stk_${"3".repeat(26)}`,
+      artifactId,
+      expectedSha256: sha256,
+      expectedByteSize: payload.byteLength
+    }, async (chunk, offset) => {
+      assert.equal(offset, written.reduce((total, item) => total + item.byteLength, 0));
+      assert.ok(chunk.byteLength <= 256 * 1024);
+      await Promise.resolve();
+      written.push(Buffer.from(chunk));
+    }, 500);
+    await waitFor(() => backend.queuedArtifactStreamRequests.length === 1);
+    backend.respondArtifactStream(backend.queuedArtifactStreamRequests[0], payload);
+    assert.deepEqual(await pending, {
+      artifactId,
+      sha256,
+      byteSize: payload.byteLength
+    });
+    assert.deepEqual(Buffer.concat(written), payload);
+  } finally {
+    supervisor.stopNow();
+  }
+});
+
+test("ACC-C3-10 artifact export completion/failure controls are correlated and main-owned", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.artifactExportMode = "queue";
+  try {
+    const completion = supervisor.artifactExportControl({
+      kind: "artifactExport.complete",
+      protocol_version: "v3.artifact-export/1.0.0",
+      project_id: PROJECT_ID,
+      project_context_revision_id: REVISION_ID,
+      task_id: `tsk_${"4".repeat(26)}`,
+      destination_token: "edc_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      display_name: "result.json",
+      artifact_id: `art_sha256_${"a".repeat(64)}`,
+      sha256: "a".repeat(64),
+      byte_size: 12,
+      completed_at: "2026-08-24T00:00:00.000Z"
+    }, 500);
+    await waitFor(() => backend.queuedArtifactExportRequests.length === 1);
+    const request = backend.queuedArtifactExportRequests[0];
+    assert.equal(request.kind, "artifactExport.complete");
+    assert.match(request.control_request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(Number.isSafeInteger(request.runtime_generation), true);
+    backend.respondArtifactExport(request);
+    assert.deepEqual(await completion, {
+      kind: "artifactExport.completed",
+      task_id: `tsk_${"4".repeat(26)}`,
+      manifest_artifact_id: `art_sha256_${"c".repeat(64)}`
+    });
+
+    const failure = supervisor.artifactExportControl({
+      kind: "artifactExport.fail",
+      protocol_version: "v3.artifact-export/1.0.0",
+      project_id: PROJECT_ID,
+      project_context_revision_id: REVISION_ID,
+      task_id: `tsk_${"5".repeat(26)}`,
+      destination_token: "edc_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+      reason_code: "ARTIFACT_EXPORT_WRITE_FAILED"
+    }, 500);
+    await waitFor(() => backend.queuedArtifactExportRequests.length === 2);
+    backend.respondArtifactExport(backend.queuedArtifactExportRequests[1]);
+    assert.deepEqual(await failure, {
+      kind: "artifactExport.failed",
+      task_id: `tsk_${"5".repeat(26)}`
+    });
+  } finally {
+    supervisor.stopNow();
+  }
+});
+
+test("ACC-C3-09 artifact stream rejects wrong generation and corrupt chunk hash", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false, requestTimeoutMs: 50 });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  const payload = Buffer.from("verified artifact bytes", "utf8");
+  const sha256 = createHash("sha256").update(payload).digest("hex");
+  const artifactId = `art_sha256_${sha256}`;
+  backend.artifactStreamMode = "queue";
+  const pending = supervisor.consumeArtifactStream({
+    ticketId: `stk_${"1".repeat(26)}`,
+    artifactId,
+    expectedSha256: sha256,
+    expectedByteSize: payload.byteLength
+  }, 80);
+  await waitFor(() => backend.queuedArtifactStreamRequests.length === 1);
+  const request = backend.queuedArtifactStreamRequests[0];
+  backend.send({
+    kind: "artifactStream.chunk",
+    ticket_id: request.ticket_id,
+    artifact_id: artifactId,
+    offset: 0,
+    payload_base64: payload.toString("base64"),
+    chunk_sha256: "0".repeat(64),
+    control_request_id: request.control_request_id,
+    runtime_generation: request.runtime_generation + 1
+  });
+  await assert.rejects(pending, (error) => error.code === "BACKEND_TIMEOUT");
+  assert.equal(supervisor.state, "READY");
+
+  const corrupt = supervisor.consumeArtifactStream({
+    ticketId: `stk_${"2".repeat(26)}`,
+    artifactId,
+    expectedSha256: sha256,
+    expectedByteSize: payload.byteLength
+  }, 200);
+  await waitFor(() => backend.queuedArtifactStreamRequests.length === 2);
+  const corruptRequest = backend.queuedArtifactStreamRequests[1];
+  backend.respondArtifactStream(corruptRequest, payload, { chunk_sha256: "0".repeat(64) });
+  await assert.rejects(corrupt);
+  assert.notEqual(supervisor.state, "READY");
 });
 
 test("release acceptance provider is absent by default and forwarded only when explicitly configured", async () => {

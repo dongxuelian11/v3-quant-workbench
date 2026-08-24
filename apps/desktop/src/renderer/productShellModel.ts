@@ -13,9 +13,17 @@ export const PRODUCT_NAVIGATION: readonly ProductNavigationItem[] = Object.freez
   Object.freeze({ id: "results", label: "结果", available: false, reason: "NOT_AVAILABLE · V1_1_C3_RESULTS_NOT_CONNECTED" }),
 ]);
 
-export function productNavigationFor(dataConnected: boolean, factorConnected = false): readonly ProductNavigationItem[] {
+export function productNavigationFor(
+  dataConnected: boolean,
+  factorConnected = false,
+  backtestConnected = false,
+  resultsConnected = false
+): readonly ProductNavigationItem[] {
   return Object.freeze(PRODUCT_NAVIGATION.map((item) => (
-    (item.id === "data" && dataConnected) || (item.id === "research" && factorConnected)
+    (item.id === "data" && dataConnected)
+      || (item.id === "research" && factorConnected)
+      || (item.id === "backtest" && backtestConnected)
+      || (item.id === "results" && resultsConnected)
   ) ? Object.freeze({ ...item, available: true, reason: null }) : item));
 }
 

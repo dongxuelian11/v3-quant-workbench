@@ -48,6 +48,8 @@
     "smoke:product-research": "node scripts/product-research-smoke.mjs",
     "smoke:product-data": "node scripts/run-v1-1-product-smoke.mjs data",
     "smoke:product-factor": "node scripts/run-v1-1-product-smoke.mjs factor",
+    "smoke:product-backtest": "node scripts/run-v1-1-product-smoke.mjs backtest",
+    "smoke:product-result": "node scripts/run-v1-1-product-smoke.mjs result",
     "package:win": "npm run package:win:release",
     "package:win:unpacked": "npm run build && node scripts/prepare-packaged-backend.mjs && electron-builder --win dir --x64 --config electron-builder.yml",
     "package:win:release": "npm run build && node scripts/prepare-packaged-backend.mjs && electron-builder --win --x64 --config electron-builder.yml --publish never",

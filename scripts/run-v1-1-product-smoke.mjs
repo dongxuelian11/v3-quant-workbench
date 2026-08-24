@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
 const mode = process.argv[2];
-if (mode !== "data" && mode !== "factor") {
-  throw new Error("usage: run-v1-1-product-smoke.mjs <data|factor>");
+if (!["data", "factor", "backtest", "result"].includes(mode)) {
+  throw new Error("usage: run-v1-1-product-smoke.mjs <data|factor|backtest|result>");
 }
 
 const root = resolve(import.meta.dirname, "..");
@@ -28,7 +28,13 @@ const env = {
 try {
   const result = spawnSync(
     python,
-    [resolve(root, "scripts", `v1_1_product_${mode}_smoke.py`), storage],
+    [
+      resolve(root, "scripts", mode === "backtest" || mode === "result"
+        ? "v1_1_product_c3_smoke.py"
+        : `v1_1_product_${mode}_smoke.py`),
+      storage,
+      mode
+    ],
     { cwd: root, env, encoding: "utf8" }
   );
   if (result.status !== 0) {

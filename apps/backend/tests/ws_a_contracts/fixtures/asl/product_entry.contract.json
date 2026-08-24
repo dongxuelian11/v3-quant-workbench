@@ -28,29 +28,6 @@
   ],
   "methods": [
     {
-      "operation_id": "ProductEntryService.v1.listBacktestRunSpecs",
-      "version": "1.0.0",
-      "kind": "QUERY",
-      "idempotency": {
-        "mode": "REQUEST_ID",
-        "scope": "operation_id + project_id + request_id",
-        "same_key_same_canonical_request": "return_original_outcome",
-        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
-      },
-      "async_behavior": {
-        "creates_task_run": false,
-        "run_identity_inputs": [],
-        "artifact_outputs": [],
-        "cancel": "NOT_APPLICABLE",
-        "retry": "NOT_APPLICABLE",
-        "resume": "NOT_APPLICABLE",
-        "input_change": "NOT_APPLICABLE",
-        "attempt_rule": "NOT_APPLICABLE"
-      },
-      "truth_pit_preconditions": [
-        "ProjectContextRevision exists, belongs to the request project, and is current",
-        "Every listed run spec reference is resolved through actual verified artifact bytes"
-      ],
       "errors": [
         "INVALID_ARGUMENT",
         "VERSION_MISMATCH",
@@ -61,6 +38,9 @@
         "INTERNAL_ERROR"
       ],
       "capability_notes": "Discovery only; tampered or missing artifacts are reported UNAVAILABLE with a diagnostic and are never listed executable.",
+      "operation_id": "ProductEntryService.v1.listBacktestRunSpecs",
+      "version": "1.0.0",
+      "kind": "QUERY",
       "request_dto": {
         "name": "ListBacktestRunSpecsRequestV1",
         "schema": {
@@ -251,34 +231,6 @@
       }
     },
     {
-      "operation_id": "ProductEntryService.v1.importResearchPackage",
-      "version": "1.0.0",
-      "kind": "COMMAND",
-      "idempotency": {
-        "mode": "IDEMPOTENCY_KEY",
-        "scope": "operation_id + project_id + idempotency_key",
-        "same_key_same_canonical_request": "return_original_outcome",
-        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
-      },
-      "async_behavior": {
-        "creates_task_run": false,
-        "run_identity_inputs": [],
-        "artifact_outputs": [
-          "RESEARCH_RUN_SPEC reference",
-          "RESEARCH_RUN_CONTEXT reference"
-        ],
-        "cancel": "NOT_APPLICABLE",
-        "retry": "NOT_APPLICABLE",
-        "resume": "NOT_APPLICABLE",
-        "input_change": "NOT_APPLICABLE",
-        "attempt_rule": "NOT_APPLICABLE"
-      },
-      "truth_pit_preconditions": [
-        "ProjectContextRevision exists, belongs to the request project, and is current",
-        "Every package payload byte/hash/identity is verified before any registration",
-        "Every source/owner row and actual payload byte already exists in target canonical state and matches exactly",
-        "Package-provided source/owner rows are comparison material only and are never inserted as authority"
-      ],
       "errors": [
         "INVALID_ARGUMENT",
         "VERSION_MISMATCH",
@@ -292,6 +244,9 @@
         "INTERNAL_ERROR"
       ],
       "capability_notes": "Whole-package verification of a v3.research-package/1.0.0 manifest and actual payload bytes; atomic all-or-nothing registration; no caller numeric financial truth is trusted.",
+      "operation_id": "ProductEntryService.v1.importResearchPackage",
+      "version": "1.0.0",
+      "kind": "COMMAND",
       "request_dto": {
         "name": "ImportResearchPackageRequestV1",
         "schema": {
@@ -452,41 +407,6 @@
       }
     },
     {
-      "operation_id": "ProductEntryService.v1.submitResearch",
-      "version": "1.0.0",
-      "kind": "COMMAND",
-      "idempotency": {
-        "mode": "IDEMPOTENCY_KEY",
-        "scope": "operation_id + project_id + idempotency_key",
-        "same_key_same_canonical_request": "return_original_outcome",
-        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
-      },
-      "async_behavior": {
-        "creates_task_run": true,
-        "run_identity_inputs": [
-          "project_id",
-          "project_context_revision_id",
-          "research_profile_id",
-          "strategy_profile_id",
-          "canonical provider/source intent"
-        ],
-        "artifact_outputs": [
-          "BACKTEST_RUN_RESULT reference",
-          "LEDGER_MANIFEST reference",
-          "RESEARCH_PIPELINE_LINEAGE reference"
-        ],
-        "cancel": "NOT_APPLICABLE",
-        "retry": "NOT_APPLICABLE",
-        "resume": "NOT_APPLICABLE",
-        "input_change": "new idempotency key",
-        "attempt_rule": "one durable inline attempt"
-      },
-      "truth_pit_preconditions": [
-        "ProjectContextRevision exists, belongs to the request project, and is current",
-        "Provider/source refs match the exact admitted Product Entry profile",
-        "Backend resolves and verifies provider raw bytes before constructing internal observations",
-        "PIT, paid-data, and Formal Market State semantics remain unavailable and are not inferred"
-      ],
       "errors": [
         "INVALID_ARGUMENT",
         "VERSION_MISMATCH",
@@ -499,6 +419,9 @@
         "INTERNAL_ERROR"
       ],
       "capability_notes": "One Product Entry source-admission composition: canonical provider refs -> backend actual source bytes -> internal ResearchSessionObservation -> existing CoreResearchPipelineService. Caller observations, bars, returns, weights, fixtures, and alternate engines are not accepted.",
+      "operation_id": "ProductEntryService.v1.submitResearch",
+      "version": "1.0.0",
+      "kind": "COMMAND",
       "request_dto": {
         "name": "SubmitResearchRequestV1",
         "schema": {
@@ -705,41 +628,6 @@
       }
     },
     {
-      "operation_id": "ProductEntryService.v1.importLocalDataset",
-      "version": "1.1.0",
-      "kind": "COMMAND",
-      "idempotency": {
-        "mode": "IDEMPOTENCY_KEY",
-        "scope": "operation_id + project_id + idempotency_key",
-        "same_key_same_canonical_request": "return_original_outcome",
-        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
-      },
-      "async_behavior": {
-        "creates_task_run": true,
-        "run_identity_inputs": [
-          "project_id",
-          "project_context_revision_id",
-          "immutable local source Artifact ref",
-          "explicit unit/timezone/adjustment semantics"
-        ],
-        "artifact_outputs": [
-          "RawCapture",
-          "DataSnapshotVersion",
-          "UniverseVersion",
-          "local data read model"
-        ],
-        "cancel": "real isolated child cancellation",
-        "retry": "NEW_ATTEMPT_SAME_RUN_FROM_START",
-        "resume": "UNAVAILABLE",
-        "input_change": "new idempotency key",
-        "attempt_rule": "durable Task before isolated import work"
-      },
-      "truth_pit_preconditions": [
-        "ProjectContextRevision exists, belongs to the request project, and is current for new acceptance",
-        "Source Artifact is PUBLISHED, byte-identity matched, and actively reachable from the same project",
-        "Worker streams and verifies actual Artifact bytes before normalization",
-        "Local user data remains NOT_FORMAL / PRE_ALPHA / PIT_UNPROVABLE"
-      ],
       "errors": [
         "INVALID_ARGUMENT",
         "VERSION_MISMATCH",
@@ -752,6 +640,9 @@
         "INTERNAL_ERROR"
       ],
       "capability_notes": "Additive V1.1 local CSV/Parquet orchestration. The request carries an immutable project-scoped Artifact ref and explicit semantics only; raw paths, capability tokens, payload bytes, bars, and caller-minted canonical owner IDs are outside the ASL contract.",
+      "operation_id": "ProductEntryService.v1.importLocalDataset",
+      "version": "1.1.0",
+      "kind": "COMMAND",
       "request_dto": {
         "name": "ImportLocalDatasetRequestV1_1",
         "schema": {
@@ -945,42 +836,6 @@
       }
     },
     {
-      "operation_id": "ProductEntryService.v1.submitFactorStudy",
-      "version": "1.1.0",
-      "kind": "COMMAND",
-      "idempotency": {
-        "mode": "IDEMPOTENCY_KEY",
-        "scope": "operation_id + project_id + idempotency_key",
-        "same_key_same_canonical_request": "return_original_outcome",
-        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
-      },
-      "async_behavior": {
-        "creates_task_run": true,
-        "run_identity_inputs": [
-          "project_id",
-          "project_context_revision_id",
-          "bounded user-authored TDX source",
-          "analysis output name"
-        ],
-        "artifact_outputs": [
-          "FormulaDocumentVersion",
-          "FactorDefinitionVersion",
-          "FactorMaterialization",
-          "FactorAnalysisResult",
-          "Factor study read model"
-        ],
-        "cancel": "real isolated child cancellation",
-        "retry": "NEW_ATTEMPT_SAME_RUN_FROM_START",
-        "resume": "UNAVAILABLE",
-        "input_change": "new idempotency key",
-        "attempt_rule": "durable Task before isolated Factor work"
-      },
-      "truth_pit_preconditions": [
-        "ProjectContextRevision exists, belongs to the request project, and is current for new acceptance",
-        "Snapshot and Universe are PUBLISHED, validated, project-reachable, and actual bytes match immutable descriptors",
-        "TDX source translates through the registered operator and SHARES-to-HANDS semantic profiles",
-        "Factor study remains NOT_FORMAL / PRE_ALPHA"
-      ],
       "errors": [
         "INVALID_ARGUMENT",
         "VERSION_MISMATCH",
@@ -993,6 +848,9 @@
         "INTERNAL_ERROR"
       ],
       "capability_notes": "Additive V1.1 Factor orchestration. The request carries bounded user TDX source and an output name only; bars, factor values, Snapshot/Universe IDs, Artifact IDs, and caller-minted canonical owner IDs are outside the contract.",
+      "operation_id": "ProductEntryService.v1.submitFactorStudy",
+      "version": "1.1.0",
+      "kind": "COMMAND",
       "request_dto": {
         "name": "SubmitFactorStudyRequestV1_1",
         "schema": {
@@ -1139,29 +997,901 @@
       }
     },
     {
-      "operation_id": "ProductEntryService.v1.getProjectHome",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "TRUTH_PRECONDITION_FAILED",
+        "RESOURCE_REJECTED",
+        "CAPABILITY_UNAVAILABLE",
+        "INTERNAL_ERROR"
+      ],
+      "capability_notes": "Side-effect-free exact-owner validation and canonical Strategy compile preview; creates no Task, Artifact, StrategyVersion or publication row.",
+      "operation_id": "ProductEntryService.v1.previewResearchStrategy",
       "version": "1.1.0",
       "kind": "QUERY",
-      "idempotency": {
-        "mode": "REQUEST_ID",
-        "scope": "operation_id + project_id + request_id",
-        "same_key_same_canonical_request": "return_original_outcome",
-        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      "request_dto": {
+        "name": "PreviewResearchStrategyRequestV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "universe_version_id",
+            "entry_signal_factor_version_id",
+            "exit_signal_factor_version_id",
+            "position_sizing",
+            "max_positions",
+            "gross_exposure",
+            "rebalance",
+            "cost_policy_version_id",
+            "execution_policy_version_id",
+            "risk_policy_set_version_id",
+            "initial_cash",
+            "assumption_profile_id"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "const": "1.1"
+            },
+            "universe_version_id": {
+              "type": "string",
+              "pattern": "^unv_sha256_[0-9a-f]{64}$"
+            },
+            "entry_signal_factor_version_id": {
+              "type": "string",
+              "pattern": "^fdv_sha256_[0-9a-f]{64}$"
+            },
+            "exit_signal_factor_version_id": {
+              "type": "string",
+              "pattern": "^fdv_sha256_[0-9a-f]{64}$"
+            },
+            "position_sizing": {
+              "type": "string",
+              "enum": [
+                "SINGLE_ASSET_FULL_WEIGHT",
+                "EQUAL_WEIGHT_ACTIVE_SIGNALS"
+              ]
+            },
+            "max_positions": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "gross_exposure": {
+              "type": "string",
+              "pattern": "^(?:0(?:\\.[0-9]+)?|1(?:\\.0+)?)$"
+            },
+            "rebalance": {
+              "type": "string",
+              "const": "NEXT_OPEN_AFTER_SIGNAL"
+            },
+            "cost_policy_version_id": {
+              "type": "string",
+              "pattern": "^cost_sha256_[0-9a-f]{64}$"
+            },
+            "execution_policy_version_id": {
+              "type": "string",
+              "pattern": "^timing_sha256_[0-9a-f]{64}$"
+            },
+            "risk_policy_set_version_id": {
+              "type": "string",
+              "pattern": "^rpsv_sha256_[0-9a-f]{64}$"
+            },
+            "initial_cash": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]*(?:\\.[0-9]+)?|0\\.[0-9]*[1-9][0-9]*)$"
+            },
+            "assumption_profile_id": {
+              "type": "string",
+              "pattern": "^assumption_sha256_[0-9a-f]{64}$"
+            }
+          }
+        }
       },
-      "async_behavior": {
-        "creates_task_run": false,
-        "run_identity_inputs": [],
-        "artifact_outputs": [],
-        "cancel": "NOT_APPLICABLE",
-        "retry": "NOT_APPLICABLE",
-        "resume": "NOT_APPLICABLE",
-        "input_change": "NOT_APPLICABLE",
-        "attempt_rule": "NOT_APPLICABLE"
-      },
-      "truth_pit_preconditions": [
-        "ProjectContextRevision exists, belongs to the request project, and is current",
-        "Data is projected only from the current canonical Snapshot and its persisted project-scoped read model"
+      "response_dto": {
+        "name": "PreviewResearchStrategyResponseV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "const": "NOT_FORMAL"
+            },
+            "read_model": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_version",
+                "maturity",
+                "truth",
+                "admission",
+                "project_id",
+                "project_context_revision_id",
+                "snapshot_id",
+                "universe_version_id",
+                "research_strategy_spec_id",
+                "strategy_definition_version_id",
+                "entry_signal_factor_version_id",
+                "exit_signal_factor_version_id",
+                "profile_refs",
+                "assumption_mode",
+                "transition_count",
+                "planned_decision_chain_count",
+                "side_effects"
+              ],
+              "properties": {
+                "schema_version": {
+                  "type": "string",
+                  "const": "v3.product-strategy-preview/1.0.0"
+                },
+                "maturity": {
+                  "type": "string",
+                  "const": "PRODUCT_CONNECTED"
+                },
+                "truth": {
+                  "type": "string",
+                  "const": "NOT_FORMAL"
+                },
+                "admission": {
+                  "type": "string",
+                  "const": "PRE_ALPHA"
+                },
+                "project_id": {
+                  "type": "string",
+                  "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "project_context_revision_id": {
+                  "type": "string",
+                  "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "snapshot_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                },
+                "universe_version_id": {
+                  "type": "string",
+                  "pattern": "^unv_sha256_[0-9a-f]{64}$"
+                },
+                "research_strategy_spec_id": {
+                  "type": "string",
+                  "pattern": "^rssv_sha256_[0-9a-f]{64}$"
+                },
+                "strategy_definition_version_id": {
+                  "type": "string",
+                  "pattern": "^sdv_sha256_[0-9a-f]{64}$"
+                },
+                "entry_signal_factor_version_id": {
+                  "type": "string",
+                  "pattern": "^fdv_sha256_[0-9a-f]{64}$"
+                },
+                "exit_signal_factor_version_id": {
+                  "type": "string",
+                  "pattern": "^fdv_sha256_[0-9a-f]{64}$"
+                },
+                "profile_refs": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "cost_policy_version_id",
+                    "execution_policy_version_id",
+                    "risk_policy_set_version_id",
+                    "assumption_profile_id"
+                  ],
+                  "properties": {
+                    "cost_policy_version_id": {
+                      "type": "string",
+                      "pattern": "^cost_sha256_[0-9a-f]{64}$"
+                    },
+                    "execution_policy_version_id": {
+                      "type": "string",
+                      "pattern": "^timing_sha256_[0-9a-f]{64}$"
+                    },
+                    "risk_policy_set_version_id": {
+                      "type": "string",
+                      "pattern": "^rpsv_sha256_[0-9a-f]{64}$"
+                    },
+                    "assumption_profile_id": {
+                      "type": "string",
+                      "pattern": "^assumption_sha256_[0-9a-f]{64}$"
+                    }
+                  }
+                },
+                "assumption_mode": {
+                  "type": "string",
+                  "enum": [
+                    "RESEARCH_APPROXIMATE",
+                    "STRICT_FAIL_CLOSED"
+                  ]
+                },
+                "transition_count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 2000000
+                },
+                "planned_decision_chain_count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 2000000
+                },
+                "side_effects": {
+                  "type": "string",
+                  "const": "NONE"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "TRUTH_PRECONDITION_FAILED",
+        "RESOURCE_REJECTED",
+        "CAPABILITY_UNAVAILABLE",
+        "INTERNAL_ERROR"
       ],
+      "capability_notes": "Durably accepts bounded Strategy intent before isolated canonical owner publication; caller numeric weights and Factor values are forbidden.",
+      "operation_id": "ProductEntryService.v1.publishResearchStrategy",
+      "version": "1.1.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "PublishResearchStrategyRequestV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "idempotency_key",
+            "universe_version_id",
+            "entry_signal_factor_version_id",
+            "exit_signal_factor_version_id",
+            "position_sizing",
+            "max_positions",
+            "gross_exposure",
+            "rebalance",
+            "cost_policy_version_id",
+            "execution_policy_version_id",
+            "risk_policy_set_version_id",
+            "initial_cash",
+            "assumption_profile_id"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Transport deduplication identity",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Canonical target project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Current canonical target context revision",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact additive Product Entry API expected by caller",
+              "const": "1.1"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "Idempotency key scoped to operation + project"
+            },
+            "universe_version_id": {
+              "type": "string",
+              "pattern": "^unv_sha256_[0-9a-f]{64}$"
+            },
+            "entry_signal_factor_version_id": {
+              "type": "string",
+              "pattern": "^fdv_sha256_[0-9a-f]{64}$"
+            },
+            "exit_signal_factor_version_id": {
+              "type": "string",
+              "pattern": "^fdv_sha256_[0-9a-f]{64}$"
+            },
+            "position_sizing": {
+              "type": "string",
+              "enum": [
+                "SINGLE_ASSET_FULL_WEIGHT",
+                "EQUAL_WEIGHT_ACTIVE_SIGNALS"
+              ]
+            },
+            "max_positions": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "gross_exposure": {
+              "type": "string",
+              "pattern": "^(?:0(?:\\.[0-9]+)?|1(?:\\.0+)?)$"
+            },
+            "rebalance": {
+              "type": "string",
+              "const": "NEXT_OPEN_AFTER_SIGNAL"
+            },
+            "cost_policy_version_id": {
+              "type": "string",
+              "pattern": "^cost_sha256_[0-9a-f]{64}$"
+            },
+            "execution_policy_version_id": {
+              "type": "string",
+              "pattern": "^timing_sha256_[0-9a-f]{64}$"
+            },
+            "risk_policy_set_version_id": {
+              "type": "string",
+              "pattern": "^rpsv_sha256_[0-9a-f]{64}$"
+            },
+            "initial_cash": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]*(?:\\.[0-9]+)?|0\\.[0-9]*[1-9][0-9]*)$"
+            },
+            "assumption_profile_id": {
+              "type": "string",
+              "pattern": "^assumption_sha256_[0-9a-f]{64}$"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "PublishResearchStrategyResponseV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "const": "NOT_FORMAL"
+            },
+            "read_model": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "read_model_version",
+                "task_id",
+                "run_id",
+                "accepted_state",
+                "maturity",
+                "truth",
+                "admission",
+                "checkpoint_resume",
+                "retry",
+                "research_strategy_spec_id"
+              ],
+              "properties": {
+                "read_model_version": {
+                  "type": "string",
+                  "const": "v3.product-entry-research-strategy/1.1"
+                },
+                "task_id": {
+                  "type": "string",
+                  "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "run_id": {
+                  "type": "string",
+                  "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "accepted_state": {
+                  "type": "string",
+                  "const": "QUEUED"
+                },
+                "maturity": {
+                  "type": "string",
+                  "const": "PRODUCT_CONNECTED"
+                },
+                "truth": {
+                  "type": "string",
+                  "const": "NOT_FORMAL"
+                },
+                "admission": {
+                  "type": "string",
+                  "const": "PRE_ALPHA"
+                },
+                "checkpoint_resume": {
+                  "type": "string",
+                  "const": "UNAVAILABLE"
+                },
+                "retry": {
+                  "type": "string",
+                  "const": "NEW_ATTEMPT_SAME_RUN_FROM_START"
+                },
+                "research_strategy_spec_id": {
+                  "type": "string",
+                  "pattern": "^rssv_sha256_[0-9a-f]{64}$"
+                },
+                "event_cursor": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "TRUTH_PRECONDITION_FAILED",
+        "RESOURCE_REJECTED",
+        "CAPABILITY_UNAVAILABLE",
+        "INTERNAL_ERROR"
+      ],
+      "capability_notes": "Side-effect-free exact-owner, Corporate Action, execution-policy and resource-estimate preflight; creates no Task, Run, Attempt or Artifact.",
+      "operation_id": "ProductEntryService.v1.previewResearchBacktest",
+      "version": "1.1.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "PreviewResearchBacktestRequestV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "research_strategy_spec_id",
+            "session_start",
+            "session_end",
+            "slippage_bps",
+            "daily_volume_participation_rate"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "const": "1.1"
+            },
+            "research_strategy_spec_id": {
+              "type": "string",
+              "pattern": "^rssv_sha256_[0-9a-f]{64}$"
+            },
+            "session_start": {
+              "type": "string",
+              "format": "date"
+            },
+            "session_end": {
+              "type": "string",
+              "format": "date"
+            },
+            "slippage_bps": {
+              "type": "string",
+              "pattern": "^(?:0(?:\\.[0-9]+)?|[1-9][0-9]*(?:\\.[0-9]+)?)$"
+            },
+            "daily_volume_participation_rate": {
+              "type": "string",
+              "pattern": "^(?:0(?:\\.[0-9]*[1-9][0-9]*)?|1(?:\\.0+)?)$"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "PreviewResearchBacktestResponseV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "const": "NOT_FORMAL"
+            },
+            "read_model": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_version",
+                "maturity",
+                "truth",
+                "admission",
+                "status",
+                "project_id",
+                "project_context_revision_id",
+                "research_strategy_spec_id",
+                "research_backtest_request_id",
+                "snapshot_id",
+                "universe_version_id",
+                "session_start",
+                "session_end",
+                "slippage_bps",
+                "daily_volume_participation_rate",
+                "commission_rate",
+                "minimum_commission_cny",
+                "stamp_duty_sell_rate",
+                "assumption_mode",
+                "policy_refs",
+                "resource_estimate",
+                "side_effects"
+              ],
+              "properties": {
+                "schema_version": {
+                  "type": "string",
+                  "const": "v3.product-backtest-preflight/1.0.0"
+                },
+                "maturity": {
+                  "type": "string",
+                  "const": "PRODUCT_CONNECTED"
+                },
+                "truth": {
+                  "type": "string",
+                  "const": "NOT_FORMAL"
+                },
+                "admission": {
+                  "type": "string",
+                  "const": "PRE_ALPHA"
+                },
+                "status": {
+                  "type": "string",
+                  "const": "PASS"
+                },
+                "project_id": {
+                  "type": "string",
+                  "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "project_context_revision_id": {
+                  "type": "string",
+                  "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "research_strategy_spec_id": {
+                  "type": "string",
+                  "pattern": "^rssv_sha256_[0-9a-f]{64}$"
+                },
+                "research_backtest_request_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                },
+                "snapshot_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                },
+                "universe_version_id": {
+                  "type": "string",
+                  "pattern": "^unv_sha256_[0-9a-f]{64}$"
+                },
+                "session_start": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "session_end": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "slippage_bps": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+                },
+                "daily_volume_participation_rate": {
+                  "type": "string",
+                  "pattern": "^(?:0(?:\\.[0-9]*[1-9][0-9]*)?|1(?:\\.0+)?)$"
+                },
+                "commission_rate": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+                },
+                "minimum_commission_cny": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+                },
+                "stamp_duty_sell_rate": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+                },
+                "assumption_mode": {
+                  "type": "string",
+                  "enum": [
+                    "RESEARCH_APPROXIMATE",
+                    "STRICT_FAIL_CLOSED"
+                  ]
+                },
+                "policy_refs": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "rule_profile_id",
+                    "cost_policy_id",
+                    "execution_timing_profile_id",
+                    "risk_policy_set_version_id"
+                  ],
+                  "properties": {
+                    "rule_profile_id": {
+                      "type": "string",
+                      "pattern": "^atrp_sha256_[0-9a-f]{64}$"
+                    },
+                    "cost_policy_id": {
+                      "type": "string",
+                      "pattern": "^cost_sha256_[0-9a-f]{64}$"
+                    },
+                    "execution_timing_profile_id": {
+                      "type": "string",
+                      "pattern": "^timing_sha256_[0-9a-f]{64}$"
+                    },
+                    "risk_policy_set_version_id": {
+                      "type": "string",
+                      "pattern": "^rpsv_sha256_[0-9a-f]{64}$"
+                    }
+                  }
+                },
+                "resource_estimate": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "resource_class",
+                    "cpu_slots",
+                    "memory_limit_bytes",
+                    "scratch_limit_bytes",
+                    "checkpoint_resume"
+                  ],
+                  "properties": {
+                    "resource_class": {
+                      "type": "string",
+                      "const": "PRODUCT_BACKTEST_CPU"
+                    },
+                    "cpu_slots": {
+                      "type": "integer",
+                      "const": 1
+                    },
+                    "memory_limit_bytes": {
+                      "type": "integer",
+                      "const": 1073741824
+                    },
+                    "scratch_limit_bytes": {
+                      "type": "integer",
+                      "const": 1073741824
+                    },
+                    "checkpoint_resume": {
+                      "type": "string",
+                      "const": "UNAVAILABLE"
+                    }
+                  }
+                },
+                "side_effects": {
+                  "type": "string",
+                  "const": "NONE"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "TRUTH_PRECONDITION_FAILED",
+        "RESOURCE_REJECTED",
+        "CAPABILITY_UNAVAILABLE",
+        "INTERNAL_ERROR"
+      ],
+      "capability_notes": "Durably accepts a PRE_ALPHA research Backtest after lightweight owner and policy coverage preflight; checkpoint/resume remains unavailable.",
+      "operation_id": "ProductEntryService.v1.submitResearchBacktest",
+      "version": "1.1.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "SubmitResearchBacktestRequestV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "idempotency_key",
+            "research_strategy_spec_id",
+            "session_start",
+            "session_end",
+            "slippage_bps",
+            "daily_volume_participation_rate"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "const": "1.1"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "research_strategy_spec_id": {
+              "type": "string",
+              "pattern": "^rssv_sha256_[0-9a-f]{64}$"
+            },
+            "session_start": {
+              "type": "string",
+              "format": "date"
+            },
+            "session_end": {
+              "type": "string",
+              "format": "date"
+            },
+            "slippage_bps": {
+              "type": "string",
+              "pattern": "^(?:0(?:\\.[0-9]+)?|[1-9][0-9]*(?:\\.[0-9]+)?)$"
+            },
+            "daily_volume_participation_rate": {
+              "type": "string",
+              "pattern": "^(?:0(?:\\.[0-9]*[1-9][0-9]*)?|1(?:\\.0+)?)$"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "SubmitResearchBacktestResponseV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "const": "NOT_FORMAL"
+            },
+            "read_model": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "read_model_version",
+                "task_id",
+                "run_id",
+                "accepted_state",
+                "maturity",
+                "truth",
+                "admission",
+                "checkpoint_resume",
+                "retry",
+                "research_backtest_request_id"
+              ],
+              "properties": {
+                "read_model_version": {
+                  "type": "string",
+                  "const": "v3.product-entry-research-backtest/1.1"
+                },
+                "task_id": {
+                  "type": "string",
+                  "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "run_id": {
+                  "type": "string",
+                  "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "accepted_state": {
+                  "type": "string",
+                  "const": "QUEUED"
+                },
+                "maturity": {
+                  "type": "string",
+                  "const": "PRODUCT_CONNECTED"
+                },
+                "truth": {
+                  "type": "string",
+                  "const": "NOT_FORMAL"
+                },
+                "admission": {
+                  "type": "string",
+                  "const": "PRE_ALPHA"
+                },
+                "checkpoint_resume": {
+                  "type": "string",
+                  "const": "UNAVAILABLE"
+                },
+                "retry": {
+                  "type": "string",
+                  "const": "NEW_ATTEMPT_SAME_RUN_FROM_START"
+                },
+                "research_backtest_request_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                },
+                "event_cursor": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "errors": [
         "INVALID_ARGUMENT",
         "VERSION_MISMATCH",
@@ -1172,6 +1902,9 @@
         "INTERNAL_ERROR"
       ],
       "capability_notes": "Project-scoped summary only; raw bytes, native paths and canonical bar rows are never returned. Missing Snapshot/read model remains explicit EMPTY or UNAVAILABLE.",
+      "operation_id": "ProductEntryService.v1.getProjectHome",
+      "version": "1.1.0",
+      "kind": "QUERY",
       "request_dto": {
         "name": "GetProjectHomeRequestV1_1",
         "schema": {
@@ -1241,7 +1974,13 @@
                 "data_state",
                 "data_unavailable_reason",
                 "factor_state",
-                "factor_unavailable_reason"
+                "factor_unavailable_reason",
+                "strategy_state",
+                "strategy_authoring_profile",
+                "backtest_policy_coverage",
+                "strategy_unavailable_reason",
+                "backtest_state",
+                "backtest_unavailable_reason"
               ],
               "properties": {
                 "read_model_version": {
@@ -2101,6 +2840,537 @@
                           }
                         }
                       }
+                    }
+                  }
+                },
+                "strategy_authoring_profile": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "schema_version",
+                    "truth",
+                    "admission",
+                    "position_sizing_options",
+                    "max_positions_min",
+                    "max_positions_max",
+                    "gross_exposure_min",
+                    "gross_exposure_max",
+                    "rebalance",
+                    "profile_refs",
+                    "assumption_profiles"
+                  ],
+                  "properties": {
+                    "schema_version": {
+                      "type": "string",
+                      "const": "v3.product-strategy-authoring-profile/1.0.0"
+                    },
+                    "truth": {
+                      "type": "string",
+                      "const": "NOT_FORMAL"
+                    },
+                    "admission": {
+                      "type": "string",
+                      "const": "PRE_ALPHA"
+                    },
+                    "position_sizing_options": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "SINGLE_ASSET_FULL_WEIGHT",
+                          "EQUAL_WEIGHT_ACTIVE_SIGNALS"
+                        ]
+                      }
+                    },
+                    "max_positions_min": {
+                      "type": "integer",
+                      "const": 1
+                    },
+                    "max_positions_max": {
+                      "type": "integer",
+                      "const": 20
+                    },
+                    "gross_exposure_min": {
+                      "type": "string",
+                      "const": "0"
+                    },
+                    "gross_exposure_max": {
+                      "type": "string",
+                      "const": "1"
+                    },
+                    "rebalance": {
+                      "type": "string",
+                      "const": "NEXT_OPEN_AFTER_SIGNAL"
+                    },
+                    "profile_refs": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "cost_policy_version_id",
+                        "execution_policy_version_id",
+                        "risk_policy_set_version_id",
+                        "assumption_profile_id"
+                      ],
+                      "properties": {
+                        "cost_policy_version_id": {
+                          "type": "string",
+                          "pattern": "^cost_sha256_[0-9a-f]{64}$"
+                        },
+                        "execution_policy_version_id": {
+                          "type": "string",
+                          "pattern": "^timing_sha256_[0-9a-f]{64}$"
+                        },
+                        "risk_policy_set_version_id": {
+                          "type": "string",
+                          "pattern": "^rpsv_sha256_[0-9a-f]{64}$"
+                        },
+                        "assumption_profile_id": {
+                          "type": "string",
+                          "pattern": "^assumption_sha256_[0-9a-f]{64}$"
+                        }
+                      }
+                    },
+                    "assumption_profiles": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "mode",
+                          "assumption_profile_id"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "enum": [
+                              "RESEARCH_APPROXIMATE",
+                              "STRICT_FAIL_CLOSED"
+                            ]
+                          },
+                          "assumption_profile_id": {
+                            "type": "string",
+                            "pattern": "^assumption_sha256_[0-9a-f]{64}$"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "backtest_policy_coverage": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "schema_version",
+                    "truth",
+                    "admission",
+                    "coverage_start",
+                    "coverage_end",
+                    "rule_profile_id",
+                    "cost_policy_id",
+                    "execution_timing_profile_id",
+                    "commission_rate",
+                    "minimum_commission_cny",
+                    "stamp_duty_sell_rate",
+                    "resource_estimate"
+                  ],
+                  "properties": {
+                    "schema_version": {
+                      "type": "string",
+                      "const": "v3.product-backtest-policy-coverage/1.0.0"
+                    },
+                    "truth": {
+                      "type": "string",
+                      "const": "NOT_FORMAL"
+                    },
+                    "admission": {
+                      "type": "string",
+                      "const": "PRE_ALPHA"
+                    },
+                    "coverage_start": {
+                      "type": "string",
+                      "format": "date"
+                    },
+                    "coverage_end": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "rule_profile_id": {
+                      "type": "string",
+                      "pattern": "^atrp_sha256_[0-9a-f]{64}$"
+                    },
+                    "cost_policy_id": {
+                      "type": "string",
+                      "pattern": "^cost_sha256_[0-9a-f]{64}$"
+                    },
+                    "execution_timing_profile_id": {
+                      "type": "string",
+                      "pattern": "^timing_sha256_[0-9a-f]{64}$"
+                    },
+                    "commission_rate": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+                    },
+                    "minimum_commission_cny": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+                    },
+                    "stamp_duty_sell_rate": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+                    },
+                    "resource_estimate": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "resource_class",
+                        "cpu_slots",
+                        "memory_limit_bytes",
+                        "scratch_limit_bytes",
+                        "checkpoint_resume"
+                      ],
+                      "properties": {
+                        "resource_class": {
+                          "type": "string",
+                          "const": "PRODUCT_BACKTEST_CPU"
+                        },
+                        "cpu_slots": {
+                          "type": "integer",
+                          "const": 1
+                        },
+                        "memory_limit_bytes": {
+                          "type": "integer",
+                          "const": 1073741824
+                        },
+                        "scratch_limit_bytes": {
+                          "type": "integer",
+                          "const": 1073741824
+                        },
+                        "checkpoint_resume": {
+                          "type": "string",
+                          "const": "UNAVAILABLE"
+                        }
+                      }
+                    }
+                  }
+                },
+                "strategy_state": {
+                  "type": "string",
+                  "enum": [
+                    "EMPTY",
+                    "AVAILABLE",
+                    "UNAVAILABLE"
+                  ]
+                },
+                "strategy_unavailable_reason": {
+                  "type": "string",
+                  "enum": [
+                    "NONE",
+                    "NO_FACTOR_STUDY",
+                    "NO_RESEARCH_STRATEGY",
+                    "STRATEGY_READ_MODEL_NOT_AVAILABLE"
+                  ]
+                },
+                "strategy": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "schema_version",
+                    "truth",
+                    "admission",
+                    "project_id",
+                    "project_context_revision_id",
+                    "snapshot_id",
+                    "universe_version_id",
+                    "research_strategy_spec_id",
+                    "strategy_version_id",
+                    "entry_signal_factor_version_id",
+                    "exit_signal_factor_version_id",
+                    "profile_refs",
+                    "transition_count",
+                    "decision_chain_count"
+                  ],
+                  "properties": {
+                    "schema_version": {
+                      "type": "string",
+                      "const": "v3.project-strategy-summary/1.0.0"
+                    },
+                    "truth": {
+                      "type": "string",
+                      "const": "NOT_FORMAL"
+                    },
+                    "admission": {
+                      "type": "string",
+                      "const": "PRE_ALPHA"
+                    },
+                    "project_id": {
+                      "type": "string",
+                      "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "project_context_revision_id": {
+                      "type": "string",
+                      "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "snapshot_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "universe_version_id": {
+                      "type": "string",
+                      "pattern": "^unv_sha256_[0-9a-f]{64}$"
+                    },
+                    "research_strategy_spec_id": {
+                      "type": "string",
+                      "pattern": "^rssv_sha256_[0-9a-f]{64}$"
+                    },
+                    "strategy_version_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "entry_signal_factor_version_id": {
+                      "type": "string",
+                      "pattern": "^fdv_sha256_[0-9a-f]{64}$"
+                    },
+                    "exit_signal_factor_version_id": {
+                      "type": "string",
+                      "pattern": "^fdv_sha256_[0-9a-f]{64}$"
+                    },
+                    "profile_refs": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "cost_policy_version_id",
+                        "execution_policy_version_id",
+                        "risk_policy_set_version_id",
+                        "assumption_profile_id"
+                      ],
+                      "properties": {
+                        "cost_policy_version_id": {
+                          "type": "string",
+                          "pattern": "^cost_sha256_[0-9a-f]{64}$"
+                        },
+                        "execution_policy_version_id": {
+                          "type": "string",
+                          "pattern": "^timing_sha256_[0-9a-f]{64}$"
+                        },
+                        "risk_policy_set_version_id": {
+                          "type": "string",
+                          "pattern": "^rpsv_sha256_[0-9a-f]{64}$"
+                        },
+                        "assumption_profile_id": {
+                          "type": "string",
+                          "pattern": "^assumption_sha256_[0-9a-f]{64}$"
+                        }
+                      }
+                    },
+                    "transition_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 3000
+                    },
+                    "decision_chain_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 3000
+                    }
+                  }
+                },
+                "backtest_state": {
+                  "type": "string",
+                  "enum": [
+                    "EMPTY",
+                    "AVAILABLE",
+                    "UNAVAILABLE"
+                  ]
+                },
+                "backtest_unavailable_reason": {
+                  "type": "string",
+                  "enum": [
+                    "NONE",
+                    "NO_RESEARCH_STRATEGY",
+                    "NO_VALID_BACKTEST",
+                    "BACKTEST_READ_MODEL_NOT_AVAILABLE"
+                  ]
+                },
+                "backtest": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "schema_version",
+                    "maturity",
+                    "truth",
+                    "admission",
+                    "project_id",
+                    "project_context_revision_id",
+                    "research_backtest_request_id",
+                    "research_strategy_spec_id",
+                    "snapshot_id",
+                    "universe_version_id",
+                    "run_id",
+                    "run_spec_id",
+                    "result_id",
+                    "backtest_result_id",
+                    "result_artifact_id",
+                    "analytics_id",
+                    "analytics_artifact_id",
+                    "summary_export_artifact_id",
+                    "orders_export_artifact_id",
+                    "fills_export_artifact_id",
+                    "result_lineage_id",
+                    "lineage_artifact_id",
+                    "result_state",
+                    "engine_version",
+                    "order_count",
+                    "fill_count",
+                    "diagnostic_count",
+                    "first_fill_session_date",
+                    "first_effective_session_date",
+                    "assumption_mode"
+                  ],
+                  "properties": {
+                    "schema_version": {
+                      "type": "string",
+                      "const": "v3.project-backtest-summary/1.0.0"
+                    },
+                    "maturity": {
+                      "type": "string",
+                      "const": "PRODUCT_CONNECTED"
+                    },
+                    "truth": {
+                      "type": "string",
+                      "const": "NOT_FORMAL"
+                    },
+                    "admission": {
+                      "type": "string",
+                      "const": "PRE_ALPHA"
+                    },
+                    "project_id": {
+                      "type": "string",
+                      "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "project_context_revision_id": {
+                      "type": "string",
+                      "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "research_backtest_request_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "research_strategy_spec_id": {
+                      "type": "string",
+                      "pattern": "^rssv_sha256_[0-9a-f]{64}$"
+                    },
+                    "snapshot_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "universe_version_id": {
+                      "type": "string",
+                      "pattern": "^unv_sha256_[0-9a-f]{64}$"
+                    },
+                    "run_id": {
+                      "type": "string",
+                      "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "run_spec_id": {
+                      "type": "string",
+                      "pattern": "^btrs_sha256_[0-9a-f]{64}$"
+                    },
+                    "result_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "backtest_result_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "result_artifact_id": {
+                      "type": "string",
+                      "pattern": "^art_sha256_[0-9a-f]{64}$"
+                    },
+                    "analytics_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "analytics_artifact_id": {
+                      "type": "string",
+                      "pattern": "^art_sha256_[0-9a-f]{64}$"
+                    },
+                    "summary_export_artifact_id": {
+                      "type": "string",
+                      "pattern": "^art_sha256_[0-9a-f]{64}$"
+                    },
+                    "orders_export_artifact_id": {
+                      "type": "string",
+                      "pattern": "^art_sha256_[0-9a-f]{64}$"
+                    },
+                    "fills_export_artifact_id": {
+                      "type": "string",
+                      "pattern": "^art_sha256_[0-9a-f]{64}$"
+                    },
+                    "result_lineage_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "lineage_artifact_id": {
+                      "type": "string",
+                      "pattern": "^art_sha256_[0-9a-f]{64}$"
+                    },
+                    "result_state": {
+                      "type": "string",
+                      "const": "VALID"
+                    },
+                    "engine_version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "order_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000000
+                    },
+                    "fill_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000000
+                    },
+                    "diagnostic_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000000
+                    },
+                    "first_fill_session_date": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date"
+                    },
+                    "first_effective_session_date": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date"
+                    },
+                    "assumption_mode": {
+                      "type": "string",
+                      "enum": [
+                        "RESEARCH_APPROXIMATE",
+                        "STRICT_FAIL_CLOSED"
+                      ]
                     }
                   }
                 },

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -302,6 +303,10 @@ def _row(value: Mapping[str, object], intent: LocalDataImportIntentV1) -> LocalE
     if action is not None and not isinstance(action, str):
         raise LocalDataImportError("corporate_action_ref must be text or null")
     action = action.strip() if isinstance(action, str) else None
+    if action and re.fullmatch(r"cax_sha256_[0-9a-f]{64}", action) is None:
+        raise LocalDataImportError(
+            "corporate_action_ref must be a canonical cax_sha256 ref or null"
+        )
     return LocalEodRow(
         instrument_id=_instrument_id(symbol),
         symbol=symbol,
@@ -359,27 +364,46 @@ def _result(
         raise LocalDataImportError("local source contains no rows")
     rows = tuple(sorted(observed, key=lambda item: (item.session_date, item.instrument_id)))
     partitions = _canonical_partitions(rows, max_bytes=limits.max_partition_bytes)
+    action_refs = tuple(
+        sorted(
+            {
+                row.corporate_action_ref
+                for row in rows
+                if row.corporate_action_ref is not None
+            }
+        )
+    )
+    manifest: dict[str, object] = {
+        "schema_version": (
+            "v3.local-a-share-eod-manifest/1.2.0"
+            if action_refs
+            else "v3.local-a-share-eod-manifest/1.1.0"
+        ),
+        "data_schema_version": NORMALIZED_SCHEMA_VERSION,
+        "adjustment": "UNADJUSTED",
+        "amount_unit": "CNY",
+        "timezone": "Asia/Shanghai",
+        "volume_unit": "SHARES",
+        "row_count": len(rows),
+        "instrument_count": len(instruments),
+        "corporate_action_ref_count": sum(
+            row.corporate_action_ref is not None for row in rows
+        ),
+        "partitions": tuple(
+            {
+                "partition_key": partition.partition_key,
+                "content_hash": partition.content_hash,
+                "row_count": partition.row_count,
+                "min_session_date": partition.min_session_date,
+                "max_session_date": partition.max_session_date,
+            }
+            for partition in partitions
+        ),
+    }
+    if action_refs:
+        manifest["corporate_action_refs"] = action_refs
     payload = canonical_json_bytes(
-        {
-            "schema_version": "v3.local-a-share-eod-manifest/1.0.0",
-            "data_schema_version": NORMALIZED_SCHEMA_VERSION,
-            "adjustment": "UNADJUSTED",
-            "amount_unit": "CNY",
-            "timezone": "Asia/Shanghai",
-            "volume_unit": "SHARES",
-            "row_count": len(rows),
-            "instrument_count": len(instruments),
-            "partitions": tuple(
-                {
-                    "partition_key": partition.partition_key,
-                    "content_hash": partition.content_hash,
-                    "row_count": partition.row_count,
-                    "min_session_date": partition.min_session_date,
-                    "max_session_date": partition.max_session_date,
-                }
-                for partition in partitions
-            ),
-        }
+        manifest
     )
     payload_hash = hashlib.sha256(payload).hexdigest()
     return LocalDataNormalizationResult(

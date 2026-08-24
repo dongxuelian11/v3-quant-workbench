@@ -18,14 +18,18 @@ export const PRODUCT_RUNTIME_CHANNELS = Object.freeze({
   boundProject: "productRuntime:boundProject",
   projectContext: "productRuntime:projectContext",
   projectHome: "productRuntime:projectHome",
+  latestProductResultDetails: "productRuntime:latestProductResultDetails",
   restoreSession: "productRuntime:restoreSession",
   connectExistingProject: "productRuntime:connectExistingProject",
   listTasks: "productRuntime:listTasks",
   getTask: "productRuntime:getTask",
+  retryResearchBacktest: "productRuntime:retryResearchBacktest",
   getTaskEvents: "productRuntime:getTaskEvents",
   getResult: "productRuntime:getResult",
   getArtifactDescriptor: "productRuntime:getArtifactDescriptor",
   openArtifactStream: "productRuntime:openArtifactStream",
+  readArtifactBytes: "productRuntime:readArtifactBytes",
+  exportArtifact: "productRuntime:exportArtifact",
   submitExistingBacktestRunSpec: "productRuntime:submitExistingBacktestRunSpec",
   createProject: "productRuntime:createProject",
   listProjects: "productRuntime:listProjects",
@@ -34,6 +38,10 @@ export const PRODUCT_RUNTIME_CHANNELS = Object.freeze({
   chooseLocalDataSource: "productRuntime:chooseLocalDataSource",
   importLocalDataset: "productRuntime:importLocalDataset",
   submitFactorStudy: "productRuntime:submitFactorStudy",
+  previewResearchStrategy: "productRuntime:previewResearchStrategy",
+  publishResearchStrategy: "productRuntime:publishResearchStrategy",
+  previewResearchBacktest: "productRuntime:previewResearchBacktest",
+  submitResearchBacktest: "productRuntime:submitResearchBacktest",
   submitResearch: "productRuntime:submitResearch"
 } as const);
 
@@ -86,6 +94,7 @@ export function registerProductRuntimeIpc(
   handle(PRODUCT_RUNTIME_CHANNELS.boundProject, () => bridge.getBoundProject());
   handle(PRODUCT_RUNTIME_CHANNELS.projectContext, () => bridge.getProjectContext());
   handle(PRODUCT_RUNTIME_CHANNELS.projectHome, () => bridge.getProjectHome());
+  handle(PRODUCT_RUNTIME_CHANNELS.latestProductResultDetails, () => bridge.getLatestProductResultDetails());
   handle(PRODUCT_RUNTIME_CHANNELS.restoreSession, () => bridge.restoreSession());
   handle(PRODUCT_RUNTIME_CHANNELS.connectExistingProject, (value) => {
     const item = assertObject(value, ["projectId", "projectContextRevisionId"]);
@@ -117,6 +126,10 @@ export function registerProductRuntimeIpc(
     const item = assertObject(value, ["taskId"]);
     return bridge.getTask(requiredString(item, "taskId"));
   });
+  handle(PRODUCT_RUNTIME_CHANNELS.retryResearchBacktest, (value) => {
+    const item = assertObject(value, ["taskId"]);
+    return bridge.retryResearchBacktest(requiredString(item, "taskId"));
+  });
   handle(PRODUCT_RUNTIME_CHANNELS.getTaskEvents, (value) => {
     const item = assertObject(value, ["afterSequence", "limit"]);
     const afterSequence = item.afterSequence;
@@ -140,6 +153,17 @@ export function registerProductRuntimeIpc(
   handle(PRODUCT_RUNTIME_CHANNELS.openArtifactStream, (value) => {
     const item = assertObject(value, ["artifactId"]);
     return bridge.openArtifactStream(requiredString(item, "artifactId"));
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.readArtifactBytes, (value) => {
+    const item = assertObject(value, ["artifactId"]);
+    return bridge.readArtifactBytes(requiredString(item, "artifactId"));
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.exportArtifact, (value) => {
+    const item = assertObject(value, ["artifactId", "suggestedName"]);
+    return bridge.exportArtifact({
+      artifactId: requiredString(item, "artifactId"),
+      suggestedName: requiredString(item, "suggestedName")
+    });
   });
   handle(PRODUCT_RUNTIME_CHANNELS.submitExistingBacktestRunSpec, (value) => {
     const item = assertObject(value, ["runSpecId"]);
@@ -205,6 +229,59 @@ export function registerProductRuntimeIpc(
       formulaSource: intent.formulaSource,
       analysisOutputName: requiredString(intent, "analysisOutputName")
     });
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.publishResearchStrategy, (intentPayload) => {
+    const intent = assertObject(intentPayload, [
+      "entrySignalFactorVersionId", "exitSignalFactorVersionId", "positionSizing",
+      "maxPositions", "grossExposure", "initialCash", "assumptionProfileId"
+    ]);
+    if (intent.positionSizing !== "SINGLE_ASSET_FULL_WEIGHT" && intent.positionSizing !== "EQUAL_WEIGHT_ACTIVE_SIGNALS") {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "positionSizing is not admitted");
+    }
+    return bridge.publishResearchStrategy({
+      entrySignalFactorVersionId: requiredString(intent, "entrySignalFactorVersionId"),
+      exitSignalFactorVersionId: requiredString(intent, "exitSignalFactorVersionId"),
+      positionSizing: intent.positionSizing,
+      maxPositions: requiredInteger(intent, "maxPositions", 1, 20),
+      grossExposure: requiredString(intent, "grossExposure"),
+      initialCash: requiredString(intent, "initialCash"),
+      assumptionProfileId: requiredString(intent, "assumptionProfileId")
+    });
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.previewResearchStrategy, (intentPayload) => {
+    const intent = assertObject(intentPayload, [
+      "entrySignalFactorVersionId", "exitSignalFactorVersionId", "positionSizing",
+      "maxPositions", "grossExposure", "initialCash", "assumptionProfileId"
+    ]);
+    if (intent.positionSizing !== "SINGLE_ASSET_FULL_WEIGHT" && intent.positionSizing !== "EQUAL_WEIGHT_ACTIVE_SIGNALS") {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "positionSizing is not admitted");
+    }
+    return bridge.previewResearchStrategy({
+      entrySignalFactorVersionId: requiredString(intent, "entrySignalFactorVersionId"),
+      exitSignalFactorVersionId: requiredString(intent, "exitSignalFactorVersionId"),
+      positionSizing: intent.positionSizing,
+      maxPositions: requiredInteger(intent, "maxPositions", 1, 20),
+      grossExposure: requiredString(intent, "grossExposure"),
+      initialCash: requiredString(intent, "initialCash"),
+      assumptionProfileId: requiredString(intent, "assumptionProfileId")
+    });
+  });
+  const researchBacktestIntent = (intentPayload: unknown) => {
+    const intent = assertObject(intentPayload, [
+      "sessionStart", "sessionEnd", "slippageBps", "dailyVolumeParticipationRate"
+    ]);
+    return {
+      sessionStart: requiredString(intent, "sessionStart"),
+      sessionEnd: requiredString(intent, "sessionEnd"),
+      slippageBps: requiredString(intent, "slippageBps"),
+      dailyVolumeParticipationRate: requiredString(intent, "dailyVolumeParticipationRate")
+    };
+  };
+  handle(PRODUCT_RUNTIME_CHANNELS.previewResearchBacktest, (intentPayload) => {
+    return bridge.previewResearchBacktest(researchBacktestIntent(intentPayload));
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.submitResearchBacktest, (intentPayload) => {
+    return bridge.submitResearchBacktest(researchBacktestIntent(intentPayload));
   });
   return () => {
     for (const channel of Object.values(PRODUCT_RUNTIME_CHANNELS)) ipcMain.removeHandler(channel);

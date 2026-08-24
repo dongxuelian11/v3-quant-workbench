@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Writable } from "node:stream";
 import { BackendCrashLoopError, BackendDisconnectedError, BackendRuntimeError, BackendTimeoutError } from "./errors";
 import { CrashLoopGuard } from "./crashLoopGuard";
@@ -13,6 +13,10 @@ import type {
   BackendProcessFactory,
   CancelTaskInput,
   ConnectionState,
+  ConsumeArtifactStreamInput,
+  ArtifactStreamBytes,
+  ArtifactStreamReceipt,
+  ArtifactStreamSink,
   DurableEventCursorPort,
   OpenArtifactStreamInput,
   RequestOptions,
@@ -85,7 +89,10 @@ type ControlRequestKind =
   | "localData.beginTransfer"
   | "localData.appendChunk"
   | "localData.finishTransfer"
-  | "localData.abortTransfer";
+  | "localData.abortTransfer"
+  | "artifactStream.consume"
+  | "artifactExport.complete"
+  | "artifactExport.fail";
 
 interface PendingControlRequest<T> {
   readonly kind: ControlRequestKind;
@@ -101,6 +108,24 @@ interface ControlTombstone {
   readonly responseKinds: readonly string[];
   readonly generation: number;
   readonly ttlBoundaryAt: number;
+}
+
+interface PendingArtifactStream {
+  readonly kind: "artifactStream.consume";
+  readonly responseKinds: readonly string[];
+  readonly controlRequestId: string;
+  readonly generation: number;
+  readonly ticketId: string;
+  readonly artifactId: string;
+  readonly expectedSha256: string;
+  readonly expectedByteSize: number;
+  readonly chunks: Buffer[] | null;
+  readonly sink: ArtifactStreamSink | null;
+  readonly digest: ReturnType<typeof createHash>;
+  writeChain: Promise<void>;
+  nextOffset: number;
+  readonly wait: Deferred<ArtifactStreamBytes | ArtifactStreamReceipt>;
+  readonly timer: NodeJS.Timeout;
 }
 
 interface Deferred<T> {
@@ -154,6 +179,7 @@ export class BackendSupervisor extends EventEmitter {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly tombstones = new Map<string, RequestTombstone>();
   private readonly pendingControls = new Map<string, PendingControlRequest<Readonly<Record<string, unknown>>>>();
+  private readonly pendingArtifactStreams = new Map<string, PendingArtifactStream>();
   private readonly controlTombstones = new Map<string, ControlTombstone>();
   private readonly requestTombstoneLimit: number;
   private readonly requestTombstoneTtlMs: number;
@@ -348,6 +374,142 @@ export class BackendSupervisor extends EventEmitter {
     const payload: Record<string, unknown> = { artifact_id: input.artifactId };
     if (input.range !== undefined) payload.range = input.range;
     return this.request("ArtifactService.v1.openArtifactStream", payload);
+  }
+
+  consumeArtifactStream(
+    input: ConsumeArtifactStreamInput,
+    timeoutMs = 30_000
+  ): Promise<ArtifactStreamBytes> {
+    return this.startArtifactStream(input, null, timeoutMs).then((result) => {
+      if (!("bytes" in result)) {
+        throw new BackendRuntimeError("artifact stream omitted buffered bytes", "ARTIFACT_STREAM_ERROR");
+      }
+      return result;
+    });
+  }
+
+  streamArtifactToSink(
+    input: ConsumeArtifactStreamInput,
+    sink: ArtifactStreamSink,
+    timeoutMs = 30_000
+  ): Promise<ArtifactStreamReceipt> {
+    if (typeof sink !== "function") {
+      throw new BackendRuntimeError("artifact stream sink is invalid", "INVALID_ARGUMENT");
+    }
+    return this.startArtifactStream(input, sink, timeoutMs).then((result) => Object.freeze({
+      artifactId: result.artifactId,
+      sha256: result.sha256,
+      byteSize: result.byteSize
+    }));
+  }
+
+  private startArtifactStream(
+    input: ConsumeArtifactStreamInput,
+    sink: ArtifactStreamSink | null,
+    timeoutMs: number
+  ): Promise<ArtifactStreamBytes | ArtifactStreamReceipt> {
+    if (this.stateValue !== "READY") throw new BackendDisconnectedError();
+    const context = this.projectContext;
+    if (!context) throw new BackendRuntimeError("project context is not bound", "PROJECT_CONTEXT_NOT_BOUND");
+    if (!/^stk_[0-9A-HJKMNP-TV-Z]{26}$/.test(input.ticketId)) {
+      throw new BackendRuntimeError("artifact stream ticket id is invalid", "INVALID_ARGUMENT");
+    }
+    if (!/^art_sha256_[0-9a-f]{64}$/.test(input.artifactId)) {
+      throw new BackendRuntimeError("artifact id is invalid", "INVALID_ARGUMENT");
+    }
+    if (!/^[0-9a-f]{64}$/.test(input.expectedSha256)
+      || input.artifactId !== `art_sha256_${input.expectedSha256}`) {
+      throw new BackendRuntimeError("artifact identity and expected SHA-256 differ", "INVALID_ARGUMENT");
+    }
+    if (!Number.isSafeInteger(input.expectedByteSize) || input.expectedByteSize < 0) {
+      throw new BackendRuntimeError("artifact byte size is invalid", "INVALID_ARGUMENT");
+    }
+    this.ensureControlCapacity();
+    const controlRequestId = uuidV7();
+    const generation = this.sessionGeneration;
+    const wait = deferred<ArtifactStreamBytes | ArtifactStreamReceipt>();
+    let pending!: PendingArtifactStream;
+    const timer = setTimeout(() => {
+      if (this.pendingArtifactStreams.get(controlRequestId) !== pending) return;
+      this.pendingArtifactStreams.delete(controlRequestId);
+      this.rememberControlTombstone(controlRequestId, pending);
+      wait.reject(new BackendTimeoutError("artifact stream consume timed out"));
+    }, timeoutMs);
+    pending = {
+      kind: "artifactStream.consume",
+      responseKinds: Object.freeze([
+        "artifactStream.chunk",
+        "artifactStream.complete",
+        "artifactStream.error"
+      ]),
+      controlRequestId,
+      generation,
+      ticketId: input.ticketId,
+      artifactId: input.artifactId,
+      expectedSha256: input.expectedSha256,
+      expectedByteSize: input.expectedByteSize,
+      chunks: sink === null ? [] : null,
+      sink,
+      digest: createHash("sha256"),
+      writeChain: Promise.resolve(),
+      nextOffset: 0,
+      wait,
+      timer
+    };
+    this.pendingArtifactStreams.set(controlRequestId, pending);
+    try {
+      this.send({
+        kind: "artifactStream.consume",
+        protocol_version: "v3.artifact-stream/1.0.0",
+        ticket_id: input.ticketId,
+        project_id: context.projectId,
+        project_context_revision_id: context.projectContextRevisionId,
+        control_request_id: controlRequestId,
+        runtime_generation: generation,
+        deadline_at: new Date(Date.now() + timeoutMs).toISOString()
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      this.pendingArtifactStreams.delete(controlRequestId);
+      throw error;
+    }
+    return wait.promise;
+  }
+
+  async artifactExportControl(
+    frame: Readonly<Record<string, unknown>>,
+    timeoutMs = 30_000
+  ): Promise<Readonly<Record<string, unknown>>> {
+    const kind = frame.kind;
+    if (kind !== "artifactExport.complete" && kind !== "artifactExport.fail") {
+      throw new BackendRuntimeError("artifact export control kind is invalid", "INVALID_ARGUMENT");
+    }
+    const expected = kind === "artifactExport.complete"
+      ? ["artifactExport.completed", "artifactExport.error"]
+      : ["artifactExport.failed", "artifactExport.error"];
+    const { kind: _kind, ...payload } = frame;
+    const message = await this.requestControl(
+      kind,
+      expected,
+      { ...payload, deadline_at: new Date(Date.now() + timeoutMs).toISOString() },
+      timeoutMs,
+      "artifact export receipt timed out"
+    );
+    if (message.kind === "artifactExport.error") {
+      const code = typeof message.code === "string" && message.code.length > 0
+        ? message.code
+        : "ARTIFACT_EXPORT_ERROR";
+      const text = typeof message.message === "string"
+        ? message.message
+        : "artifact export receipt failed";
+      throw new BackendRuntimeError(text, code, message.retryable === true);
+    }
+    const {
+      control_request_id: _controlRequestId,
+      runtime_generation: _runtimeGeneration,
+      ...response
+    } = message;
+    return contextBridgeSafe(response);
   }
 
   async getHealth(timeoutMs = 5_000): Promise<Readonly<Record<string, unknown>>> {
@@ -685,6 +847,12 @@ export class BackendSupervisor extends EventEmitter {
       case "localData.sourcePublished":
       case "localData.transferAborted":
       case "localData.error": this.onControlResponse(message); break;
+      case "artifactStream.chunk":
+      case "artifactStream.complete":
+      case "artifactStream.error": this.onArtifactStreamFrame(message); break;
+      case "artifactExport.completed":
+      case "artifactExport.failed":
+      case "artifactExport.error": this.onControlResponse(message); break;
       case "runtime.shutdownReady": this.onControlResponse(message); break;
       case "runtime.shutdownCommitted": this.onControlResponse(message); break;
       default: throw new TransportProtocolError(`unexpected backend frame: ${String(message.kind)}`);
@@ -934,6 +1102,143 @@ export class BackendSupervisor extends EventEmitter {
     pending.wait.resolve(contextBridgeSafe(message));
   }
 
+  private onArtifactStreamFrame(message: Record<string, unknown>): void {
+    const controlRequestId = message.control_request_id;
+    const generation = message.runtime_generation;
+    if (
+      typeof controlRequestId !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(controlRequestId)
+      || !Number.isSafeInteger(generation)
+      || Number(generation) < 1
+    ) {
+      throw new TransportProtocolError("artifact stream correlation is invalid");
+    }
+    const pending = this.pendingArtifactStreams.get(controlRequestId);
+    if (!pending) {
+      const tombstone = this.getControlTombstone(controlRequestId);
+      if (tombstone && tombstone.generation === Number(generation)) {
+        if (message.kind !== "artifactStream.chunk") this.controlTombstones.delete(controlRequestId);
+        this.emit("diagnostic", {
+          level: "WARN",
+          code: "LATE_CONTROL_RESPONSE_DISCARDED",
+          message: `discarded late ${String(message.kind)} for artifact stream ${controlRequestId}`
+        } satisfies RuntimeDiagnostic);
+        return;
+      }
+      throw new TransportProtocolError("artifact stream frame has no pending correlation");
+    }
+    if (pending.generation !== Number(generation) || pending.generation !== this.sessionGeneration) {
+      this.emit("diagnostic", {
+        level: "WARN",
+        code: "STALE_CONTROL_RESPONSE_DISCARDED",
+        message: `discarded artifact stream frame for stale session generation ${String(generation)}`
+      } satisfies RuntimeDiagnostic);
+      return;
+    }
+    const finishWithError = (error: Error): void => {
+      clearTimeout(pending.timer);
+      this.pendingArtifactStreams.delete(controlRequestId);
+      this.rememberControlTombstone(controlRequestId, pending);
+      pending.wait.reject(error);
+    };
+    if (message.kind === "artifactStream.error") {
+      const code = typeof message.code === "string" ? message.code : "ARTIFACT_STREAM_ERROR";
+      const text = typeof message.message === "string" ? message.message : "artifact stream failed";
+      finishWithError(new BackendRuntimeError(text, code, message.retryable === true, asRecord(message.details ?? {}, "artifact stream error details")));
+      return;
+    }
+    if (message.ticket_id !== pending.ticketId || message.artifact_id !== pending.artifactId) {
+      throw new TransportProtocolError("artifact stream frame identity does not match the pending ticket");
+    }
+    if (message.kind === "artifactStream.chunk") {
+      const allowed = new Set([
+        "kind", "ticket_id", "artifact_id", "offset", "payload_base64",
+        "chunk_sha256", "control_request_id", "runtime_generation"
+      ]);
+      if (Object.keys(message).some((key) => !allowed.has(key)) || Object.keys(message).length !== allowed.size) {
+        throw new TransportProtocolError("artifact stream chunk fields are not closed");
+      }
+      if (!Number.isSafeInteger(message.offset) || Number(message.offset) !== pending.nextOffset) {
+        throw new TransportProtocolError("artifact stream chunk offset is not contiguous");
+      }
+      if (typeof message.payload_base64 !== "string" || typeof message.chunk_sha256 !== "string") {
+        throw new TransportProtocolError("artifact stream chunk payload/hash is invalid");
+      }
+      const chunk = Buffer.from(message.payload_base64, "base64");
+      if (chunk.byteLength < 1 || chunk.byteLength > 256 * 1024 || chunk.toString("base64") !== message.payload_base64) {
+        throw new TransportProtocolError("artifact stream chunk encoding or size is invalid");
+      }
+      const observed = createHash("sha256").update(chunk).digest("hex");
+      if (observed !== message.chunk_sha256) {
+        throw new TransportProtocolError("artifact stream chunk SHA-256 mismatch");
+      }
+      if (pending.nextOffset + chunk.byteLength > pending.expectedByteSize) {
+        throw new TransportProtocolError("artifact stream exceeds expected byte size");
+      }
+      pending.digest.update(chunk);
+      if (pending.chunks !== null) {
+        pending.chunks.push(chunk);
+      } else {
+        const sink = pending.sink;
+        if (sink === null) {
+          throw new TransportProtocolError("artifact stream has no byte consumer");
+        }
+        const offset = pending.nextOffset;
+        pending.writeChain = pending.writeChain.then(() => sink(Uint8Array.from(chunk), offset));
+        void pending.writeChain.catch((error: unknown) => {
+          finishWithError(error instanceof Error
+            ? error
+            : new BackendRuntimeError(String(error), "ARTIFACT_STREAM_SINK_ERROR"));
+        });
+      }
+      pending.nextOffset += chunk.byteLength;
+      return;
+    }
+    const allowed = new Set([
+      "kind", "ticket_id", "artifact_id", "total_byte_count", "artifact_sha256",
+      "range_start", "range_end_exclusive", "control_request_id", "runtime_generation"
+    ]);
+    if (Object.keys(message).some((key) => !allowed.has(key)) || Object.keys(message).length !== allowed.size) {
+      throw new TransportProtocolError("artifact stream complete fields are not closed");
+    }
+    if (
+      message.total_byte_count !== pending.expectedByteSize
+      || message.range_start !== 0
+      || message.range_end_exclusive !== pending.expectedByteSize
+      || message.artifact_sha256 !== pending.expectedSha256
+      || pending.nextOffset !== pending.expectedByteSize
+    ) {
+      throw new TransportProtocolError("artifact stream terminal identity or size mismatch");
+    }
+    const sha256 = pending.digest.digest("hex");
+    if (sha256 !== pending.expectedSha256) {
+      throw new TransportProtocolError("reassembled artifact SHA-256 mismatch");
+    }
+    clearTimeout(pending.timer);
+    this.pendingArtifactStreams.delete(controlRequestId);
+    if (pending.chunks !== null) {
+      const bytes = Buffer.concat(pending.chunks, pending.expectedByteSize);
+      pending.wait.resolve(Object.freeze({
+        artifactId: pending.artifactId,
+        sha256,
+        byteSize: bytes.byteLength,
+        bytes: Uint8Array.from(bytes)
+      }));
+      return;
+    }
+    void pending.writeChain.then(() => {
+      pending.wait.resolve(Object.freeze({
+        artifactId: pending.artifactId,
+        sha256,
+        byteSize: pending.expectedByteSize
+      }));
+    }).catch((error: unknown) => {
+      finishWithError(error instanceof Error
+        ? error
+        : new BackendRuntimeError(String(error), "ARTIFACT_STREAM_SINK_ERROR"));
+    });
+  }
+
   private becomeReady(): void {
     this.restartAttempt = 0;
     this.setState("READY");
@@ -1005,8 +1310,8 @@ export class BackendSupervisor extends EventEmitter {
   private ensureControlCapacity(): void {
     this.pruneControlTombstones();
     if (
-      this.pendingControls.size >= MAX_PENDING_CONTROL_REQUESTS
-      || this.pendingControls.size + this.controlTombstones.size >= CONTROL_TOMBSTONE_LIMIT
+      this.pendingControls.size + this.pendingArtifactStreams.size >= MAX_PENDING_CONTROL_REQUESTS
+      || this.pendingControls.size + this.pendingArtifactStreams.size + this.controlTombstones.size >= CONTROL_TOMBSTONE_LIMIT
     ) {
       throw new BackendRuntimeError(
         "new backend control request rejected while correlation capacity is reserved",
@@ -1015,7 +1320,7 @@ export class BackendSupervisor extends EventEmitter {
         {
           max_pending: MAX_PENDING_CONTROL_REQUESTS,
           max_tombstones: CONTROL_TOMBSTONE_LIMIT,
-          pending_correlations: this.pendingControls.size,
+          pending_correlations: this.pendingControls.size + this.pendingArtifactStreams.size,
           timed_out_correlations: this.controlTombstones.size
         }
       );
@@ -1024,7 +1329,7 @@ export class BackendSupervisor extends EventEmitter {
 
   private rememberControlTombstone(
     controlRequestId: string,
-    pending: PendingControlRequest<Readonly<Record<string, unknown>>>
+    pending: Pick<PendingControlRequest<Readonly<Record<string, unknown>>>, "kind" | "responseKinds" | "generation">
   ): void {
     this.pruneControlTombstones();
     this.controlTombstones.set(controlRequestId, {
@@ -1157,6 +1462,11 @@ export class BackendSupervisor extends EventEmitter {
       pending.wait.reject(error);
     }
     this.pendingControls.clear();
+    for (const pending of this.pendingArtifactStreams.values()) {
+      clearTimeout(pending.timer);
+      pending.wait.reject(error);
+    }
+    this.pendingArtifactStreams.clear();
     this.controlTombstones.clear();
   }
 

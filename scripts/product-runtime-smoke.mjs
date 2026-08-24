@@ -23,7 +23,9 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
 const backendSrc = resolve(root, "apps/backend/src");
-const python = process.env.V3_PYTHON ?? "python3";
+const python = process.env.V3_TEST_PYTHON
+  ?? process.env.V3_PYTHON
+  ?? (process.platform === "win32" ? "python" : "python3");
 const pythonEnv = {
   ...process.env,
   PYTHONPATH: `${root}${delimiter}${backendSrc}`,
@@ -56,6 +58,9 @@ function uuidv7() {
 
 function runPython(args) {
   const result = spawnSync(python, args, { env: pythonEnv, encoding: "utf8" });
+  if (result.error) {
+    throw new Error(`python ${args[0]} could not start: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     console.error(result.stdout ?? "");
     console.error(result.stderr ?? "");
@@ -166,9 +171,14 @@ check(hello.protocol === "v3.local/1.0", "protocol version");
 check(hello.capabilities.length === 18, "capability matrix lists 18 services");
 const caps = new Map(hello.capabilities.map((c) => [c.code, c]));
 for (const service of SERVICE_SET) check(caps.has(service), `capability present: ${service}`);
-for (const service of ["ProjectSessionService", "ArtifactService", "BacktestService", "ProductEntryService"]) {
+for (const service of ["ProjectSessionService", "ArtifactService", "ProductEntryService"]) {
   check(caps.get(service).truth_state === "FORMAL", `${service} is FORMAL`);
 }
+check(caps.get("BacktestService").truth_state === "UNAVAILABLE", "BacktestService is UNAVAILABLE");
+check(
+  caps.get("BacktestService").reason_code === "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED",
+  "BacktestService reports the unclosed formal execution contract",
+);
 for (const service of ["ResearchService", "ModelService", "DatasetService", "StrategyService"]) {
   check(caps.get(service).truth_state === "UNAVAILABLE", `${service} is UNAVAILABLE`);
 }
@@ -227,71 +237,34 @@ check(opened.body.read_model.project_id === projectId, "openProject returns the 
 const context = await request("ProjectSessionService.v1.getProjectContext", {});
 check(context.status === "OK" && context.body.read_model.project_context_revision_id === pcrId, "getProjectContext OK");
 
-// Golden execution: submit the canonical backtest run spec.
-const idempotencyKey = "smoke-golden-key-0001";
-const submitted = await request("BacktestService.v1.submitBacktest", {
+// The frozen formal Backtest wire remains valid but normal product composition
+// must deny it before any Task/Run/Result side effect. V1.1 product execution is
+// covered by the additive ProductEntry Backtest/Result smokes.
+const deniedLegacyBacktest = await request("BacktestService.v1.submitBacktest", {
   run_spec_id: runSpecId,
   execution_adapter_version_id: "v3.a_share_daily_eod_engine/0.2.0",
-  idempotency_key: idempotencyKey,
+  idempotency_key: "smoke-legacy-backtest-denied-0001",
 });
-check(submitted.status === "OK", "submitBacktest accepted");
-check(submitted.body.accepted_state === "QUEUED", "accepted state is QUEUED");
-const taskId = submitted.body.task_id;
-const runId = submitted.body.run_id;
-check(typeof taskId === "string" && taskId.startsWith("tsk_"), "canonical Task identity");
-check(typeof runId === "string" && runId.startsWith("run_"), "canonical Run identity");
+check(
+  deniedLegacyBacktest.status === "ERROR"
+    && deniedLegacyBacktest.error.code === "CAPABILITY_UNAVAILABLE"
+    && deniedLegacyBacktest.error.details.reason_code === "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED",
+  "legacy submitBacktest fails closed with the exact capability reason",
+);
 
-const task = await request("TaskService.v1.getTask", { task_id: taskId });
-check(task.status === "OK" && task.body.read_model.state === "SUCCEEDED", "Task transitioned to SUCCEEDED");
-const resultArtifactId = task.body.read_model.outputs["BACKTEST_RUN_RESULT"];
-check(typeof resultArtifactId === "string" && resultArtifactId.startsWith("art_sha256_"), "canonical result artifact identity");
-
-const events = await request("TaskService.v1.getEvents", { after_sequence: 0, limit: 100 });
-check(events.status === "OK", "task events query OK");
-const eventTypes = new Set(events.body.read_model.items.map((item) => item.event_type));
-check(eventTypes.has("TASK_QUEUED") && eventTypes.has("TASK_STARTED") && eventTypes.has("TASK_SUCCEEDED"), "canonical Task transition events durable");
-const lastEventSequence = events.body.read_model.high_watermark;
+const tasksAfterDenial = await request("TaskService.v1.listTasks", { filter: {}, page_size: 10 });
+check(
+  tasksAfterDenial.status === "OK" && tasksAfterDenial.body.read_model.items.length === 0,
+  "legacy Backtest denial creates no Task side effect",
+);
+const lastEventSequence = 0;
 
 const resumeUnavailable = await request("TaskService.v1.resumeTask", {
-  task_id: taskId,
+  task_id: "tsk_01ARZ3NDEKTSV4RRFFQ69G5FAV",
   checkpoint_artifact_id: `art_sha256_${"a".repeat(64)}`,
-  expected_state_version: task.body.read_model.state_version,
+  expected_state_version: 1,
 });
 check(resumeUnavailable.status === "ERROR" && resumeUnavailable.error.code === "CAPABILITY_UNAVAILABLE", "resumeTask is not admitted and reports CAPABILITY_UNAVAILABLE");
-
-const descriptor = await request("ArtifactService.v1.getArtifactDescriptor", { artifact_id: resultArtifactId });
-check(descriptor.status === "OK", "artifact descriptor OK");
-const declaredSha = descriptor.body.read_model.sha256;
-check(/^[0-9a-f]{64}$/.test(declaredSha), "descriptor carries a canonical SHA-256");
-
-const ticket = await request("ArtifactService.v1.openArtifactStream", { artifact_id: resultArtifactId });
-check(ticket.status === "OK" && ticket.body.read_model.mode === "STREAM_TICKET", "stream ticket issued without a raw path");
-
-// Events are notifications; the Task read model is the canonical relation.
-const resultId = task.body.read_model.result_id;
-check(typeof resultId === "string" && resultId.startsWith("res_"), "canonical result_id resolved directly from the Task read model");
-const resultRow = await request("ResultService.v1.getResult", {
-  result_id: resultId,
-  section: "summary",
-  page: {},
-});
-check(resultRow.status === "OK" && resultRow.body.read_model.state === "PENDING_RECONCILIATION", "durable Result record reopened");
-
-// Idempotency: same key + same request returns the same Task/Run.
-const duplicate = await request("BacktestService.v1.submitBacktest", {
-  run_spec_id: runSpecId,
-  execution_adapter_version_id: "v3.a_share_daily_eod_engine/0.2.0",
-  idempotency_key: idempotencyKey,
-});
-check(duplicate.status === "OK" && duplicate.body.task_id === taskId && duplicate.body.run_id === runId, "duplicate idempotency_key returns the same task/run (no double execution)");
-
-// Same key + different request fails closed.
-const conflicting = await request("BacktestService.v1.submitBacktest", {
-  run_spec_id: "btrs_sha256_" + "f".repeat(64),
-  execution_adapter_version_id: "v3.a_share_daily_eod_engine/0.2.0",
-  idempotency_key: idempotencyKey,
-});
-check(conflicting.status === "ERROR" && conflicting.error.code === "IDEMPOTENCY_CONFLICT", "same key + different request fails closed");
 
 // Negative: operation in an UNAVAILABLE service fails closed.
 const unavailable = await request("ResearchService.v1.submitFactorAnalysis", {
@@ -315,15 +288,37 @@ while (true) {
   if (frame.kind === "events.replayComplete") break;
   replayFrames.push(frame);
 }
-check(replayFrames.length >= 3, "durable event replay delivers the golden run events");
+check(replayFrames.length === 0, "denied legacy Backtest creates no durable events");
 
 // Graceful shutdown.
-backend.send({ kind: "runtime.prepareShutdown", deadline_at: null });
+const prepareShutdownId = uuidv7();
+backend.send({
+  kind: "runtime.prepareShutdown",
+  control_request_id: prepareShutdownId,
+  runtime_generation: 1,
+  deadline_at: null,
+});
 const shutdownReady = await backend.nextFrame();
-check(shutdownReady.kind === "runtime.shutdownReady", "shutdown prepared");
-backend.send({ kind: "runtime.commitShutdown" });
+check(
+  shutdownReady.kind === "runtime.shutdownReady"
+    && shutdownReady.control_request_id === prepareShutdownId
+    && shutdownReady.runtime_generation === 1,
+  "shutdown prepared with exact control correlation",
+);
+const commitShutdownId = uuidv7();
+backend.send({
+  kind: "runtime.commitShutdown",
+  control_request_id: commitShutdownId,
+  runtime_generation: 1,
+  deadline_at: null,
+});
 const shutdownCommitted = await backend.nextFrame();
-check(shutdownCommitted.kind === "runtime.shutdownCommitted", "shutdown committed");
+check(
+  shutdownCommitted.kind === "runtime.shutdownCommitted"
+    && shutdownCommitted.control_request_id === commitShutdownId
+    && shutdownCommitted.runtime_generation === 1,
+  "shutdown committed with exact control correlation",
+);
 
 // ---- Phase B: restart on the same storage root ---------------------------
 const restarted = spawnBackend(storageRoot, token);
@@ -368,20 +363,6 @@ const restored = await request2("ProjectSessionService.v1.restoreSession", { ses
 check(restored.status === "OK", "session restored after restart");
 check(restored.body.read_model.project_id === projectId, "restored session points at the durable project");
 
-const taskAfter = await request2("TaskService.v1.getTask", { task_id: taskId });
-check(taskAfter.status === "OK" && taskAfter.body.read_model.state === "SUCCEEDED", "same Task state after restart");
-check(taskAfter.body.read_model.run_id === runId, "same Run identity after restart");
-
-const resultAfter = await request2("ResultService.v1.getResult", {
-  result_id: resultId,
-  section: "summary",
-  page: {},
-});
-check(resultAfter.status === "OK" && resultAfter.body.read_model.backtest_run_id === runId, "same Result after restart");
-
-const descriptorAfter = await request2("ArtifactService.v1.getArtifactDescriptor", { artifact_id: resultArtifactId });
-check(descriptorAfter.status === "OK" && descriptorAfter.body.read_model.sha256 === declaredSha, "same Artifact descriptor SHA after restart");
-
 // Durable events still replay from the restarted runtime.
 restarted.send({ kind: "events.replay", after_sequence: 0, limit: 100 });
 let replayedTypes = [];
@@ -390,26 +371,35 @@ while (true) {
   if (frame.kind === "events.replayComplete") break;
   replayedTypes.push(frame.event_type);
 }
-check(replayedTypes.includes("TASK_SUCCEEDED"), "durable events replay after restart");
+check(replayedTypes.length === 0, "restart confirms legacy Backtest denial left no durable events");
 
-restarted.send({ kind: "runtime.prepareShutdown", deadline_at: null });
-await restarted.nextFrame();
-restarted.send({ kind: "runtime.commitShutdown" });
-await restarted.nextFrame();
-
-// ---- Phase C: python verified byte SHA + determinism check ---------------
-const verified = JSON.parse(
-  runPython([
-    "scripts/product_runtime_smoke_python.py",
-    "verify",
-    storageRoot,
-    resultArtifactId,
-    declaredSha,
-    runSpecId,
-    setupWire.expected_backtest_result_id,
-  ])
+const restartPrepareShutdownId = uuidv7();
+restarted.send({
+  kind: "runtime.prepareShutdown",
+  control_request_id: restartPrepareShutdownId,
+  runtime_generation: 2,
+  deadline_at: null,
+});
+const restartShutdownReady = await restarted.nextFrame();
+check(
+  restartShutdownReady.kind === "runtime.shutdownReady"
+    && restartShutdownReady.control_request_id === restartPrepareShutdownId
+    && restartShutdownReady.runtime_generation === 2,
+  "restarted runtime shutdown prepared with exact control correlation",
 );
-check(verified.verified === true && verified.sha256 === declaredSha, "actual artifact bytes SHA matches the descriptor");
-check(verified.result_id === setupWire.expected_backtest_result_id, "runtime execution reproduces the canonical pipeline result deterministically");
+const restartCommitShutdownId = uuidv7();
+restarted.send({
+  kind: "runtime.commitShutdown",
+  control_request_id: restartCommitShutdownId,
+  runtime_generation: 2,
+  deadline_at: null,
+});
+const restartShutdownCommitted = await restarted.nextFrame();
+check(
+  restartShutdownCommitted.kind === "runtime.shutdownCommitted"
+    && restartShutdownCommitted.control_request_id === restartCommitShutdownId
+    && restartShutdownCommitted.runtime_generation === 2,
+  "restarted runtime shutdown committed with exact control correlation",
+);
 
 console.log(`\nPRODUCT_RUNTIME_SMOKE PASS (${passed} checks)`);

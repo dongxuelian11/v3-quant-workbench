@@ -122,6 +122,7 @@ MIGRATION_APPLICATION_VERSION = "v3-product-runtime-composition"
 
 # Frozen execution adapter identity: the only admitted engine for the product path.
 ADMITTED_EXECUTION_ADAPTER_VERSION_ID = "v3.a_share_daily_eod_engine/0.2.0"
+FORMAL_BACKTEST_UNAVAILABLE_REASON = "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED"
 INLINE_WORKER_KIND = "PRODUCT_INLINE_V1"
 INLINE_ENVIRONMENT_PROFILE_ID = "v3.product-inline-executor/1.0.0"
 PRODUCT_CODE_VERSION = BUILD_MANIFEST.code_version
@@ -284,6 +285,7 @@ def product_artifact_policy() -> SafeFormatPolicy:
         "DATA_TRUTH_CALENDAR",
         "DATA_TRUTH_SNAPSHOT_PARTITION",
         "DATA_TRUTH_SNAPSHOT_MANIFEST",
+        "DATA_TRUTH_CORPORATE_ACTION_SET",
         "UNIVERSE_MEMBERSHIP",
         "RESEARCH_STRATEGY_PROFILE",
         "RESEARCH_DATASET_PROFILE",
@@ -293,6 +295,23 @@ def product_artifact_policy() -> SafeFormatPolicy:
         "LOCAL_DATA_NORMALIZATION_RECEIPT",
         "LOCAL_DATA_UNIVERSE_AUDIT",
         "LOCAL_DATA_IMPORT_READ_MODEL",
+        "PRODUCT_RESEARCH_STRATEGY_SPEC",
+        "PRODUCT_STRATEGY_DEFINITION",
+        "PRODUCT_STRATEGY_VALIDATION",
+        "PRODUCT_STRATEGY_STATE_MATERIALIZATION",
+        "PRODUCT_STRATEGY_READ_MODEL",
+        "PRODUCT_STRATEGY_DECISION_INPUT",
+        "PRODUCT_STRATEGY_DECISION_DATASET",
+        "PRODUCT_STRATEGY_SIGNAL",
+        "PRODUCT_STRATEGY_SELECTION",
+        "PRODUCT_STRATEGY_PORTFOLIO_INTENT",
+        "PRODUCT_RESEARCH_EXECUTION_INPUTS",
+        "PRODUCT_RESEARCH_ASSUMPTION_RECEIPT",
+        "PRODUCT_RESEARCH_RESULT_RECONCILIATION",
+        "PRODUCT_RESULT_ANALYTICS",
+        "PRODUCT_RESULT_LINEAGE",
+        "PRODUCT_RESULT_EXPORT_SUMMARY_JSON",
+        "PRODUCT_RESEARCH_BACKTEST_READ_MODEL",
     )
     return SafeFormatPolicy(
         rules
@@ -306,6 +325,19 @@ def product_artifact_policy() -> SafeFormatPolicy:
             )
             for role in product_roles
         )
+        + tuple(
+            FormatRule(
+                role,
+                "text/csv",
+                ADMITTED,
+                "utf8-text-v1",
+                f"product runtime {role} deterministic UTF-8 CSV payload",
+            )
+            for role in (
+                "PRODUCT_RESULT_EXPORT_ORDERS_CSV",
+                "PRODUCT_RESULT_EXPORT_FILLS_CSV",
+            )
+        )
     )
 
 
@@ -316,19 +348,39 @@ class ProductArtifactBatch:
         self,
         *,
         store: FileSystemArtifactStore,
-        payloads: tuple[tuple[str, bytes, str, str], ...],
+        payloads: tuple[tuple[Any, ...], ...],
         published_at: datetime,
     ) -> None:
-        """payloads: (provenance_entity_id, bytes, role, schema_fingerprint)."""
+        """payloads: provenance, bytes, role, schema fingerprint, optional MIME."""
         self.store = store
-        self.payloads = payloads
+        normalized_payloads: list[tuple[Any, ...]] = []
+        for item in payloads:
+            if len(item) not in {4, 5}:
+                raise V3ContractError("product artifact payload tuple is invalid")
+            provenance_entity_id, payload, role, schema_fingerprint = item[:4]
+            media_type = item[4] if len(item) == 5 else "application/json"
+            if (
+                not isinstance(provenance_entity_id, str)
+                or not provenance_entity_id
+                or not isinstance(payload, bytes)
+                or not isinstance(role, str)
+                or not role
+                or not isinstance(schema_fingerprint, str)
+                or not schema_fingerprint
+                or not isinstance(media_type, str)
+                or not media_type
+            ):
+                raise V3ContractError("product artifact payload fields are invalid")
+            normalized_payloads.append(item)
+        self.payloads = tuple(normalized_payloads)
         self.published_at = published_at
-        stages = tuple(store.stage_bytes(payload) for _, payload, _, _ in payloads)
+        stages = tuple(store.stage_bytes(item[1]) for item in self.payloads)
         self.stages: tuple[Any, ...] = stages
         self.results: list[Any] = []
 
     def verify_staged(self) -> None:
-        for (_, payload, _, _), stage in zip(self.payloads, self.stages, strict=True):
+        for item, stage in zip(self.payloads, self.stages, strict=True):
+            payload = item[1]
             if stage.sha256 != hashlib.sha256(payload).hexdigest():
                 raise V3ContractError("staged product artifact hash mismatch")
             if stage.byte_size != len(payload):
@@ -336,15 +388,15 @@ class ProductArtifactBatch:
 
     def publish_staged(self) -> None:
         self.results = []
-        for (provenance_entity_id, _, role, schema_fingerprint), stage in zip(
-            self.payloads, self.stages, strict=True
-        ):
+        for item, stage in zip(self.payloads, self.stages, strict=True):
+            provenance_entity_id, _, role, schema_fingerprint = item[:4]
+            media_type = item[4] if len(item) == 5 else "application/json"
             self.results.append(
                 self.store.publish(
                     stage.staging_token,
                     expected_sha256=stage.sha256,
                     expected_byte_size=stage.byte_size,
-                    media_type="application/json",
+                    media_type=media_type,
                     role=role,
                     provenance_entity_id=provenance_entity_id,
                     schema_fingerprint=schema_fingerprint,
@@ -994,6 +1046,57 @@ class ProductExecution:
         self.engine = DeterministicAshareBacktestEngine()
         self.retry_policy = RetryPolicy()
 
+    def _record_progress(
+        self,
+        task: Task,
+        run: Run,
+        attempt: TaskAttempt,
+        *,
+        phase: str,
+        completed_units: int,
+        total_units: int,
+        work_unit: str,
+    ) -> None:
+        allowed = {"ACQUIRING", "VALIDATING", "COMPUTING", "PUBLISHING", "RECONCILING"}
+        if phase not in allowed:
+            raise ValueError("Task progress phase is not admitted")
+        if (
+            not isinstance(completed_units, int)
+            or isinstance(completed_units, bool)
+            or not isinstance(total_units, int)
+            or isinstance(total_units, bool)
+            or total_units < 1
+            or completed_units < 0
+            or completed_units > total_units
+            or not isinstance(work_unit, str)
+            or not work_unit
+            or len(work_unit) > 128
+        ):
+            raise ValueError("Task progress work units are invalid")
+        with self.product.task_persistence.begin() as unit:
+            current_task = unit.require_task(task.task_id)
+            if current_task.project_id != task.project_id or current_task.state in TASK_TERMINAL_STATES:
+                raise ImpossibleTransition("terminal or cross-project Task cannot record progress")
+            unit.append_event(
+                PendingTaskEvent(
+                    event_id=mint_v3_id("tev_"),
+                    event_version=_TASK_EVENT_VERSION,
+                    project_id=current_task.project_id,
+                    task_id=current_task.task_id,
+                    event_type="TASK_PROGRESS",
+                    occurred_at=datetime.now(timezone.utc),
+                    payload={
+                        "phase": phase,
+                        "completed_units": completed_units,
+                        "total_units": total_units,
+                        "work_unit": work_unit,
+                    },
+                    run_id=run.run_id,
+                    attempt_id=attempt.attempt_id,
+                )
+            )
+            unit.commit()
+
     # -- durable task phases ------------------------------------------------
 
     def _create_task(
@@ -1188,6 +1291,7 @@ class ProductExecution:
         outputs: Mapping[str, Any],
         *,
         run_transition: bool = True,
+        artifact_outputs: tuple[tuple[str, int, str], ...] = (),
     ) -> None:
         with self.product.task_persistence.begin() as unit:
             current_task = unit.require_task(task.task_id)
@@ -1206,6 +1310,22 @@ class ProductExecution:
                 TaskTransitionContext(successful_attempt=True, publication_committed=True),
             )
             unit.save_task(current_task, expected_version=current_task.state_version)
+            completed_at = wire_time(datetime.now(timezone.utc))
+            for output_role, ordinal, artifact_id in artifact_outputs:
+                unit.connection.execute(
+                    """
+                    INSERT INTO task_output(
+                      task_id,output_role,ordinal,artifact_id,created_at
+                    ) VALUES(?,?,?,?,?)
+                    """,
+                    (
+                        current_task.task_id,
+                        output_role,
+                        ordinal,
+                        artifact_id,
+                        completed_at,
+                    ),
+                )
             unit.append_event(
                 PendingTaskEvent(
                     event_id=mint_v3_id("tev_"),
@@ -1324,7 +1444,7 @@ class ProductExecution:
     def _publish_artifact_batch(
         self,
         *,
-        payloads: tuple[tuple[str, bytes, str, str], ...],
+        payloads: tuple[tuple[Any, ...], ...],
         references: tuple[tuple[str, str, str], ...],
     ) -> list[Any]:
         """references: (owner_id, role, artifact_index)."""
@@ -1340,7 +1460,8 @@ class ProductExecution:
         try:
             uow.begin()
             port = SQLiteArtifactPublicationPort(uow)
-            for index, (provenance, _, _, _) in enumerate(payloads):
+            for index, item in enumerate(payloads):
+                provenance = item[0]
                 descriptor = batch.results[index].descriptor
                 active_references = tuple(
                     ArtifactReference(
@@ -1614,8 +1735,16 @@ class ProductExecution:
         self.product.require_project_context_ownership(project_id, project_context_revision_id)
         if export_profile_id not in EXPORT_PROFILES:
             raise InvalidArgumentError(f"unknown export profile: {export_profile_id}")
+        if len(artifact_ids) != 1:
+            raise InvalidArgumentError("V1.1 native export requires exactly one Artifact")
+        if (
+            not destination_token.startswith("edc_")
+            or len(destination_token) < 16
+            or len(destination_token) > 128
+        ):
+            raise InvalidArgumentError("destination_token is not an admitted Electron capability")
         for artifact_id in artifact_ids:
-            self.product.require_published_artifact(artifact_id)
+            self.product.require_project_reachable_artifact(project_id, artifact_id)
         operation_id = "ArtifactService.v1.exportArtifact"
         semantic = {
             "project_id": project_id,
@@ -1629,20 +1758,6 @@ class ProductExecution:
         existing = DurableIdempotency().lookup(self.product, scope, request_hash)
         if existing is not None:
             return ExecutionOutcome(str(existing["task_id"]), str(existing["run_id"]), None)
-        manifest_wire = {
-            "schema_version": "v3.export-manifest/1.0.0",
-            "export_profile_id": export_profile_id,
-            "destination_token": destination_token,
-            "artifacts": [
-                {
-                    "artifact_id": artifact_id,
-                    "sha256": sha256_from_artifact_id(artifact_id),
-                    "byte_size": len(self.product.read_verified_bytes(artifact_id)),
-                }
-                for artifact_id in artifact_ids
-            ],
-        }
-        manifest_payload = canonical_json_bytes(manifest_wire)
         normalized_input_hash = canonical_sha256(
             {"artifact_ids": list(artifact_ids), "export_profile_id": export_profile_id}
         )
@@ -1668,27 +1783,158 @@ class ProductExecution:
         )
         self._transition_to_running(task, run, attempt)
         event_cursor = self._latest_sequence(project_id)
-        try:
-            outputs = self._publish_artifact_batch(
-                payloads=(
-                    (
-                        "prv_product_export_manifest",
-                        manifest_payload,
-                        EXPORT_MANIFEST_ROLE,
-                        "v3.export-manifest/1.0.0",
-                    ),
-                ),
-                references=((run.run_id, RUN_EXPORT_MANIFEST_REFERENCE_ROLE, 0),),
-            )[0]
-            self._finish_success(
-                task, run, attempt,
-                outputs={"artifact_id": outputs.descriptor.artifact_id, "artifact_sha256": outputs.descriptor.sha256},
-            )
-        except Exception as error:
-            self._finish_failure(
-                task, run, attempt, error=error, category=classify_execution_error(error)
-            )
         return ExecutionOutcome(task.task_id, run.run_id, event_cursor)
+
+    def complete_artifact_export(
+        self,
+        *,
+        project_id: str,
+        project_context_revision_id: str,
+        task_id: str,
+        destination_token: str,
+        display_name: str,
+        artifact_id: str,
+        sha256: str,
+        byte_size: int,
+        completed_at: str,
+    ) -> dict[str, Any]:
+        """Finalize an export only after Electron attests an exact native write."""
+
+        self.product.require_project_context_ownership(
+            project_id, project_context_revision_id
+        )
+        if isinstance(byte_size, bool) or not isinstance(byte_size, int) or byte_size < 0:
+            raise InvalidArgumentError("export byte_size must be a non-negative integer")
+        if (
+            not display_name
+            or len(display_name) > 255
+            or "/" in display_name
+            or "\\" in display_name
+            or display_name in {".", ".."}
+        ):
+            raise InvalidArgumentError("export display_name is invalid")
+        if not completed_at.endswith("Z"):
+            raise InvalidArgumentError("completed_at must be RFC3339 UTC")
+        try:
+            completed = datetime.fromisoformat(completed_at[:-1] + "+00:00")
+        except ValueError as exc:
+            raise InvalidArgumentError("completed_at must be RFC3339 UTC") from exc
+        task = self.product.task_persistence.read_task(task_id)
+        if task.project_id != project_id or task.operation_id != "ArtifactService.v1.exportArtifact":
+            raise TruthPreconditionFailedError("export Task does not belong to this project/operation")
+        if task.state is not TaskState.RUNNING:
+            raise ConflictError("export Task is not awaiting native completion")
+        run = self._read_run(task.active_run_id)
+        attempt = self.product.task_persistence.latest_attempt(task_id)
+        context_wire = json.loads(
+            self.product.read_verified_bytes(
+                self._run_context_artifact(run.run_id)
+            ).decode("utf-8")
+        )
+        if (
+            context_wire.get("context_kind") != EXPORT_CONTEXT_KIND
+            or context_wire.get("project_id") != project_id
+            or context_wire.get("project_context_revision_id")
+            != project_context_revision_id
+            or context_wire.get("destination_token") != destination_token
+            or context_wire.get("artifact_ids") != [artifact_id]
+        ):
+            raise TruthPreconditionFailedError("native export receipt does not match its durable context")
+        descriptor = self.product.require_project_reachable_artifact(
+            project_id, artifact_id
+        )
+        if (
+            str(descriptor["sha256"]) != sha256
+            or int(descriptor["byte_size"]) != byte_size
+            or artifact_id != f"art_sha256_{sha256}"
+        ):
+            raise TruthPreconditionFailedError("native export receipt does not match Artifact identity")
+        # Re-read through the verified Artifact handle at finalization time; a
+        # desktop receipt cannot replace canonical payload integrity.
+        payload = self.product.read_verified_bytes(artifact_id)
+        if len(payload) != byte_size or hashlib.sha256(payload).hexdigest() != sha256:
+            raise TruthPreconditionFailedError("native export source bytes changed before finalization")
+        manifest_wire = {
+            "schema_version": "v3.export-manifest/1.0.0",
+            "export_profile_id": context_wire["export_profile_id"],
+            "display_name": display_name,
+            "completed_at": wire_time(completed),
+            "artifacts": [
+                {
+                    "artifact_id": artifact_id,
+                    "sha256": sha256,
+                    "byte_size": byte_size,
+                }
+            ],
+        }
+        output = self._publish_artifact_batch(
+            payloads=(
+                (
+                    "prv_product_export_manifest",
+                    canonical_json_bytes(manifest_wire),
+                    EXPORT_MANIFEST_ROLE,
+                    "v3.export-manifest/1.0.0",
+                ),
+            ),
+            references=((run.run_id, RUN_EXPORT_MANIFEST_REFERENCE_ROLE, 0),),
+        )[0]
+        self._finish_success(
+            task,
+            run,
+            attempt,
+            outputs={
+                "artifact_id": output.descriptor.artifact_id,
+                "artifact_sha256": output.descriptor.sha256,
+            },
+        )
+        return {
+            "kind": "artifactExport.completed",
+            "task_id": task_id,
+            "manifest_artifact_id": output.descriptor.artifact_id,
+        }
+
+    def fail_artifact_export(
+        self,
+        *,
+        project_id: str,
+        project_context_revision_id: str,
+        task_id: str,
+        destination_token: str,
+        reason_code: str,
+    ) -> dict[str, Any]:
+        self.product.require_project_context_ownership(
+            project_id, project_context_revision_id
+        )
+        if not reason_code or len(reason_code) > 128:
+            raise InvalidArgumentError("export failure reason_code is invalid")
+        task = self.product.task_persistence.read_task(task_id)
+        if task.project_id != project_id or task.operation_id != "ArtifactService.v1.exportArtifact":
+            raise TruthPreconditionFailedError("export Task does not belong to this project/operation")
+        if task.state is not TaskState.RUNNING:
+            raise ConflictError("export Task is not awaiting native completion")
+        run = self._read_run(task.active_run_id)
+        attempt = self.product.task_persistence.latest_attempt(task_id)
+        context_wire = json.loads(
+            self.product.read_verified_bytes(
+                self._run_context_artifact(run.run_id)
+            ).decode("utf-8")
+        )
+        if (
+            context_wire.get("context_kind") != EXPORT_CONTEXT_KIND
+            or context_wire.get("project_id") != project_id
+            or context_wire.get("project_context_revision_id")
+            != project_context_revision_id
+            or context_wire.get("destination_token") != destination_token
+        ):
+            raise TruthPreconditionFailedError("native export failure does not match its durable context")
+        self._finish_failure(
+            task,
+            run,
+            attempt,
+            error=V3ContractError(reason_code),
+            category=ErrorCategory.INTERNAL_ERROR,
+        )
+        return {"kind": "artifactExport.failed", "task_id": task_id}
 
     def _persist_context_artifact(self, wire: Mapping[str, Any], *, provenance: str) -> str:
         payload = canonical_json_bytes(wire)
@@ -1858,6 +2104,12 @@ class ProductExecution:
         immutable Run; the Run remains TERMINAL and is not re-transitioned.
         """
         task = self.product.task_persistence.read_task(task_id)
+        if task.operation_id == "ProductEntryService.v1.submitResearchBacktest":
+            return self.product.backtest.retry_failed_task(
+                task_id=task_id,
+                failed_attempt_id=failed_attempt_id,
+                expected_state_version=expected_state_version,
+            )
         if task.state is not TaskState.FAILED and task.state is not TaskState.PARTIAL:
             raise ConflictError("Task is not in a retryable state")
         if task.state_version != expected_state_version:
@@ -1954,41 +2206,10 @@ class ProductExecution:
                     run_transition=False,
                 )
         elif kind == EXPORT_CONTEXT_KIND:
-            try:
-                manifest_wire = {
-                    "schema_version": "v3.export-manifest/1.0.0",
-                    "export_profile_id": context_wire["export_profile_id"],
-                    "destination_token": context_wire["destination_token"],
-                    "artifacts": [
-                        {
-                            "artifact_id": artifact_id,
-                            "sha256": sha256_from_artifact_id(artifact_id),
-                            "byte_size": len(self.product.read_verified_bytes(artifact_id)),
-                        }
-                        for artifact_id in context_wire["artifact_ids"]
-                    ],
-                }
-                outputs = self._publish_artifact_batch(
-                    payloads=(
-                        (
-                            "prv_product_export_manifest",
-                            canonical_json_bytes(manifest_wire),
-                            EXPORT_MANIFEST_ROLE,
-                            "v3.export-manifest/1.0.0",
-                        ),
-                    ),
-                    references=((run_id, RUN_EXPORT_MANIFEST_REFERENCE_ROLE, 0),),
-                )[0]
-                self._finish_success(
-                    task, run, attempt,
-                    outputs={"artifact_id": outputs.descriptor.artifact_id, "artifact_sha256": outputs.descriptor.sha256},
-                    run_transition=False,
-                )
-            except Exception as error:
-                self._finish_failure(
-                    task, run, attempt, error=error, category=classify_execution_error(error),
-                    run_transition=False,
-                )
+            # A retry creates a fresh Attempt but cannot replay OS destination
+            # authority. It waits for a new Electron native completion/failure
+            # receipt and never recreates a success manifest by itself.
+            return task_id
         else:
             self._finish_failure(
                 task, run, attempt,
@@ -2081,6 +2302,9 @@ class ProductRuntime:
         from .product_research import ProductResearchService
         from .product_data import ProductDataService
         from .product_factor import ProductFactorStudyService
+        from .product_strategy import ProductStrategyService
+        from .product_backtest import ProductResearchBacktestService
+        from .product_results import ProductResultService
         from .local_data_transfer import ProductLocalDataTransferService
 
         self.research = ProductResearchService(
@@ -2089,22 +2313,36 @@ class ProductRuntime:
         )
         self.data = ProductDataService(self)
         self.factor = ProductFactorStudyService(self)
+        self.strategy = ProductStrategyService(self)
+        self.backtest = ProductResearchBacktestService(self)
+        self.results = ProductResultService(self)
         self.local_data_transfers = ProductLocalDataTransferService(self)
         self.idempotency = DurableIdempotency()
         self._shutdown_prepared = False
         self._shutdown_committed = False
         self._cancellation_lock = RLock()
-        self.reconciliation_summary = (
-            self._reconcile_execution_state()
-            if reconcile_on_start
-            else {
+        if reconcile_on_start:
+            # Publication recovery owns a cataloged Result before generic
+            # worker-loss reconciliation is allowed to fail its Task.
+            from .product_publication import ProductBacktestPublication
+
+            publication_summary = ProductBacktestPublication(self).recover_pending()
+            worker_summary = self._reconcile_execution_state()
+            self.reconciliation_summary = {
+                **worker_summary,
+                **publication_summary,
+            }
+        else:
+            self.reconciliation_summary = {
                 "active_leases_revoked": 0,
                 "expired_leases_reconciled": 0,
                 "attempts_lost": 0,
                 "tasks_failed": 0,
                 "workers_stopped": 0,
+                "publication_intents_seen": 0,
+                "publication_finalized": 0,
+                "publication_failed": 0,
             }
-        )
 
     # -- catalog access ------------------------------------------------------
 
@@ -2179,6 +2417,58 @@ class ProductRuntime:
         if str(row["state"]) != "PUBLISHED":
             raise ArtifactNotPublishedError(f"artifact is not published: {artifact_id}")
         return row
+
+    def require_project_reachable_artifact(
+        self, project_id: str, artifact_id: str
+    ) -> dict[str, Any]:
+        """Require active reachability from the named Product project."""
+
+        self.require_project(project_id)
+        descriptor = self.require_published_artifact(artifact_id)
+        connection = self._connection(read_only=True)
+        try:
+            reachable = connection.execute(
+                """
+                SELECT 1
+                FROM artifact_reference AS ar
+                WHERE ar.artifact_id=? AND ar.state='ACTIVE' AND (
+                  (ar.owner_type='Project' AND ar.owner_id=?)
+                  OR (ar.owner_type='Task' AND ar.owner_id IN (
+                    SELECT task_id FROM task WHERE project_id=?
+                  ))
+                  OR (ar.owner_type='Run' AND ar.owner_id IN (
+                    SELECT r.run_id FROM run AS r
+                    JOIN task AS t ON t.task_id=r.task_id
+                    WHERE t.project_id=?
+                  ))
+                  OR (ar.owner_type='TaskAttempt' AND ar.owner_id IN (
+                    SELECT a.attempt_id FROM task_attempt AS a
+                    JOIN run AS r ON r.run_id=a.run_id
+                    JOIN task AS t ON t.task_id=r.task_id
+                    WHERE t.project_id=?
+                  ))
+                  OR (ar.owner_type='Result' AND ar.owner_id IN (
+                    SELECT result_id FROM result WHERE project_id=?
+                  ))
+                )
+                LIMIT 1
+                """,
+                (
+                    artifact_id,
+                    project_id,
+                    project_id,
+                    project_id,
+                    project_id,
+                    project_id,
+                ),
+            ).fetchone()
+        finally:
+            connection.close()
+        if reachable is None:
+            raise TruthPreconditionFailedError(
+                "Artifact is not reachable from the request project"
+            )
+        return descriptor
 
     def require_experiment(self, experiment_id: str) -> dict[str, Any]:
         connection = self._connection(read_only=True)
@@ -2255,13 +2545,20 @@ class ProductRuntime:
         bound_services = {
             "ProjectSessionService",
             "ArtifactService",
-            "BacktestService",
             "ProductEntryService",
         }
         capabilities: list[Capability] = []
         for service in sorted(SERVICE_CONTRACTS):
             if service in bound_services:
                 capabilities.append(Capability(code=service, truth_state="FORMAL"))
+            elif service == "BacktestService":
+                capabilities.append(
+                    Capability(
+                        code=service,
+                        truth_state="UNAVAILABLE",
+                        reason_code=FORMAL_BACKTEST_UNAVAILABLE_REASON,
+                    )
+                )
             elif service in {"ResultService", "TaskService"}:
                 capabilities.append(
                     Capability(
@@ -2594,7 +2891,7 @@ def build_product_ports(
 ) -> RuntimePorts:
     """Normal production RuntimePorts: real facades over durable product stores."""
     from .product_entry import handle_product_entry_control
-    from .product_facades import build_product_facades
+    from .product_facades import ArtifactFacade, build_product_facades
     from .product_workers import ProductResearchWorkerConfig
 
     product = build_product_runtime(
@@ -2605,7 +2902,11 @@ def build_product_ports(
         ),
     )
     handlers: dict[str, Any] = {}
-    for facade in build_product_facades(product):
+    facades = build_product_facades(product)
+    artifact_facade = next(
+        facade for facade in facades if isinstance(facade, ArtifactFacade)
+    )
+    for facade in facades:
         handlers.update(facade.handlers())
     return RuntimePorts(
         operation_handlers=handlers,
@@ -2618,11 +2919,14 @@ def build_product_ports(
             lambda kind, message: handle_product_entry_control(product, kind, message)
         ),
         local_data_control=product.local_data_transfers.handle,
+        artifact_stream_control=artifact_facade.handle_stream_control,
+        artifact_export_control=artifact_facade.handle_export_control,
     )
 
 
 __all__ = [
     "ADMITTED_EXECUTION_ADAPTER_VERSION_ID",
+    "FORMAL_BACKTEST_UNAVAILABLE_REASON",
     "BACKTEST_RUN_RESULT_ROLE",
     "BACKTEST_RUN_SPEC_ROLE",
     "DEFAULT_RETENTION_PROFILE",
