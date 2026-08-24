@@ -19,6 +19,7 @@ from v3_backend.domain.factors import (
     OperatorNode,
     OperatorRegistry,
     ValueType,
+    panel_operator_registry,
     signal_compatible_operator_registry,
 )
 from v3_backend.provenance.canonical_hash import canonical_sha256
@@ -99,10 +100,61 @@ class TdxCompatibilityProfileVersion:
         payload = {"operator_registry_version": registry.registry_version, "mappings": [value.to_wire() for value in mappings]}
         return cls("tdxcp_sha256_" + canonical_sha256(payload), registry.registry_version, tuple(mappings))
 
+    @classmethod
+    def create_panel_v1_1(cls, registry: OperatorRegistry) -> TdxCompatibilityProfileVersion:
+        supported = {
+            "MA": ("SMA", "1.0.0", "MA(X,N): N integer 2..250", "N-1 observations", ValueType.FLOAT_SERIES),
+            "EMA": ("EMA", "1.0.0", "EMA(X,N): N integer 2..250", "N-1 observations", ValueType.FLOAT_SERIES),
+            "REF": ("LAG", "1.0.0", "REF(X,N): N integer 0..250", "N observations", ValueType.FLOAT_SERIES),
+            "HHV": ("HHV", "1.0.0", "HHV(X,N): N integer 1..250", "N-1 observations", ValueType.FLOAT_SERIES),
+            "LLV": ("LLV", "1.0.0", "LLV(X,N): N integer 1..250", "N-1 observations", ValueType.FLOAT_SERIES),
+            "SUM": ("SUM", "1.0.0", "SUM(X,N): N integer 1..250", "N-1 observations", ValueType.FLOAT_SERIES),
+            "STD": ("STD", "1.0.0", "STD(X,N): population standard deviation", "N-1 observations", ValueType.FLOAT_SERIES),
+            "CROSS": ("CROSS", "1.0.0", "CROSS(left,right)", "one prior observation", ValueType.BOOLEAN_SERIES),
+            "IF": ("IF", "1.0.0", "IF(condition,true_value,false_value)", "propagated", ValueType.FLOAT_SERIES),
+            "RANK": ("RANK", "1.0.0", "RANK(X): percentile within session date", "none", ValueType.FLOAT_SERIES),
+        }
+        unresolved = {"SMA"}
+        names = (
+            "MA", "EMA", "SMA", "REF", "HHV", "LLV", "SUM", "STD", "CROSS",
+            "COUNT", "EVERY", "EXIST", "IF", "MAX", "MIN", "ABS", "RANK",
+        )
+        mappings: list[TdxFunctionCompatibility] = []
+        for name in names:
+            if name in supported:
+                operator, version, parameters, warmup, output = supported[name]
+                mappings.append(
+                    TdxFunctionCompatibility(
+                        name, operator, version, parameters, warmup, output,
+                        TdxFunctionStatus.SUPPORTED,
+                    )
+                )
+            else:
+                status = (
+                    TdxFunctionStatus.SEMANTICS_UNRESOLVED
+                    if name in unresolved
+                    else TdxFunctionStatus.UNSUPPORTED_CANONICAL_OPERATOR
+                )
+                mappings.append(
+                    TdxFunctionCompatibility(
+                        name, None, None, "NOT_ADMITTED", "LOOKBACK_UNRESOLVED", None, status
+                    )
+                )
+        payload = {
+            "operator_registry_version": registry.registry_version,
+            "mappings": [value.to_wire() for value in mappings],
+        }
+        return cls(
+            "tdxcp_sha256_" + canonical_sha256(payload),
+            registry.registry_version,
+            tuple(mappings),
+        )
+
     def assert_canonical(self) -> None:
-        required = ("MA", "EMA", "SMA", "REF", "HHV", "LLV", "SUM", "STD", "CROSS", "COUNT", "EVERY", "EXIST", "IF", "MAX", "MIN", "ABS")
+        legacy = ("MA", "EMA", "SMA", "REF", "HHV", "LLV", "SUM", "STD", "CROSS", "COUNT", "EVERY", "EXIST", "IF", "MAX", "MIN", "ABS")
+        panel = (*legacy, "RANK")
         names = tuple(value.tdx_function for value in self.mappings)
-        if names != required or len(names) != len(set(names)):
+        if names not in {legacy, panel} or len(names) != len(set(names)):
             raise TdxFormulaError("TDX_COMPATIBILITY_PROFILE_NOT_CANONICAL", "mapping coverage/order mismatch")
         payload = {"operator_registry_version": self.operator_registry_version, "mappings": [value.to_wire() for value in self.mappings]}
         if self.compatibility_profile_id != "tdxcp_sha256_" + canonical_sha256(payload):
@@ -283,12 +335,15 @@ class TdxTranslator:
 
     def __init__(self, registry: OperatorRegistry, compatibility: TdxCompatibilityProfileVersion | None = None) -> None:
         self.registry = registry
-        if registry.to_wire() != signal_compatible_operator_registry().to_wire():
+        if registry.to_wire() == signal_compatible_operator_registry().to_wire():
+            registered = TdxCompatibilityProfileVersion.create_default(registry)
+        elif registry.to_wire() == panel_operator_registry().to_wire():
+            registered = TdxCompatibilityProfileVersion.create_panel_v1_1(registry)
+        else:
             raise TdxFormulaError(
                 "TDX_COMPATIBILITY_PROFILE_NOT_REGISTERED",
-                "TDX execution requires the exact V3 signal-compatible registry",
+                "TDX execution requires an exact registered V3 operator registry",
             )
-        registered = TdxCompatibilityProfileVersion.create_default(registry)
         self.compatibility = compatibility or registered
         self.compatibility.assert_canonical()
         if self.compatibility != registered:
@@ -391,13 +446,30 @@ class TdxTranslator:
                     raise TdxFormulaError("TDX_PARSE_ERROR", "CROSS requires two arguments")
                 values = tuple(self._translate_expression(value, environment, data_profile) for value in expression.arguments)
                 return OperatorNode(compatibility.canonical_operator, compatibility.canonical_operator_version, values, {})  # type: ignore[arg-type]
-            if expression.function_name == "MA":
+            if expression.function_name in {"MA", "EMA", "REF", "HHV", "LLV", "SUM", "STD"}:
                 if len(expression.arguments) != 2 or not isinstance(expression.arguments[1], NumberExpression):
-                    raise TdxFormulaError("LOOKBACK_UNRESOLVED", "MA period must be a numeric literal")
+                    raise TdxFormulaError(
+                        "LOOKBACK_UNRESOLVED",
+                        f"{expression.function_name} period must be a non-negative numeric literal",
+                    )
                 period_decimal = Decimal(expression.arguments[1].text)
                 if period_decimal != period_decimal.to_integral_value():
-                    raise TdxFormulaError("LOOKBACK_UNRESOLVED", "MA period must be an integer")
+                    raise TdxFormulaError("LOOKBACK_UNRESOLVED", f"{expression.function_name} period must be an integer")
                 source = self._translate_expression(expression.arguments[0], environment, data_profile)
-                return OperatorNode(compatibility.canonical_operator, compatibility.canonical_operator_version, (source,), {"timeperiod": int(period_decimal)})  # type: ignore[arg-type]
+                parameter = "periods" if expression.function_name == "REF" else "timeperiod"
+                return OperatorNode(compatibility.canonical_operator, compatibility.canonical_operator_version, (source,), {parameter: int(period_decimal)})  # type: ignore[arg-type]
+            if expression.function_name == "IF":
+                if len(expression.arguments) != 3:
+                    raise TdxFormulaError("TDX_PARSE_ERROR", "IF requires three arguments")
+                values = tuple(
+                    self._translate_expression(value, environment, data_profile)
+                    for value in expression.arguments
+                )
+                return OperatorNode(compatibility.canonical_operator, compatibility.canonical_operator_version, values, {})  # type: ignore[arg-type]
+            if expression.function_name == "RANK":
+                if len(expression.arguments) != 1:
+                    raise TdxFormulaError("TDX_PARSE_ERROR", "RANK requires one argument")
+                source = self._translate_expression(expression.arguments[0], environment, data_profile)
+                return OperatorNode(compatibility.canonical_operator, compatibility.canonical_operator_version, (source,), {})  # type: ignore[arg-type]
             raise TdxFormulaError("UNSUPPORTED_TDX_OPERATOR", expression.function_name)
         raise TdxFormulaError("TDX_PARSE_ERROR", "unknown AST expression")

@@ -3,6 +3,11 @@ import type {
   ArtifactDescriptorView,
   BacktestSubmitOutcomeView,
   ImportResearchPackageOutcomeView,
+  LocalDataSourceSelectionView,
+  ProductLocalDataImportOutcomeView,
+  ProductFactorStudyIntent,
+  ProductFactorStudyOutcomeView,
+  ProductProjectHomeView,
   ProductResearchSubmitIntent,
   ProductResearchSubmitOutcomeView,
   ProductBindingRefs,
@@ -64,6 +69,12 @@ interface ProductRuntimeState {
   lastSubmit: BacktestSubmitOutcomeView | null;
   lastImport: ImportResearchPackageOutcomeView | null;
   lastResearch: ProductResearchSubmitOutcomeView | null;
+  dataHome: ProductProjectHomeView | null;
+  dataTask: ProductTaskView | null;
+  localDataSelection: LocalDataSourceSelectionView | null;
+  localDataImport: ProductLocalDataImportOutcomeView | null;
+  factorStudy: ProductFactorStudyOutcomeView | null;
+  factorTask: ProductTaskView | null;
   researchDiscoveryState: ProductResearchDiscoveryState;
   recoveredResearchTaskId: string | null;
   task: ProductTaskView | null;
@@ -81,10 +92,13 @@ interface ProductRuntimeState {
   submitRunSpec(): Promise<void>;
   createProjectAndBind(displayName: string, notes?: string): Promise<void>;
   importResearchPackage(): Promise<void>;
+  importLocalData(volumeUnit: "SHARES" | "HANDS"): Promise<void>;
+  submitFactorStudy(intent: ProductFactorStudyIntent): Promise<void>;
   submitResearch(intent: ProductResearchSubmitIntent): Promise<void>;
 }
 
 const RUN_SPEC_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
+const DATA_TASK_POLL_TIMEOUT_MS = 5 * 60_000;
 let rendererRequestOrdinal = 0;
 
 class LateScopeResultDropped extends Error {
@@ -280,6 +294,12 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
   lastSubmit: null,
   lastImport: null,
   lastResearch: null,
+  dataHome: null,
+  dataTask: null,
+  localDataSelection: null,
+  localDataImport: null,
+  factorStudy: null,
+  factorTask: null,
   researchDiscoveryState: "NOT_RUN",
   recoveredResearchTaskId: null,
   task: null,
@@ -324,6 +344,12 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       lastSubmit: null,
       lastImport: null,
       lastResearch: null,
+      dataHome: null,
+      dataTask: null,
+      localDataSelection: null,
+      localDataImport: null,
+      factorStudy: null,
+      factorTask: null,
       researchDiscoveryState: "NOT_RUN" as const,
       recoveredResearchTaskId: null,
       task: null,
@@ -356,6 +382,23 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
         : null;
       if (refreshToken !== null) guardProjectScope(refreshToken);
       const current = get();
+      let dataHome: ProductProjectHomeView | null = null;
+      let dataHomeError: unknown = null;
+      if (!stale && status.boundProject !== null && typeof bridge.getProjectHome === "function") {
+        try {
+          dataHome = await bridge.getProjectHome();
+          if (refreshToken !== null) guardProjectScope(refreshToken);
+          if (
+            dataHome.projectId !== status.boundProject.projectId
+            || dataHome.projectContextRevisionId !== status.boundProject.projectContextRevisionId
+          ) {
+            throw new Error("project home does not match the active project scope");
+          }
+        } catch (error) {
+          dataHomeError = error;
+          dataHome = null;
+        }
+      }
       const previousResearch = current.lastResearch;
       const coldResearchDiscoveryEligible = previousResearch === null
         && current.lastSubmit === null
@@ -405,7 +448,8 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
           capabilities,
           boundProject: status.boundProject,
           projects,
-          runSpecs
+          runSpecs,
+          dataHome
         };
         if (stale) {
           return {
@@ -420,6 +464,14 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
             recoveredResearchTaskId: null,
             surface: deriveSurface({ ...state, ...base, task: null, result: null, inflight: false }),
             errorMessage: "项目绑定已失效 · BINDING_STALE - 需要重新验证并重新绑定 canonical 项目"
+          };
+        }
+        if (dataHomeError !== null) {
+          return {
+            ...state,
+            ...base,
+            surface: "ERROR" as const,
+            errorMessage: describeError(dataHomeError) ?? "canonical Data readback unavailable"
           };
         }
         if (previousResearch !== null) {
@@ -685,6 +737,182 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
         : state);
     } finally {
       set((state) => isCurrentProjectScope(state, token) ? { ...state, entryBusy: false } : state);
+    }
+  },
+
+  importLocalData: async (volumeUnit) => {
+    const bridge = window.v3ProductRuntime;
+    const token = captureProjectScope(get());
+    if (!bridge || token === null) return;
+    set((state) => isCurrentProjectScope(state, token)
+      ? {
+          ...state,
+          entryBusy: true,
+          errorMessage: null,
+          dataTask: null,
+          localDataSelection: null,
+          localDataImport: null,
+          factorStudy: null,
+          factorTask: null
+        }
+      : state);
+    try {
+      const selection = await bridge.chooseLocalDataSource();
+      guardProjectScope(token);
+      if (selection === null) return;
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, localDataSelection: selection }
+        : state);
+      const outcome = await bridge.importLocalDataset({
+        capabilityToken: selection.capabilityToken,
+        volumeUnit,
+        amountUnit: "CNY",
+        timezone: "Asia/Shanghai",
+        adjustment: "UNADJUSTED"
+      });
+      guardProjectScope(token);
+      const deadline = Date.now() + DATA_TASK_POLL_TIMEOUT_MS;
+      let task: ProductTaskView;
+      while (true) {
+        task = await bridge.getTask(outcome.taskId);
+        guardProjectScope(token);
+        if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(task.state)) break;
+        if (Date.now() >= deadline) throw new Error("LOCAL_DATA_IMPORT_TASK_TIMEOUT");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      if (task.projectId !== token.projectId || task.operationId !== "ProductEntryService.v1.importLocalDataset") {
+        throw new Error("local-data Task scope or operation does not match the accepted import");
+      }
+      if (task.state !== "SUCCEEDED") throw new Error(`LOCAL_DATA_IMPORT_${task.state}`);
+      const nextRevisionId = task.outputs.project_context_revision_id;
+      const snapshotId = task.outputs.snapshot_id;
+      if (typeof nextRevisionId !== "string" || !nextRevisionId.startsWith("pcr_") || typeof snapshotId !== "string" || snapshotId.length < 1) {
+        throw new Error("local-data Task did not publish the required canonical context outputs");
+      }
+      guardProjectScope(token);
+      await bridge.connectExistingProject({
+        projectId: token.projectId,
+        projectContextRevisionId: nextRevisionId
+      });
+      get().activateProjectScope(null);
+      const refs = await bridge.getBoundProject();
+      if (refs === null || refs.projectId !== token.projectId || refs.projectContextRevisionId !== nextRevisionId) {
+        throw new Error("imported Data context was not atomically adopted by the Product binding");
+      }
+      get().activateProjectScope(refs);
+      const home = await bridge.getProjectHome();
+      const active = get().projectScope;
+      if (
+        active === null
+        || active.projectId !== home.projectId
+        || active.projectContextRevisionId !== home.projectContextRevisionId
+        || home.projectContextRevisionId !== nextRevisionId
+        || home.dataState !== "AVAILABLE"
+        || home.data?.snapshotId !== snapshotId
+      ) {
+        throw new Error("canonical Data readback does not match the imported Task outputs");
+      }
+      set((state) => state.projectScope !== null
+        && state.projectScope.projectId === refs.projectId
+        && state.projectScope.projectContextRevisionId === refs.projectContextRevisionId
+        ? {
+            ...state,
+            dataHome: home,
+            dataTask: task,
+            localDataSelection: selection,
+            localDataImport: outcome,
+            surface: "PROJECT_BOUND" as const,
+            errorMessage: null
+          }
+        : state);
+    } catch (error) {
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: describeError(error) ?? "导入本地数据失败" }
+        : state);
+    } finally {
+      set((state) => state.projectScope?.projectId === token.projectId
+        ? { ...state, entryBusy: false }
+        : state);
+    }
+  },
+
+  submitFactorStudy: async (intent) => {
+    const bridge = window.v3ProductRuntime;
+    const token = captureProjectScope(get());
+    if (!bridge || token === null) return;
+    const currentHome = get().dataHome;
+    if (currentHome?.dataState !== "AVAILABLE" || currentHome.data === null) {
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: "FACTOR_REQUIRES_AVAILABLE_SNAPSHOT" }
+        : state);
+      return;
+    }
+    set((state) => isCurrentProjectScope(state, token)
+      ? { ...state, entryBusy: true, errorMessage: null, factorStudy: null, factorTask: null }
+      : state);
+    try {
+      const outcome = await bridge.submitFactorStudy(intent);
+      guardProjectScope(token);
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, factorStudy: outcome }
+        : state);
+      const deadline = Date.now() + DATA_TASK_POLL_TIMEOUT_MS;
+      let task: ProductTaskView;
+      while (true) {
+        task = await bridge.getTask(outcome.taskId);
+        guardProjectScope(token);
+        set((state) => isCurrentProjectScope(state, token)
+          ? { ...state, factorTask: task }
+          : state);
+        if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(task.state)) break;
+        if (Date.now() >= deadline) throw new Error("FACTOR_STUDY_TASK_TIMEOUT");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      if (task.projectId !== token.projectId || task.operationId !== "ProductEntryService.v1.submitFactorStudy") {
+        throw new Error("Factor Task scope or operation does not match the accepted study");
+      }
+      if (task.state !== "SUCCEEDED") throw new Error(`FACTOR_STUDY_${task.state}`);
+      if (task.outputs.formula_document_version_id !== outcome.formulaDocumentVersionId) {
+        throw new Error("Factor Task FormulaDocument identity does not match acceptance");
+      }
+      const home = await bridge.getProjectHome();
+      guardProjectScope(token);
+      if (
+        home.projectId !== token.projectId
+        || home.projectContextRevisionId !== token.projectContextRevisionId
+        || home.factorState !== "AVAILABLE"
+        || home.factor === null
+        || home.factor.snapshotId !== currentHome.data.snapshotId
+        || home.factor.formulaDocumentVersionId !== outcome.formulaDocumentVersionId
+      ) {
+        throw new Error("canonical Factor readback does not match the accepted Task");
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? {
+            ...state,
+            dataHome: home,
+            factorStudy: outcome,
+            factorTask: task,
+            surface: "PROJECT_BOUND" as const,
+            errorMessage: null
+          }
+        : state);
+    } catch (error) {
+      if (error instanceof LateScopeResultDropped || !isCurrentProjectScope(get(), token)) {
+        recordLateScopeResult(token);
+        return;
+      }
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, surface: "ERROR", errorMessage: describeError(error) ?? "因子研究失败" }
+        : state);
+    } finally {
+      set((state) => isCurrentProjectScope(state, token)
+        ? { ...state, entryBusy: false }
+        : state);
     }
   },
 

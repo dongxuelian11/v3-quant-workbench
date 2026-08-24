@@ -116,6 +116,8 @@ export interface RuntimeResponseError {
 
 export interface RequestOptions {
   readonly contractVersion?: string;
+  /** Exact ASL major.minor expected by the selected operation contract. */
+  readonly expectedApiVersion?: "1.0" | "1.1";
   readonly idempotencyKey?: string;
   readonly timeoutMs?: number;
   readonly deadlineAt?: string;

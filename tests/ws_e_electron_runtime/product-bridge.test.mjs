@@ -27,7 +27,7 @@ function projectContextReadModel(projectId, pcrId) {
   };
 }
 
-function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = null, runSpecRows = null, taskRows = null } = {}) {
+function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = null, runSpecRows = null, taskRows = null, projectHome = null } = {}) {
   const calls = [];
   return {
     calls,
@@ -53,8 +53,11 @@ function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = 
       }
       this.state = "READY";
     },
-    async request(operationId, payload) {
-      calls.push({ operationId, payload });
+    async request(operationId, payload, options) {
+      calls.push({ operationId, payload, options });
+      if (operationId === "ProductEntryService.v1.getProjectHome" && projectHome !== null) {
+        return structuredClone(projectHome);
+      }
       if (operationId === "ProductEntryService.v1.listBacktestRunSpecs" && runSpecRows !== null) {
         const after = payload.page.after_artifact_id;
         const start = after === undefined ? 0 : runSpecRows.findIndex((row) => row.artifact_id === after) + 1;
@@ -105,6 +108,26 @@ function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = 
             strategy_profile_id: "RESEARCH_CLOSE_RANK_TOP1_V1",
             research_classification: ["RESEARCH_ONLY", "APPROXIMATE"],
             truth_admission: { truth: "NOT_FORMAL", admission: "PRE_ALPHA" }
+          }
+        };
+      }
+      if (operationId === "ProductEntryService.v1.submitFactorStudy") {
+        return {
+          request_id: "req-factor",
+          truth_state: "NOT_FORMAL",
+          read_model: {
+            read_model_version: "v3.product-entry-factor-study/1.1",
+            task_id: "tsk_factor01",
+            run_id: "run_factor01",
+            accepted_state: "QUEUED",
+            event_cursor: 7,
+            maturity: "PRODUCT_CONNECTED",
+            truth: "NOT_FORMAL",
+            admission: "PRE_ALPHA",
+            checkpoint_resume: "UNAVAILABLE",
+            retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
+            formula_document_version_id: `fdoc_sha256_${"d".repeat(64)}`,
+            analysis_output_name: "MJ"
           }
         };
       }
@@ -408,6 +431,227 @@ test("submitResearch uses the exact Product Entry operation and main-owned close
   }
 });
 
+test("submitFactorStudy owns idempotency in main, collapses exact intent, and carries no caller truth", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-factor-bridge-contract-"));
+  try {
+    const supervisor = stubSupervisor();
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject({ projectId: REFS.projectId, projectContextRevisionId: REFS.projectContextRevisionId });
+    const intent = { formulaSource: "MJ:AMOUNT/VOL/100;", analysisOutputName: "MJ" };
+    const [first, second] = await Promise.all([bridge.submitFactorStudy(intent), bridge.submitFactorStudy(intent)]);
+    assert.deepEqual(second, first);
+    assert.equal(first.formulaDocumentVersionId, `fdoc_sha256_${"d".repeat(64)}`);
+    const submits = supervisor.calls.filter((call) => call.operationId === "ProductEntryService.v1.submitFactorStudy");
+    assert.equal(submits.length, 1);
+    assert.deepEqual(Object.keys(submits[0].payload).sort(), ["analysis_output_name", "formula_source", "idempotency_key"]);
+    assert.equal(submits[0].payload.formula_source, intent.formulaSource);
+    assert.equal(submits[0].payload.analysis_output_name, "MJ");
+    assert.match(submits[0].payload.idempotency_key, /^v3-desktop:/);
+    assert.deepEqual(submits[0].options, {
+      contractVersion: "1.1.0",
+      expectedApiVersion: "1.1",
+      idempotencyKey: submits[0].payload.idempotency_key,
+      timeoutMs: 30_000
+    });
+    for (const forbidden of ["bars", "values", "snapshot_id", "universe_version_id", "factor_definition_version_id", "artifact_id"]) {
+      assert.equal(forbidden in submits[0].payload, false);
+    }
+    await assert.rejects(
+      () => bridge.submitFactorStudy({ ...intent, snapshotId: "caller-owned" }),
+      { code: "INVALID_ARGUMENT" }
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("getProjectHome uses Product Entry 1.1 and rejects date-coverage or closed-shape drift", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-project-home-bridge-contract-"));
+  const refs = {
+    projectId: `prj_${"A".repeat(26)}`,
+    projectContextRevisionId: `pcr_${"B".repeat(26)}`
+  };
+  const data = {
+    schema_version: "v3.product-data-read-model/1.0.0",
+    project_id: refs.projectId,
+    project_context_revision_id: refs.projectContextRevisionId,
+    display_name: "golden.csv",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    source_type: "LOCAL_USER_SUPPLIED",
+    pit_state: "PIT_UNPROVABLE",
+    media_type: "text/csv",
+    row_count: 40,
+    instrument_count: 20,
+    date_coverage_start: "2026-01-05",
+    date_coverage_end: "2026-02-06",
+    partition_count: 1,
+    universe_role: "USER_DEFINED_STATIC",
+    quality_status: "PASS",
+    validation_profile_id: "svp_local_user_supplied_v1",
+    capability_reasons: {
+      pit: "PIT_UNPROVABLE",
+      revision: "PROVIDER_REVISION_UNKNOWN",
+      calendar: "OBSERVED_LOCAL_ROWS_NOT_FORMAL_TRADING_CALENDAR",
+      status: "SOURCE_COLUMN_ABSENT_OR_NULL_WHEN_NOT_PROVIDED"
+    },
+    volume_unit: "SHARES",
+    amount_unit: "CNY",
+    adjustment: "UNADJUSTED",
+    raw_capture_id: `raw_sha256_${"a".repeat(64)}`,
+    raw_content_hash: "a".repeat(64),
+    snapshot_id: `snp_sha256_${"b".repeat(64)}`,
+    normalized_payload_hash: "b".repeat(64),
+    universe_version_id: `unv_sha256_${"c".repeat(64)}`,
+    imported_at: "2026-08-24T00:00:00Z",
+    raw_artifact_id: `art_sha256_${"a".repeat(64)}`
+  };
+  const response = {
+    request_id: "018f47f2-9b02-7cc0-8ee6-1b82e3d62c01",
+    truth_state: "NOT_FORMAL",
+    read_model: {
+      read_model_version: "v3.project-home/1.1",
+      project_id: refs.projectId,
+      project_context_revision_id: refs.projectContextRevisionId,
+      maturity: "PRODUCT_CONNECTED",
+      truth: "NOT_FORMAL",
+      admission: "PRE_ALPHA",
+      local_import_state: "AVAILABLE",
+      data_state: "AVAILABLE",
+      data_unavailable_reason: "NONE",
+      factor_state: "EMPTY",
+      factor_unavailable_reason: "NO_FACTOR_STUDY",
+      data
+    }
+  };
+  const unavailableMetric = (reason) => ({ status: "INSUFFICIENT_SAMPLE", value: null, reason });
+  const factor = {
+    schema_version: "v3.project-factor-summary/1.0.0",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    project_id: refs.projectId,
+    project_context_revision_id: refs.projectContextRevisionId,
+    snapshot_id: data.snapshot_id,
+    universe_version_id: data.universe_version_id,
+    source_manifest_artifact_id: `art_sha256_${"d".repeat(64)}`,
+    source_manifest_sha256: "d".repeat(64),
+    formula_document_version_id: `fdoc_sha256_${"e".repeat(64)}`,
+    formula_document_artifact_id: `art_sha256_${"e".repeat(64)}`,
+    analysis_output_name: "MJ",
+    analysis_artifact_id: `art_sha256_${"f".repeat(64)}`,
+    outputs: [{
+      name: "MJ",
+      factor_definition_version_id: `fdv_sha256_${"1".repeat(64)}`,
+      factor_definition_artifact_id: `art_sha256_${"1".repeat(64)}`,
+      materialization_id: `fmt_sha256_${"2".repeat(64)}`,
+      materialization_artifact_id: `art_sha256_${"2".repeat(64)}`,
+      output_type: "FLOAT_SERIES",
+      row_count: 40
+    }],
+    visual_preview: [{
+      session_date: "2026-01-05",
+      instrument_id: "ins_000001",
+      open: 10,
+      high: 11,
+      low: 9,
+      close: 10.5,
+      volume_shares: 1000,
+      amount_cny: 10500,
+      series: [{ name: "MJ", value: 10.5 }]
+    }],
+    analysis: {
+      factor_analysis_result_id: `far_sha256_${"3".repeat(64)}`,
+      spec: {
+        schema_version: "v3.factor-analysis-spec/1.0.0",
+        forward_return_horizon_sessions: 5,
+        quantiles: 5,
+        minimum_instruments_per_date: 20,
+        minimum_valid_ic_dates: 20,
+        formation_price: "RAW_CLOSE",
+        label_price: "RAW_CLOSE",
+        signal_availability: "AFTER_SESSION_CLOSE"
+      },
+      aggregate: {
+        valid_dates: 0,
+        ic_mean: unavailableMetric("MINIMUM_VALID_IC_DATES"),
+        ic_std: unavailableMetric("MINIMUM_VALID_IC_DATES"),
+        icir: unavailableMetric("MINIMUM_VALID_IC_DATES"),
+        rank_ic_mean: unavailableMetric("MINIMUM_VALID_IC_DATES"),
+        rank_ic_std: unavailableMetric("MINIMUM_VALID_IC_DATES"),
+        rank_icir: unavailableMetric("MINIMUM_VALID_IC_DATES"),
+        yearly_distribution: []
+      },
+      daily_results: [{
+        session_date: "2026-01-05",
+        label_session_date: "2026-01-12",
+        status: "INSUFFICIENT_SAMPLE",
+        reason: "MINIMUM_INSTRUMENTS_PER_DATE",
+        universe_size: 1,
+        sample_size: 1,
+        coverage: 1,
+        missing_rate: 0,
+        ic: unavailableMetric("MINIMUM_INSTRUMENTS_PER_DATE"),
+        rank_ic: unavailableMetric("MINIMUM_INSTRUMENTS_PER_DATE"),
+        quantile_returns: null,
+        long_short_spread: null,
+        turnover: unavailableMetric("NO_PRIOR_PORTFOLIO"),
+        diagnostics: ["MINIMUM_INSTRUMENTS_PER_DATE"],
+        excluded_reason_counts: [["WARMUP", 1]]
+      }]
+    }
+  };
+  try {
+    const supervisor = stubSupervisor({ projectHome: response });
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject(refs);
+    const home = await bridge.getProjectHome();
+    assert.equal(home.data.dateCoverageStart, "2026-01-05");
+    assert.equal(home.data.dateCoverageEnd, "2026-02-06");
+    const call = supervisor.calls.find((item) => item.operationId === "ProductEntryService.v1.getProjectHome");
+    assert.deepEqual(call.payload, {});
+    assert.deepEqual(call.options, { contractVersion: "1.1.0", expectedApiVersion: "1.1" });
+
+    const factorResponse = structuredClone(response);
+    factorResponse.read_model.factor_state = "AVAILABLE";
+    factorResponse.read_model.factor_unavailable_reason = "NONE";
+    factorResponse.read_model.factor = factor;
+    const factorBridge = new ProductBridge(
+      stubSupervisor({ projectHome: factorResponse }),
+      stubStore(),
+      new ProductBindingStore(productBindingPath(join(dir, "factor")))
+    );
+    await factorBridge.connectExistingProject(refs);
+    const factorHome = await factorBridge.getProjectHome();
+    assert.equal(factorHome.factor.analysis.dailyResults[0].excludedReasonCounts[0].reason, "WARMUP");
+    assert.equal(factorHome.factor.visualPreview[0].series.MJ, 10.5);
+
+    for (const mutate of [
+      (candidate) => { candidate.read_model.factor.project_id = `prj_${"C".repeat(26)}`; },
+      (candidate) => { candidate.read_model.factor.visual_preview[0].series[0].value = Infinity; },
+      (candidate) => { candidate.read_model.factor.visual_preview[0].series = []; },
+      (candidate) => { candidate.read_model.factor.analysis.daily_results[0].excluded_reason_counts = [{ reason: "WARMUP", count: 1 }]; }
+    ]) {
+      const candidate = structuredClone(factorResponse);
+      mutate(candidate);
+      const candidateBridge = new ProductBridge(
+        stubSupervisor({ projectHome: candidate }),
+        stubStore(),
+        new ProductBindingStore(productBindingPath(join(dir, `factor-drift-${Math.random()}`)))
+      );
+      await candidateBridge.connectExistingProject(refs);
+      await assert.rejects(() => candidateBridge.getProjectHome(), { code: "PRODUCT_BRIDGE_ERROR" });
+    }
+
+    response.read_model.data.date_coverage_start = "2026-03-01";
+    const driftSupervisor = stubSupervisor({ projectHome: response });
+    const driftBridge = new ProductBridge(driftSupervisor, stubStore(), new ProductBindingStore(productBindingPath(join(dir, "drift"))));
+    await driftBridge.connectExistingProject(refs);
+    await assert.rejects(() => driftBridge.getProjectHome(), { code: "PRODUCT_BRIDGE_ERROR" });
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
 test("run-spec discovery exposes an explicit next page without bridge auto-looping", async () => {
   const dir = await mkdtemp(join(tmpdir(), "v3-run-spec-pages-"));
   try {
@@ -572,8 +816,8 @@ test("UNAVAILABLE run-spec with null metadata is readable and never fabricated",
 
 test("product IPC channel set is closed and typed", () => {
   const channels = Object.values(PRODUCT_RUNTIME_CHANNELS);
-  assert.equal(channels.length, 18);
-  assert.ok(new Set(channels).size === 18);
+  assert.equal(channels.length, 22);
+  assert.ok(new Set(channels).size === 22);
   for (const channel of channels) assert.ok(channel.startsWith("productRuntime:"));
 });
 
@@ -585,7 +829,8 @@ test("product IPC rejects numeric strings instead of coercing pagination", async
   };
   const bridge = {
     async listProjects(request) { return request; },
-    async listTasks(request) { return request; }
+    async listTasks(request) { return request; },
+    async submitFactorStudy(request) { return request; }
   };
   const unregister = registerProductRuntimeIpc(ipcMain, () => undefined, bridge);
   try {
@@ -600,6 +845,18 @@ test("product IPC rejects numeric strings instead of coercing pagination", async
     assert.deepEqual(
       await handlers.get(PRODUCT_RUNTIME_CHANNELS.listProjects)({}, { pageSize: 50 }),
       { pageSize: 50 }
+    );
+    assert.deepEqual(
+      await handlers.get(PRODUCT_RUNTIME_CHANNELS.submitFactorStudy)({}, { formulaSource: "MJ:CLOSE;", analysisOutputName: "MJ" }),
+      { formulaSource: "MJ:CLOSE;", analysisOutputName: "MJ" }
+    );
+    await assert.rejects(
+      () => handlers.get(PRODUCT_RUNTIME_CHANNELS.submitFactorStudy)({}, { formulaSource: "MJ:CLOSE;", analysisOutputName: "MJ", snapshotId: "forbidden" }),
+      /INVALID_ARGUMENT/
+    );
+    await assert.rejects(
+      () => handlers.get(PRODUCT_RUNTIME_CHANNELS.submitFactorStudy)({}, { formulaSource: "X".repeat(65_537), analysisOutputName: "MJ" }),
+      /INVALID_ARGUMENT/
     );
   } finally {
     unregister();

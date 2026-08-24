@@ -1006,6 +1006,9 @@ class ProductEntryFacade:
             "ProductEntryService.v1.listBacktestRunSpecs": self.list_backtest_run_specs,
             "ProductEntryService.v1.importResearchPackage": self.import_research_package,
             "ProductEntryService.v1.submitResearch": self.submit_research,
+            "ProductEntryService.v1.importLocalDataset": self.import_local_dataset,
+            "ProductEntryService.v1.submitFactorStudy": self.submit_factor_study,
+            "ProductEntryService.v1.getProjectHome": self.get_project_home,
         }
 
     def list_backtest_run_specs(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -1060,6 +1063,230 @@ class ProductEntryFacade:
             "truth_state": "DEMO",
             "read_model": {
                 "read_model_version": "v3.product-entry-research/1.0",
+                **outcome,
+            },
+        }
+
+    def import_local_dataset(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .product_data import ProductLocalDataSubmission
+        from .request_router import current_request_deadline_at
+
+        outcome = self.product.data.submit(
+            ProductLocalDataSubmission(
+                project_id=str(request["project_id"]),
+                project_context_revision_id=str(
+                    request["project_context_revision_id"]
+                ),
+                source=request["source"],
+                idempotency_key=str(request["idempotency_key"]),
+                execution_deadline_at=current_request_deadline_at(),
+            )
+        )
+        return {
+            "request_id": request["request_id"],
+            "truth_state": "NOT_FORMAL",
+            "read_model": {
+                "read_model_version": "v3.product-entry-local-data/1.1",
+                **outcome,
+            },
+        }
+
+    def get_project_home(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .product_data import ProductDataService
+        from .product_factor import ProductFactorStudyService
+
+        project_id = str(request["project_id"])
+        supplied_revision_id = str(request["project_context_revision_id"])
+        current = self.product.current_revision(project_id)
+        current_revision_id = str(current["project_context_revision_id"])
+        if current_revision_id != supplied_revision_id:
+            raise TruthPreconditionFailedError(
+                "getProjectHome requires the current project context revision"
+            )
+        read_model: dict[str, Any] = {
+            "read_model_version": "v3.project-home/1.1",
+            "project_id": project_id,
+            "project_context_revision_id": current_revision_id,
+            "maturity": "PRODUCT_CONNECTED",
+            "truth": "NOT_FORMAL",
+            "admission": "PRE_ALPHA",
+            "local_import_state": "AVAILABLE",
+            "data_state": "EMPTY",
+            "data_unavailable_reason": "NO_SNAPSHOT",
+            "factor_state": "EMPTY",
+            "factor_unavailable_reason": "NO_SNAPSHOT",
+        }
+        snapshot_id = current.get("snapshot_id")
+        if snapshot_id is not None:
+            try:
+                data = ProductDataService(self.product).get_local_dataset(
+                    project_id=project_id,
+                    project_context_revision_id=current_revision_id,
+                    snapshot_id=str(snapshot_id),
+                )
+            except NotFoundError:
+                read_model.update(
+                    data_state="UNAVAILABLE",
+                    data_unavailable_reason="DATA_READ_MODEL_NOT_AVAILABLE",
+                )
+            except TruthPreconditionFailedError:
+                read_model.update(
+                    data_state="UNAVAILABLE",
+                    data_unavailable_reason="DATA_READ_MODEL_NOT_AVAILABLE",
+                )
+            else:
+                raw_artifact_id = data["artifact_ids"]["LOCAL_DATA_RAW_FILE"]
+                read_model.update(
+                    data_state="AVAILABLE",
+                    data_unavailable_reason="NONE",
+                    data={
+                        key: data[key]
+                        for key in (
+                            "schema_version",
+                            "project_id",
+                            "project_context_revision_id",
+                            "display_name",
+                            "truth",
+                            "admission",
+                            "source_type",
+                            "pit_state",
+                            "media_type",
+                            "row_count",
+                            "instrument_count",
+                            "date_coverage_start",
+                            "date_coverage_end",
+                            "partition_count",
+                            "universe_role",
+                            "quality_status",
+                            "validation_profile_id",
+                            "capability_reasons",
+                            "volume_unit",
+                            "amount_unit",
+                            "adjustment",
+                            "raw_capture_id",
+                            "raw_content_hash",
+                            "snapshot_id",
+                            "normalized_payload_hash",
+                            "universe_version_id",
+                            "imported_at",
+                        )
+                    }
+                    | {"raw_artifact_id": raw_artifact_id},
+                )
+            try:
+                study = ProductFactorStudyService(self.product).get_latest_factor_study(
+                    project_id=project_id,
+                    project_context_revision_id=current_revision_id,
+                    snapshot_id=str(snapshot_id),
+                )
+            except NotFoundError:
+                read_model.update(
+                    factor_state="EMPTY",
+                    factor_unavailable_reason="NO_FACTOR_STUDY",
+                )
+            except TruthPreconditionFailedError:
+                read_model.update(
+                    factor_state="UNAVAILABLE",
+                    factor_unavailable_reason="FACTOR_READ_MODEL_NOT_AVAILABLE",
+                )
+            else:
+                output_names = tuple(study["outputs"])
+                read_model.update(
+                    factor_state="AVAILABLE",
+                    factor_unavailable_reason="NONE",
+                    factor={
+                        "schema_version": "v3.project-factor-summary/1.0.0",
+                        "truth": study["truth"],
+                        "admission": study["admission"],
+                        "project_id": study["project_id"],
+                        "project_context_revision_id": study[
+                            "project_context_revision_id"
+                        ],
+                        "snapshot_id": study["snapshot_id"],
+                        "universe_version_id": study["universe_version_id"],
+                        "source_manifest_artifact_id": study[
+                            "source_manifest_artifact_id"
+                        ],
+                        "source_manifest_sha256": study["source_manifest_sha256"],
+                        "formula_document_version_id": study[
+                            "formula_document_version_id"
+                        ],
+                        "formula_document_artifact_id": study[
+                            "formula_document_artifact_id"
+                        ],
+                        "analysis_output_name": study["analysis_output_name"],
+                        "analysis_artifact_id": study["analysis_artifact_id"],
+                        "outputs": tuple(
+                            {"name": name, **study["outputs"][name]}
+                            for name in output_names
+                        ),
+                        "visual_preview": tuple(
+                            {
+                                "session_date": row["session_date"],
+                                "instrument_id": row["instrument_id"],
+                                "open": row["open"],
+                                "high": row["high"],
+                                "low": row["low"],
+                                "close": row["close"],
+                                "volume_shares": row["volume_shares"],
+                                "amount_cny": row["amount_cny"],
+                                "series": tuple(
+                                    {"name": name, "value": row[name]}
+                                    for name in output_names
+                                ),
+                            }
+                            for row in study["visual_preview"]
+                        ),
+                        "analysis": {
+                            "factor_analysis_result_id": study["analysis"][
+                                "factor_analysis_result_id"
+                            ],
+                            "spec": study["analysis"]["spec"],
+                            "aggregate": study["analysis"]["aggregate"],
+                            "daily_results": tuple(
+                                {
+                                    **{
+                                        key: value
+                                        for key, value in item.items()
+                                        if key != "excluded_reason_counts"
+                                    },
+                                    "excluded_reason_counts": tuple(
+                                        {"reason": pair[0], "count": pair[1]}
+                                        for pair in item["excluded_reason_counts"]
+                                    ),
+                                }
+                                for item in study["analysis"]["daily_results"]
+                            ),
+                        },
+                    },
+                )
+        return {
+            "request_id": request["request_id"],
+            "truth_state": "NOT_FORMAL",
+            "read_model": read_model,
+        }
+
+    def submit_factor_study(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .product_factor import ProductFactorStudySubmission
+        from .request_router import current_request_deadline_at
+
+        outcome = self.product.factor.submit(
+            ProductFactorStudySubmission(
+                project_id=str(request["project_id"]),
+                project_context_revision_id=str(
+                    request["project_context_revision_id"]
+                ),
+                formula_source=str(request["formula_source"]),
+                analysis_output_name=str(request["analysis_output_name"]),
+                idempotency_key=str(request["idempotency_key"]),
+                execution_deadline_at=current_request_deadline_at(),
+            )
+        )
+        return {
+            "request_id": request["request_id"],
+            "truth_state": "NOT_FORMAL",
+            "read_model": {
+                "read_model_version": "v3.product-entry-factor-study/1.1",
                 **outcome,
             },
         }

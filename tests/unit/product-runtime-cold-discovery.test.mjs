@@ -19,6 +19,73 @@ const STATUS = {
   buildManifestId: "build_cold",
   buildIdentityState: "VERIFIED"
 };
+const IMPORT_CONTEXT = "pcr_imported";
+const IMPORT_BOUND_REFS = { projectId: PROJECT, projectContextRevisionId: IMPORT_CONTEXT, sessionId: "ses_imported" };
+const DATA_HOME = {
+  readModelVersion: "v3.project-home/1.1",
+  projectId: PROJECT,
+  projectContextRevisionId: IMPORT_CONTEXT,
+  maturity: "PRODUCT_CONNECTED",
+  truth: "NOT_FORMAL",
+  admission: "PRE_ALPHA",
+  localImportState: "AVAILABLE",
+  dataState: "AVAILABLE",
+  dataUnavailableReason: "NONE",
+  factorState: "EMPTY",
+  factorUnavailableReason: "NO_FACTOR_STUDY",
+  factor: null,
+  data: {
+    schemaVersion: "v3.product-data-read-model/1.0.0",
+    projectId: PROJECT,
+    projectContextRevisionId: IMPORT_CONTEXT,
+    displayName: "bars.csv",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    sourceType: "LOCAL_USER_SUPPLIED",
+    pitState: "PIT_UNPROVABLE",
+    mediaType: "text/csv",
+    rowCount: 2,
+    instrumentCount: 1,
+    dateCoverageStart: "2026-01-05",
+    dateCoverageEnd: "2026-01-06",
+    partitionCount: 1,
+    universeRole: "USER_DEFINED_STATIC",
+    qualityStatus: "PASS",
+    validationProfileId: "svp_local_user_supplied_v1",
+    capabilityReasons: {
+      pit: "PIT_UNPROVABLE",
+      revision: "PROVIDER_REVISION_UNKNOWN",
+      calendar: "OBSERVED_LOCAL_ROWS_NOT_FORMAL_TRADING_CALENDAR",
+      status: "SOURCE_COLUMN_ABSENT_OR_NULL_WHEN_NOT_PROVIDED"
+    },
+    volumeUnit: "SHARES",
+    amountUnit: "CNY",
+    adjustment: "UNADJUSTED",
+    rawCaptureId: "raw_capture",
+    rawContentHash: "a".repeat(64),
+    snapshotId: "snp_sha256_" + "b".repeat(64),
+    normalizedPayloadHash: "b".repeat(64),
+    universeVersionId: "unv_imported",
+    importedAt: "2026-08-24T00:00:00Z",
+    rawArtifactId: "art_sha256_" + "a".repeat(64)
+  }
+};
+const FACTOR_DOCUMENT_ID = `fdoc_sha256_${"d".repeat(64)}`;
+const FACTOR_HOME = {
+  ...DATA_HOME,
+  factorState: "AVAILABLE",
+  factorUnavailableReason: "NONE",
+  factor: {
+    schemaVersion: "v3.project-factor-summary/1.0.0",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    projectId: PROJECT,
+    projectContextRevisionId: IMPORT_CONTEXT,
+    snapshotId: DATA_HOME.data.snapshotId,
+    universeVersionId: DATA_HOME.data.universeVersionId,
+    formulaDocumentVersionId: FACTOR_DOCUMENT_ID
+  }
+};
 
 function task({
   taskId,
@@ -89,6 +156,12 @@ function resetStore() {
     lastSubmit: null,
     lastImport: null,
     lastResearch: null,
+    dataHome: null,
+    dataTask: null,
+    localDataSelection: null,
+    localDataImport: null,
+    factorStudy: null,
+    factorTask: null,
     researchDiscoveryState: "NOT_RUN",
     recoveredResearchTaskId: null,
     task: null,
@@ -99,6 +172,205 @@ function resetStore() {
     bindingGeneration: 0
   });
 }
+
+test("ACC-C2-10 chooser cancellation creates no Task and exposes no renderer path", async () => {
+  resetStore();
+  const calls = [];
+  globalThis.window = {
+    v3ProductRuntime: {
+      async chooseLocalDataSource() { calls.push("choose"); return null; },
+      async importLocalDataset() { calls.push("import"); throw new Error("cancel must not import"); },
+      async getTask() { calls.push("task"); throw new Error("cancel must not create or poll a Task"); }
+    }
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(BOUND_REFS);
+    await useProductRuntime.getState().importLocalData("SHARES");
+    const state = useProductRuntime.getState();
+    assert.deepEqual(calls, ["choose"]);
+    assert.equal(state.localDataSelection, null);
+    assert.equal(state.localDataImport, null);
+    assert.equal(state.dataTask, null);
+    assert.equal(state.entryBusy, false);
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("ACC-C2-09/10 successful import adopts the worker context before canonical Data readback and restart rediscovers it", async () => {
+  resetStore();
+  const calls = [];
+  const selection = {
+    displayName: "bars.csv",
+    byteSize: 128,
+    mediaType: "text/csv",
+    capabilityToken: "capability-token-without-path"
+  };
+  const completedTask = task({
+    taskId: "local-import",
+    operationId: "ProductEntryService.v1.importLocalDataset",
+    resultId: null,
+    outputId: null
+  });
+  completedTask.outputs = {
+    snapshot_id: DATA_HOME.data.snapshotId,
+    universe_version_id: DATA_HOME.data.universeVersionId,
+    project_context_revision_id: IMPORT_CONTEXT,
+    raw_artifact_id: DATA_HOME.data.rawArtifactId
+  };
+  const bridge = {
+    async chooseLocalDataSource() { calls.push("choose"); return selection; },
+    async importLocalDataset(intent) {
+      calls.push("import");
+      assert.deepEqual(intent, {
+        capabilityToken: selection.capabilityToken,
+        volumeUnit: "SHARES",
+        amountUnit: "CNY",
+        timezone: "Asia/Shanghai",
+        adjustment: "UNADJUSTED"
+      });
+      return {
+        taskId: completedTask.taskId,
+        runId: completedTask.runId,
+        acceptedState: "QUEUED",
+        maturity: "PRODUCT_CONNECTED",
+        truth: "NOT_FORMAL",
+        admission: "PRE_ALPHA",
+        checkpointResume: "UNAVAILABLE",
+        retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
+        sourceArtifactId: DATA_HOME.data.rawArtifactId
+      };
+    },
+    async getTask() { calls.push("task"); return completedTask; },
+    async connectExistingProject(candidate) {
+      calls.push("connect");
+      assert.deepEqual(candidate, { projectId: PROJECT, projectContextRevisionId: IMPORT_CONTEXT });
+    },
+    async getBoundProject() { calls.push("bound"); return IMPORT_BOUND_REFS; },
+    async getProjectHome() { calls.push("home"); return DATA_HOME; }
+  };
+  globalThis.window = { v3ProductRuntime: bridge };
+  try {
+    useProductRuntime.getState().activateProjectScope(BOUND_REFS);
+    await useProductRuntime.getState().importLocalData("SHARES");
+    const state = useProductRuntime.getState();
+    assert.deepEqual(calls, ["choose", "import", "task", "connect", "bound", "home"]);
+    assert.equal(state.projectScope.projectContextRevisionId, IMPORT_CONTEXT);
+    assert.equal(state.dataHome.data.snapshotId, DATA_HOME.data.snapshotId);
+    assert.equal("path" in state.localDataSelection, false);
+    assert.equal("bytes" in state.localDataSelection, false);
+
+    resetStore();
+    globalThis.window = {
+      v3ProductRuntime: {
+        async getProductStatus() { return { ...STATUS, boundProject: IMPORT_BOUND_REFS }; },
+        async listBacktestRunSpecs() { return { specs: [], hasMore: false, nextCursor: null }; },
+        async listTasks() { return { tasks: [], hasMore: false, nextCursor: null }; },
+        async getProjectHome() { return DATA_HOME; }
+      }
+    };
+    await useProductRuntime.getState().refresh();
+    assert.equal(useProductRuntime.getState().dataHome.data.snapshotId, DATA_HOME.data.snapshotId);
+    assert.equal(useProductRuntime.getState().projectScope.projectContextRevisionId, IMPORT_CONTEXT);
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("Factor study follows accepted Task identity and publishes only canonical Project Home readback", async () => {
+  resetStore();
+  const calls = [];
+  const completedTask = task({
+    taskId: "factor-study",
+    operationId: "ProductEntryService.v1.submitFactorStudy",
+    resultId: null,
+    outputId: null
+  });
+  completedTask.outputs = { formula_document_version_id: FACTOR_DOCUMENT_ID };
+  const outcome = {
+    taskId: completedTask.taskId,
+    runId: completedTask.runId,
+    acceptedState: "QUEUED",
+    maturity: "PRODUCT_CONNECTED",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    checkpointResume: "UNAVAILABLE",
+    retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
+    formulaDocumentVersionId: FACTOR_DOCUMENT_ID,
+    analysisOutputName: "MJ"
+  };
+  globalThis.window = {
+    v3ProductRuntime: {
+      async submitFactorStudy(intent) {
+        calls.push("submit");
+        assert.deepEqual(intent, { formulaSource: "MJ:CLOSE;", analysisOutputName: "MJ" });
+        return outcome;
+      },
+      async getTask(taskId) { calls.push("task"); assert.equal(taskId, outcome.taskId); return completedTask; },
+      async getProjectHome() { calls.push("home"); return FACTOR_HOME; }
+    }
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(IMPORT_BOUND_REFS);
+    useProductRuntime.setState({ dataHome: DATA_HOME });
+    await useProductRuntime.getState().submitFactorStudy({ formulaSource: "MJ:CLOSE;", analysisOutputName: "MJ" });
+    const state = useProductRuntime.getState();
+    assert.deepEqual(calls, ["submit", "task", "home"]);
+    assert.equal(state.factorStudy.formulaDocumentVersionId, FACTOR_DOCUMENT_ID);
+    assert.equal(state.factorTask.operationId, "ProductEntryService.v1.submitFactorStudy");
+    assert.equal(state.dataHome.factor.formulaDocumentVersionId, FACTOR_DOCUMENT_ID);
+    assert.equal(state.surface, "PROJECT_BOUND");
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("late Factor acceptance from Project A is dropped after project activation changes", async () => {
+  resetStore();
+  let resolveAcceptance;
+  const pendingAcceptance = new Promise((resolve) => { resolveAcceptance = resolve; });
+  globalThis.window = {
+    v3ProductRuntime: {
+      async submitFactorStudy() { return pendingAcceptance; },
+      async getTask() { throw new Error("late acceptance must not be polled"); },
+      async getProjectHome() { throw new Error("late acceptance must not read Project Home"); }
+    }
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(IMPORT_BOUND_REFS);
+    useProductRuntime.setState({ dataHome: DATA_HOME });
+    const run = useProductRuntime.getState().submitFactorStudy({ formulaSource: "MJ:CLOSE;", analysisOutputName: "MJ" });
+    useProductRuntime.getState().activateProjectScope({
+      projectId: OTHER_PROJECT,
+      projectContextRevisionId: "pcr_other",
+      sessionId: "ses_other"
+    });
+    resolveAcceptance({
+      taskId: "tsk_late_factor",
+      runId: "run_late_factor",
+      acceptedState: "QUEUED",
+      maturity: "PRODUCT_CONNECTED",
+      truth: "NOT_FORMAL",
+      admission: "PRE_ALPHA",
+      checkpointResume: "UNAVAILABLE",
+      retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
+      formulaDocumentVersionId: FACTOR_DOCUMENT_ID,
+      analysisOutputName: "MJ"
+    });
+    await run;
+    const state = useProductRuntime.getState();
+    assert.equal(state.projectScope.projectId, OTHER_PROJECT);
+    assert.equal(state.factorStudy, null);
+    assert.equal(state.factorTask, null);
+    assert.equal(state.dataHome, null);
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
 
 function bridgeFor(tasks, { missingResult = false, missingArtifact = false } = {}) {
   const byId = new Map(tasks.map((item) => [item.taskId, item]));

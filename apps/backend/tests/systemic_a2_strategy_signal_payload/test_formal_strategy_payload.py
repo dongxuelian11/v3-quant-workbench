@@ -45,6 +45,7 @@ from v3_backend.domain.strategies import (
     StrategyCompiler,
     default_component_registry,
     encode_score_payload,
+    encode_score_payload_for_universe,
     strategy_payload_context_identity,
 )
 import v3_backend.adapters.strategy_payload as strategy_payload_adapter
@@ -58,6 +59,38 @@ from apps.backend.tests.track_f_strategy_runtime.helpers import (
 
 DECISION_TIME = datetime(2026, 1, 5, 15, tzinfo=timezone.utc)
 SCORES = ("3", "3", "2", None)
+
+
+class ScorePayloadOwnerBoundaryTests(unittest.TestCase):
+    def test_exact_universe_encoder_matches_legacy_binding_wrapper(self) -> None:
+        base = build_runtime_fixture(snapshot_id="snp_a2", universe_id="unv_a2")
+        prediction_definition = StrategyCompiler(default_component_registry()).compile(
+            dataclasses.replace(
+                build_strategy_ir(),
+                required_bindings=(BindingSlot("scores", "PREDICTION_SIGNAL", score_port()),),
+            )
+        )
+
+        direct = encode_score_payload_for_universe(
+            definition=prediction_definition,
+            universe=base.binding.universe,
+            binding_key="scores",
+            decision_time=DECISION_TIME,
+            values=SCORES,
+        )
+        legacy = encode_score_payload(
+            definition=prediction_definition,
+            binding=base.binding,
+            binding_key="scores",
+            decision_time=DECISION_TIME,
+            values=SCORES,
+        )
+
+        self.assertEqual(direct, legacy)
+        decoded = json.loads(direct)
+        self.assertEqual(decoded["universe_version_id"], base.binding.universe.universe_version_id)
+        self.assertNotIn("owner_id", decoded)
+        self.assertNotIn("sgv_placeholder", direct.decode("utf-8"))
 
 
 class StaticByteReader:

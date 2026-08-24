@@ -109,9 +109,9 @@ class ContractHardeningTests(unittest.TestCase):
         self.assertEqual(internal.message, "internal error")
 
     def test_all_operations_remain_explicit(self) -> None:
-        # Product Entry expansion (task-authorized): 64 -> 67 operations while
+        # Product Entry expansion (task-authorized): 64 -> 70 operations while
         # every operation keeps an explicit frozen identity (no generic API).
-        self.assertEqual(len(OPERATIONS), 67)
+        self.assertEqual(len(OPERATIONS), 70)
         self.assertEqual(len(OPERATIONS), len(set(OPERATIONS)))
         self.assertFalse(any(operation.operation_id.endswith(".execute") for operation in OPERATIONS.values()))
 

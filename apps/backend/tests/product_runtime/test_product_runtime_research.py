@@ -437,7 +437,7 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     handlers.update(facade.handlers())
                 request_id = "01890f3c-7b5a-7000-8000-000000000051"
                 deadline_at = (
-                    datetime.now(timezone.utc) + timedelta(seconds=0.5)
+                    datetime.now(timezone.utc) + timedelta(seconds=5.0)
                 ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
                 body = _request(
                     project["project_id"],
@@ -460,6 +460,16 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 worker = product.research_workers.task_process(task_id)
                 self.assertIsNotNone(worker)
                 self.assertTrue(worker.is_alive())
+                executing_deadline = time.monotonic() + 4.0
+                while time.monotonic() < executing_deadline:
+                    if any(
+                        isinstance(item, Progress) and item.phase == "DISPATCHED"
+                        for item in product.research_workers.response_trace(task_id)
+                    ):
+                        break
+                    time.sleep(0.02)
+                else:
+                    self.fail("deadline escalation test did not enter non-cooperative start delay")
 
                 connection = product._connection(read_only=True)
                 try:
@@ -477,7 +487,7 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     connection.close()
                 self.assertEqual(tuple(persisted), (deadline_at, deadline_at))
 
-                wait_until = time.monotonic() + 4.0
+                wait_until = time.monotonic() + 7.0
                 task = product.task_persistence.read_task(task_id)
                 while task.state.value != "CANCELLED" and time.monotonic() < wait_until:
                     time.sleep(0.02)
@@ -785,6 +795,25 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                     for table in ("task", "run", "result", "raw_capture", "artifact")
                 }
+                task = connection.execute(
+                    """
+                    SELECT t.state,a.error_code,a.error_detail_artifact_id
+                    FROM task AS t
+                    JOIN run AS r ON r.task_id=t.task_id
+                    JOIN task_attempt AS a ON a.run_id=r.run_id
+                    ORDER BY t.created_at DESC,a.attempt_no DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                failure_event = connection.execute(
+                    """
+                    SELECT payload_json
+                    FROM task_event
+                    WHERE event_type='TASK_FAILED'
+                    ORDER BY project_sequence DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
                 artifact_roles = [
                     row[0]
                     for row in connection.execute(
@@ -793,12 +822,17 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 ]
             finally:
                 connection.close()
+            self.assertEqual(after["task"] - before["task"], 1)
+            self.assertEqual(after["run"] - before["run"], 1)
+            self.assertEqual(after["result"], before["result"])
+            self.assertEqual(after["raw_capture"], before["raw_capture"])
+            self.assertEqual(tuple(task[:2]), ("FAILED", "INVALID_ARGUMENT"))
+            self.assertIsNone(task[2])
+            self.assertIn("PROVIDER_ACQUISITION_UNAVAILABLE", str(failure_event[0]))
             self.assertEqual(
-                {name: after[name] for name in ("task", "run", "result", "raw_capture")},
-                {name: before[name] for name in ("task", "run", "result", "raw_capture")},
+                artifact_roles,
+                ["DATA_TRUTH_CAPABILITY_POLICY", "PRODUCT_EXECUTION_CONTEXT"],
             )
-            self.assertEqual(after["artifact"] - before["artifact"], 1)
-            self.assertEqual(artifact_roles, ["DATA_TRUTH_CAPABILITY_POLICY"])
 
     def test_closed_entry_and_clean_start_restart_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="v3-product-research-") as directory:

@@ -426,6 +426,196 @@ export interface ProductResearchSubmitOutcomeView {
   readonly eventCursor?: number;
 }
 
+/** Renderer-visible native selection: deliberately excludes every path. */
+export interface LocalDataSourceSelectionView {
+  readonly displayName: string;
+  readonly byteSize: number;
+  readonly mediaType: "text/csv" | "application/vnd.apache.parquet";
+  readonly capabilityToken: string;
+}
+
+/** Explicit user-supplied local-data semantics plus a one-use main capability. */
+export interface ProductLocalDataImportIntent {
+  readonly capabilityToken: string;
+  readonly volumeUnit: "SHARES" | "HANDS";
+  readonly amountUnit: "CNY";
+  readonly timezone: "Asia/Shanghai";
+  readonly adjustment: "UNADJUSTED";
+}
+
+export interface ProductLocalDataImportOutcomeView {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly acceptedState: "QUEUED";
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly checkpointResume: "UNAVAILABLE";
+  readonly retry: "NEW_ATTEMPT_SAME_RUN_FROM_START";
+  readonly sourceArtifactId: string;
+  readonly eventCursor?: number;
+}
+
+export interface ProductFactorStudyIntent {
+  readonly formulaSource: string;
+  readonly analysisOutputName: string;
+}
+
+export interface ProductFactorStudyOutcomeView {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly acceptedState: "QUEUED";
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly checkpointResume: "UNAVAILABLE";
+  readonly retry: "NEW_ATTEMPT_SAME_RUN_FROM_START";
+  readonly formulaDocumentVersionId: string;
+  readonly analysisOutputName: string;
+  readonly eventCursor?: number;
+}
+
+export interface ProductFactorMetricView {
+  readonly status: "AVAILABLE" | "INSUFFICIENT_SAMPLE" | "NOT_AVAILABLE";
+  readonly value: number | null;
+  readonly reason: string | null;
+}
+
+export interface ProductFactorDailyAnalysisView {
+  readonly sessionDate: string;
+  readonly labelSessionDate: string;
+  readonly status: "AVAILABLE" | "INSUFFICIENT_SAMPLE" | "NOT_AVAILABLE";
+  readonly reason: string | null;
+  readonly universeSize: number;
+  readonly sampleSize: number;
+  readonly coverage: number;
+  readonly missingRate: number;
+  readonly ic: ProductFactorMetricView;
+  readonly rankIc: ProductFactorMetricView;
+  readonly quantileReturns: readonly number[] | null;
+  readonly longShortSpread: number | null;
+  readonly turnover: ProductFactorMetricView;
+  readonly diagnostics: readonly string[];
+  readonly excludedReasonCounts: readonly Readonly<{ reason: string; count: number }>[];
+}
+
+export interface ProductFactorSummaryView {
+  readonly schemaVersion: "v3.project-factor-summary/1.0.0";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly snapshotId: string;
+  readonly universeVersionId: string;
+  readonly sourceManifestArtifactId: string;
+  readonly sourceManifestSha256: string;
+  readonly formulaDocumentVersionId: string;
+  readonly formulaDocumentArtifactId: string;
+  readonly analysisOutputName: string;
+  readonly analysisArtifactId: string;
+  readonly outputs: readonly Readonly<{
+    name: string;
+    factorDefinitionVersionId: string;
+    factorDefinitionArtifactId: string;
+    materializationId: string;
+    materializationArtifactId: string;
+    outputType: "FLOAT_SERIES" | "BOOLEAN_SERIES";
+    rowCount: number;
+  }>[];
+  readonly visualPreview: readonly Readonly<{
+    sessionDate: string;
+    instrumentId: string;
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number | null;
+    volumeShares: number | null;
+    amountCny: number | null;
+    series: Readonly<Record<string, number | boolean | null>>;
+  }>[];
+  readonly analysis: Readonly<{
+    factorAnalysisResultId: string;
+    spec: Readonly<{
+      forwardReturnHorizonSessions: 5;
+      quantiles: 5;
+      minimumInstrumentsPerDate: 20;
+      minimumValidIcDates: 20;
+      formationPrice: "RAW_CLOSE";
+      labelPrice: "RAW_CLOSE";
+      signalAvailability: "AFTER_SESSION_CLOSE";
+    }>;
+    aggregate: Readonly<{
+      validDates: number;
+      icMean: ProductFactorMetricView;
+      icStd: ProductFactorMetricView;
+      icir: ProductFactorMetricView;
+      rankIcMean: ProductFactorMetricView;
+      rankIcStd: ProductFactorMetricView;
+      rankIcir: ProductFactorMetricView;
+      yearlyDistribution: readonly Readonly<{
+        year: number;
+        validDates: number;
+        icMean: ProductFactorMetricView;
+        icStd: ProductFactorMetricView;
+        icir: ProductFactorMetricView;
+      }>[];
+    }>;
+    dailyResults: readonly ProductFactorDailyAnalysisView[];
+  }>;
+}
+
+export interface ProductDataReadModelView {
+  readonly schemaVersion: "v3.product-data-read-model/1.0.0";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly displayName: string;
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly sourceType: "LOCAL_USER_SUPPLIED";
+  readonly pitState: "PIT_UNPROVABLE";
+  readonly mediaType: "text/csv" | "application/vnd.apache.parquet";
+  readonly rowCount: number;
+  readonly instrumentCount: number;
+  readonly dateCoverageStart: string;
+  readonly dateCoverageEnd: string;
+  readonly partitionCount: number;
+  readonly universeRole: "USER_DEFINED_STATIC";
+  readonly qualityStatus: "PASS";
+  readonly validationProfileId: "svp_local_user_supplied_v1";
+  readonly capabilityReasons: Readonly<{
+    pit: "PIT_UNPROVABLE";
+    revision: "PROVIDER_REVISION_UNKNOWN";
+    calendar: "OBSERVED_LOCAL_ROWS_NOT_FORMAL_TRADING_CALENDAR";
+    status: "SOURCE_COLUMN_ABSENT_OR_NULL_WHEN_NOT_PROVIDED";
+  }>;
+  readonly volumeUnit: "SHARES";
+  readonly amountUnit: "CNY";
+  readonly adjustment: "UNADJUSTED";
+  readonly rawCaptureId: string;
+  readonly rawContentHash: string;
+  readonly snapshotId: string;
+  readonly normalizedPayloadHash: string;
+  readonly universeVersionId: string;
+  readonly importedAt: string;
+  readonly rawArtifactId: string;
+}
+
+export interface ProductProjectHomeView {
+  readonly readModelVersion: "v3.project-home/1.1";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly localImportState: "AVAILABLE";
+  readonly dataState: "EMPTY" | "AVAILABLE" | "UNAVAILABLE";
+  readonly dataUnavailableReason: "NONE" | "NO_SNAPSHOT" | "DATA_READ_MODEL_NOT_AVAILABLE";
+  readonly data: ProductDataReadModelView | null;
+  readonly factorState: "EMPTY" | "AVAILABLE" | "UNAVAILABLE";
+  readonly factorUnavailableReason: "NONE" | "NO_SNAPSHOT" | "NO_FACTOR_STUDY" | "FACTOR_READ_MODEL_NOT_AVAILABLE";
+  readonly factor: ProductFactorSummaryView | null;
+}
+
 /**
  * Narrow typed product bridge exposed to the renderer. There is deliberately
  * no generic request(operationId, payload) member: every method maps to one
@@ -437,6 +627,8 @@ export interface V3ProductRuntimeBridge {
   getCapabilities(): Promise<readonly ProductCapabilityView[]>;
   getBoundProject(): Promise<ProductBindingRefs | null>;
   getProjectContext(): Promise<ProjectContextView>;
+  /** Project-scoped, summary-only readback; never contains raw bytes or paths. */
+  getProjectHome(): Promise<ProductProjectHomeView>;
   restoreSession(): Promise<SessionRestoreView>;
   connectExistingProject(request: ConnectExistingProjectRequest): Promise<ProjectContextView>;
   listTasks(request?: ProductTaskPageRequest): Promise<ProductTasksListView>;
@@ -458,6 +650,12 @@ export interface V3ProductRuntimeBridge {
    * package's source authority. Null = user cancelled the chooser.
    */
   importResearchPackage(): Promise<ImportResearchPackageOutcomeView | null>;
+  /** Native chooser result; null means cancellation and creates no Task. */
+  chooseLocalDataSource(): Promise<LocalDataSourceSelectionView | null>;
+  /** Transfer through backend staging, then submit only the immutable raw ref. */
+  importLocalDataset(request: ProductLocalDataImportIntent): Promise<ProductLocalDataImportOutcomeView>;
+  /** Queue a real backend Factor study; renderer supplies no data/owner IDs or values. */
+  submitFactorStudy(request: ProductFactorStudyIntent): Promise<ProductFactorStudyOutcomeView>;
   /**
    * Product-connected, research-only source admission. The renderer supplies
    * only symbol/date intent; provider refs and the transport envelope are

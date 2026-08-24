@@ -6,6 +6,13 @@ import type {
   ArtifactStreamTicketView,
   BacktestSubmitOutcomeView,
   ImportResearchPackageOutcomeView,
+  LocalDataSourceSelectionView,
+  ProductLocalDataImportIntent,
+  ProductLocalDataImportOutcomeView,
+  ProductFactorStudyIntent,
+  ProductFactorStudyOutcomeView,
+  ProductFactorSummaryView,
+  ProductProjectHomeView,
   ProductResearchSubmitIntent,
   ProductResearchSubmitOutcomeView,
   ProductBindingRefs,
@@ -51,6 +58,7 @@ import {
   createProjectIntentPath,
   runCreateProjectIntent,
 } from "./createProjectIntentStore";
+import { LocalDataSourceBroker } from "./localDataImport";
 import transportContract from "../../../../../packages/contracts/research_package_transport_v1.json";
 
 /**
@@ -159,6 +167,542 @@ function assertResearchIntent(request: ProductResearchSubmitIntent): void {
   if (!RESEARCH_DATE_PATTERN.test(request.startDate) || !RESEARCH_DATE_PATTERN.test(request.endDate)) {
     throw new ProductAdapterError("INVALID_ARGUMENT", "research dates must use YYYYMMDD");
   }
+}
+
+function assertLocalDataImportIntent(request: ProductLocalDataImportIntent): void {
+  if (request === null || typeof request !== "object" || Array.isArray(request)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "local-data import intent must be an object");
+  }
+  const expected = ["adjustment", "amountUnit", "capabilityToken", "timezone", "volumeUnit"];
+  if (Object.keys(request).sort().join(",") !== expected.join(",")) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "local-data import intent fields do not match the closed shape");
+  }
+  if (typeof request.capabilityToken !== "string" || request.capabilityToken.length < 16 || request.capabilityToken.length > 128) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "local-data capabilityToken is invalid");
+  }
+  if (request.volumeUnit !== "SHARES" && request.volumeUnit !== "HANDS") {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "volumeUnit must be SHARES or HANDS");
+  }
+  if (request.amountUnit !== "CNY" || request.timezone !== "Asia/Shanghai" || request.adjustment !== "UNADJUSTED") {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "local-data amount/timezone/adjustment semantics are not admitted");
+  }
+}
+
+function adaptLocalDataImportOutcome(response: unknown): ProductLocalDataImportOutcomeView {
+  if (response === null || typeof response !== "object" || Array.isArray(response)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "local-data import returned a non-object response");
+  }
+  const top = response as Record<string, unknown>;
+  if (top.truth_state !== "NOT_FORMAL") {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "local-data import returned an invalid truth_state");
+  }
+  const value = top.read_model;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "local-data import returned a non-object read_model");
+  }
+  const readModel = value as Record<string, unknown>;
+  const required = [
+    "accepted_state", "admission", "checkpoint_resume", "maturity", "read_model_version",
+    "retry", "run_id", "source_artifact_id", "task_id", "truth"
+  ];
+  const allowed = new Set([...required, "event_cursor"]);
+  if (required.some((key) => !(key in readModel)) || Object.keys(readModel).some((key) => !allowed.has(key))) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "local-data import read_model fields do not match the closed shape");
+  }
+  if (
+    readModel.read_model_version !== "v3.product-entry-local-data/1.1"
+    || readModel.accepted_state !== "QUEUED"
+    || readModel.maturity !== "PRODUCT_CONNECTED"
+    || readModel.truth !== "NOT_FORMAL"
+    || readModel.admission !== "PRE_ALPHA"
+    || readModel.checkpoint_resume !== "UNAVAILABLE"
+    || readModel.retry !== "NEW_ATTEMPT_SAME_RUN_FROM_START"
+    || typeof readModel.task_id !== "string"
+    || !CANONICAL_ID_PATTERN.test(readModel.task_id)
+    || typeof readModel.run_id !== "string"
+    || !CANONICAL_ID_PATTERN.test(readModel.run_id)
+    || typeof readModel.source_artifact_id !== "string"
+    || !ARTIFACT_ID_PATTERN.test(readModel.source_artifact_id)
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "local-data import read_model is invalid");
+  }
+  if (readModel.event_cursor !== undefined && (!Number.isSafeInteger(readModel.event_cursor) || Number(readModel.event_cursor) < 0)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "local-data import event_cursor is invalid");
+  }
+  return Object.freeze({
+    taskId: readModel.task_id,
+    runId: readModel.run_id,
+    acceptedState: "QUEUED",
+    maturity: "PRODUCT_CONNECTED",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    checkpointResume: "UNAVAILABLE",
+    retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
+    sourceArtifactId: readModel.source_artifact_id,
+    ...(readModel.event_cursor === undefined ? {} : { eventCursor: Number(readModel.event_cursor) })
+  });
+}
+
+function assertFactorStudyIntent(request: ProductFactorStudyIntent): void {
+  if (request === null || typeof request !== "object" || Array.isArray(request)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Factor study intent must be an object");
+  }
+  if (Object.keys(request).sort().join(",") !== "analysisOutputName,formulaSource") {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "Factor study intent fields do not match the closed shape");
+  }
+  if (typeof request.formulaSource !== "string" || request.formulaSource.trim().length === 0 || request.formulaSource.length > 65_536) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "formulaSource must be bounded non-empty TDX text");
+  }
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(request.analysisOutputName)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", "analysisOutputName is invalid");
+  }
+}
+
+function adaptFactorStudyOutcome(response: unknown): ProductFactorStudyOutcomeView {
+  if (response === null || typeof response !== "object" || Array.isArray(response)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor study returned a non-object response");
+  }
+  const top = response as Record<string, unknown>;
+  const value = top.read_model;
+  if (top.truth_state !== "NOT_FORMAL" || value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor study truth or read model is invalid");
+  }
+  const model = value as Record<string, unknown>;
+  const required = [
+    "accepted_state", "admission", "analysis_output_name", "checkpoint_resume",
+    "formula_document_version_id", "maturity", "read_model_version", "retry",
+    "run_id", "task_id", "truth"
+  ];
+  const allowed = new Set([...required, "event_cursor"]);
+  if (required.some((key) => !(key in model)) || Object.keys(model).some((key) => !allowed.has(key))) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor study acceptance fields do not match the closed shape");
+  }
+  if (
+    model.read_model_version !== "v3.product-entry-factor-study/1.1"
+    || model.accepted_state !== "QUEUED"
+    || model.maturity !== "PRODUCT_CONNECTED"
+    || model.truth !== "NOT_FORMAL"
+    || model.admission !== "PRE_ALPHA"
+    || model.checkpoint_resume !== "UNAVAILABLE"
+    || model.retry !== "NEW_ATTEMPT_SAME_RUN_FROM_START"
+    || typeof model.task_id !== "string" || !CANONICAL_ID_PATTERN.test(model.task_id)
+    || typeof model.run_id !== "string" || !CANONICAL_ID_PATTERN.test(model.run_id)
+    || typeof model.formula_document_version_id !== "string" || !/^fdoc_sha256_[0-9a-f]{64}$/.test(model.formula_document_version_id)
+    || typeof model.analysis_output_name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(model.analysis_output_name)
+    || (model.event_cursor !== undefined && (!Number.isSafeInteger(model.event_cursor) || Number(model.event_cursor) < 1))
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor study acceptance identity or truth is invalid");
+  }
+  return Object.freeze({
+    taskId: model.task_id,
+    runId: model.run_id,
+    acceptedState: "QUEUED",
+    maturity: "PRODUCT_CONNECTED",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    checkpointResume: "UNAVAILABLE",
+    retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
+    formulaDocumentVersionId: model.formula_document_version_id,
+    analysisOutputName: model.analysis_output_name,
+    ...(model.event_cursor === undefined ? {} : { eventCursor: Number(model.event_cursor) })
+  });
+}
+
+function finiteNullable(value: unknown, label: string): number | null {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", `${label} must be finite or null`);
+  }
+  return value;
+}
+
+function adaptFactorMetric(value: unknown, label: string) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", `${label} is not a metric object`);
+  }
+  const metric = value as Record<string, unknown>;
+  const status = String(metric.status);
+  if (Object.keys(metric).sort().join(",") !== "reason,status,value"
+    || !["AVAILABLE", "INSUFFICIENT_SAMPLE", "NOT_AVAILABLE"].includes(status)
+    || (metric.reason !== null && (typeof metric.reason !== "string" || metric.reason.length === 0))
+    || (status === "AVAILABLE" && (metric.reason !== null || typeof metric.value !== "number" || !Number.isFinite(metric.value)))
+    || (status !== "AVAILABLE" && (metric.value !== null || typeof metric.reason !== "string"))) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", `${label} metric shape is invalid`);
+  }
+  return Object.freeze({
+    status: metric.status as "AVAILABLE" | "INSUFFICIENT_SAMPLE" | "NOT_AVAILABLE",
+    value: finiteNullable(metric.value, `${label}.value`),
+    reason: metric.reason as string | null
+  });
+}
+
+function adaptProjectFactor(value: unknown, projectId: string, contextId: string): ProductFactorSummaryView {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "available Factor summary is absent");
+  }
+  const factor = value as Record<string, unknown>;
+  const keys = [
+    "admission", "analysis", "analysis_artifact_id", "analysis_output_name",
+    "formula_document_artifact_id", "formula_document_version_id", "outputs",
+    "project_context_revision_id", "project_id", "schema_version", "snapshot_id",
+    "source_manifest_artifact_id", "source_manifest_sha256", "truth",
+    "universe_version_id", "visual_preview"
+  ];
+  if (Object.keys(factor).sort().join(",") !== keys.sort().join(",")
+    || factor.schema_version !== "v3.project-factor-summary/1.0.0"
+    || factor.truth !== "NOT_FORMAL" || factor.admission !== "PRE_ALPHA"
+    || factor.project_id !== projectId || factor.project_context_revision_id !== contextId
+    || typeof factor.snapshot_id !== "string" || !CANONICAL_ID_PATTERN.test(factor.snapshot_id)
+    || typeof factor.universe_version_id !== "string" || !CANONICAL_ID_PATTERN.test(factor.universe_version_id)
+    || typeof factor.source_manifest_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(factor.source_manifest_artifact_id)
+    || typeof factor.source_manifest_sha256 !== "string" || !CONTENT_SHA_PATTERN.test(factor.source_manifest_sha256)
+    || typeof factor.formula_document_version_id !== "string" || !/^fdoc_sha256_[0-9a-f]{64}$/.test(factor.formula_document_version_id)
+    || typeof factor.formula_document_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(factor.formula_document_artifact_id)
+    || typeof factor.analysis_output_name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(factor.analysis_output_name)
+    || typeof factor.analysis_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(factor.analysis_artifact_id)
+    || !Array.isArray(factor.outputs) || factor.outputs.length < 1 || factor.outputs.length > 64
+    || !Array.isArray(factor.visual_preview) || factor.visual_preview.length > 5_000
+    || factor.analysis === null || typeof factor.analysis !== "object" || Array.isArray(factor.analysis)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor summary identity or bounds are invalid");
+  }
+  const outputs = factor.outputs.map((raw) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor output is invalid");
+    const item = raw as Record<string, unknown>;
+    if (Object.keys(item).sort().join(",") !== "factor_definition_artifact_id,factor_definition_version_id,materialization_artifact_id,materialization_id,name,output_type,row_count"
+      || typeof item.name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(item.name)
+      || typeof item.factor_definition_version_id !== "string" || !/^fdv_sha256_[0-9a-f]{64}$/.test(item.factor_definition_version_id)
+      || typeof item.factor_definition_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(item.factor_definition_artifact_id)
+      || typeof item.materialization_id !== "string" || !/^fmt_sha256_[0-9a-f]{64}$/.test(item.materialization_id)
+      || typeof item.materialization_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(item.materialization_artifact_id)
+      || !["FLOAT_SERIES", "BOOLEAN_SERIES"].includes(String(item.output_type))
+      || !Number.isSafeInteger(item.row_count) || Number(item.row_count) < 1 || Number(item.row_count) > 2_000_000) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor output identity is invalid");
+    }
+    return Object.freeze({
+      name: item.name,
+      factorDefinitionVersionId: item.factor_definition_version_id,
+      factorDefinitionArtifactId: item.factor_definition_artifact_id,
+      materializationId: item.materialization_id,
+      materializationArtifactId: item.materialization_artifact_id,
+      outputType: item.output_type as "FLOAT_SERIES" | "BOOLEAN_SERIES",
+      rowCount: Number(item.row_count)
+    });
+  });
+  const outputNames = new Set(outputs.map((item) => item.name));
+  if (outputNames.size !== outputs.length) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor output names are duplicated");
+  }
+  const preview = factor.visual_preview.map((raw) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor preview row is invalid");
+    const row = raw as Record<string, unknown>;
+    if (Object.keys(row).sort().join(",") !== "amount_cny,close,high,instrument_id,low,open,series,session_date,volume_shares"
+      || typeof row.session_date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(row.session_date)
+      || typeof row.instrument_id !== "string" || !CANONICAL_ID_PATTERN.test(row.instrument_id)
+      || !Array.isArray(row.series)) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor preview shape is invalid");
+    const series: Record<string, number | boolean | null> = {};
+    for (const rawSeries of row.series) {
+      if (rawSeries === null || typeof rawSeries !== "object" || Array.isArray(rawSeries)) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor series item is invalid");
+      const item = rawSeries as Record<string, unknown>;
+      if (Object.keys(item).sort().join(",") !== "name,value" || typeof item.name !== "string" || !outputNames.has(item.name)
+        || (item.value !== null && typeof item.value !== "boolean" && (typeof item.value !== "number" || !Number.isFinite(item.value)))) {
+        throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor series value is invalid");
+      }
+      if (item.name in series) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor series name is duplicated");
+      series[item.name] = item.value as number | boolean | null;
+    }
+    if (Object.keys(series).length !== outputNames.size) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor preview output coverage is incomplete");
+    return Object.freeze({
+      sessionDate: row.session_date,
+      instrumentId: row.instrument_id,
+      open: finiteNullable(row.open, "Factor open"),
+      high: finiteNullable(row.high, "Factor high"),
+      low: finiteNullable(row.low, "Factor low"),
+      close: finiteNullable(row.close, "Factor close"),
+      volumeShares: finiteNullable(row.volume_shares, "Factor volume"),
+      amountCny: finiteNullable(row.amount_cny, "Factor amount"),
+      series: Object.freeze(series)
+    });
+  });
+  const analysis = factor.analysis as Record<string, unknown>;
+  if (Object.keys(analysis).sort().join(",") !== "aggregate,daily_results,factor_analysis_result_id,spec"
+    || typeof analysis.factor_analysis_result_id !== "string" || !/^far_sha256_[0-9a-f]{64}$/.test(analysis.factor_analysis_result_id)
+    || analysis.spec === null || typeof analysis.spec !== "object" || Array.isArray(analysis.spec)
+    || analysis.aggregate === null || typeof analysis.aggregate !== "object" || Array.isArray(analysis.aggregate)
+    || !Array.isArray(analysis.daily_results)) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor analysis shape is invalid");
+  const spec = analysis.spec as Record<string, unknown>;
+  const specKeys = [
+    "schema_version", "forward_return_horizon_sessions", "quantiles",
+    "minimum_instruments_per_date", "minimum_valid_ic_dates", "formation_price",
+    "label_price", "signal_availability"
+  ];
+  if (Object.keys(spec).sort().join(",") !== specKeys.sort().join(",")
+    || spec.schema_version !== "v3.factor-analysis-spec/1.0.0"
+    || spec.forward_return_horizon_sessions !== 5 || spec.quantiles !== 5 || spec.minimum_instruments_per_date !== 20
+    || spec.minimum_valid_ic_dates !== 20 || spec.formation_price !== "RAW_CLOSE" || spec.label_price !== "RAW_CLOSE"
+    || spec.signal_availability !== "AFTER_SESSION_CLOSE") throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor analysis spec drifted");
+  const aggregate = analysis.aggregate as Record<string, unknown>;
+  const aggregateKeys = ["ic_mean", "ic_std", "icir", "rank_ic_mean", "rank_ic_std", "rank_icir", "valid_dates", "yearly_distribution"];
+  if (Object.keys(aggregate).sort().join(",") !== aggregateKeys.sort().join(",")
+    || !Number.isSafeInteger(aggregate.valid_dates) || Number(aggregate.valid_dates) < 0
+    || !Array.isArray(aggregate.yearly_distribution)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor aggregate shape is invalid");
+  }
+  const yearlyDistribution = aggregate.yearly_distribution.map((raw) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor yearly analysis is invalid");
+    }
+    const item = raw as Record<string, unknown>;
+    if (Object.keys(item).sort().join(",") !== "ic_mean,ic_std,icir,valid_dates,year"
+      || !Number.isSafeInteger(item.year) || Number(item.year) < 1900 || Number(item.year) > 2200
+      || !Number.isSafeInteger(item.valid_dates) || Number(item.valid_dates) < 0) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor yearly analysis fields are invalid");
+    }
+    return Object.freeze({
+      year: Number(item.year),
+      validDates: Number(item.valid_dates),
+      icMean: adaptFactorMetric(item.ic_mean, "yearly.ic_mean"),
+      icStd: adaptFactorMetric(item.ic_std, "yearly.ic_std"),
+      icir: adaptFactorMetric(item.icir, "yearly.icir")
+    });
+  });
+  const dailyResults = analysis.daily_results.map((raw) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor daily analysis is invalid");
+    const item = raw as Record<string, unknown>;
+    const dailyKeys = [
+      "session_date", "label_session_date", "status", "reason", "universe_size",
+      "sample_size", "coverage", "missing_rate", "ic", "rank_ic",
+      "quantile_returns", "long_short_spread", "turnover", "diagnostics",
+      "excluded_reason_counts"
+    ];
+    if (Object.keys(item).sort().join(",") !== dailyKeys.sort().join(",")
+      || typeof item.session_date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(item.session_date)
+      || typeof item.label_session_date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(item.label_session_date)
+      || !["AVAILABLE", "INSUFFICIENT_SAMPLE", "NOT_AVAILABLE"].includes(String(item.status))
+      || (item.reason !== null && (typeof item.reason !== "string" || item.reason.length === 0))
+      || !Number.isSafeInteger(item.universe_size) || Number(item.universe_size) < 0
+      || !Number.isSafeInteger(item.sample_size) || Number(item.sample_size) < 0 || Number(item.sample_size) > Number(item.universe_size)
+      || typeof item.coverage !== "number" || !Number.isFinite(item.coverage) || item.coverage < 0 || item.coverage > 1
+      || typeof item.missing_rate !== "number" || !Number.isFinite(item.missing_rate) || item.missing_rate < 0 || item.missing_rate > 1
+      || (item.quantile_returns !== null && (!Array.isArray(item.quantile_returns) || item.quantile_returns.length !== 5))
+      || !Array.isArray(item.diagnostics) || item.diagnostics.some((entry) => typeof entry !== "string")
+      || !Array.isArray(item.excluded_reason_counts)) {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor daily analysis fields are invalid");
+    }
+    const excludedReasonCounts = item.excluded_reason_counts.map((entry) => {
+      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || entry[0].length === 0
+        || !Number.isSafeInteger(entry[1]) || Number(entry[1]) < 0) {
+        throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor exclusion reason is invalid");
+      }
+      return Object.freeze({ reason: entry[0], count: Number(entry[1]) });
+    });
+    return Object.freeze({
+      sessionDate: item.session_date,
+      labelSessionDate: item.label_session_date,
+      status: item.status as "AVAILABLE" | "INSUFFICIENT_SAMPLE" | "NOT_AVAILABLE",
+      reason: item.reason as string | null,
+      universeSize: Number(item.universe_size), sampleSize: Number(item.sample_size),
+      coverage: item.coverage, missingRate: item.missing_rate,
+      ic: adaptFactorMetric(item.ic, "daily.ic"), rankIc: adaptFactorMetric(item.rank_ic, "daily.rank_ic"),
+      quantileReturns: item.quantile_returns === null ? null : item.quantile_returns.map((entry) => {
+        const value = finiteNullable(entry, "quantile return");
+        if (value === null) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "quantile return cannot be null");
+        return value;
+      }),
+      longShortSpread: finiteNullable(item.long_short_spread, "long-short spread"),
+      turnover: adaptFactorMetric(item.turnover, "daily.turnover"),
+      diagnostics: Object.freeze(item.diagnostics),
+      excludedReasonCounts: Object.freeze(excludedReasonCounts)
+    });
+  });
+  return Object.freeze({
+    schemaVersion: "v3.project-factor-summary/1.0.0",
+    truth: "NOT_FORMAL", admission: "PRE_ALPHA", projectId, projectContextRevisionId: contextId,
+    snapshotId: factor.snapshot_id, universeVersionId: factor.universe_version_id,
+    sourceManifestArtifactId: factor.source_manifest_artifact_id, sourceManifestSha256: factor.source_manifest_sha256,
+    formulaDocumentVersionId: factor.formula_document_version_id, formulaDocumentArtifactId: factor.formula_document_artifact_id,
+    analysisOutputName: factor.analysis_output_name, analysisArtifactId: factor.analysis_artifact_id,
+    outputs: Object.freeze(outputs), visualPreview: Object.freeze(preview),
+    analysis: Object.freeze({
+      factorAnalysisResultId: analysis.factor_analysis_result_id,
+      spec: Object.freeze({
+        forwardReturnHorizonSessions: 5, quantiles: 5, minimumInstrumentsPerDate: 20,
+        minimumValidIcDates: 20, formationPrice: "RAW_CLOSE", labelPrice: "RAW_CLOSE", signalAvailability: "AFTER_SESSION_CLOSE"
+      }),
+      aggregate: Object.freeze({
+        validDates: Number(aggregate.valid_dates), icMean: adaptFactorMetric(aggregate.ic_mean, "aggregate.ic_mean"),
+        icStd: adaptFactorMetric(aggregate.ic_std, "aggregate.ic_std"), icir: adaptFactorMetric(aggregate.icir, "aggregate.icir"),
+        rankIcMean: adaptFactorMetric(aggregate.rank_ic_mean, "aggregate.rank_ic_mean"),
+        rankIcStd: adaptFactorMetric(aggregate.rank_ic_std, "aggregate.rank_ic_std"),
+        rankIcir: adaptFactorMetric(aggregate.rank_icir, "aggregate.rank_icir"),
+        yearlyDistribution: Object.freeze(yearlyDistribution)
+      }),
+      dailyResults: Object.freeze(dailyResults)
+    })
+  });
+}
+
+function adaptProjectHome(response: unknown): ProductProjectHomeView {
+  if (response === null || typeof response !== "object" || Array.isArray(response)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project home returned a non-object response");
+  }
+  const top = response as Record<string, unknown>;
+  if (top.truth_state !== "NOT_FORMAL" || top.read_model === null || typeof top.read_model !== "object" || Array.isArray(top.read_model)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project home truth or read model is invalid");
+  }
+  const model = top.read_model as Record<string, unknown>;
+  const required = [
+    "admission", "data_state", "data_unavailable_reason", "local_import_state",
+    "factor_state", "factor_unavailable_reason", "maturity",
+    "project_context_revision_id", "project_id", "read_model_version", "truth"
+  ];
+  const allowed = new Set([...required, "data", "factor"]);
+  if (required.some((key) => !(key in model)) || Object.keys(model).some((key) => !allowed.has(key))) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project home fields do not match the closed shape");
+  }
+  if (
+    model.read_model_version !== "v3.project-home/1.1"
+    || typeof model.project_id !== "string" || !PROJECT_ID_PATTERN.test(model.project_id)
+    || typeof model.project_context_revision_id !== "string" || !PROJECT_CONTEXT_REVISION_PATTERN.test(model.project_context_revision_id)
+    || model.maturity !== "PRODUCT_CONNECTED"
+    || model.truth !== "NOT_FORMAL"
+    || model.admission !== "PRE_ALPHA"
+    || model.local_import_state !== "AVAILABLE"
+    || !["EMPTY", "AVAILABLE", "UNAVAILABLE"].includes(String(model.data_state))
+    || !["NONE", "NO_SNAPSHOT", "DATA_READ_MODEL_NOT_AVAILABLE"].includes(String(model.data_unavailable_reason))
+    || !["EMPTY", "AVAILABLE", "UNAVAILABLE"].includes(String(model.factor_state))
+    || !["NONE", "NO_SNAPSHOT", "NO_FACTOR_STUDY", "FACTOR_READ_MODEL_NOT_AVAILABLE"].includes(String(model.factor_unavailable_reason))
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project home identity or truth fields are invalid");
+  }
+  let factor: ProductFactorSummaryView | null = null;
+  if (model.factor_state === "AVAILABLE") {
+    if (model.factor_unavailable_reason !== "NONE") throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "available Factor carries an unavailable reason");
+    factor = adaptProjectFactor(model.factor, model.project_id, model.project_context_revision_id);
+  } else {
+    if ("factor" in model || model.factor_unavailable_reason === "NONE") {
+      throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "unavailable Factor state is inconsistent");
+    }
+  }
+  if (model.data_state !== "AVAILABLE") {
+    if ("data" in model) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "unavailable project home must not carry data");
+    return Object.freeze({
+      readModelVersion: "v3.project-home/1.1",
+      projectId: model.project_id,
+      projectContextRevisionId: model.project_context_revision_id,
+      maturity: "PRODUCT_CONNECTED",
+      truth: "NOT_FORMAL",
+      admission: "PRE_ALPHA",
+      localImportState: "AVAILABLE",
+      dataState: model.data_state as "EMPTY" | "UNAVAILABLE",
+      dataUnavailableReason: model.data_unavailable_reason as "NO_SNAPSHOT" | "DATA_READ_MODEL_NOT_AVAILABLE",
+      data: null,
+      factorState: model.factor_state as "EMPTY" | "AVAILABLE" | "UNAVAILABLE",
+      factorUnavailableReason: model.factor_unavailable_reason as "NONE" | "NO_SNAPSHOT" | "NO_FACTOR_STUDY" | "FACTOR_READ_MODEL_NOT_AVAILABLE",
+      factor
+    });
+  }
+  if (model.data_unavailable_reason !== "NONE" || model.data === null || typeof model.data !== "object" || Array.isArray(model.data)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "available project home data is absent");
+  }
+  const data = model.data as Record<string, unknown>;
+  const dataKeys = [
+    "adjustment", "admission", "amount_unit", "capability_reasons", "date_coverage_end", "date_coverage_start", "display_name", "imported_at",
+    "instrument_count", "media_type", "normalized_payload_hash", "pit_state",
+    "partition_count", "project_context_revision_id", "project_id", "quality_status", "raw_artifact_id", "raw_capture_id",
+    "raw_content_hash", "row_count", "schema_version", "snapshot_id", "source_type",
+    "truth", "universe_role", "universe_version_id", "validation_profile_id", "volume_unit"
+  ];
+  if (Object.keys(data).sort().join(",") !== dataKeys.sort().join(",")) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project data fields do not match the closed shape");
+  }
+  if (
+    data.schema_version !== "v3.product-data-read-model/1.0.0"
+    || data.project_id !== model.project_id
+    || data.project_context_revision_id !== model.project_context_revision_id
+    || typeof data.display_name !== "string" || data.display_name.length < 1 || data.display_name.length > 255
+    || data.truth !== "NOT_FORMAL" || data.admission !== "PRE_ALPHA"
+    || data.source_type !== "LOCAL_USER_SUPPLIED" || data.pit_state !== "PIT_UNPROVABLE"
+    || !["text/csv", "application/vnd.apache.parquet"].includes(String(data.media_type))
+    || !Number.isSafeInteger(data.row_count) || Number(data.row_count) < 1 || Number(data.row_count) > 2_000_000
+    || !Number.isSafeInteger(data.instrument_count) || Number(data.instrument_count) < 1 || Number(data.instrument_count) > 2_000
+    || typeof data.date_coverage_start !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(data.date_coverage_start)
+    || typeof data.date_coverage_end !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(data.date_coverage_end)
+    || data.date_coverage_start > data.date_coverage_end
+    || !Number.isSafeInteger(data.partition_count) || Number(data.partition_count) < 1 || Number(data.partition_count) > 2_000_000
+    || data.universe_role !== "USER_DEFINED_STATIC"
+    || data.quality_status !== "PASS"
+    || data.validation_profile_id !== "svp_local_user_supplied_v1"
+    || data.volume_unit !== "SHARES" || data.amount_unit !== "CNY" || data.adjustment !== "UNADJUSTED"
+    || typeof data.raw_capture_id !== "string" || !CANONICAL_ID_PATTERN.test(data.raw_capture_id)
+    || typeof data.raw_content_hash !== "string" || !CONTENT_SHA_PATTERN.test(data.raw_content_hash)
+    || typeof data.snapshot_id !== "string" || !CANONICAL_ID_PATTERN.test(data.snapshot_id)
+    || typeof data.normalized_payload_hash !== "string" || !CONTENT_SHA_PATTERN.test(data.normalized_payload_hash)
+    || typeof data.universe_version_id !== "string" || !CANONICAL_ID_PATTERN.test(data.universe_version_id)
+    || typeof data.imported_at !== "string" || Number.isNaN(Date.parse(data.imported_at))
+    || typeof data.raw_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(data.raw_artifact_id)
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project data identity, bounds or truth fields are invalid");
+  }
+  const capabilityReasons = data.capability_reasons;
+  if (
+    capabilityReasons === null || typeof capabilityReasons !== "object" || Array.isArray(capabilityReasons)
+    || Object.keys(capabilityReasons).sort().join(",") !== "calendar,pit,revision,status"
+    || (capabilityReasons as Record<string, unknown>).pit !== "PIT_UNPROVABLE"
+    || (capabilityReasons as Record<string, unknown>).revision !== "PROVIDER_REVISION_UNKNOWN"
+    || (capabilityReasons as Record<string, unknown>).calendar !== "OBSERVED_LOCAL_ROWS_NOT_FORMAL_TRADING_CALENDAR"
+    || (capabilityReasons as Record<string, unknown>).status !== "SOURCE_COLUMN_ABSENT_OR_NULL_WHEN_NOT_PROVIDED"
+  ) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "project data capability reasons are invalid");
+  }
+  return Object.freeze({
+    readModelVersion: "v3.project-home/1.1",
+    projectId: model.project_id,
+    projectContextRevisionId: model.project_context_revision_id,
+    maturity: "PRODUCT_CONNECTED",
+    truth: "NOT_FORMAL",
+    admission: "PRE_ALPHA",
+    localImportState: "AVAILABLE",
+    dataState: "AVAILABLE",
+    dataUnavailableReason: "NONE",
+    data: Object.freeze({
+      schemaVersion: "v3.product-data-read-model/1.0.0",
+      projectId: data.project_id,
+      projectContextRevisionId: data.project_context_revision_id,
+      displayName: data.display_name,
+      truth: "NOT_FORMAL",
+      admission: "PRE_ALPHA",
+      sourceType: "LOCAL_USER_SUPPLIED",
+      pitState: "PIT_UNPROVABLE",
+      mediaType: data.media_type as "text/csv" | "application/vnd.apache.parquet",
+      rowCount: Number(data.row_count),
+      instrumentCount: Number(data.instrument_count),
+      dateCoverageStart: data.date_coverage_start,
+      dateCoverageEnd: data.date_coverage_end,
+      partitionCount: Number(data.partition_count),
+      universeRole: "USER_DEFINED_STATIC",
+      qualityStatus: "PASS",
+      validationProfileId: "svp_local_user_supplied_v1",
+      capabilityReasons: Object.freeze({
+        pit: "PIT_UNPROVABLE",
+        revision: "PROVIDER_REVISION_UNKNOWN",
+        calendar: "OBSERVED_LOCAL_ROWS_NOT_FORMAL_TRADING_CALENDAR",
+        status: "SOURCE_COLUMN_ABSENT_OR_NULL_WHEN_NOT_PROVIDED"
+      }),
+      volumeUnit: "SHARES",
+      amountUnit: "CNY",
+      adjustment: "UNADJUSTED",
+      rawCaptureId: data.raw_capture_id,
+      rawContentHash: data.raw_content_hash,
+      snapshotId: data.snapshot_id,
+      normalizedPayloadHash: data.normalized_payload_hash,
+      universeVersionId: data.universe_version_id,
+      importedAt: data.imported_at,
+      rawArtifactId: data.raw_artifact_id
+    }),
+    factorState: model.factor_state as "EMPTY" | "AVAILABLE" | "UNAVAILABLE",
+    factorUnavailableReason: model.factor_unavailable_reason as "NONE" | "NO_SNAPSHOT" | "NO_FACTOR_STUDY" | "FACTOR_READ_MODEL_NOT_AVAILABLE",
+    factor
+  });
 }
 
 function researchOperationPayload(
@@ -404,12 +948,14 @@ function assertProductPageRequest(request: ProductPageRequest | undefined): Requ
 export class ProductBridge {
   private inflightSubmit = new Map<string, Promise<BacktestSubmitOutcomeView>>();
   private inflightResearch = new Map<string, Promise<ProductResearchSubmitOutcomeView>>();
+  private inflightFactor = new Map<string, Promise<ProductFactorStudyOutcomeView>>();
   private bindingActivationInProgress = false;
   private bindingOutcome: ProductBindingOutcome = { state: "NO_CANONICAL_PROJECT_BOUND" };
   private readonly supervisor: BackendSupervisor;
   private readonly store: WorkspaceStore;
   private readonly bindings: ProductBindingStore;
   private readonly createProjectIntents: CreateProjectIntentStore;
+  private readonly localDataSources: LocalDataSourceBroker | null;
 
   constructor(
     supervisor: BackendSupervisor,
@@ -418,13 +964,15 @@ export class ProductBridge {
     chooseResearchPackage: ResearchPackageChooser = async () => null,
     createProjectIntents: CreateProjectIntentStore = new CreateProjectIntentStore(
       createProjectIntentPath(dirname(bindings.path))
-    )
+    ),
+    localDataSources: LocalDataSourceBroker | null = null
   ) {
     this.supervisor = supervisor;
     this.store = store;
     this.bindings = bindings;
     this.chooseResearchPackage = chooseResearchPackage;
     this.createProjectIntents = createProjectIntents;
+    this.localDataSources = localDataSources;
   }
 
   private readonly chooseResearchPackage: ResearchPackageChooser;
@@ -505,6 +1053,16 @@ export class ProductBridge {
     this.requireBinding();
     const response = await this.supervisor.request("ProjectSessionService.v1.getProjectContext", {});
     return adaptProjectContext(response);
+  }
+
+  async getProjectHome(): Promise<ProductProjectHomeView> {
+    this.requireBinding();
+    const response = await this.supervisor.request(
+      "ProductEntryService.v1.getProjectHome",
+      {},
+      { contractVersion: "1.1.0", expectedApiVersion: "1.1" }
+    );
+    return adaptProjectHome(response);
   }
 
   async restoreSession(): Promise<SessionRestoreView> {
@@ -819,6 +1377,57 @@ export class ProductBridge {
     return adaptImportResearchPackageOutcome(response);
   }
 
+  /** Native selection metadata only; the path and open handle remain in main. */
+  async chooseLocalDataSource(): Promise<LocalDataSourceSelectionView | null> {
+    this.requireBinding();
+    if (this.localDataSources === null) {
+      throw new ProductAdapterError("LOCAL_DATA_IMPORT_NOT_AVAILABLE", "本地数据导入尚未绑定原生文件能力");
+    }
+    return this.localDataSources.chooseSource();
+  }
+
+  /** Publish raw bytes in backend ownership before the durable import Task. */
+  async importLocalDataset(request: ProductLocalDataImportIntent): Promise<ProductLocalDataImportOutcomeView> {
+    const refs = this.requireBinding();
+    if (this.localDataSources === null) {
+      throw new ProductAdapterError("LOCAL_DATA_IMPORT_NOT_AVAILABLE", "本地数据导入尚未绑定原生文件能力");
+    }
+    assertLocalDataImportIntent(request);
+    const source = await this.localDataSources.transferSource(
+      {
+        capabilityToken: request.capabilityToken,
+        projectId: refs.projectId,
+        projectContextRevisionId: refs.projectContextRevisionId
+      },
+      (frame, timeoutMs) => this.supervisor.localDataControl(frame as Record<string, unknown>, timeoutMs)
+    );
+    const idempotencyKey = `v3-desktop:${uuidV4()}`;
+    const response = await this.supervisor.request(
+      "ProductEntryService.v1.importLocalDataset",
+      {
+        idempotency_key: idempotencyKey,
+        source: {
+          artifact_id: source.artifactId,
+          sha256: source.sha256,
+          byte_size: source.byteSize,
+          media_type: source.mediaType,
+          display_name: source.displayName,
+          volume_unit: request.volumeUnit,
+          amount_unit: request.amountUnit,
+          timezone: request.timezone,
+          adjustment: request.adjustment
+        }
+      },
+      {
+        contractVersion: "1.1.0",
+        expectedApiVersion: "1.1",
+        idempotencyKey,
+        timeoutMs: 30_000
+      }
+    );
+    return adaptLocalDataImportOutcome(response);
+  }
+
   /**
    * Product-connected research entry. Provider identity is fixed by the main
    * process; the renderer can submit only a bounded symbol/date intent.
@@ -847,6 +1456,39 @@ export class ProductBridge {
     const requestPromise = this.requestResearchOutcome(request, key, idempotencyKey);
     this.inflightResearch.set(key, requestPromise);
     return requestPromise;
+  }
+
+  async submitFactorStudy(request: ProductFactorStudyIntent): Promise<ProductFactorStudyOutcomeView> {
+    this.requireBinding();
+    assertFactorStudyIntent(request);
+    const key = createHash("sha256")
+      .update(request.formulaSource, "utf8")
+      .update("\0", "utf8")
+      .update(request.analysisOutputName, "utf8")
+      .digest("hex");
+    const existing = this.inflightFactor.get(key);
+    if (existing !== undefined) return existing;
+    const idempotencyKey = `v3-desktop:${uuidV4()}`;
+    const pending = this.supervisor.request(
+      "ProductEntryService.v1.submitFactorStudy",
+      {
+        idempotency_key: idempotencyKey,
+        formula_source: request.formulaSource,
+        analysis_output_name: request.analysisOutputName
+      },
+      {
+        contractVersion: "1.1.0",
+        expectedApiVersion: "1.1",
+        idempotencyKey,
+        timeoutMs: 30_000
+      }
+    ).then(adaptFactorStudyOutcome).finally(() => this.inflightFactor.delete(key));
+    this.inflightFactor.set(key, pending);
+    return pending;
+  }
+
+  async dispose(): Promise<void> {
+    await this.localDataSources?.close();
   }
 
   /**

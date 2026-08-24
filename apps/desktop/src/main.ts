@@ -23,6 +23,7 @@ import { runProductClosureSmoke as runProductClosureSmokeFlow, type ProductClosu
 import {
   ProductBindingStore,
   ProductBridge,
+  LocalDataSourceBroker,
   productBindingPath,
   registerProductRuntimeIpc,
   registerUnavailableProductRuntimeIpc
@@ -229,6 +230,23 @@ async function chooseResearchPackage(): Promise<string | null> {
   return selection.filePaths[0] ?? null;
 }
 
+async function chooseLocalDataSource(): Promise<string | null> {
+  const window = mainWindow !== null ? (BrowserWindow.fromWebContents(mainWindow.webContents) ?? mainWindow) : null;
+  const options = {
+    title: "选择本地 A 股日线数据",
+    properties: ["openFile"] as Array<"openFile">,
+    buttonLabel: "安全打开",
+    filters: [
+      { name: "A 股日线数据", extensions: ["csv", "parquet"] }
+    ]
+  };
+  const selection = window !== null
+    ? await dialog.showOpenDialog(window, options)
+    : await dialog.showOpenDialog(options);
+  if (selection.canceled || selection.filePaths.length !== 1) return null;
+  return selection.filePaths[0] ?? null;
+}
+
 function registerBackendRuntime(): void {
   if (!mainWindow || !backendSupervisor) throw new Error("BACKEND_RUNTIME_REGISTRATION_NOT_READY");
   backendRelay = new BackendRuntimeEventRelay(backendSupervisor, mainWindow.webContents);
@@ -236,7 +254,14 @@ function registerBackendRuntime(): void {
   backendRuntimeLifecycle = new BackendRuntimeLifecycle(backendSupervisor);
   backendSupervisor.on("diagnostic", (diagnostic) => console.error(JSON.stringify(diagnostic)));
   registerBackendRuntimeIpc(ipcMain, trusted, backendSupervisor, () => backendRelay?.evidenceSnapshot ?? null);
-  productBridge = new ProductBridge(backendSupervisor, store, productBindings, chooseResearchPackage);
+  productBridge = new ProductBridge(
+    backendSupervisor,
+    store,
+    productBindings,
+    chooseResearchPackage,
+    undefined,
+    new LocalDataSourceBroker({ chooseFile: chooseLocalDataSource })
+  );
   registerProductRuntimeIpc(ipcMain, trusted, productBridge);
 }
 
@@ -642,6 +667,7 @@ async function gracefulShutdown(): Promise<void> {
     // store stay alive, then perform the final cursor/state flush. Only
     // then may the store be closed and the relay stopped.
     store.beginQuiesce();
+    await productBridge.dispose();
     await store.flush();
     if (backendRuntimeLifecycle && backendSupervisor) {
       await backendRuntimeLifecycle.onExplicitQuit(GRACEFUL_SHUTDOWN_DEADLINE_MS);

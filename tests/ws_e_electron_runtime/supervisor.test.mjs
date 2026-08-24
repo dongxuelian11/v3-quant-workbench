@@ -95,6 +95,8 @@ class MockBackend {
   queuedHealthRequests = [];
   productEntryMode = "ok";
   queuedProductEntryRequests = [];
+  localDataMode = "ok";
+  queuedLocalDataRequests = [];
 
   constructor(process, index, protocol = "v3.local/1.0") {
     this.process = process;
@@ -169,6 +171,12 @@ class MockBackend {
         return;
       }
       this.respondProductEntry(message);
+    } else if (message.kind === "localData.beginTransfer") {
+      if (this.localDataMode === "queue") {
+        this.queuedLocalDataRequests.push(message);
+        return;
+      }
+      this.respondLocalData(message);
     } else if (message.kind === "runtime.prepareShutdown") {
       this.send({
         kind: "runtime.shutdownReady",
@@ -218,6 +226,17 @@ class MockBackend {
     if (request?.control_request_id !== undefined) response.control_request_id = request.control_request_id;
     if (request?.runtime_generation !== undefined) response.runtime_generation = request.runtime_generation;
     this.send(response);
+  }
+
+  respondLocalData(request = this.queuedLocalDataRequests.shift()) {
+    this.send({
+      kind: "localData.transferReady",
+      transfer_id: `ldt_${"0".repeat(26)}`,
+      next_offset: 0,
+      max_chunk_bytes: 262144,
+      control_request_id: request.control_request_id,
+      runtime_generation: request.runtime_generation
+    });
   }
 
   flushRequestsInReverse() {
@@ -439,6 +458,46 @@ test("timed-out Product Entry control releases its slot and discards its correla
   } finally {
     supervisor.stopNow();
     await Promise.allSettled([recovered]);
+  }
+});
+
+test("local-data control is correlated, generation-fenced and rejects every path field before transport", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  const frame = {
+    kind: "localData.beginTransfer",
+    protocol_version: "v3.local-data-transfer/1.0.0",
+    project_id: PROJECT_ID,
+    project_context_revision_id: REVISION_ID,
+    display_name: "bars.csv",
+    media_type: "text/csv",
+    expected_byte_size: 128
+  };
+  try {
+    const before = backend.received.length;
+    await assert.rejects(
+      () => supervisor.localDataControl({ ...frame, path: "D:\\secret\\bars.csv" }),
+      (error) => error.code === "INVALID_ARGUMENT"
+    );
+    assert.equal(backend.received.length, before, "path-bearing frame must not reach the backend");
+    backend.localDataMode = "queue";
+    const pending = supervisor.localDataControl(frame, 200);
+    await waitFor(() => backend.queuedLocalDataRequests.length === 1);
+    const request = backend.queuedLocalDataRequests[0];
+    assert.match(request.control_request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(Number.isSafeInteger(request.runtime_generation), true);
+    assert.equal("path" in request, false);
+    backend.respondLocalData(request);
+    assert.deepEqual(await pending, {
+      kind: "localData.transferReady",
+      transfer_id: `ldt_${"0".repeat(26)}`,
+      next_offset: 0,
+      max_chunk_bytes: 262144
+    });
+  } finally {
+    supervisor.stopNow();
   }
 });
 

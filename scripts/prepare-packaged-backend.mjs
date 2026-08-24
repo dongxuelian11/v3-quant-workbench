@@ -145,7 +145,7 @@ run(sourcePython, [
 
 const criticalImportSmoke = JSON.parse(run(resolve(stagedPythonRoot, "python.exe"), ["-c", [
   "import importlib,json",
-  "names=['v3_backend','pydantic','pydantic_core','pydantic_ai','numpy','scipy','sklearn','joblib','akshare']",
+  "names=['v3_backend','pydantic','pydantic_core','pydantic_ai','numpy','scipy','sklearn','joblib','akshare','pyarrow']",
   "versions={}",
   "[versions.__setitem__(name, getattr(importlib.import_module(name),'__version__','UNAVAILABLE')) for name in names]",
   "print(json.dumps({'status':'PASS','modules':versions},sort_keys=True))",
@@ -164,6 +164,9 @@ if (criticalImportSmoke.status !== "PASS" || !criticalImportSmoke.modules || typ
 }
 if (criticalImportSmoke.modules.akshare !== "1.18.84") {
   throw new Error(`packaged AKShare import/version mismatch: ${JSON.stringify(criticalImportSmoke.modules.akshare)}`);
+}
+if (criticalImportSmoke.modules.pyarrow !== "23.0.1") {
+  throw new Error(`packaged PyArrow import/version mismatch: ${JSON.stringify(criticalImportSmoke.modules.pyarrow)}`);
 }
 
 const report = JSON.parse(await readFile(reportPath, "utf8"));

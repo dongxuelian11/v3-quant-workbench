@@ -53,8 +53,19 @@ from v3_backend.workers.protocol import (
 DEFAULT_MAX_ACTIVE_RESEARCH_WORKERS = min(4, max(1, (os.cpu_count() or 2) - 1))
 PRODUCT_HEARTBEAT_SECONDS = 2
 PRODUCT_LEASE_EXPIRY_SECONDS = 10
-_PRODUCT_OPERATION = "ProductEntryService.v1.submitResearch"
-_PRODUCT_RESOURCE_CLASS = "PRODUCT_RESEARCH_CPU"
+_PRODUCT_RESEARCH_OPERATION = "ProductEntryService.v1.submitResearch"
+_PRODUCT_RESEARCH_RESOURCE_CLASS = "PRODUCT_RESEARCH_CPU"
+_PRODUCT_WORK_PROFILES = {
+    "RESEARCH": (_PRODUCT_RESEARCH_OPERATION, _PRODUCT_RESEARCH_RESOURCE_CLASS),
+    "LOCAL_DATA_IMPORT": (
+        "ProductEntryService.v1.importLocalDataset",
+        "PRODUCT_DATA_CPU",
+    ),
+    "FACTOR_STUDY": (
+        "ProductEntryService.v1.submitFactorStudy",
+        "PRODUCT_FACTOR_CPU",
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +86,8 @@ class _ResearchWorkerLaunch:
     task_id: str
     run_id: str
     attempt_id: str
+    operation_id: str
+    work_kind: str
     worker_request: WorkerRequest
     start_delay_seconds: float
     provider_mode: str | None
@@ -90,7 +103,7 @@ def _safe_send(connection: Any, lock: Any, message: object) -> bool:
         return False
 
 
-def _research_worker_main(
+def _product_worker_main(
     launch: _ResearchWorkerLaunch,
     cancel_event: Any,
     command_pipe: Any,
@@ -192,7 +205,29 @@ def _research_worker_main(
         if cancel_event.is_set():
             _safe_send(response_pipe, send_lock, WorkerTerminal("CANCELLED"))
             return
-        product.research.execute_accepted(launch.prepared_request, handles)
+        if launch.work_kind == "RESEARCH":
+            if (
+                launch.operation_id != _PRODUCT_WORK_PROFILES["RESEARCH"][0]
+                or launch.worker_request.operation_id != launch.operation_id
+            ):
+                raise ValueError("Product research worker operation binding drifted")
+            product.research.execute_accepted(launch.prepared_request, handles)
+        elif launch.work_kind == "LOCAL_DATA_IMPORT":
+            if (
+                launch.operation_id != _PRODUCT_WORK_PROFILES["LOCAL_DATA_IMPORT"][0]
+                or launch.worker_request.operation_id != launch.operation_id
+            ):
+                raise ValueError("Product local-data worker operation binding drifted")
+            product.data.execute_accepted(launch.prepared_request, handles)
+        elif launch.work_kind == "FACTOR_STUDY":
+            if (
+                launch.operation_id != _PRODUCT_WORK_PROFILES["FACTOR_STUDY"][0]
+                or launch.worker_request.operation_id != launch.operation_id
+            ):
+                raise ValueError("Product Factor worker operation binding drifted")
+            product.factor.execute_accepted(launch.prepared_request, handles)
+        else:
+            raise ValueError(f"unsupported Product worker kind: {launch.work_kind}")
         stop_heartbeat()
         _safe_send(
             response_pipe,
@@ -223,6 +258,8 @@ def _research_worker_main(
 class _SpawnPayload:
     prepared_request: Any
     handles: Any
+    operation_id: str
+    work_kind: str
 
 
 @dataclass
@@ -273,10 +310,23 @@ class _ProductProcessFactory:
         self._pending: dict[str, _SpawnPayload] = {}
         self._spawned: dict[str, _ProductWorkerProcess] = {}
 
-    def stage(self, attempt_id: str, prepared_request: Any, handles: Any) -> None:
+    def stage(
+        self,
+        attempt_id: str,
+        prepared_request: Any,
+        handles: Any,
+        *,
+        operation_id: str,
+        work_kind: str,
+    ) -> None:
         if attempt_id in self._pending or attempt_id in self._spawned:
             raise RuntimeError("worker spawn context already exists")
-        self._pending[attempt_id] = _SpawnPayload(prepared_request, handles)
+        self._pending[attempt_id] = _SpawnPayload(
+            prepared_request,
+            handles,
+            operation_id,
+            work_kind,
+        )
 
     def discard(self, attempt_id: str) -> None:
         self._pending.pop(attempt_id, None)
@@ -287,7 +337,7 @@ class _ProductProcessFactory:
         command_receive, command_send = self.context.Pipe(duplex=False)
         cancel_event = self.context.Event()
         process = self.context.Process(
-            target=_research_worker_main,
+            target=_product_worker_main,
             args=(
                 _ResearchWorkerLaunch(
                     storage_root=str(self.storage_root),
@@ -295,6 +345,8 @@ class _ProductProcessFactory:
                     task_id=payload.handles.task.task_id,
                     run_id=payload.handles.run.run_id,
                     attempt_id=payload.handles.attempt.attempt_id,
+                    operation_id=payload.operation_id,
+                    work_kind=payload.work_kind,
                     worker_request=request,
                     start_delay_seconds=self.start_delay_seconds,
                     provider_mode=self.provider_mode,
@@ -304,7 +356,7 @@ class _ProductProcessFactory:
                 command_receive,
                 send_pipe,
             ),
-            name=f"v3-research-{payload.handles.task.task_id}",
+            name=f"v3-product-{payload.work_kind.lower()}-{payload.handles.task.task_id}",
             daemon=False,
         )
         process.start()
@@ -439,7 +491,7 @@ class ProductResearchWorkerManager:
             observed = len(self._slots) + len(self._reservations)
             if observed >= self._max_active_workers:
                 raise ResourceRejectedError(
-                    "Product Research worker capacity is exhausted",
+                    "Product worker capacity is exhausted",
                     details={
                         "reason_code": "WORKER_CAPACITY_EXCEEDED",
                         "limit": self._max_active_workers,
@@ -460,21 +512,27 @@ class ProductResearchWorkerManager:
         handles: Any,
         *,
         reservation_token: str,
+        operation_id: str = _PRODUCT_RESEARCH_OPERATION,
+        work_kind: str = "RESEARCH",
+        resource_class: str = _PRODUCT_RESEARCH_RESOURCE_CLASS,
     ) -> multiprocessing.Process:
         with self._lock:
             self._reap_locked()
+            profile = _PRODUCT_WORK_PROFILES.get(work_kind)
+            if profile is None or profile != (operation_id, resource_class):
+                raise ValueError("Product worker kind/operation/resource binding is not admitted")
             if reservation_token not in self._reservations:
-                raise RuntimeError("research worker capacity reservation is absent or consumed")
+                raise RuntimeError("Product worker capacity reservation is absent or consumed")
             self._reservations.remove(reservation_token)
             task_id = handles.task.task_id
             attempt_id = handles.attempt.attempt_id
             if task_id in self._slots:
-                raise RuntimeError("research Task already owns a child process")
+                raise RuntimeError("Product Task already owns a child process")
             lease_token = str(uuid.uuid4())
             request = WorkerRequest(
                 attempt_id=attempt_id,
                 run_id=handles.run.run_id,
-                operation_id=_PRODUCT_OPERATION,
+                operation_id=operation_id,
                 canonical_input={"request_hash": prepared_request.request_hash},
                 input_hash=prepared_request.request_hash,
                 read_tickets=(),
@@ -483,13 +541,19 @@ class ProductResearchWorkerManager:
                 cancellation_channel=f"cancel/{attempt_id}",
                 checkpoint_policy="NOT_AVAILABLE",
             )
-            self._factory.stage(attempt_id, prepared_request, handles)
+            self._factory.stage(
+                attempt_id,
+                prepared_request,
+                handles,
+                operation_id=operation_id,
+                work_kind=work_kind,
+            )
             try:
                 lease = self.supervisor.dispatch(
                     request,
                     OperationProfile(
-                        _PRODUCT_OPERATION,
-                        _PRODUCT_RESOURCE_CLASS,
+                        operation_id,
+                        resource_class,
                         cpu_slots=1,
                         memory_hard_limit_bytes=1024 * 1024 * 1024,
                         scratch_budget_bytes=1024 * 1024 * 1024,

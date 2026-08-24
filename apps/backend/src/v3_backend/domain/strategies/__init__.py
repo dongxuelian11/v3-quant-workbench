@@ -63,6 +63,7 @@ from .formal import (
     FormalStrategyEvaluationService,
     FormalStrategyInputRequest,
     encode_score_payload,
+    encode_score_payload_for_universe,
     strategy_payload_context_identity,
 )
 
@@ -122,6 +123,7 @@ __all__ = [
     "UnknownComponent",
     "default_component_registry",
     "encode_score_payload",
+    "encode_score_payload_for_universe",
     "normalize_decimal_string",
     "strategy_payload_context_identity",
 ]

@@ -81,7 +81,11 @@ type ControlRequestKind =
   | "runtime.prepareShutdown"
   | "runtime.commitShutdown"
   | "productEntry.createProject"
-  | "productEntry.listProjects";
+  | "productEntry.listProjects"
+  | "localData.beginTransfer"
+  | "localData.appendChunk"
+  | "localData.finishTransfer"
+  | "localData.abortTransfer";
 
 interface PendingControlRequest<T> {
   readonly kind: ControlRequestKind;
@@ -265,7 +269,7 @@ export class BackendSupervisor extends EventEmitter {
       request_id: requestId,
       project_id: context.projectId,
       project_context_revision_id: context.projectContextRevisionId,
-      expected_api_version: "1.0",
+      expected_api_version: options.expectedApiVersion ?? "1.0",
       ...contextBridgeSafe(payload)
     };
     const envelope: Record<string, unknown> = {
@@ -390,6 +394,45 @@ export class BackendSupervisor extends EventEmitter {
     if (message.kind === "productEntry.error") {
       const code = typeof message.code === "string" && message.code.length > 0 ? message.code : "PRODUCT_ENTRY_ERROR";
       const text = typeof message.message === "string" ? message.message : "product entry control failed";
+      throw new BackendRuntimeError(text, code);
+    }
+    const {
+      control_request_id: _controlRequestId,
+      runtime_generation: _runtimeGeneration,
+      ...response
+    } = message;
+    return contextBridgeSafe(response);
+  }
+
+  /** Correlated project-bound local-source staging; never accepts a path. */
+  async localDataControl(frame: Record<string, unknown>, timeoutMs = 30_000): Promise<Readonly<Record<string, unknown>>> {
+    if (this.stateValue !== "READY") throw new BackendDisconnectedError();
+    const kind = frame.kind;
+    const successKinds: Readonly<Record<string, string>> = {
+      "localData.beginTransfer": "localData.transferReady",
+      "localData.appendChunk": "localData.chunkAccepted",
+      "localData.finishTransfer": "localData.sourcePublished",
+      "localData.abortTransfer": "localData.transferAborted"
+    };
+    if (typeof kind !== "string" || !(kind in successKinds)) {
+      throw new BackendRuntimeError("unknown local-data control kind", "INVALID_ARGUMENT");
+    }
+    for (const forbidden of ["path", "raw_path", "file_path"]) {
+      if (forbidden in frame) {
+        throw new BackendRuntimeError("local-data control cannot carry a filesystem path", "INVALID_ARGUMENT");
+      }
+    }
+    const { kind: _kind, ...payload } = frame;
+    const message = await this.requestControl(
+      kind as ControlRequestKind,
+      [successKinds[kind]!, "localData.error"],
+      { ...payload, deadline_at: new Date(Date.now() + timeoutMs).toISOString() },
+      timeoutMs,
+      "local-data control timed out"
+    );
+    if (message.kind === "localData.error") {
+      const code = typeof message.code === "string" && message.code.length > 0 ? message.code : "LOCAL_DATA_TRANSFER_ERROR";
+      const text = typeof message.message === "string" ? message.message : "local-data transfer failed";
       throw new BackendRuntimeError(text, code);
     }
     const {
@@ -637,6 +680,11 @@ export class BackendSupervisor extends EventEmitter {
       case "productEntry.projectCreated":
       case "productEntry.projectsListed": this.onControlResponse(message); break;
       case "productEntry.error": this.onControlResponse(message); break;
+      case "localData.transferReady":
+      case "localData.chunkAccepted":
+      case "localData.sourcePublished":
+      case "localData.transferAborted":
+      case "localData.error": this.onControlResponse(message); break;
       case "runtime.shutdownReady": this.onControlResponse(message); break;
       case "runtime.shutdownCommitted": this.onControlResponse(message); break;
       default: throw new TransportProtocolError(`unexpected backend frame: ${String(message.kind)}`);

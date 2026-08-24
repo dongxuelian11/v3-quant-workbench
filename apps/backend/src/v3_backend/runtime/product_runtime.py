@@ -34,7 +34,7 @@ from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
-from v3_backend.adapters.artifact_store import FileSystemArtifactStore
+from v3_backend.adapters.artifact_store import FileSystemArtifactStore, StagingReceipt
 from v3_backend.adapters.sqlite.artifact_publication import SQLiteArtifactPublicationPort
 from v3_backend.adapters.sqlite.connection import connect_catalog
 from v3_backend.adapters.sqlite.repositories import (
@@ -214,6 +214,20 @@ def product_artifact_policy() -> SafeFormatPolicy:
 
     rules = (
         FormatRule(
+            "LOCAL_DATA_RAW_FILE",
+            "text/csv",
+            ADMITTED,
+            "utf8-text-v1",
+            "bounded user-supplied CSV bytes retained as immutable source evidence",
+        ),
+        FormatRule(
+            "LOCAL_DATA_RAW_FILE",
+            "application/vnd.apache.parquet",
+            ADMITTED,
+            "flat-parquet-v1",
+            "bounded flat primitive Parquet bytes retained as immutable source evidence",
+        ),
+        FormatRule(
             SCORE_PAYLOAD_ROLE,
             "application/json",
             ADMITTED,
@@ -241,6 +255,23 @@ def product_artifact_policy() -> SafeFormatPolicy:
             "canonical-finite-json-v1",
             "research-only derived feature values with finite numeric wire values",
         ),
+        *(
+            FormatRule(
+                role,
+                "application/json",
+                ADMITTED,
+                "canonical-finite-json-v1",
+                f"V1.1 Factor artifact with finite research numeric values: {role}",
+            )
+            for role in (
+                "FACTOR_FORMULA_DOCUMENT",
+                "FACTOR_DEFINITION",
+                "FACTOR_MATERIALIZATION_PARTITION",
+                "FACTOR_MATERIALIZATION",
+                "FACTOR_ANALYSIS",
+                "PRODUCT_FACTOR_STUDY_READ_MODEL",
+            )
+        ),
     )
     product_roles = (
         BACKTEST_RUN_SPEC_ROLE,
@@ -252,10 +283,16 @@ def product_artifact_policy() -> SafeFormatPolicy:
         "DATA_TRUTH_RAW_CAPTURE",
         "DATA_TRUTH_CALENDAR",
         "DATA_TRUTH_SNAPSHOT_PARTITION",
+        "DATA_TRUTH_SNAPSHOT_MANIFEST",
         "UNIVERSE_MEMBERSHIP",
         "RESEARCH_STRATEGY_PROFILE",
         "RESEARCH_DATASET_PROFILE",
         "RESEARCH_PIPELINE_LINEAGE",
+        "LOCAL_DATA_CONNECTOR_MANIFEST",
+        "LOCAL_DATA_SCHEMA_MAPPING",
+        "LOCAL_DATA_NORMALIZATION_RECEIPT",
+        "LOCAL_DATA_UNIVERSE_AUDIT",
+        "LOCAL_DATA_IMPORT_READ_MODEL",
     )
     return SafeFormatPolicy(
         rules
@@ -329,6 +366,64 @@ class ProductArtifactBatch:
         return None
 
 
+class ProductStagedArtifact:
+    """PUBLISH callbacks for one already-streamed product artifact."""
+
+    def __init__(
+        self,
+        *,
+        store: FileSystemArtifactStore,
+        staging: StagingReceipt,
+        provenance_entity_id: str,
+        role: str,
+        media_type: str,
+        schema_fingerprint: str,
+        published_at: datetime,
+    ) -> None:
+        self.store = store
+        self.staging = staging
+        self.provenance_entity_id = provenance_entity_id
+        self.role = role
+        self.media_type = media_type
+        self.schema_fingerprint = schema_fingerprint
+        self.published_at = published_at
+        self.result: Any | None = None
+
+    def verify_staged(self) -> None:
+        digest = hashlib.sha256()
+        byte_size = 0
+        with self.store.open_staged(self.staging.staging_token) as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+                byte_size += len(chunk)
+        if digest.hexdigest() != self.staging.sha256 or byte_size != self.staging.byte_size:
+            raise V3ContractError("pre-staged product artifact identity changed")
+
+    def publish_staged(self) -> None:
+        self.result = self.store.publish(
+            self.staging.staging_token,
+            expected_sha256=self.staging.sha256,
+            expected_byte_size=self.staging.byte_size,
+            media_type=self.media_type,
+            role=self.role,
+            provenance_entity_id=self.provenance_entity_id,
+            schema_fingerprint=self.schema_fingerprint,
+            semantic_fingerprint=self.staging.sha256,
+            published_at=self.published_at,
+        )
+
+    def compensate_unreferenced_staging(self) -> None:
+        if self.result is None or self.result.deduplicated:
+            return
+        try:
+            self.store.delete_published_bytes(self.result.descriptor.artifact_id)
+        except Exception:
+            pass
+
+    def notify_committed(self) -> None:
+        return None
+
+
 def catalog_rows(connection: sqlite3.Connection, sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
     return [dict(row) for row in connection.execute(sql, params).fetchall()]
 
@@ -336,6 +431,29 @@ def catalog_rows(connection: sqlite3.Connection, sql: str, params: tuple[Any, ..
 def catalog_row(connection: sqlite3.Connection, sql: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
     row = connection.execute(sql, params).fetchone()
     return None if row is None else dict(row)
+
+
+def _require_existing_artifact_descriptor(
+    connection: sqlite3.Connection,
+    descriptor: ArtifactDescriptor,
+) -> None:
+    existing = catalog_row(
+        connection,
+        "SELECT * FROM artifact WHERE artifact_id=?",
+        (descriptor.artifact_id,),
+    )
+    expected = {
+        "sha256": descriptor.sha256,
+        "byte_size": descriptor.byte_size,
+        "media_type": descriptor.media_type,
+        "semantic_role": descriptor.role,
+        "storage_key": descriptor.storage_key,
+        "safe_format_id": descriptor.safe_format_id,
+        "schema_fingerprint": descriptor.schema_fingerprint,
+        "state": "PUBLISHED",
+    }
+    if existing is None or any(existing.get(key) != value for key, value in expected.items()):
+        raise V3ContractError("existing published Artifact metadata conflicts with exact bytes")
 
 
 class ProductEventReplay:
@@ -890,6 +1008,7 @@ class ProductExecution:
         is_batch: bool = False,
         execution_deadline_at: str | None = None,
         inline_worker: bool = True,
+        service_contract_version: str = "1.0.0",
     ) -> tuple[Task, Run, TaskAttempt]:
         run_id = mint_v3_id("run_")
         task = Task(
@@ -911,7 +1030,7 @@ class ProductExecution:
                 normalized_input_hash=normalized_input_hash,
                 code_version=PRODUCT_CODE_VERSION,
                 environment_profile=INLINE_ENVIRONMENT_PROFILE_ID,
-                service_contract_version="1.0.0",
+                service_contract_version=service_contract_version,
             ),
             state=RunState.SEALED,
             state_version=0,
@@ -1234,14 +1353,92 @@ class ProductExecution:
                     )
                     for owner_id, role, artifact_index in references
                     if artifact_index == index
+                    and uow.connection.execute(
+                        """
+                        SELECT 1 FROM artifact_reference
+                        WHERE owner_id=? AND role=? AND artifact_id=? AND state='ACTIVE'
+                        """,
+                        (owner_id, role, descriptor.artifact_id),
+                    ).fetchone()
+                    is None
                 )
-                port.publish(
-                    ArtifactPublication(descriptor=descriptor, active_references=active_references)
-                )
+                if active_references:
+                    port.publish(
+                        ArtifactPublication(
+                            descriptor=descriptor,
+                            active_references=active_references,
+                        )
+                    )
+                else:
+                    _require_existing_artifact_descriptor(uow.connection, descriptor)
                 results.append(batch.results[index])
             uow.commit()
             batch.notify_committed()
             return results
+        finally:
+            if uow.active:
+                uow.rollback()
+            connection.close()
+
+    def _publish_staged_artifact(
+        self,
+        *,
+        staging: StagingReceipt,
+        provenance_entity_id: str,
+        role: str,
+        media_type: str,
+        schema_fingerprint: str,
+        references: tuple[tuple[str, str], ...],
+    ) -> Any:
+        """Publish one bounded stream through the canonical Artifact/Catalog owner."""
+
+        published_at = datetime.now(timezone.utc)
+        callbacks = ProductStagedArtifact(
+            store=self.product.artifact_store,
+            staging=staging,
+            provenance_entity_id=provenance_entity_id,
+            role=role,
+            media_type=media_type,
+            schema_fingerprint=schema_fingerprint,
+            published_at=published_at,
+        )
+        connection = connect_catalog(self.product.database_path)
+        uow = SQLiteUnitOfWork(connection, TransactionMode.PUBLISH, publish_callbacks=callbacks)
+        try:
+            uow.begin()
+            if callbacks.result is None:
+                raise V3ContractError("pre-staged product artifact publication produced no result")
+            descriptor = callbacks.result.descriptor
+            active_references = tuple(
+                ArtifactReference(
+                    reference_id=mint_v3_id("arf_"),
+                    owner_id=owner_id,
+                    artifact_id=descriptor.artifact_id,
+                    role=reference_role,
+                    created_at=published_at,
+                    state="ACTIVE",
+                )
+                for owner_id, reference_role in references
+                if uow.connection.execute(
+                    """
+                    SELECT 1 FROM artifact_reference
+                    WHERE owner_id=? AND role=? AND artifact_id=? AND state='ACTIVE'
+                    """,
+                    (owner_id, reference_role, descriptor.artifact_id),
+                ).fetchone()
+                is None
+            )
+            if active_references:
+                SQLiteArtifactPublicationPort(uow).publish(
+                    ArtifactPublication(
+                        descriptor=descriptor,
+                        active_references=active_references,
+                    )
+                )
+            else:
+                _require_existing_artifact_descriptor(uow.connection, descriptor)
+            uow.commit()
+            return callbacks.result
         finally:
             if uow.active:
                 uow.rollback()
@@ -1871,18 +2068,28 @@ class ProductRuntime:
         if research_worker_config is not None:
             from .product_workers import ProductResearchWorkerManager
 
-            self.research_workers = ProductResearchWorkerManager(
+            self.product_workers = ProductResearchWorkerManager(
                 self,
                 research_worker_config,
             )
         else:
-            self.research_workers = None
+            self.product_workers = None
+        # Compatibility alias for the already accepted 1.0 research path.  The
+        # manager is now shared by additive Product Entry work kinds rather than
+        # creating a second Task/Worker state machine.
+        self.research_workers = self.product_workers
         from .product_research import ProductResearchService
+        from .product_data import ProductDataService
+        from .product_factor import ProductFactorStudyService
+        from .local_data_transfer import ProductLocalDataTransferService
 
         self.research = ProductResearchService(
             self,
             provider_factory=research_provider_factory,
         )
+        self.data = ProductDataService(self)
+        self.factor = ProductFactorStudyService(self)
+        self.local_data_transfers = ProductLocalDataTransferService(self)
         self.idempotency = DurableIdempotency()
         self._shutdown_prepared = False
         self._shutdown_committed = False
@@ -2335,6 +2542,7 @@ class ProductRuntime:
 
     def prepare_shutdown(self, deadline: str | None) -> dict[str, str]:
         self._shutdown_prepared = True
+        self.local_data_transfers.close()
         if self.research_workers is not None:
             for task_id in self.research_workers.task_ids():
                 self.cancel_research_task(
@@ -2409,6 +2617,7 @@ def build_product_ports(
         product_entry_control=(
             lambda kind, message: handle_product_entry_control(product, kind, message)
         ),
+        local_data_control=product.local_data_transfers.handle,
     )
 
 

@@ -17,6 +17,7 @@ export const PRODUCT_RUNTIME_CHANNELS = Object.freeze({
   capabilities: "productRuntime:capabilities",
   boundProject: "productRuntime:boundProject",
   projectContext: "productRuntime:projectContext",
+  projectHome: "productRuntime:projectHome",
   restoreSession: "productRuntime:restoreSession",
   connectExistingProject: "productRuntime:connectExistingProject",
   listTasks: "productRuntime:listTasks",
@@ -30,6 +31,9 @@ export const PRODUCT_RUNTIME_CHANNELS = Object.freeze({
   listProjects: "productRuntime:listProjects",
   listBacktestRunSpecs: "productRuntime:listBacktestRunSpecs",
   importResearchPackage: "productRuntime:importResearchPackage",
+  chooseLocalDataSource: "productRuntime:chooseLocalDataSource",
+  importLocalDataset: "productRuntime:importLocalDataset",
+  submitFactorStudy: "productRuntime:submitFactorStudy",
   submitResearch: "productRuntime:submitResearch"
 } as const);
 
@@ -81,6 +85,7 @@ export function registerProductRuntimeIpc(
   handle(PRODUCT_RUNTIME_CHANNELS.capabilities, () => bridge.getCapabilities());
   handle(PRODUCT_RUNTIME_CHANNELS.boundProject, () => bridge.getBoundProject());
   handle(PRODUCT_RUNTIME_CHANNELS.projectContext, () => bridge.getProjectContext());
+  handle(PRODUCT_RUNTIME_CHANNELS.projectHome, () => bridge.getProjectHome());
   handle(PRODUCT_RUNTIME_CHANNELS.restoreSession, () => bridge.restoreSession());
   handle(PRODUCT_RUNTIME_CHANNELS.connectExistingProject, (value) => {
     const item = assertObject(value, ["projectId", "projectContextRevisionId"]);
@@ -160,12 +165,45 @@ export function registerProductRuntimeIpc(
   handle(PRODUCT_RUNTIME_CHANNELS.listProjects, (value) => bridge.listProjects(pageRequest(value)));
   handle(PRODUCT_RUNTIME_CHANNELS.listBacktestRunSpecs, (value) => bridge.listBacktestRunSpecs(pageRequest(value)));
   handle(PRODUCT_RUNTIME_CHANNELS.importResearchPackage, () => bridge.importResearchPackage());
+  handle(PRODUCT_RUNTIME_CHANNELS.chooseLocalDataSource, (value) => {
+    if (value !== undefined) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "chooseLocalDataSource does not accept a payload");
+    }
+    return bridge.chooseLocalDataSource();
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.importLocalDataset, (value) => {
+    const item = assertObject(value, ["capabilityToken", "volumeUnit", "amountUnit", "timezone", "adjustment"]);
+    const volumeUnit = item.volumeUnit;
+    if (volumeUnit !== "SHARES" && volumeUnit !== "HANDS") {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "volumeUnit must be SHARES or HANDS");
+    }
+    if (item.amountUnit !== "CNY" || item.timezone !== "Asia/Shanghai" || item.adjustment !== "UNADJUSTED") {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "local-data semantic declarations are not admitted");
+    }
+    return bridge.importLocalDataset({
+      capabilityToken: requiredString(item, "capabilityToken"),
+      volumeUnit,
+      amountUnit: "CNY",
+      timezone: "Asia/Shanghai",
+      adjustment: "UNADJUSTED"
+    });
+  });
   handle(PRODUCT_RUNTIME_CHANNELS.submitResearch, (intentPayload) => {
     const intentFields = assertObject(intentPayload, ["symbol", "startDate", "endDate"]);
     return bridge.submitResearch({
       symbol: requiredString(intentFields, "symbol"),
       startDate: requiredString(intentFields, "startDate"),
       endDate: requiredString(intentFields, "endDate")
+    });
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.submitFactorStudy, (intentPayload) => {
+    const intent = assertObject(intentPayload, ["formulaSource", "analysisOutputName"]);
+    if (typeof intent.formulaSource !== "string" || intent.formulaSource.trim().length === 0 || intent.formulaSource.length > 65_536) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "formulaSource must be bounded non-empty TDX text");
+    }
+    return bridge.submitFactorStudy({
+      formulaSource: intent.formulaSource,
+      analysisOutputName: requiredString(intent, "analysisOutputName")
     });
   });
   return () => {

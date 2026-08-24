@@ -8,4 +8,5 @@ export {
 } from "./createProjectIntentStore";
 export { ProductBridge, errorToView } from "./productBridge";
 export type { ProductBindingOutcome } from "./productBridge";
+export { LocalDataSourceBroker } from "./localDataImport";
 export { PRODUCT_RUNTIME_CHANNELS, registerProductRuntimeIpc, registerUnavailableProductRuntimeIpc } from "./ipc";

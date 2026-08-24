@@ -38,6 +38,9 @@ class RuntimePorts:
     # Narrow, versioned projectless Product Entry bootstrap seam.  None keeps
     # productEntry.* control frames fail-closed (unknown control frame).
     product_entry_control: Callable[[str, Mapping[str, Any]], dict[str, Any]] | None = None
+    # Project-bound local source staging. Bytes arrive only as correlated,
+    # bounded chunks and are published by the backend Artifact owner.
+    local_data_control: Callable[[str, Mapping[str, Any]], dict[str, Any]] | None = None
 
 
 class RuntimeSession:
@@ -115,6 +118,8 @@ class RuntimeSession:
                 )
             elif str(message.get("kind", "")).startswith("productEntry."):
                 self._handle_product_entry(message, sink)
+            elif str(message.get("kind", "")).startswith("localData."):
+                self._handle_local_data(message, sink)
             elif message.get("kind") == "runtime.prepareShutdown":
                 self._prepare_shutdown(message, sink)
             elif message.get("kind") == "runtime.commitShutdown":
@@ -263,6 +268,62 @@ class RuntimeSession:
                     "retryable": error.retryable,
                 },
             )
+
+    def _handle_local_data(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
+        """Closed project-bound staging protocol for native local file bytes."""
+        from v3_backend.errors.mapping import map_exception
+
+        if self.ports.local_data_control is None:
+            raise ProtocolViolation("local-data control frames are not bound in this runtime")
+        kind = str(message["kind"])
+        payload_fields = {
+            "localData.beginTransfer": {
+                "protocol_version", "project_id", "project_context_revision_id",
+                "display_name", "media_type", "expected_byte_size",
+            },
+            "localData.appendChunk": {
+                "protocol_version", "transfer_id", "offset", "payload_base64", "chunk_sha256",
+            },
+            "localData.finishTransfer": {
+                "protocol_version", "transfer_id", "expected_sha256", "expected_byte_size",
+            },
+            "localData.abortTransfer": {"protocol_version", "transfer_id"},
+        }.get(kind)
+        if payload_fields is None:
+            raise ProtocolViolation("unknown local-data control frame")
+        control_request_id, runtime_generation = self._control_correlation(message, payload_fields)
+        owner_message = {
+            key: value
+            for key, value in message.items()
+            if key not in {"control_request_id", "runtime_generation", "deadline_at"}
+        }
+        if not self.health.accepting_requests:
+            write_frame(sink, {
+                "kind": "localData.error",
+                "control_request_id": control_request_id,
+                "runtime_generation": runtime_generation,
+                "code": "RESOURCE_REJECTED",
+                "message": "runtime is draining and rejects new local-data transfers",
+                "retryable": False,
+            })
+            return
+        try:
+            response = dict(self.ports.local_data_control(kind, owner_message))
+            response.update({
+                "control_request_id": control_request_id,
+                "runtime_generation": runtime_generation,
+            })
+            write_frame(sink, response)
+        except Exception as exc:
+            error = map_exception(exc)
+            write_frame(sink, {
+                "kind": "localData.error",
+                "control_request_id": control_request_id,
+                "runtime_generation": runtime_generation,
+                "code": error.code.value,
+                "message": error.message,
+                "retryable": error.retryable,
+            })
 
 
 def default_capabilities() -> tuple[Capability, ...]:

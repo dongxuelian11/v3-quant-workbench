@@ -8,6 +8,12 @@ import type {
   DesktopBridge,
   DesktopCommandEnvelope,
   ImportResearchPackageOutcomeView,
+  LocalDataSourceSelectionView,
+  ProductLocalDataImportIntent,
+  ProductLocalDataImportOutcomeView,
+  ProductFactorStudyIntent,
+  ProductFactorStudyOutcomeView,
+  ProductProjectHomeView,
   ProductResearchSubmitIntent,
   ProductResearchSubmitOutcomeView,
   PersistedWorkspace,
@@ -120,6 +126,7 @@ const productRuntimeBridge: V3ProductRuntimeBridge = Object.freeze({
   getCapabilities: () => invokeProduct<readonly ProductCapabilityView[]>("productRuntime:capabilities"),
   getBoundProject: () => invokeProduct<ProductBindingRefs | null>("productRuntime:boundProject"),
   getProjectContext: () => invokeProduct<ProjectContextView>("productRuntime:projectContext"),
+  getProjectHome: () => invokeProduct<ProductProjectHomeView>("productRuntime:projectHome"),
   restoreSession: () => invokeProduct<SessionRestoreView>("productRuntime:restoreSession"),
   connectExistingProject: (request: ConnectExistingProjectRequest) => invokeProduct<ProjectContextView>("productRuntime:connectExistingProject", {
     projectId: request.projectId,
@@ -139,6 +146,9 @@ const productRuntimeBridge: V3ProductRuntimeBridge = Object.freeze({
   listProjects: (request?: ProductPageRequest) => invokeProduct<ProjectsListView>("productRuntime:listProjects", request),
   listBacktestRunSpecs: (request?: ProductPageRequest) => invokeProduct<RunSpecsListView>("productRuntime:listBacktestRunSpecs", request),
   importResearchPackage: () => invokeProduct<ImportResearchPackageOutcomeView | null>("productRuntime:importResearchPackage"),
+  chooseLocalDataSource: () => invokeProduct<LocalDataSourceSelectionView | null>("productRuntime:chooseLocalDataSource"),
+  importLocalDataset: (request: ProductLocalDataImportIntent) => invokeProduct<ProductLocalDataImportOutcomeView>("productRuntime:importLocalDataset", request),
+  submitFactorStudy: (request: ProductFactorStudyIntent) => invokeProduct<ProductFactorStudyOutcomeView>("productRuntime:submitFactorStudy", request),
   submitResearch: (request: ProductResearchSubmitIntent) => invokeProduct<ProductResearchSubmitOutcomeView>("productRuntime:submitResearch", request)
 });
 

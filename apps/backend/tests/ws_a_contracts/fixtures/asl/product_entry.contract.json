@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "contract_schema_id": "urn:v3:asl-contract-envelope:1.0.0",
-  "contract_id": "urn:v3:asl:product_entry:1.0.0",
+  "contract_id": "urn:v3:asl:product_entry:1.1.0",
   "service": "ProductEntryService",
-  "api_version": "1.0.0",
+  "api_version": "1.1.0",
   "compatibility": {
     "major": "breaking",
     "minor": "additive only",
@@ -697,6 +697,1591 @@
                 "event_cursor": {
                   "type": "integer",
                   "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation_id": "ProductEntryService.v1.importLocalDataset",
+      "version": "1.1.0",
+      "kind": "COMMAND",
+      "idempotency": {
+        "mode": "IDEMPOTENCY_KEY",
+        "scope": "operation_id + project_id + idempotency_key",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": true,
+        "run_identity_inputs": [
+          "project_id",
+          "project_context_revision_id",
+          "immutable local source Artifact ref",
+          "explicit unit/timezone/adjustment semantics"
+        ],
+        "artifact_outputs": [
+          "RawCapture",
+          "DataSnapshotVersion",
+          "UniverseVersion",
+          "local data read model"
+        ],
+        "cancel": "real isolated child cancellation",
+        "retry": "NEW_ATTEMPT_SAME_RUN_FROM_START",
+        "resume": "UNAVAILABLE",
+        "input_change": "new idempotency key",
+        "attempt_rule": "durable Task before isolated import work"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists, belongs to the request project, and is current for new acceptance",
+        "Source Artifact is PUBLISHED, byte-identity matched, and actively reachable from the same project",
+        "Worker streams and verifies actual Artifact bytes before normalization",
+        "Local user data remains NOT_FORMAL / PRE_ALPHA / PIT_UNPROVABLE"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "TRUTH_PRECONDITION_FAILED",
+        "RESOURCE_REJECTED",
+        "CAPABILITY_UNAVAILABLE",
+        "INTERNAL_ERROR"
+      ],
+      "capability_notes": "Additive V1.1 local CSV/Parquet orchestration. The request carries an immutable project-scoped Artifact ref and explicit semantics only; raw paths, capability tokens, payload bytes, bars, and caller-minted canonical owner IDs are outside the ASL contract.",
+      "request_dto": {
+        "name": "ImportLocalDatasetRequestV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "idempotency_key",
+            "source"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Transport deduplication identity",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Canonical target project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Current canonical target context revision",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact additive Product Entry API expected by caller",
+              "const": "1.1"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "Idempotency key scoped to operation + project"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Immutable project-scoped local source Artifact ref plus explicit data semantics; never a path or numeric payload",
+              "required": [
+                "artifact_id",
+                "sha256",
+                "byte_size",
+                "media_type",
+                "display_name",
+                "volume_unit",
+                "amount_unit",
+                "timezone",
+                "adjustment"
+              ],
+              "properties": {
+                "artifact_id": {
+                  "type": "string",
+                  "pattern": "^art_sha256_[0-9a-f]{64}$"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "byte_size": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 268435456
+                },
+                "media_type": {
+                  "type": "string",
+                  "enum": [
+                    "text/csv",
+                    "application/vnd.apache.parquet"
+                  ]
+                },
+                "display_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255,
+                  "pattern": "^[^/\\\\]+$"
+                },
+                "volume_unit": {
+                  "type": "string",
+                  "enum": [
+                    "SHARES",
+                    "HANDS"
+                  ]
+                },
+                "amount_unit": {
+                  "type": "string",
+                  "const": "CNY"
+                },
+                "timezone": {
+                  "type": "string",
+                  "const": "Asia/Shanghai"
+                },
+                "adjustment": {
+                  "type": "string",
+                  "const": "UNADJUSTED"
+                }
+              }
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "ImportLocalDatasetResponseV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "const": "NOT_FORMAL"
+            },
+            "read_model": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "read_model_version",
+                "task_id",
+                "run_id",
+                "accepted_state",
+                "maturity",
+                "truth",
+                "admission",
+                "checkpoint_resume",
+                "retry",
+                "source_artifact_id"
+              ],
+              "properties": {
+                "read_model_version": {
+                  "type": "string",
+                  "const": "v3.product-entry-local-data/1.1"
+                },
+                "task_id": {
+                  "type": "string",
+                  "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "run_id": {
+                  "type": "string",
+                  "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "accepted_state": {
+                  "type": "string",
+                  "const": "QUEUED"
+                },
+                "maturity": {
+                  "type": "string",
+                  "const": "PRODUCT_CONNECTED"
+                },
+                "truth": {
+                  "type": "string",
+                  "const": "NOT_FORMAL"
+                },
+                "admission": {
+                  "type": "string",
+                  "const": "PRE_ALPHA"
+                },
+                "checkpoint_resume": {
+                  "type": "string",
+                  "const": "UNAVAILABLE"
+                },
+                "retry": {
+                  "type": "string",
+                  "const": "NEW_ATTEMPT_SAME_RUN_FROM_START"
+                },
+                "source_artifact_id": {
+                  "type": "string",
+                  "pattern": "^art_sha256_[0-9a-f]{64}$"
+                },
+                "event_cursor": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation_id": "ProductEntryService.v1.submitFactorStudy",
+      "version": "1.1.0",
+      "kind": "COMMAND",
+      "idempotency": {
+        "mode": "IDEMPOTENCY_KEY",
+        "scope": "operation_id + project_id + idempotency_key",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": true,
+        "run_identity_inputs": [
+          "project_id",
+          "project_context_revision_id",
+          "bounded user-authored TDX source",
+          "analysis output name"
+        ],
+        "artifact_outputs": [
+          "FormulaDocumentVersion",
+          "FactorDefinitionVersion",
+          "FactorMaterialization",
+          "FactorAnalysisResult",
+          "Factor study read model"
+        ],
+        "cancel": "real isolated child cancellation",
+        "retry": "NEW_ATTEMPT_SAME_RUN_FROM_START",
+        "resume": "UNAVAILABLE",
+        "input_change": "new idempotency key",
+        "attempt_rule": "durable Task before isolated Factor work"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists, belongs to the request project, and is current for new acceptance",
+        "Snapshot and Universe are PUBLISHED, validated, project-reachable, and actual bytes match immutable descriptors",
+        "TDX source translates through the registered operator and SHARES-to-HANDS semantic profiles",
+        "Factor study remains NOT_FORMAL / PRE_ALPHA"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "TRUTH_PRECONDITION_FAILED",
+        "RESOURCE_REJECTED",
+        "CAPABILITY_UNAVAILABLE",
+        "INTERNAL_ERROR"
+      ],
+      "capability_notes": "Additive V1.1 Factor orchestration. The request carries bounded user TDX source and an output name only; bars, factor values, Snapshot/Universe IDs, Artifact IDs, and caller-minted canonical owner IDs are outside the contract.",
+      "request_dto": {
+        "name": "SubmitFactorStudyRequestV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "idempotency_key",
+            "formula_source",
+            "analysis_output_name"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Transport deduplication identity",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Canonical target project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Current canonical target context revision",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact additive Product Entry API expected by caller",
+              "const": "1.1"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "Idempotency key scoped to operation + project"
+            },
+            "formula_source": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536,
+              "description": "User-authored bounded TDX source; never factor values or owner IDs"
+            },
+            "analysis_output_name": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "SubmitFactorStudyResponseV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "const": "NOT_FORMAL"
+            },
+            "read_model": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "read_model_version",
+                "task_id",
+                "run_id",
+                "accepted_state",
+                "maturity",
+                "truth",
+                "admission",
+                "checkpoint_resume",
+                "retry",
+                "formula_document_version_id",
+                "analysis_output_name"
+              ],
+              "properties": {
+                "read_model_version": {
+                  "type": "string",
+                  "const": "v3.product-entry-factor-study/1.1"
+                },
+                "task_id": {
+                  "type": "string",
+                  "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "run_id": {
+                  "type": "string",
+                  "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "accepted_state": {
+                  "type": "string",
+                  "const": "QUEUED"
+                },
+                "maturity": {
+                  "type": "string",
+                  "const": "PRODUCT_CONNECTED"
+                },
+                "truth": {
+                  "type": "string",
+                  "const": "NOT_FORMAL"
+                },
+                "admission": {
+                  "type": "string",
+                  "const": "PRE_ALPHA"
+                },
+                "checkpoint_resume": {
+                  "type": "string",
+                  "const": "UNAVAILABLE"
+                },
+                "retry": {
+                  "type": "string",
+                  "const": "NEW_ATTEMPT_SAME_RUN_FROM_START"
+                },
+                "formula_document_version_id": {
+                  "type": "string",
+                  "pattern": "^fdoc_sha256_[0-9a-f]{64}$"
+                },
+                "analysis_output_name": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                },
+                "event_cursor": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation_id": "ProductEntryService.v1.getProjectHome",
+      "version": "1.1.0",
+      "kind": "QUERY",
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists, belongs to the request project, and is current",
+        "Data is projected only from the current canonical Snapshot and its persisted project-scoped read model"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "TRUTH_PRECONDITION_FAILED",
+        "CAPABILITY_UNAVAILABLE",
+        "INTERNAL_ERROR"
+      ],
+      "capability_notes": "Project-scoped summary only; raw bytes, native paths and canonical bar rows are never returned. Missing Snapshot/read model remains explicit EMPTY or UNAVAILABLE.",
+      "request_dto": {
+        "name": "GetProjectHomeRequestV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Transport deduplication identity",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Canonical target project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Current canonical target context revision",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact additive Product Entry API expected by caller",
+              "const": "1.1"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "GetProjectHomeResponseV1_1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "const": "NOT_FORMAL"
+            },
+            "read_model": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "read_model_version",
+                "project_id",
+                "project_context_revision_id",
+                "maturity",
+                "truth",
+                "admission",
+                "local_import_state",
+                "data_state",
+                "data_unavailable_reason",
+                "factor_state",
+                "factor_unavailable_reason"
+              ],
+              "properties": {
+                "read_model_version": {
+                  "type": "string",
+                  "const": "v3.project-home/1.1"
+                },
+                "project_id": {
+                  "type": "string",
+                  "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "project_context_revision_id": {
+                  "type": "string",
+                  "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "maturity": {
+                  "type": "string",
+                  "const": "PRODUCT_CONNECTED"
+                },
+                "truth": {
+                  "type": "string",
+                  "const": "NOT_FORMAL"
+                },
+                "admission": {
+                  "type": "string",
+                  "const": "PRE_ALPHA"
+                },
+                "local_import_state": {
+                  "type": "string",
+                  "const": "AVAILABLE"
+                },
+                "data_state": {
+                  "type": "string",
+                  "enum": [
+                    "EMPTY",
+                    "AVAILABLE",
+                    "UNAVAILABLE"
+                  ]
+                },
+                "data_unavailable_reason": {
+                  "type": "string",
+                  "enum": [
+                    "NONE",
+                    "NO_SNAPSHOT",
+                    "DATA_READ_MODEL_NOT_AVAILABLE"
+                  ]
+                },
+                "factor_state": {
+                  "type": "string",
+                  "enum": [
+                    "EMPTY",
+                    "AVAILABLE",
+                    "UNAVAILABLE"
+                  ]
+                },
+                "factor_unavailable_reason": {
+                  "type": "string",
+                  "enum": [
+                    "NONE",
+                    "NO_SNAPSHOT",
+                    "NO_FACTOR_STUDY",
+                    "FACTOR_READ_MODEL_NOT_AVAILABLE"
+                  ]
+                },
+                "factor": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "schema_version",
+                    "truth",
+                    "admission",
+                    "project_id",
+                    "project_context_revision_id",
+                    "snapshot_id",
+                    "universe_version_id",
+                    "source_manifest_artifact_id",
+                    "source_manifest_sha256",
+                    "formula_document_version_id",
+                    "formula_document_artifact_id",
+                    "analysis_output_name",
+                    "analysis_artifact_id",
+                    "outputs",
+                    "visual_preview",
+                    "analysis"
+                  ],
+                  "properties": {
+                    "schema_version": {
+                      "type": "string",
+                      "const": "v3.project-factor-summary/1.0.0"
+                    },
+                    "truth": {
+                      "type": "string",
+                      "const": "NOT_FORMAL"
+                    },
+                    "admission": {
+                      "type": "string",
+                      "const": "PRE_ALPHA"
+                    },
+                    "project_id": {
+                      "type": "string",
+                      "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "project_context_revision_id": {
+                      "type": "string",
+                      "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "snapshot_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "universe_version_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "source_manifest_artifact_id": {
+                      "type": "string",
+                      "pattern": "^art_sha256_[0-9a-f]{64}$"
+                    },
+                    "source_manifest_sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "formula_document_version_id": {
+                      "type": "string",
+                      "pattern": "^fdoc_sha256_[0-9a-f]{64}$"
+                    },
+                    "formula_document_artifact_id": {
+                      "type": "string",
+                      "pattern": "^art_sha256_[0-9a-f]{64}$"
+                    },
+                    "analysis_output_name": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                    },
+                    "analysis_artifact_id": {
+                      "type": "string",
+                      "pattern": "^art_sha256_[0-9a-f]{64}$"
+                    },
+                    "outputs": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "name",
+                          "factor_definition_version_id",
+                          "factor_definition_artifact_id",
+                          "materialization_id",
+                          "materialization_artifact_id",
+                          "output_type",
+                          "row_count"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                          },
+                          "factor_definition_version_id": {
+                            "type": "string",
+                            "pattern": "^fdv_sha256_[0-9a-f]{64}$"
+                          },
+                          "factor_definition_artifact_id": {
+                            "type": "string",
+                            "pattern": "^art_sha256_[0-9a-f]{64}$"
+                          },
+                          "materialization_id": {
+                            "type": "string",
+                            "pattern": "^fmt_sha256_[0-9a-f]{64}$"
+                          },
+                          "materialization_artifact_id": {
+                            "type": "string",
+                            "pattern": "^art_sha256_[0-9a-f]{64}$"
+                          },
+                          "output_type": {
+                            "type": "string",
+                            "enum": [
+                              "FLOAT_SERIES",
+                              "BOOLEAN_SERIES"
+                            ]
+                          },
+                          "row_count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 2000000
+                          }
+                        }
+                      }
+                    },
+                    "visual_preview": {
+                      "type": "array",
+                      "maxItems": 5000,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "session_date",
+                          "instrument_id",
+                          "open",
+                          "high",
+                          "low",
+                          "close",
+                          "volume_shares",
+                          "amount_cny",
+                          "series"
+                        ],
+                        "properties": {
+                          "session_date": {
+                            "type": "string",
+                            "format": "date"
+                          },
+                          "instrument_id": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                          },
+                          "open": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "high": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "low": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "close": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "volume_shares": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "amount_cny": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "series": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "name",
+                                "value"
+                              ],
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                                },
+                                "value": {
+                                  "type": [
+                                    "number",
+                                    "boolean",
+                                    "null"
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "analysis": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "factor_analysis_result_id",
+                        "spec",
+                        "aggregate",
+                        "daily_results"
+                      ],
+                      "properties": {
+                        "factor_analysis_result_id": {
+                          "type": "string",
+                          "pattern": "^far_sha256_[0-9a-f]{64}$"
+                        },
+                        "spec": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "schema_version",
+                            "forward_return_horizon_sessions",
+                            "quantiles",
+                            "minimum_instruments_per_date",
+                            "minimum_valid_ic_dates",
+                            "formation_price",
+                            "label_price",
+                            "signal_availability"
+                          ],
+                          "properties": {
+                            "schema_version": {
+                              "type": "string",
+                              "const": "v3.factor-analysis-spec/1.0.0"
+                            },
+                            "forward_return_horizon_sessions": {
+                              "type": "integer",
+                              "const": 5
+                            },
+                            "quantiles": {
+                              "type": "integer",
+                              "const": 5
+                            },
+                            "minimum_instruments_per_date": {
+                              "type": "integer",
+                              "const": 20
+                            },
+                            "minimum_valid_ic_dates": {
+                              "type": "integer",
+                              "const": 20
+                            },
+                            "formation_price": {
+                              "type": "string",
+                              "const": "RAW_CLOSE"
+                            },
+                            "label_price": {
+                              "type": "string",
+                              "const": "RAW_CLOSE"
+                            },
+                            "signal_availability": {
+                              "type": "string",
+                              "const": "AFTER_SESSION_CLOSE"
+                            }
+                          }
+                        },
+                        "aggregate": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "valid_dates",
+                            "ic_mean",
+                            "ic_std",
+                            "icir",
+                            "rank_ic_mean",
+                            "rank_ic_std",
+                            "rank_icir",
+                            "yearly_distribution"
+                          ],
+                          "properties": {
+                            "valid_dates": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "ic_mean": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "status",
+                                "value",
+                                "reason"
+                              ],
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "AVAILABLE",
+                                    "INSUFFICIENT_SAMPLE",
+                                    "NOT_AVAILABLE"
+                                  ]
+                                },
+                                "value": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              }
+                            },
+                            "ic_std": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "status",
+                                "value",
+                                "reason"
+                              ],
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "AVAILABLE",
+                                    "INSUFFICIENT_SAMPLE",
+                                    "NOT_AVAILABLE"
+                                  ]
+                                },
+                                "value": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              }
+                            },
+                            "icir": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "status",
+                                "value",
+                                "reason"
+                              ],
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "AVAILABLE",
+                                    "INSUFFICIENT_SAMPLE",
+                                    "NOT_AVAILABLE"
+                                  ]
+                                },
+                                "value": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              }
+                            },
+                            "rank_ic_mean": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "status",
+                                "value",
+                                "reason"
+                              ],
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "AVAILABLE",
+                                    "INSUFFICIENT_SAMPLE",
+                                    "NOT_AVAILABLE"
+                                  ]
+                                },
+                                "value": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              }
+                            },
+                            "rank_ic_std": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "status",
+                                "value",
+                                "reason"
+                              ],
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "AVAILABLE",
+                                    "INSUFFICIENT_SAMPLE",
+                                    "NOT_AVAILABLE"
+                                  ]
+                                },
+                                "value": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              }
+                            },
+                            "rank_icir": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "status",
+                                "value",
+                                "reason"
+                              ],
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "AVAILABLE",
+                                    "INSUFFICIENT_SAMPLE",
+                                    "NOT_AVAILABLE"
+                                  ]
+                                },
+                                "value": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              }
+                            },
+                            "yearly_distribution": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                  "year",
+                                  "valid_dates",
+                                  "ic_mean",
+                                  "ic_std",
+                                  "icir"
+                                ],
+                                "properties": {
+                                  "year": {
+                                    "type": "integer"
+                                  },
+                                  "valid_dates": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "ic_mean": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": [
+                                      "status",
+                                      "value",
+                                      "reason"
+                                    ],
+                                    "properties": {
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "AVAILABLE",
+                                          "INSUFFICIENT_SAMPLE",
+                                          "NOT_AVAILABLE"
+                                        ]
+                                      },
+                                      "value": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "reason": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "ic_std": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": [
+                                      "status",
+                                      "value",
+                                      "reason"
+                                    ],
+                                    "properties": {
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "AVAILABLE",
+                                          "INSUFFICIENT_SAMPLE",
+                                          "NOT_AVAILABLE"
+                                        ]
+                                      },
+                                      "value": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "reason": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "icir": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": [
+                                      "status",
+                                      "value",
+                                      "reason"
+                                    ],
+                                    "properties": {
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "AVAILABLE",
+                                          "INSUFFICIENT_SAMPLE",
+                                          "NOT_AVAILABLE"
+                                        ]
+                                      },
+                                      "value": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "reason": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "daily_results": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "session_date",
+                              "label_session_date",
+                              "status",
+                              "reason",
+                              "universe_size",
+                              "sample_size",
+                              "coverage",
+                              "missing_rate",
+                              "ic",
+                              "rank_ic",
+                              "quantile_returns",
+                              "long_short_spread",
+                              "turnover",
+                              "diagnostics",
+                              "excluded_reason_counts"
+                            ],
+                            "properties": {
+                              "session_date": {
+                                "type": "string",
+                                "format": "date"
+                              },
+                              "label_session_date": {
+                                "type": "string",
+                                "format": "date"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "AVAILABLE",
+                                  "INSUFFICIENT_SAMPLE",
+                                  "NOT_AVAILABLE"
+                                ]
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "universe_size": {
+                                "type": "integer",
+                                "minimum": 1
+                              },
+                              "sample_size": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "coverage": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "missing_rate": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "ic": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                  "status",
+                                  "value",
+                                  "reason"
+                                ],
+                                "properties": {
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "AVAILABLE",
+                                      "INSUFFICIENT_SAMPLE",
+                                      "NOT_AVAILABLE"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  }
+                                }
+                              },
+                              "rank_ic": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                  "status",
+                                  "value",
+                                  "reason"
+                                ],
+                                "properties": {
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "AVAILABLE",
+                                      "INSUFFICIENT_SAMPLE",
+                                      "NOT_AVAILABLE"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  }
+                                }
+                              },
+                              "quantile_returns": {
+                                "type": [
+                                  "array",
+                                  "null"
+                                ]
+                              },
+                              "long_short_spread": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "turnover": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                  "status",
+                                  "value",
+                                  "reason"
+                                ],
+                                "properties": {
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "AVAILABLE",
+                                      "INSUFFICIENT_SAMPLE",
+                                      "NOT_AVAILABLE"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  }
+                                }
+                              },
+                              "diagnostics": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "excluded_reason_counts": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": [
+                                    "reason",
+                                    "count"
+                                  ],
+                                  "properties": {
+                                    "reason": {
+                                      "type": "string"
+                                    },
+                                    "count": {
+                                      "type": "integer",
+                                      "minimum": 1
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "data": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "schema_version",
+                    "project_id",
+                    "project_context_revision_id",
+                    "display_name",
+                    "truth",
+                    "admission",
+                    "source_type",
+                    "pit_state",
+                    "media_type",
+                    "row_count",
+                    "instrument_count",
+                    "date_coverage_start",
+                    "date_coverage_end",
+                    "partition_count",
+                    "universe_role",
+                    "quality_status",
+                    "validation_profile_id",
+                    "capability_reasons",
+                    "volume_unit",
+                    "amount_unit",
+                    "adjustment",
+                    "raw_capture_id",
+                    "raw_content_hash",
+                    "snapshot_id",
+                    "normalized_payload_hash",
+                    "universe_version_id",
+                    "imported_at",
+                    "raw_artifact_id"
+                  ],
+                  "properties": {
+                    "schema_version": {
+                      "type": "string",
+                      "const": "v3.product-data-read-model/1.0.0"
+                    },
+                    "project_id": {
+                      "type": "string",
+                      "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "project_context_revision_id": {
+                      "type": "string",
+                      "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "display_name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255
+                    },
+                    "truth": {
+                      "type": "string",
+                      "const": "NOT_FORMAL"
+                    },
+                    "admission": {
+                      "type": "string",
+                      "const": "PRE_ALPHA"
+                    },
+                    "source_type": {
+                      "type": "string",
+                      "const": "LOCAL_USER_SUPPLIED"
+                    },
+                    "pit_state": {
+                      "type": "string",
+                      "const": "PIT_UNPROVABLE"
+                    },
+                    "media_type": {
+                      "type": "string",
+                      "enum": [
+                        "text/csv",
+                        "application/vnd.apache.parquet"
+                      ]
+                    },
+                    "row_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 2000000
+                    },
+                    "instrument_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 2000
+                    },
+                    "date_coverage_start": {
+                      "type": "string",
+                      "format": "date"
+                    },
+                    "date_coverage_end": {
+                      "type": "string",
+                      "format": "date"
+                    },
+                    "partition_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 2000000
+                    },
+                    "universe_role": {
+                      "type": "string",
+                      "const": "USER_DEFINED_STATIC"
+                    },
+                    "quality_status": {
+                      "type": "string",
+                      "const": "PASS"
+                    },
+                    "validation_profile_id": {
+                      "type": "string",
+                      "const": "svp_local_user_supplied_v1"
+                    },
+                    "capability_reasons": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "pit",
+                        "revision",
+                        "calendar",
+                        "status"
+                      ],
+                      "properties": {
+                        "pit": {
+                          "type": "string",
+                          "const": "PIT_UNPROVABLE"
+                        },
+                        "revision": {
+                          "type": "string",
+                          "const": "PROVIDER_REVISION_UNKNOWN"
+                        },
+                        "calendar": {
+                          "type": "string",
+                          "const": "OBSERVED_LOCAL_ROWS_NOT_FORMAL_TRADING_CALENDAR"
+                        },
+                        "status": {
+                          "type": "string",
+                          "const": "SOURCE_COLUMN_ABSENT_OR_NULL_WHEN_NOT_PROVIDED"
+                        }
+                      }
+                    },
+                    "volume_unit": {
+                      "type": "string",
+                      "const": "SHARES"
+                    },
+                    "amount_unit": {
+                      "type": "string",
+                      "const": "CNY"
+                    },
+                    "adjustment": {
+                      "type": "string",
+                      "const": "UNADJUSTED"
+                    },
+                    "raw_capture_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "raw_content_hash": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "snapshot_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "normalized_payload_hash": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "universe_version_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,200}$"
+                    },
+                    "imported_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "raw_artifact_id": {
+                      "type": "string",
+                      "pattern": "^art_sha256_[0-9a-f]{64}$"
+                    }
+                  }
                 }
               }
             }

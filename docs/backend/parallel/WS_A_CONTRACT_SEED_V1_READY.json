@@ -5,9 +5,9 @@
   "branch": "rebuild/br1-ws-a-contracts-v1",
   "source_anchor": "97ce15b7548df56312b785a5ce10b0fadb87d81a",
   "service_count": 18,
-  "operation_count": 67,
+  "operation_count": 70,
   "contract_digest_algorithm": "sha256(path\\0sha256(file)\\n), domain-separated WS-A-CONTRACT-SEED-V1\\0",
-  "contract_digest": "422b56453e4622f0b3926a767fe0938c43dd57de8e26fe4c1e44cb69e0a18b42",
+  "contract_digest": "e41cbf6161efb96732bf95ea9e49ed29900035b7aa02a1fbe54af2363d62a353",
   "files": [
     "apps/backend/src/v3_backend/contracts/__init__.py",
     "apps/backend/src/v3_backend/contracts/artifact.py",
@@ -57,6 +57,7 @@
     "apps/backend/tests/ws_a_contracts/fixtures/asl/model.contract.json",
     "apps/backend/tests/ws_a_contracts/fixtures/asl/optimization.contract.json",
     "apps/backend/tests/ws_a_contracts/fixtures/asl/portfolio.contract.json",
+    "apps/backend/tests/ws_a_contracts/fixtures/asl/product_entry.contract.json",
     "apps/backend/tests/ws_a_contracts/fixtures/asl/project_session.contract.json",
     "apps/backend/tests/ws_a_contracts/fixtures/asl/research.contract.json",
     "apps/backend/tests/ws_a_contracts/fixtures/asl/result.contract.json",
@@ -67,5 +68,5 @@
     "apps/backend/tests/ws_a_contracts/fixtures/asl/universe.contract.json",
     "apps/backend/tests/ws_a_contracts/fixtures/conformance_manifest.json"
   ],
-  "expansion_note": "2026-08-20 bounded Product Runtime research wave: +ProductEntryService adds one project-bound submitResearch operation; provider/source refs are closed and backend-owned actual bytes construct internal observations before the existing CoreResearchPipelineService; original 17/64 frozen v1 set remains preserved exactly."
+  "expansion_note": "2026-08-24 bounded V1.1 Data and Factor wave: ProductEntryService preserves its three 1.0 operations and adds importLocalDataset, submitFactorStudy and getProjectHome 1.1.0. Commands accept bounded intent or immutable refs, durably queue before isolated work, and never accept caller numeric truth. The original 17/64 frozen v1 set and Product Entry 1.0 wire shapes remain preserved exactly."
 }
