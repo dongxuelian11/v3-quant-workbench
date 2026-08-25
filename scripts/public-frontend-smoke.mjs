@@ -41,7 +41,8 @@ function workflowJob(jobId, nextJobId) {
 }
 const authorityJob = workflowJob("authority-contract-quality", "backend-runtime");
 const backendJob = workflowJob("backend-runtime", "windows-product-integration");
-const windowsJob = workflowJob("windows-product-integration");
+const windowsJob = workflowJob("windows-product-integration", "verify-public-baseline");
+const requiredCompatibilityGate = workflowJob("verify-public-baseline");
 for (const command of ["validate:authority", "test:contracts", "typecheck", "lint", "test:unit"]) {
   assertSourceContract(authorityJob, new RegExp(`npm run ${command.replaceAll(":", "\\:")}`), `Job A is missing ${command}`);
 }
@@ -51,6 +52,13 @@ for (const command of ["test:backend", "smoke:product-runtime", "smoke:product-d
 assert.doesNotMatch(`${authorityJob}\n${backendJob}`, /visual-restoration-screenshots|smoke:visual-evidence|smoke:electron/, "Ubuntu Jobs A/B must not require local Electron/UAU evidence");
 assertSourceContract(windowsJob, /npm\.cmd run smoke:electron:runtime/, "Job C must exercise the hosted Windows Electron runtime");
 assert.doesNotMatch(windowsJob, /visual-restoration-screenshots|smoke:visual-evidence/, "Hosted Job C must not claim local UAU evidence");
+assertSourceContract(requiredCompatibilityGate, /name:\s*verify-public-baseline/, "Public CI must emit the active Ruleset status context");
+assertSourceContract(requiredCompatibilityGate, /if:\s*\$\{\{\s*always\(\)\s*\}\}/, "Required status compatibility gate must run after failures");
+for (const jobId of ["authority-contract-quality", "backend-runtime", "windows-product-integration"]) {
+  assertSourceContract(requiredCompatibilityGate, new RegExp(`- ${jobId}`), `Required status compatibility gate does not need ${jobId}`);
+  assertSourceContract(requiredCompatibilityGate, new RegExp(`needs\\.${jobId.replaceAll("-", "\\-")}\\.result`), `Required status compatibility gate does not inspect ${jobId}`);
+}
+assertSourceContract(requiredCompatibilityGate, /exit 1/, "Required status compatibility gate must fail closed");
 
 const gitignore = await readRequired(".gitignore");
 assertSourceContract(gitignore, /^\/deliverables\/\s*$/m, "Generated local evidence must remain ignored");

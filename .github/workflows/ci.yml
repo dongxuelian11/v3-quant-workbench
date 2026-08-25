@@ -150,3 +150,26 @@ jobs:
           npm.cmd run smoke:product-factor
           npm.cmd run smoke:product-backtest
           npm.cmd run smoke:product-result
+
+  verify-public-baseline:
+    name: verify-public-baseline
+    needs:
+      - authority-contract-quality
+      - backend-runtime
+      - windows-product-integration
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      V3_JOB_A_RESULT: ${{ needs.authority-contract-quality.result }}
+      V3_JOB_B_RESULT: ${{ needs.backend-runtime.result }}
+      V3_JOB_C_RESULT: ${{ needs.windows-product-integration.result }}
+    steps:
+      - name: Enforce exact-head Jobs A-C
+        shell: bash
+        run: |
+          if [[ "$V3_JOB_A_RESULT" != "success" || "$V3_JOB_B_RESULT" != "success" || "$V3_JOB_C_RESULT" != "success" ]]; then
+            echo "Exact-head Jobs A-C did not all succeed: A=$V3_JOB_A_RESULT B=$V3_JOB_B_RESULT C=$V3_JOB_C_RESULT"
+            exit 1
+          fi
+          echo "Exact-head Jobs A-C succeeded for ${{ github.event.pull_request.head.sha || github.sha }}"

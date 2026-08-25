@@ -34,7 +34,8 @@ function assertExactActionPins(workflow, label) {
 test("V1.1 unified product gate exposes diagnostic Jobs A-F", () => {
   const jobA = jobSource(ci, "authority-contract-quality", "backend-runtime");
   const jobB = jobSource(ci, "backend-runtime", "windows-product-integration");
-  const jobC = jobSource(ci, "windows-product-integration");
+  const jobC = jobSource(ci, "windows-product-integration", "verify-public-baseline");
+  const requiredCompatibilityGate = jobSource(ci, "verify-public-baseline");
   const jobD = jobSource(packaging, "windows-package", "windows-clean-machine");
   const jobE = jobSource(packaging, "windows-clean-machine", "live-provider-acceptance");
   const jobF = jobSource(packaging, "live-provider-acceptance");
@@ -59,6 +60,14 @@ test("V1.1 unified product gate exposes diagnostic Jobs A-F", () => {
   for (const command of ["build", "test:runtime", "verify:product-bundle-truth", "smoke:frontend", "smoke:electron:runtime", "smoke:product-data", "smoke:product-factor", "smoke:product-backtest", "smoke:product-result"]) {
     assert.match(jobC, new RegExp(`npm\\.cmd run ${command.replaceAll(":", "\\:")}`));
   }
+
+  assert.match(requiredCompatibilityGate, /name:\s*verify-public-baseline/);
+  assert.match(requiredCompatibilityGate, /if:\s*\$\{\{\s*always\(\)\s*\}\}/);
+  for (const jobId of ["authority-contract-quality", "backend-runtime", "windows-product-integration"]) {
+    assert.match(requiredCompatibilityGate, new RegExp(`- ${jobId}`));
+    assert.match(requiredCompatibilityGate, new RegExp(`needs\\.${jobId.replaceAll("-", "\\-")}\\.result`));
+  }
+  assert.match(requiredCompatibilityGate, /exit 1/);
 
   assert.match(jobD, /V3_SOURCE_GIT_SHA/);
   assert.match(jobD, /V3_V1_1_PRODUCT_RELEASE_PACKAGE\.zip/);
