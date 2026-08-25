@@ -11,6 +11,7 @@ const {
   awaitWithProcessLiveness,
   createElectronDownloader,
   ensureElectronBinary,
+  extractElectronArchiveWithTar,
 } = await import("../../scripts/ensure-electron-binary.mjs");
 
 async function listen(server) {
@@ -88,6 +89,30 @@ test("Electron artifact resolution owns a ref'ed liveness handle until settlemen
     /download failed/,
   );
   assert.deepEqual(cleared, [marker, marker]);
+});
+
+test("Windows Electron extraction uses a bounded child process without shell interpolation", async () => {
+  const calls = [];
+  const execFileImpl = (file, args, options, callback) => {
+    calls.push({ file, args, options });
+    callback(null, "", "");
+  };
+  await extractElectronArchiveWithTar("D:\\cache\\electron.zip", { dir: "D:\\stage" }, { execFileImpl });
+  assert.deepEqual(calls, [{
+    file: "tar.exe",
+    args: ["-xf", "D:\\cache\\electron.zip", "-C", "D:\\stage"],
+    options: { windowsHide: true, timeout: 600_000, maxBuffer: 1_048_576 },
+  }]);
+  await assert.rejects(
+    extractElectronArchiveWithTar("D:\\cache\\electron.zip", { dir: "D:\\stage" }, {
+      execFileImpl: (_file, _args, _options, callback) => callback(
+        Object.assign(new Error("operation timed out"), { killed: true, signal: "SIGTERM" }),
+        "",
+        "tar timeout",
+      ),
+    }),
+    /Electron archive extraction failed.*tar timeout/,
+  );
 });
 
 test("Electron installer retains process liveness through extraction and publication", async () => {

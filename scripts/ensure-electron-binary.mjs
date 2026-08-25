@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { execFile } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -10,6 +11,8 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const ELECTRON_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1_000;
 const ELECTRON_DOWNLOAD_MAX_REDIRECTS = 10;
+const ELECTRON_EXTRACTION_TIMEOUT_MS = 10 * 60 * 1_000;
+const ELECTRON_EXTRACTION_MAX_BUFFER_BYTES = 1_048_576;
 
 function transportFor(url) {
   if (url.protocol === "http:") return http;
@@ -96,6 +99,28 @@ export async function awaitWithProcessLiveness(operation, {
   }
 }
 
+export async function extractElectronArchiveWithTar(zipPath, { dir }, {
+  execFileImpl = execFile,
+} = {}) {
+  if (typeof zipPath !== "string" || zipPath.length === 0) throw new Error("Electron archive path is required");
+  if (typeof dir !== "string" || dir.length === 0) throw new Error("Electron extraction directory is required");
+  await new Promise((resolveExtraction, rejectExtraction) => {
+    const options = {
+      windowsHide: true,
+      timeout: ELECTRON_EXTRACTION_TIMEOUT_MS,
+      maxBuffer: ELECTRON_EXTRACTION_MAX_BUFFER_BYTES,
+    };
+    execFileImpl("tar.exe", ["-xf", zipPath, "-C", dir], options, (error, _stdout, stderr) => {
+      if (!error) {
+        resolveExtraction();
+        return;
+      }
+      const diagnostic = String(stderr || error.message || error).trim().slice(-4_000);
+      rejectExtraction(new Error(`Electron archive extraction failed${diagnostic ? `: ${diagnostic}` : ""}`));
+    });
+  });
+}
+
 function executablePathFor(platform) {
   switch (platform) {
     case "darwin":
@@ -149,7 +174,9 @@ async function ensureElectronBinaryOperation({
 
   const downloadArtifact = downloadArtifactImpl ?? require("@electron/get").downloadArtifact;
   const downloader = createElectronDownloader();
-  const extract = extractImpl ?? require("extract-zip");
+  const extract = extractImpl ?? (process.platform === "win32"
+    ? extractElectronArchiveWithTar
+    : require("extract-zip"));
   const checksums = JSON.parse(await readFile(join(packageRoot, "checksums.json"), "utf8"));
   const zipPath = await downloadArtifact({
     version,
