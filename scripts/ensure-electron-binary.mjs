@@ -131,7 +131,7 @@ async function installedState(packageRoot, expectedVersion, platformPath) {
   }
 }
 
-export async function ensureElectronBinary({
+async function ensureElectronBinaryOperation({
   electronPackageRoot,
   platform = process.env.npm_config_platform || process.platform,
   arch = process.env.npm_config_arch || process.arch,
@@ -151,7 +151,7 @@ export async function ensureElectronBinary({
   const downloader = createElectronDownloader();
   const extract = extractImpl ?? require("extract-zip");
   const checksums = JSON.parse(await readFile(join(packageRoot, "checksums.json"), "utf8"));
-  const zipPath = await awaitWithProcessLiveness(() => downloadArtifact({
+  const zipPath = await downloadArtifact({
     version,
     artifactName: "electron",
     force: process.env.force_no_cache === "true",
@@ -162,7 +162,7 @@ export async function ensureElectronBinary({
     platform,
     arch,
     downloader,
-  }));
+  });
 
   const stagingRoot = await mkdtemp(join(packageRoot, ".v3-electron-dist-"));
   const finalDist = join(packageRoot, "dist");
@@ -180,6 +180,10 @@ export async function ensureElectronBinary({
     await rm(stagingRoot, { recursive: true, force: true });
   }
   return Object.freeze({ version, platform, arch, platformPath, alreadyInstalled: false });
+}
+
+export async function ensureElectronBinary(options = {}) {
+  return awaitWithProcessLiveness(() => ensureElectronBinaryOperation(options));
 }
 
 const isDirectExecution = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

@@ -90,21 +90,43 @@ test("Electron artifact resolution owns a ref'ed liveness handle until settlemen
   assert.deepEqual(cleared, [marker, marker]);
 });
 
-test("Electron liveness guard prevents Node unsettled-top-level-await exit", () => {
+test("Electron installer retains process liveness through extraction and publication", async () => {
+  const packageRoot = await mkdtemp(join(tmpdir(), "v3-electron-liveness-"));
   const moduleUrl = pathToFileURL(join(process.cwd(), "scripts", "ensure-electron-binary.mjs")).href;
-  const child = spawnSync(process.execPath, [
-    "--input-type=module",
-    "--eval",
-    `import { awaitWithProcessLiveness } from ${JSON.stringify(moduleUrl)};
-const value = await awaitWithProcessLiveness(() => new Promise((resolve) => {
-  const timer = setTimeout(() => resolve("SETTLED"), 40);
-  timer.unref();
-}));
-process.stdout.write(value);`,
-  ], { encoding: "utf8" });
-  assert.equal(child.status, 0, child.stderr);
-  assert.equal(child.stdout, "SETTLED");
-  assert.doesNotMatch(child.stderr, /unsettled top-level await/i);
+  try {
+    await writeFile(join(packageRoot, "package.json"), JSON.stringify({ version: "39.8.10" }), "utf8");
+    await writeFile(join(packageRoot, "checksums.json"), "{}", "utf8");
+    const child = spawnSync(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      `import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { ensureElectronBinary } from ${JSON.stringify(moduleUrl)};
+const packageRoot = ${JSON.stringify(packageRoot)};
+const installed = await ensureElectronBinary({
+  electronPackageRoot: packageRoot,
+  platform: "win32",
+  arch: "x64",
+  downloadArtifactImpl: async () => join(packageRoot, "electron.zip"),
+  extractImpl: async (_zipPath, { dir }) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      (async () => {
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, "version"), "39.8.10", "utf8");
+        await writeFile(join(dir, "electron.exe"), "binary", "utf8");
+      })().then(resolve, reject);
+    }, 40);
+    timer.unref();
+  }),
+});
+process.stdout.write(installed.platformPath);`,
+    ], { encoding: "utf8", timeout: 5_000 });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout, "electron.exe");
+    assert.doesNotMatch(child.stderr, /unsettled top-level await/i);
+  } finally {
+    await rm(packageRoot, { recursive: true, force: true });
+  }
 });
 
 test("Electron installer awaits verified extraction and becomes idempotent", async () => {
