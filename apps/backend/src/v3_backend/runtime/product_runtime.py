@@ -1361,6 +1361,11 @@ class ProductExecution:
         category: ErrorCategory,
         run_transition: bool = True,
     ) -> None:
+        reason_code: str | None = None
+        if isinstance(error, V3ContractError):
+            candidate = error.details.get("reason_code")
+            if isinstance(candidate, str) and 1 <= len(candidate) <= 128:
+                reason_code = candidate
         with self.product.task_persistence.begin() as unit:
             current_task = unit.require_task(task.task_id)
             current_run = unit.require_run(run.run_id)
@@ -1399,6 +1404,13 @@ class ProductExecution:
                 TaskTransitionContext(error_persisted=True),
             )
             unit.save_task(current_task, expected_version=current_task.state_version)
+            failure_payload: dict[str, Any] = {
+                "error_type": type(error).__name__,
+                "error_message": str(error)[:2048],
+                "error_category": category.value,
+            }
+            if reason_code is not None:
+                failure_payload["reason_code"] = reason_code
             unit.append_event(
                 PendingTaskEvent(
                     event_id=mint_v3_id("tev_"),
@@ -1407,11 +1419,7 @@ class ProductExecution:
                     task_id=current_task.task_id,
                     event_type="TASK_FAILED",
                     occurred_at=datetime.now(timezone.utc),
-                    payload={
-                        "error_type": type(error).__name__,
-                        "error_message": str(error)[:2048],
-                        "error_category": category.value,
-                    },
+                    payload=failure_payload,
                     run_id=current_run.run_id,
                     attempt_id=current_attempt.attempt_id,
                 )

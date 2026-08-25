@@ -2951,8 +2951,19 @@ class ProductResearchService:
             self.product,
             _research_result_request(execution, handles.run.run_id, pipeline_result),
         )
+        task_outputs = {
+            role: str(outputs[role])
+            for role in (
+                "result_id",
+                "result_artifact_id",
+                "result_artifact_sha256",
+                "lineage_artifact_id",
+                "pipeline_run_id",
+                "maturity",
+            )
+        }
         self.product.execution._finish_success(
-            handles.task, handles.run, handles.attempt, outputs=outputs
+            handles.task, handles.run, handles.attempt, outputs=task_outputs
         )
         return _research_accept_outcome(
             handles.task.task_id, handles.run.run_id, event_cursor=event_cursor

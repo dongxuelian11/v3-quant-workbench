@@ -247,6 +247,7 @@ export interface ProductTaskAttemptView {
   readonly ordinal: number;
   readonly state: string;
   readonly errorCategory: string | null;
+  readonly reasonCode: string | null;
 }
 
 export interface ProductTaskListFilter {

@@ -9,6 +9,7 @@ const packaging = await readFile(resolve(root, ".github/workflows/packaging-clea
 const cleanMachineDriver = await readFile(resolve(root, "scripts/v1_1-release-clean-machine.ps1"), "utf8");
 const packagedJourneyDriver = await readFile(resolve(root, "scripts/v1_1_product_release_packaged_e2e.mjs"), "utf8");
 const liveProviderDriver = await readFile(resolve(root, "scripts/product-closure-packaged-e2e.mjs"), "utf8");
+const productClosureSmoke = await readFile(resolve(root, "apps/desktop/src/main/productClosureSmoke.ts"), "utf8");
 
 function jobSource(workflow, jobId, nextJobId) {
   const startToken = `  ${jobId}:\n`;
@@ -51,7 +52,8 @@ test("V1.1 unified product gate exposes diagnostic Jobs A-F", () => {
 
   assert.match(jobC, /runs-on:\s*windows-latest/);
   assert.match(jobC, /Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD/);
-  assert.match(jobC, /delete process\.env\.ELECTRON_SKIP_BINARY_DOWNLOAD; require\('\.\/node_modules\/electron\/install\.js'\)/);
+  assert.match(jobC, /node scripts\/ensure-electron-binary\.mjs/);
+  assert.doesNotMatch(jobC, /require\('\.\/node_modules\/electron\/install\.js'\)/);
   assert.match(jobC, /fs\.accessSync\(binary\)/);
   for (const command of ["build", "test:runtime", "verify:product-bundle-truth", "smoke:frontend", "smoke:electron:runtime", "smoke:product-data", "smoke:product-factor", "smoke:product-backtest", "smoke:product-result"]) {
     assert.match(jobC, new RegExp(`npm\\.cmd run ${command.replaceAll(":", "\\:")}`));
@@ -137,4 +139,23 @@ test("Job F blocks only on the exact provider-unavailable code", () => {
   assert.match(jobF, /\$logs -match "PROVIDER_ACQUISITION_UNAVAILABLE"/);
   assert.doesNotMatch(jobF, /\$logs\s+-match\s+"[^"]*(?:upstream|timed out|timeout)/i);
   assert.match(jobF, /result = "FAIL_PROVIDER_ACCEPTANCE_TIMEOUT"/);
+});
+
+test("Job F canonical source query matches the exact live-provider request range", () => {
+  assert.match(productClosureSmoke, /startDate:\s*\\"20260106\\",\s*endDate:\s*\\"20260107\\"/);
+  assert.match(liveProviderDriver, /request\.get\('start_date'\) != '20260106'/);
+  assert.match(liveProviderDriver, /request\.get\('end_date'\) != '20260107'/);
+  assert.match(liveProviderDriver, /requested_start === "20260106" && sourceEvidence\.requested_end === "20260107"/);
+  assert.doesNotMatch(liveProviderDriver, /20250701|20250710/);
+});
+
+test("provider-unavailable packaged smoke preserves one failed audit Task and no successful chain", () => {
+  assert.match(productClosureSmoke, /tasks\.tasks\.length !== 1/);
+  assert.match(productClosureSmoke, /failedTask\.state !== \\"FAILED\\"/);
+  assert.match(productClosureSmoke, /failedTask\.resultId !== null/);
+  assert.match(productClosureSmoke, /failedOutputRoles\[0\] !== \\"EXECUTION_CONTEXT\\"/);
+  assert.match(productClosureSmoke, /failedTask\.outputs\.EXECUTION_CONTEXT\.startsWith/);
+  assert.match(productClosureSmoke, /failedTask\.attempt\.reasonCode !== \\"PROVIDER_ACQUISITION_UNAVAILABLE\\"/);
+  assert.match(productClosureSmoke, /successful_canonical_chain_count: 0/);
+  assert.doesNotMatch(productClosureSmoke, /tasks\.tasks\.length !== 0/);
 });

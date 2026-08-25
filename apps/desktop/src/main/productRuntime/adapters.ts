@@ -142,7 +142,8 @@ export function adaptTask(raw: unknown): ProductTaskView {
     attemptId: optionalStringField(attemptRaw, "attempt_id"),
     ordinal: intField(attemptRaw, "ordinal"),
     state: stringField(attemptRaw, "state"),
-    errorCategory: optionalStringField(attemptRaw, "error_category")
+    errorCategory: optionalStringField(attemptRaw, "error_category"),
+    reasonCode: optionalStringField(attemptRaw, "reason_code")
   });
   const outputsRaw = record(model.outputs, "task outputs");
   const outputs: Record<string, string> = {};

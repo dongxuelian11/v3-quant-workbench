@@ -127,6 +127,9 @@ interface ProductRuntimeState {
 
 const RUN_SPEC_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
 const DATA_TASK_POLL_TIMEOUT_MS = 5 * 60_000;
+const RESEARCH_TASK_POLL_TIMEOUT_MS = 5 * 60_000;
+const RESEARCH_TASK_POLL_INTERVAL_MS = 250;
+const RESEARCH_TASK_TERMINAL_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 const TASK_EVENT_PAGE_LIMIT = 500;
 const RETRYABLE_PRODUCT_BACKTEST_CATEGORIES = new Set([
   "TRANSIENT_IO",
@@ -227,23 +230,71 @@ function capabilityOf(capabilities: readonly ProductCapabilityView[], code: stri
 async function readResearchTaskView(
   bridge: V3ProductRuntimeBridge,
   outcome: ProductResearchSubmitOutcomeView,
+  expectedProjectId: string,
   scopeGuard: () => void = () => undefined,
 ): Promise<{
   task: ProductTaskView;
   researchResult: ProductResultView | null;
   artifactDescriptor: ArtifactDescriptorView | null;
 }> {
-  const task = await bridge.getTask(outcome.taskId);
-  scopeGuard();
+  const deadline = Date.now() + RESEARCH_TASK_POLL_TIMEOUT_MS;
+  let task: ProductTaskView;
+  while (true) {
+    task = await bridge.getTask(outcome.taskId);
+    scopeGuard();
+    if (
+      task.taskId !== outcome.taskId
+      || task.runId !== outcome.runId
+      || task.projectId !== expectedProjectId
+      || task.operationId !== "ProductEntryService.v1.submitResearch"
+    ) {
+      throw new Error(`TASK_IDENTITY_MISMATCH: Product Research Task ${outcome.taskId}`);
+    }
+    if (RESEARCH_TASK_TERMINAL_STATES.has(task.state)) break;
+    if (Date.now() >= deadline) {
+      throw new Error(`TASK_TERMINAL_TIMEOUT: Product Research Task ${task.taskId} did not reach a terminal state`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, RESEARCH_TASK_POLL_INTERVAL_MS));
+    scopeGuard();
+  }
+  if (task.state !== "SUCCEEDED") {
+    const category = task.attempt.errorCategory ?? `TASK_${task.state}`;
+    const reason = task.attempt.reasonCode;
+    const failure = reason === "PROVIDER_ACQUISITION_UNAVAILABLE"
+      ? `CAPABILITY_UNAVAILABLE · ${reason} · ${category}`
+      : reason === null
+        ? category
+        : `${reason} · ${category}`;
+    throw new Error(`${failure}: Product Research Task ${task.taskId} reached ${task.state}`);
+  }
   const resultArtifactId = task.outputs["BACKTEST_RUN_RESULT"];
-  const artifactDescriptor = resultArtifactId
-    ? await bridge.getArtifactDescriptor(resultArtifactId).catch(() => null)
-    : null;
+  if (task.resultId === null || resultArtifactId === undefined) {
+    throw new Error(`TASK_SUCCEEDED_WITHOUT_RESULT_TRUTH: Product Research Task ${task.taskId}`);
+  }
+  const [artifactDescriptor, researchResult] = await Promise.all([
+    bridge.getArtifactDescriptor(resultArtifactId),
+    bridge.getResult(task.resultId),
+  ]);
   scopeGuard();
-  const researchResult = task.resultId === null
-    ? null
-    : await bridge.getResult(task.resultId).catch(() => null);
-  scopeGuard();
+  if (
+    researchResult.resultId !== task.resultId
+    || researchResult.projectId !== task.projectId
+    || researchResult.backtestRunId !== task.runId
+  ) {
+    throw new Error(`RESULT_IDENTITY_MISMATCH: Product Research Task ${task.taskId}`);
+  }
+  if (artifactDescriptor.artifactId !== resultArtifactId) {
+    throw new Error(`ARTIFACT_IDENTITY_MISMATCH: Product Research Task ${task.taskId}`);
+  }
+  const resultArtifact = researchResult.resultArtifact;
+  if (
+    resultArtifact === null
+    || resultArtifact.artifactId !== artifactDescriptor.artifactId
+    || resultArtifact.sha256 !== artifactDescriptor.sha256
+    || resultArtifact.byteSize !== artifactDescriptor.byteSize
+  ) {
+    throw new Error(`RESULT_ARTIFACT_IDENTITY_MISMATCH: Product Research Task ${task.taskId}`);
+  }
   return { task, researchResult, artifactDescriptor };
 }
 
@@ -521,6 +572,7 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
           const candidate = await readResearchTaskView(
             bridge,
             previousResearch,
+            status.boundProject.projectId,
             () => { if (refreshToken !== null) guardProjectScope(refreshToken); }
           );
           if (candidate.task.projectId === status.boundProject.projectId) {
@@ -1360,7 +1412,7 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
     try {
       const outcome = await bridge.submitResearch(intent);
       guardProjectScope(token);
-      const view = await readResearchTaskView(bridge, outcome, () => guardProjectScope(token));
+      const view = await readResearchTaskView(bridge, outcome, token.projectId, () => guardProjectScope(token));
       set((state) => isCurrentProjectScope(state, token)
         ? {
             inflight: false,

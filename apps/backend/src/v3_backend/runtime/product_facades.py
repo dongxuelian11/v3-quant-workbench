@@ -286,12 +286,44 @@ def _attempt_read_model(product: ProductRuntime, task_id: str, run_id: str) -> d
             "ordinal": 0,
             "state": "QUEUED",
             "error_category": None,
+            "reason_code": None,
         }
+    reason_code: str | None = None
+    if attempt.state.value == "FAILED":
+        connection = product._connection(read_only=True)
+        try:
+            failure_event = connection.execute(
+                """
+                SELECT payload_json
+                FROM task_event
+                WHERE task_id=? AND run_id=? AND attempt_id=? AND event_type='TASK_FAILED'
+                ORDER BY project_sequence DESC
+                LIMIT 1
+                """,
+                (task_id, run_id, attempt.attempt_id),
+            ).fetchone()
+        finally:
+            connection.close()
+        if failure_event is not None:
+            try:
+                failure_payload = json.loads(str(failure_event["payload_json"]))
+            except json.JSONDecodeError as error:
+                raise TruthPreconditionFailedError(
+                    "Task failure event payload is not valid JSON"
+                ) from error
+            candidate = failure_payload.get("reason_code") if isinstance(failure_payload, dict) else None
+            if candidate is not None:
+                if not isinstance(candidate, str) or not 1 <= len(candidate) <= 128:
+                    raise TruthPreconditionFailedError(
+                        "Task failure event reason_code must be a bounded non-empty string"
+                    )
+                reason_code = candidate
     return {
         "attempt_id": attempt.attempt_id,
         "ordinal": attempt.ordinal,
         "state": attempt.state.value,
         "error_category": attempt.terminal_error_category,
+        "reason_code": reason_code,
     }
 
 

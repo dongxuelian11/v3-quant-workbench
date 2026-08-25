@@ -592,9 +592,17 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     task = product.task_persistence.read_task(task_id)
                 self.assertEqual(task.state.value, "CANCELLED")
                 self.assertFalse(worker.is_alive(), "deadline terminal state requires confirmed child exit")
-                self.assertEqual(
+                self.assertIn(
                     product.research_workers.termination_trace(task_id),
-                    ("COOPERATIVE_CANCEL_REQUESTED", "TERMINATE_SENT", "EXIT_CONFIRMED"),
+                    (
+                        ("COOPERATIVE_CANCEL_REQUESTED", "TERMINATE_SENT", "EXIT_CONFIRMED"),
+                        (
+                            "COOPERATIVE_CANCEL_REQUESTED",
+                            "TERMINATE_SENT",
+                            "KILL_SENT",
+                            "EXIT_CONFIRMED",
+                        ),
+                    ),
                 )
 
                 with product.task_persistence.begin() as unit:
@@ -901,7 +909,7 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 }
                 task = connection.execute(
                     """
-                    SELECT t.state,a.error_code,a.error_detail_artifact_id
+                    SELECT t.task_id,t.state,a.error_code,a.error_detail_artifact_id
                     FROM task AS t
                     JOIN run AS r ON r.task_id=t.task_id
                     JOIN task_attempt AS a ON a.run_id=r.run_id
@@ -930,9 +938,20 @@ class ProductRuntimeResearchTests(unittest.TestCase):
             self.assertEqual(after["run"] - before["run"], 1)
             self.assertEqual(after["result"], before["result"])
             self.assertEqual(after["raw_capture"], before["raw_capture"])
-            self.assertEqual(tuple(task[:2]), ("FAILED", "INVALID_ARGUMENT"))
-            self.assertIsNone(task[2])
+            self.assertEqual(tuple(task[1:3]), ("FAILED", "INVALID_ARGUMENT"))
+            self.assertIsNone(task[3])
             self.assertIn("PROVIDER_ACQUISITION_UNAVAILABLE", str(failure_event[0]))
+            task_response = _facade_handler(product, "TaskService.v1.getTask")(
+                {
+                    "request_id": str(uuid.uuid4()),
+                    "project_id": project["project_id"],
+                    "task_id": str(task[0]),
+                }
+            )
+            self.assertEqual(
+                task_response["read_model"]["attempt"]["reason_code"],
+                "PROVIDER_ACQUISITION_UNAVAILABLE",
+            )
             self.assertEqual(
                 artifact_roles,
                 ["DATA_TRUTH_CAPABILITY_POLICY", "PRODUCT_EXECUTION_CONTEXT"],
@@ -980,6 +999,27 @@ class ProductRuntimeResearchTests(unittest.TestCase):
             finally:
                 result_connection.close()
             self.assertIsNotNone(result_row)
+
+            task_response = _facade_handler(product, "TaskService.v1.getTask")(
+                {
+                    "request_id": str(uuid.uuid4()),
+                    "project_id": project["project_id"],
+                    "task_id": task.task_id,
+                }
+            )
+            terminal_outputs = task_response["read_model"]["outputs"]
+            self.assertEqual(terminal_outputs["result_id"], str(result_row["result_id"]))
+            self.assertTrue(terminal_outputs["result_artifact_id"].startswith("art_sha256_"))
+            self.assertTrue(terminal_outputs["lineage_artifact_id"].startswith("art_sha256_"))
+            self.assertTrue(
+                all(
+                    isinstance(role, str)
+                    and role
+                    and isinstance(value, str)
+                    and value
+                    for role, value in terminal_outputs.items()
+                )
+            )
 
             restarted = ProductRuntime(root, research_provider_factory=_provider_factory)
             replay_request = _request(

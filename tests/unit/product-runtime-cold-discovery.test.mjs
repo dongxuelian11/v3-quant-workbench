@@ -252,7 +252,7 @@ function task({
     stateVersion: 3,
     runId,
     resultId,
-    attempt: { attemptId: `att_${taskId}`, ordinal: 1, state, errorCategory: null },
+    attempt: { attemptId: `att_${taskId}`, ordinal: 1, state, errorCategory: null, reasonCode: null },
     outputs: outputId === null ? {} : { BACKTEST_RUN_RESULT: outputId },
     createdAt,
     updatedAt: updatedAt ?? createdAt,
@@ -758,7 +758,7 @@ test("Task feedback retries only a persisted retry-admitted Product Backtest and
     state: "QUEUED",
     stateVersion: 8,
     terminalAt: null,
-    attempt: { attemptId: "att_retry_2", ordinal: 2, state: "QUEUED", errorCategory: null }
+    attempt: { attemptId: "att_retry_2", ordinal: 2, state: "QUEUED", errorCategory: null, reasonCode: null }
   };
   const succeeded = {
     ...queued,
@@ -1149,6 +1149,229 @@ test("ACC-C1-02 delayed Project A completion is dropped after atomic activation 
     assert.match(warnings[0].request_id, /^renderer_request_[1-9][0-9]*$/);
   } finally {
     console.warn = priorWarn;
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("legacy Product Research waits for the durable Task terminal result before reading Result truth", async () => {
+  resetStore();
+  const succeeded = task({ taskId: "provider-terminal-success" });
+  const queued = {
+    ...succeeded,
+    state: "QUEUED",
+    resultId: null,
+    outputs: {},
+    terminalAt: null,
+    attempt: { ...succeeded.attempt, state: "QUEUED" },
+  };
+  const running = {
+    ...queued,
+    state: "RUNNING",
+    stateVersion: 2,
+    attempt: { ...queued.attempt, state: "RUNNING" },
+  };
+  const descriptor = descriptorFor(succeeded);
+  const observedStates = [];
+  globalThis.window = {
+    v3ProductRuntime: {
+      async submitResearch() {
+        return {
+          taskId: succeeded.taskId,
+          runId: succeeded.runId,
+          acceptedState: "QUEUED",
+          idempotencyKey: "renderer-owned-by-main",
+          eventCursor: 1,
+          truthState: "DEMO",
+          maturity: "PRODUCT_CONNECTED_CANDIDATE",
+          researchProfileId: "RESEARCH_FREE_DATA_V1",
+          strategyProfileId: "RESEARCH_CLOSE_RANK_TOP1_V1",
+          researchClassification: ["RESEARCH_ONLY"],
+          truthAdmission: { truth: "NOT_FORMAL", admission: "PRE_ALPHA" },
+        };
+      },
+      async getTask() {
+        const next = [queued, running, succeeded][observedStates.length] ?? succeeded;
+        observedStates.push(next.state);
+        return next;
+      },
+      async getResult(resultId) {
+        assert.deepEqual(observedStates, ["QUEUED", "RUNNING", "SUCCEEDED"]);
+        assert.equal(resultId, succeeded.resultId);
+        return resultFor(succeeded, descriptor);
+      },
+      async getArtifactDescriptor(artifactId) {
+        assert.deepEqual(observedStates, ["QUEUED", "RUNNING", "SUCCEEDED"]);
+        assert.equal(artifactId, descriptor.artifactId);
+        return descriptor;
+      },
+    },
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(BOUND_REFS);
+    useProductRuntime.setState({ status: STATUS });
+    await useProductRuntime.getState().submitResearch({ symbol: "600519", startDate: "20260106", endDate: "20260107" });
+    const state = useProductRuntime.getState();
+    assert.deepEqual(observedStates, ["QUEUED", "RUNNING", "SUCCEEDED"]);
+    assert.equal(state.task.state, "SUCCEEDED");
+    assert.equal(state.result.resultId, succeeded.resultId);
+    assert.equal(state.artifactDescriptor.artifactId, descriptor.artifactId);
+    assert.equal(state.surface, "RESULT_AVAILABLE");
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("legacy Product Research preserves the exact terminal provider failure category", async () => {
+  resetStore();
+  const base = task({ taskId: "provider-terminal-failure", resultId: null, outputId: null });
+  const queued = {
+    ...base,
+    state: "QUEUED",
+    terminalAt: null,
+    attempt: { ...base.attempt, state: "QUEUED", errorCategory: null },
+  };
+  const failed = {
+    ...base,
+    state: "FAILED",
+    stateVersion: 2,
+    attempt: {
+      ...base.attempt,
+      state: "FAILED",
+      errorCategory: "INVALID_ARGUMENT",
+      reasonCode: "PROVIDER_ACQUISITION_UNAVAILABLE",
+    },
+  };
+  let reads = 0;
+  globalThis.window = {
+    v3ProductRuntime: {
+      async submitResearch() {
+        return {
+          taskId: base.taskId,
+          runId: base.runId,
+          acceptedState: "QUEUED",
+          idempotencyKey: "renderer-owned-by-main",
+          eventCursor: 1,
+          truthState: "DEMO",
+          maturity: "PRODUCT_CONNECTED_CANDIDATE",
+          researchProfileId: "RESEARCH_FREE_DATA_V1",
+          strategyProfileId: "RESEARCH_CLOSE_RANK_TOP1_V1",
+          researchClassification: ["RESEARCH_ONLY"],
+          truthAdmission: { truth: "NOT_FORMAL", admission: "PRE_ALPHA" },
+        };
+      },
+      async getTask() {
+        reads += 1;
+        return reads === 1 ? queued : failed;
+      },
+      async getResult() { throw new Error("failed provider Task must not read Result"); },
+      async getArtifactDescriptor() { throw new Error("failed provider Task must not read Artifact"); },
+    },
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(BOUND_REFS);
+    await useProductRuntime.getState().submitResearch({ symbol: "600519", startDate: "20260106", endDate: "20260107" });
+    const state = useProductRuntime.getState();
+    assert.equal(reads, 2);
+    assert.equal(state.surface, "ERROR");
+    assert.match(state.errorMessage, /CAPABILITY_UNAVAILABLE/);
+    assert.match(state.errorMessage, /PROVIDER_ACQUISITION_UNAVAILABLE/);
+    assert.match(state.errorMessage, /INVALID_ARGUMENT/);
+    assert.equal(state.task, null);
+    assert.equal(state.result, null);
+    assert.equal(state.artifactDescriptor, null);
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("legacy Product Research rejects terminal Task identity drift before reading Result truth", async () => {
+  resetStore();
+  const accepted = task({ taskId: "provider-accepted-task" });
+  const drifted = task({
+    taskId: accepted.taskId,
+    projectId: OTHER_PROJECT,
+    runId: "run_drifted",
+  });
+  globalThis.window = {
+    v3ProductRuntime: {
+      async submitResearch() {
+        return {
+          taskId: accepted.taskId,
+          runId: accepted.runId,
+          acceptedState: "QUEUED",
+          idempotencyKey: "renderer-owned-by-main",
+          eventCursor: 1,
+          truthState: "DEMO",
+          maturity: "PRODUCT_CONNECTED_CANDIDATE",
+          researchProfileId: "RESEARCH_FREE_DATA_V1",
+          strategyProfileId: "RESEARCH_CLOSE_RANK_TOP1_V1",
+          researchClassification: ["RESEARCH_ONLY"],
+          truthAdmission: { truth: "NOT_FORMAL", admission: "PRE_ALPHA" },
+        };
+      },
+      async getTask() { return drifted; },
+      async getResult() { throw new Error("identity-drifted Task must not read Result"); },
+      async getArtifactDescriptor() { throw new Error("identity-drifted Task must not read Artifact"); },
+    },
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(BOUND_REFS);
+    useProductRuntime.setState({ status: STATUS });
+    await useProductRuntime.getState().submitResearch({ symbol: "600519", startDate: "20260106", endDate: "20260107" });
+    const state = useProductRuntime.getState();
+    assert.equal(state.surface, "ERROR");
+    assert.match(state.errorMessage, /TASK_IDENTITY_MISMATCH/);
+    assert.equal(state.task, null);
+    assert.equal(state.result, null);
+    assert.equal(state.artifactDescriptor, null);
+  } finally {
+    delete globalThis.window;
+    resetStore();
+  }
+});
+
+test("legacy Product Research rejects Result and Artifact identity drift after terminal success", async () => {
+  resetStore();
+  const succeeded = task({ taskId: "provider-result-drift" });
+  const descriptor = descriptorFor(succeeded);
+  globalThis.window = {
+    v3ProductRuntime: {
+      async submitResearch() {
+        return {
+          taskId: succeeded.taskId,
+          runId: succeeded.runId,
+          acceptedState: "QUEUED",
+          idempotencyKey: "renderer-owned-by-main",
+          eventCursor: 1,
+          truthState: "DEMO",
+          maturity: "PRODUCT_CONNECTED_CANDIDATE",
+          researchProfileId: "RESEARCH_FREE_DATA_V1",
+          strategyProfileId: "RESEARCH_CLOSE_RANK_TOP1_V1",
+          researchClassification: ["RESEARCH_ONLY"],
+          truthAdmission: { truth: "NOT_FORMAL", admission: "PRE_ALPHA" },
+        };
+      },
+      async getTask() { return succeeded; },
+      async getResult() {
+        return { ...resultFor(succeeded, descriptor), projectId: OTHER_PROJECT };
+      },
+      async getArtifactDescriptor() { return descriptor; },
+    },
+  };
+  try {
+    useProductRuntime.getState().activateProjectScope(BOUND_REFS);
+    useProductRuntime.setState({ status: STATUS });
+    await useProductRuntime.getState().submitResearch({ symbol: "600519", startDate: "20260106", endDate: "20260107" });
+    const state = useProductRuntime.getState();
+    assert.equal(state.surface, "ERROR");
+    assert.match(state.errorMessage, /RESULT_IDENTITY_MISMATCH/);
+    assert.equal(state.task, null);
+    assert.equal(state.result, null);
+    assert.equal(state.artifactDescriptor, null);
+  } finally {
     delete globalThis.window;
     resetStore();
   }

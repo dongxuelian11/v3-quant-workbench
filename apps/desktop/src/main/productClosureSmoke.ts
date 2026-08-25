@@ -235,8 +235,12 @@ async function runProviderUnavailable(window: BrowserWindow): Promise<Record<str
     "const projects = await bridge.listProjects();" +
     "const tasks = await bridge.listTasks();" +
     "if (status.backendState !== \"READY\" || status.bindingState !== \"PROJECT_BOUND\") throw new Error(\"application was not usable after provider failure\");" +
-    "if (!Array.isArray(tasks.tasks) || tasks.tasks.length !== 0 || tasks.hasMore !== false || tasks.nextCursor !== null) throw new Error(\"provider failure minted a canonical Task\");" +
-    "return { phase: \"provider-unavailable\", status, projectContext, projects, tasks, rendererEvidence: evidence, retry_later: true, successful_canonical_chain_count: 0 };"
+    "if (!Array.isArray(tasks.tasks) || tasks.tasks.length !== 1 || tasks.hasMore !== false || tasks.nextCursor !== null) throw new Error(\"provider failure did not preserve exactly one durable failed Task\");" +
+    "const failedTask = tasks.tasks[0];" +
+    "const failedOutputRoles = Object.keys(failedTask.outputs);" +
+    "if (failedTask.projectId !== projectContext.projectId || failedTask.operationId !== \"ProductEntryService.v1.submitResearch\" || failedTask.state !== \"FAILED\" || failedTask.resultId !== null || failedOutputRoles.length !== 1 || failedOutputRoles[0] !== \"EXECUTION_CONTEXT\" || typeof failedTask.outputs.EXECUTION_CONTEXT !== \"string\" || !failedTask.outputs.EXECUTION_CONTEXT.startsWith(\"art_sha256_\")) throw new Error(\"provider failure Task identity or terminal truth is invalid\");" +
+    "if (failedTask.attempt === null || failedTask.attempt.state !== \"FAILED\" || failedTask.attempt.errorCategory !== \"INVALID_ARGUMENT\" || failedTask.attempt.reasonCode !== \"PROVIDER_ACQUISITION_UNAVAILABLE\") throw new Error(\"provider failure Task lost its exact terminal reason\");" +
+    "return { phase: \"provider-unavailable\", status, projectContext, projects, tasks, failedTask, rendererEvidence: evidence, retry_later: true, successful_canonical_chain_count: 0 };"
   );
 }
 
