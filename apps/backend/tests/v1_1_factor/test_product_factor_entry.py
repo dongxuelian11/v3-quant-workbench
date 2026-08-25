@@ -4,6 +4,7 @@ import io
 import tempfile
 import time
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
 from v3_backend.adapters.local_data import LocalDataImportIntentV1, LocalDataImportLimits
@@ -13,9 +14,11 @@ from v3_backend.runtime.product_data import ProductDataService
 from v3_backend.runtime.product_entry import create_project
 from v3_backend.runtime.product_facades import build_product_facades
 from v3_backend.runtime.product_factor import ProductFactorStudyService
+from v3_backend.runtime.framed_stdio import encode_frame
 from v3_backend.runtime.product_runtime import ProductRuntime, mint_uuid7
 from v3_backend.runtime.product_workers import ProductResearchWorkerConfig
 from v3_backend.runtime.request_router import RequestRouter
+from v3_backend.transport_contract import MAX_FRAME_BYTES
 
 from .test_factor_panel import GOLDEN_FORMULA, _panel_csv
 
@@ -32,6 +35,93 @@ def _handlers(product: ProductRuntime):
 
 
 class ProductFactorEntryTests(unittest.TestCase):
+    def test_large_factor_home_is_a_truthful_bounded_projection_below_transport_ceiling(self) -> None:
+        rows = ["symbol,date,open,high,low,close,volume,amount"]
+        start = date(2018, 1, 1)
+        for ordinal in range(3_200):
+            session_date = start + timedelta(days=ordinal)
+            price = 100 if ordinal < 3_100 else 200
+            rows.append(
+                f"600519,{session_date.isoformat()},{price},{price},{price},{price},"
+                f"10000,{price * 10000}"
+            )
+        source = ("\n".join(rows) + "\n").encode("utf-8")
+
+        with tempfile.TemporaryDirectory(prefix="v3-v1-1-factor-home-frame-") as directory:
+            product = ProductRuntime(Path(directory))
+            project = create_project(
+                product,
+                display_name="Bounded Factor home",
+                notes=None,
+                idempotency_key="create-bounded-factor-home",
+            )
+            imported = ProductDataService(product).import_local_dataset(
+                project_id=project["project_id"],
+                project_context_revision_id=project["project_context_revision_id"],
+                display_name="large-panel.csv",
+                source=io.BytesIO(source),
+                intent=LocalDataImportIntentV1(
+                    media_type="text/csv",
+                    volume_unit="SHARES",
+                    amount_unit="CNY",
+                    timezone="Asia/Shanghai",
+                    adjustment="UNADJUSTED",
+                ),
+            )
+            study = ProductFactorStudyService(product).run_factor_study(
+                project_id=project["project_id"],
+                project_context_revision_id=imported["project_context_revision_id"],
+                formula_source=GOLDEN_FORMULA,
+                analysis_output_name="MJ",
+            )
+            request_id = mint_uuid7()
+            home = RequestRouter(_handlers(product)).route({
+                "kind": "request",
+                "request_id": request_id,
+                "operation_id": "ProductEntryService.v1.getProjectHome",
+                "contract_version": "1.1",
+                "project_id": project["project_id"],
+                "project_context_revision_id": imported["project_context_revision_id"],
+                "body": {
+                    "request_id": request_id,
+                    "project_id": project["project_id"],
+                    "project_context_revision_id": imported["project_context_revision_id"],
+                    "expected_api_version": "1.1",
+                },
+            })
+
+            self.assertEqual(home["status"], "OK", home)
+            factor = home["body"]["read_model"]["factor"]
+            self.assertEqual(factor["schema_version"], "v3.project-factor-summary/1.1.0")
+            self.assertEqual(
+                factor["visual_preview_total_rows"],
+                len(study["visual_preview"]),
+            )
+            self.assertEqual(factor["visual_preview_projection"], "TAIL_ASCENDING_MAX_256")
+            self.assertLessEqual(len(factor["visual_preview"]), 256)
+            self.assertEqual(
+                factor["analysis"]["daily_result_count"],
+                len(study["analysis"]["daily_results"]),
+            )
+            self.assertEqual(
+                factor["analysis"]["daily_results_projection"],
+                "TAIL_ASCENDING_MAX_256",
+            )
+            self.assertLessEqual(len(factor["analysis"]["daily_results"]), 256)
+            self.assertTrue(
+                any(
+                    next(
+                        item["value"]
+                        for item in row["series"]
+                        if item["name"] == "GOLDEN_CROSS"
+                    )
+                    is True
+                    for row in factor["visual_preview"]
+                )
+            )
+            frame = encode_frame(home)
+            self.assertLessEqual(len(frame) - 4, MAX_FRAME_BYTES)
+
     def _runtime_with_data(self, root: Path):
         product = ProductRuntime(
             root,

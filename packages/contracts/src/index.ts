@@ -544,7 +544,7 @@ export interface ProductFactorDailyAnalysisView {
 }
 
 export interface ProductFactorSummaryView {
-  readonly schemaVersion: "v3.project-factor-summary/1.0.0";
+  readonly schemaVersion: "v3.project-factor-summary/1.1.0";
   readonly truth: "NOT_FORMAL";
   readonly admission: "PRE_ALPHA";
   readonly projectId: string;
@@ -566,6 +566,8 @@ export interface ProductFactorSummaryView {
     outputType: "FLOAT_SERIES" | "BOOLEAN_SERIES";
     rowCount: number;
   }>[];
+  readonly visualPreviewTotalRows: number;
+  readonly visualPreviewProjection: "TAIL_ASCENDING_MAX_256";
   readonly visualPreview: readonly Readonly<{
     sessionDate: string;
     instrumentId: string;
@@ -604,6 +606,8 @@ export interface ProductFactorSummaryView {
         icir: ProductFactorMetricView;
       }>[];
     }>;
+    dailyResultCount: number;
+    dailyResultsProjection: "TAIL_ASCENDING_MAX_256";
     dailyResults: readonly ProductFactorDailyAnalysisView[];
   }>;
 }

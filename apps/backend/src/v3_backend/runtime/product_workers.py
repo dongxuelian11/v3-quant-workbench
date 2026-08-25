@@ -706,8 +706,44 @@ class ProductResearchWorkerManager:
             slot = self._slots.get(task_id)
         if slot is None:
             return False
-        trace: list[str] = ["COOPERATIVE_CANCEL_REQUESTED"]
-        self.supervisor.cancel(slot.attempt_id)
+        return self._confirm_slot_exit(
+            task_id,
+            slot,
+            request_cooperative_cancel=True,
+        )
+
+    def confirm_terminal_exit(self, task_id: str) -> bool:
+        """Wait for a canonically terminal Task's process without rewriting Task truth.
+
+        A child persists the Task terminal transition before it emits its typed
+        terminal protocol message and exits.  Shutdown may therefore observe a
+        terminal Task with a still-live process.  That process still has to be
+        joined (and, if it fails to wind down, escalated), but the already-owned
+        canonical Task state must not be changed to CANCELLED.
+        """
+        with self._lock:
+            slot = self._slots.get(task_id)
+        if slot is None:
+            return True
+        return self._confirm_slot_exit(
+            task_id,
+            slot,
+            request_cooperative_cancel=False,
+        )
+
+    def _confirm_slot_exit(
+        self,
+        task_id: str,
+        slot: _WorkerSlot,
+        *,
+        request_cooperative_cancel: bool,
+    ) -> bool:
+        trace: list[str] = []
+        if request_cooperative_cancel:
+            trace.append("COOPERATIVE_CANCEL_REQUESTED")
+            self.supervisor.cancel(slot.attempt_id)
+        else:
+            trace.append("TERMINAL_EXIT_WAIT_STARTED")
         slot.process.join(self._cancel_grace_seconds)
         if slot.process.is_alive():
             trace.append("TERMINATE_SENT")

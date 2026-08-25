@@ -613,10 +613,11 @@ function adaptProjectFactor(value: unknown, projectId: string, contextId: string
     "formula_document_artifact_id", "formula_document_version_id", "outputs",
     "project_context_revision_id", "project_id", "schema_version", "snapshot_id",
     "source_manifest_artifact_id", "source_manifest_sha256", "truth",
-    "universe_version_id", "visual_preview"
+    "universe_version_id", "visual_preview", "visual_preview_projection",
+    "visual_preview_total_rows"
   ];
   if (Object.keys(factor).sort().join(",") !== keys.sort().join(",")
-    || factor.schema_version !== "v3.project-factor-summary/1.0.0"
+    || factor.schema_version !== "v3.project-factor-summary/1.1.0"
     || factor.truth !== "NOT_FORMAL" || factor.admission !== "PRE_ALPHA"
     || factor.project_id !== projectId || factor.project_context_revision_id !== contextId
     || typeof factor.snapshot_id !== "string" || !CANONICAL_ID_PATTERN.test(factor.snapshot_id)
@@ -628,7 +629,11 @@ function adaptProjectFactor(value: unknown, projectId: string, contextId: string
     || typeof factor.analysis_output_name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(factor.analysis_output_name)
     || typeof factor.analysis_artifact_id !== "string" || !ARTIFACT_ID_PATTERN.test(factor.analysis_artifact_id)
     || !Array.isArray(factor.outputs) || factor.outputs.length < 1 || factor.outputs.length > 64
-    || !Array.isArray(factor.visual_preview) || factor.visual_preview.length > 5_000
+    || !Number.isSafeInteger(factor.visual_preview_total_rows) || Number(factor.visual_preview_total_rows) < 0
+    || Number(factor.visual_preview_total_rows) > 2_000_000
+    || factor.visual_preview_projection !== "TAIL_ASCENDING_MAX_256"
+    || !Array.isArray(factor.visual_preview) || factor.visual_preview.length > 256
+    || factor.visual_preview.length !== Math.min(Number(factor.visual_preview_total_rows), 256)
     || factor.analysis === null || typeof factor.analysis !== "object" || Array.isArray(factor.analysis)) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor summary identity or bounds are invalid");
   }
@@ -691,11 +696,17 @@ function adaptProjectFactor(value: unknown, projectId: string, contextId: string
     });
   });
   const analysis = factor.analysis as Record<string, unknown>;
-  if (Object.keys(analysis).sort().join(",") !== "aggregate,daily_results,factor_analysis_result_id,spec"
+  if (Object.keys(analysis).sort().join(",") !== "aggregate,daily_result_count,daily_results,daily_results_projection,factor_analysis_result_id,spec"
     || typeof analysis.factor_analysis_result_id !== "string" || !/^far_sha256_[0-9a-f]{64}$/.test(analysis.factor_analysis_result_id)
     || analysis.spec === null || typeof analysis.spec !== "object" || Array.isArray(analysis.spec)
     || analysis.aggregate === null || typeof analysis.aggregate !== "object" || Array.isArray(analysis.aggregate)
-    || !Array.isArray(analysis.daily_results)) throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor analysis shape is invalid");
+    || !Number.isSafeInteger(analysis.daily_result_count) || Number(analysis.daily_result_count) < 0
+    || Number(analysis.daily_result_count) > 2_000_000
+    || analysis.daily_results_projection !== "TAIL_ASCENDING_MAX_256"
+    || !Array.isArray(analysis.daily_results) || analysis.daily_results.length > 256
+    || analysis.daily_results.length !== Math.min(Number(analysis.daily_result_count), 256)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor analysis shape is invalid");
+  }
   const spec = analysis.spec as Record<string, unknown>;
   const specKeys = [
     "schema_version", "forward_return_horizon_sessions", "quantiles",
@@ -782,13 +793,16 @@ function adaptProjectFactor(value: unknown, projectId: string, contextId: string
     });
   });
   return Object.freeze({
-    schemaVersion: "v3.project-factor-summary/1.0.0",
+    schemaVersion: "v3.project-factor-summary/1.1.0",
     truth: "NOT_FORMAL", admission: "PRE_ALPHA", projectId, projectContextRevisionId: contextId,
     snapshotId: factor.snapshot_id, universeVersionId: factor.universe_version_id,
     sourceManifestArtifactId: factor.source_manifest_artifact_id, sourceManifestSha256: factor.source_manifest_sha256,
     formulaDocumentVersionId: factor.formula_document_version_id, formulaDocumentArtifactId: factor.formula_document_artifact_id,
     analysisOutputName: factor.analysis_output_name, analysisArtifactId: factor.analysis_artifact_id,
-    outputs: Object.freeze(outputs), visualPreview: Object.freeze(preview),
+    outputs: Object.freeze(outputs),
+    visualPreviewTotalRows: Number(factor.visual_preview_total_rows),
+    visualPreviewProjection: "TAIL_ASCENDING_MAX_256",
+    visualPreview: Object.freeze(preview),
     analysis: Object.freeze({
       factorAnalysisResultId: analysis.factor_analysis_result_id,
       spec: Object.freeze({
@@ -803,6 +817,8 @@ function adaptProjectFactor(value: unknown, projectId: string, contextId: string
         rankIcir: adaptFactorMetric(aggregate.rank_icir, "aggregate.rank_icir"),
         yearlyDistribution: Object.freeze(yearlyDistribution)
       }),
+      dailyResultCount: Number(analysis.daily_result_count),
+      dailyResultsProjection: "TAIL_ASCENDING_MAX_256",
       dailyResults: Object.freeze(dailyResults)
     })
   });
@@ -1033,6 +1049,7 @@ function adaptProjectBacktest(
 }
 
 const RESULT_TABLE_PREVIEW_LIMIT = 200;
+const PRODUCT_RESULT_ANALYTICS_ENGINE_VERSION = "v3.result_analytics_engine/1.1.0";
 const EXACT_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
 const CONTENT_SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -1244,7 +1261,7 @@ function adaptLatestProductResultArtifacts(
     || analytics.analytics_id !== summary.analyticsId
     || typeof analytics.content_sha256 !== "string" || !CONTENT_SHA256_PATTERN.test(analytics.content_sha256)
     || summary.analyticsId !== `bra_sha256_${analytics.content_sha256}`
-    || analytics.engine_version !== summary.engineVersion) {
+    || analytics.engine_version !== PRODUCT_RESULT_ANALYTICS_ENGINE_VERSION) {
     throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "Analytics identity does not match Project Home");
   }
   assertPreAlphaTruth(analytics.truth_admission, "Analytics truth");

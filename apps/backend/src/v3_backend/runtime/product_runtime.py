@@ -1288,7 +1288,7 @@ class ProductExecution:
         task: Task,
         run: Run,
         attempt: TaskAttempt,
-        outputs: Mapping[str, Any],
+        outputs: Mapping[str, str],
         *,
         run_transition: bool = True,
         artifact_outputs: tuple[tuple[str, int, str], ...] = (),
@@ -2086,8 +2086,13 @@ class ProductExecution:
                     unit.commit()
             else:
                 self._finish_success(
-                    task, run, attempt,
-                    outputs={"manifest_artifact_id": outputs.descriptor.artifact_id, "child_task_ids": child_ids},
+                    task,
+                    run,
+                    attempt,
+                    # Child identity is owned by task_dependency and the
+                    # content-addressed expansion manifest. TASK_SUCCEEDED
+                    # outputs remain a scalar role-to-value read model.
+                    outputs={"manifest_artifact_id": outputs.descriptor.artifact_id},
                 )
         except Exception as error:
             self._finish_failure(
@@ -2842,10 +2847,17 @@ class ProductRuntime:
         self.local_data_transfers.close()
         if self.research_workers is not None:
             for task_id in self.research_workers.task_ids():
-                self.cancel_research_task(
-                    task_id,
-                    reason="RUNTIME_SHUTDOWN",
-                )
+                task = self.task_persistence.read_task(task_id)
+                if task.state in TASK_TERMINAL_STATES:
+                    if not self.research_workers.confirm_terminal_exit(task_id):
+                        raise ConflictError(
+                            "shutdown cannot confirm terminal research child exit"
+                        )
+                else:
+                    self.cancel_research_task(
+                        task_id,
+                        reason="RUNTIME_SHUTDOWN",
+                    )
             if self.research_workers.has_live_processes():
                 raise ConflictError("shutdown cannot confirm all research child exits")
         self.reconciliation_summary = self._reconcile_execution_state()

@@ -8,6 +8,7 @@ import unittest
 import io
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from v3_backend.adapters.market_data.akshare import AkshareAShareEodAdapter
@@ -31,6 +32,7 @@ from v3_backend.runtime.product_workers import (
     ProductResearchWorkerConfig,
 )
 from v3_backend.control_plane.worker_supervisor import WorkerSupervisor
+from v3_backend.domain.tasks.entities import TaskState
 from v3_backend.workers.protocol import Progress, WorkerHeartbeat, WorkerHello
 from v3_backend.errors import CapabilityUnavailableError, ResourceRejectedError
 from v3_backend.contracts.registry import SERVICE_CONTRACTS
@@ -120,6 +122,44 @@ def _request(project_id: str, revision_id: str, *, key: str = "research-1") -> d
 
 
 class ProductRuntimeResearchTests(unittest.TestCase):
+    def test_shutdown_waits_for_terminal_task_process_exit_without_cancelling_task(self) -> None:
+        class _TerminalExitRaceWorkers:
+            def __init__(self) -> None:
+                self.live = True
+                self.confirmed_task_ids: list[str] = []
+
+            def task_ids(self) -> tuple[str, ...]:
+                return ("tsk_terminal_exit_race",)
+
+            def confirm_terminal_exit(self, task_id: str) -> bool:
+                self.confirmed_task_ids.append(task_id)
+                self.live = False
+                return True
+
+            def has_live_processes(self) -> bool:
+                return self.live
+
+        with tempfile.TemporaryDirectory(prefix="v3-product-terminal-exit-race-") as directory:
+            product = ProductRuntime(Path(directory))
+            workers = _TerminalExitRaceWorkers()
+            product.research_workers = workers
+            terminal_task = SimpleNamespace(state=TaskState.SUCCEEDED)
+
+            with (
+                patch.object(product.task_persistence, "read_task", return_value=terminal_task),
+                patch.object(product, "cancel_research_task") as cancel_research_task,
+            ):
+                truth = product.prepare_shutdown(None)
+
+            cancel_research_task.assert_not_called()
+            self.assertEqual(workers.confirmed_task_ids, ["tsk_terminal_exit_race"])
+            self.assertFalse(workers.has_live_processes())
+            self.assertEqual(terminal_task.state, TaskState.SUCCEEDED)
+            self.assertEqual(
+                truth["active_task_policy"],
+                "CANCEL_AND_CONFIRM_EXIT_BEFORE_SHUTDOWN",
+            )
+
     def test_lease_monitor_failure_stops_new_worker_admission(self) -> None:
         with tempfile.TemporaryDirectory(prefix="v3-product-lease-monitor-failure-") as directory:
             product = ProductRuntime(

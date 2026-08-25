@@ -22,7 +22,7 @@ function SeriesChart({ values, label }: { values: readonly Readonly<{ sessionDat
   }, [values]);
   return <figure className="product-result-chart" aria-label={label}>
     <figcaption>{label}</figcaption>
-    {points.length === 0 ? <p>NOT_AVAILABLE · 样本不足</p> : <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img"><polyline points={points} /></svg>}
+    {points.length === 0 ? <p>NOT_AVAILABLE · 样本不足</p> : <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img"><title>{label}时间序列，共 {values.length} 个观测</title><polyline points={points} /></svg>}
     <div><span>{values[0]?.sessionDate ?? "—"}</span><span>{values.at(-1)?.sessionDate ?? "—"}</span></div>
   </figure>;
 }

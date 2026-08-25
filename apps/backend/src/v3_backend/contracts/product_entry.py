@@ -166,10 +166,11 @@ _PROJECT_FACTOR_SCHEMA = {
         'source_manifest_artifact_id', 'source_manifest_sha256',
         'formula_document_version_id', 'formula_document_artifact_id',
         'analysis_output_name', 'analysis_artifact_id', 'outputs',
+        'visual_preview_total_rows', 'visual_preview_projection',
         'visual_preview', 'analysis',
     ],
     'properties': {
-        'schema_version': {'type': 'string', 'const': 'v3.project-factor-summary/1.0.0'},
+        'schema_version': {'type': 'string', 'const': 'v3.project-factor-summary/1.1.0'},
         'truth': {'type': 'string', 'const': 'NOT_FORMAL'},
         'admission': {'type': 'string', 'const': 'PRE_ALPHA'},
         'project_id': {'type': 'string', 'pattern': _PRJ},
@@ -204,9 +205,15 @@ _PROJECT_FACTOR_SCHEMA = {
                 },
             },
         },
+        'visual_preview_total_rows': {
+            'type': 'integer', 'minimum': 0, 'maximum': 2000000,
+        },
+        'visual_preview_projection': {
+            'type': 'string', 'const': 'TAIL_ASCENDING_MAX_256',
+        },
         'visual_preview': {
             'type': 'array',
-            'maxItems': 5000,
+            'maxItems': 256,
             'items': {
                 'type': 'object',
                 'additionalProperties': False,
@@ -241,12 +248,23 @@ _PROJECT_FACTOR_SCHEMA = {
         'analysis': {
             'type': 'object',
             'additionalProperties': False,
-            'required': ['factor_analysis_result_id', 'spec', 'aggregate', 'daily_results'],
+            'required': [
+                'factor_analysis_result_id', 'spec', 'aggregate',
+                'daily_result_count', 'daily_results_projection', 'daily_results',
+            ],
             'properties': {
                 'factor_analysis_result_id': {'type': 'string', 'pattern': _FAR},
                 'spec': _FACTOR_ANALYSIS_SPEC_SCHEMA,
                 'aggregate': _FACTOR_AGGREGATE_SCHEMA,
-                'daily_results': {'type': 'array', 'items': _FACTOR_DAILY_SCHEMA},
+                'daily_result_count': {
+                    'type': 'integer', 'minimum': 0, 'maximum': 2000000,
+                },
+                'daily_results_projection': {
+                    'type': 'string', 'const': 'TAIL_ASCENDING_MAX_256',
+                },
+                'daily_results': {
+                    'type': 'array', 'maxItems': 256, 'items': _FACTOR_DAILY_SCHEMA,
+                },
             },
         },
     },

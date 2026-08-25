@@ -208,6 +208,44 @@ class ProductDataEntryContractTests(unittest.TestCase):
                     time.sleep(0.05)
                 self.assertEqual(task.state.value, "SUCCEEDED")
                 current = product.current_revision(project["project_id"])
+                task_request_id = mint_uuid7()
+                task_response = router.route(
+                    {
+                        "kind": "request",
+                        "request_id": task_request_id,
+                        "operation_id": "TaskService.v1.getTask",
+                        "contract_version": "1.0",
+                        "project_id": project["project_id"],
+                        "project_context_revision_id": current[
+                            "project_context_revision_id"
+                        ],
+                        "body": {
+                            "request_id": task_request_id,
+                            "project_id": project["project_id"],
+                            "project_context_revision_id": current[
+                                "project_context_revision_id"
+                            ],
+                            "expected_api_version": "1.0",
+                            "task_id": read_model["task_id"],
+                        },
+                    }
+                )
+                self.assertEqual(task_response["status"], "OK", task_response)
+                terminal_outputs = task_response["body"]["read_model"]["outputs"]
+                self.assertEqual(
+                    terminal_outputs["project_context_revision_id"],
+                    current["project_context_revision_id"],
+                )
+                self.assertEqual(
+                    terminal_outputs["snapshot_id"], current["snapshot_id"]
+                )
+                self.assertEqual(
+                    terminal_outputs["universe_version_id"],
+                    current["universe_version_id"],
+                )
+                self.assertEqual(
+                    terminal_outputs["raw_artifact_id"], descriptor.artifact_id
+                )
                 restored = ProductDataService(product).get_local_dataset(
                     project_id=project["project_id"],
                     project_context_revision_id=str(

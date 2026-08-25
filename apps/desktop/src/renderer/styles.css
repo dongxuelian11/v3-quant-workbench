@@ -1274,12 +1274,48 @@ h1, h2, h3, strong, b { font-family: "Segoe UI Variable Display", "Segoe UI Vari
 .product-project-row, .product-runspec-row { width: 100%; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .product-project-row > span, .product-runspec-identity { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .product-runspec-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.product-home-overview { display: grid; grid-template-columns: minmax(260px,.8fr) minmax(390px,1.5fr) minmax(220px,.7fr); gap: 28px; padding: 12px clamp(16px,2vw,28px) 22px; }
+.product-home-overview > section { min-width: 0; padding-top: 14px; border-top: 1px solid var(--v3-border-subtle); }
+.product-project-switcher label { display: block; margin: 12px 0 6px; color: var(--v3-fg-muted); }
+.product-project-switch-row { display: flex; align-items: center; gap: 10px; }
+.product-project-switch-row select { min-width: 0; flex: 1; min-height: 36px; border: 0; border-bottom: 1px solid var(--v3-border); border-radius: 0; background: transparent; color: var(--v3-fg); }
+.product-project-switch-row button, .product-create-project button, .product-next-action button { min-height: 36px; border: 0; border-radius: 3px; padding: 0 14px; background: var(--v3-accent); color: #081018; font-weight: 750; }
+.product-project-switch-row button:disabled, .product-create-project button:disabled, .product-next-action button:disabled { opacity: .45; cursor: not-allowed; }
+.product-create-project { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--v3-border-subtle); }
+.product-create-project summary, .product-compatibility > summary { color: var(--v3-accent-text); cursor: pointer; }
+.product-create-project label { display: grid; gap: 5px; margin-top: 10px; color: var(--v3-fg-muted); }
+.product-create-project input { min-height: 34px; padding: 0 7px; border: 0; border-bottom: 1px solid var(--v3-border); border-radius: 0; background: transparent; color: var(--v3-fg); }
+.product-create-project button { margin-top: 12px; }
+.product-home-timeline { margin: 10px 0 0; }
+.product-home-timeline > div { display: grid; grid-template-columns: 104px minmax(0,1fr); gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--v3-border-subtle); }
+.product-home-timeline dt { color: var(--v3-fg-muted); }
+.product-home-timeline dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.product-next-action { align-self: start; }
+.product-next-action > small { color: var(--v3-accent-text); letter-spacing: .6px; }
+.product-next-action h2 { margin: 8px 0 6px; font-size: 20px; }
+.product-next-action p { min-height: 2.8em; margin: 0 0 14px; color: var(--v3-fg-muted); overflow-wrap: anywhere; }
+.product-compatibility { padding: 16px clamp(16px,2vw,28px) 24px; border-top: 1px solid var(--v3-border-subtle); }
+.product-compatibility[open] > summary { margin-bottom: 12px; }
+.product-build-identity { overflow-wrap: anywhere; }
+@media (max-width: 1180px) {
+  .product-home-overview { grid-template-columns: minmax(260px,.8fr) minmax(360px,1.2fr); }
+  .product-next-action { grid-column: 1; grid-row: 1; }
+  .product-project-switcher { grid-column: 1; grid-row: 2; }
+  .product-home-status { grid-column: 2; grid-row: 1 / span 2; }
+}
+@media (max-width: 760px) {
+  .product-home-overview { display: flex; flex-direction: column; }
+  .product-next-action { order: -1; }
+  .product-project-switch-row { align-items: stretch; flex-direction: column; }
+  .product-home-timeline > div { grid-template-columns: 1fr; gap: 4px; }
+}
 
 /* PRODUCT renderer shell. Development workbench chrome is not imported by the
    production entry, so this shell owns the frameless window and truthful nav. */
 .product-app-shell { width: 100%; height: 100%; display: grid; grid-template-rows: var(--v3-context-height) minmax(0, 1fr) 30px; background: var(--v3-root); }
 .product-titlebar { min-width: 0; display: flex; align-items: center; gap: 18px; padding-left: 14px; border-bottom: 1px solid var(--v3-border-subtle); background: rgba(11,14,21,.97); -webkit-app-region: drag; }
 .product-titlebar button, .product-titlebar input { -webkit-app-region: no-drag; }
+.product-titlebar .window-controls { margin-right: 0; }
 .product-brand { min-width: 250px; display: grid; grid-template-columns: auto auto; align-items: baseline; gap: 0 8px; }
 .product-brand strong { color: var(--v3-accent); font-size: 17px; letter-spacing: -.6px; }
 .product-brand span { font-size: 12px; font-weight: 650; }
@@ -1399,8 +1435,8 @@ h1, h2, h3, strong, b { font-family: "Segoe UI Variable Display", "Segoe UI Vari
 .product-c3-lineage dt,.product-result-lineage dt { color: var(--v3-fg-muted); }.product-c3-lineage dd,.product-result-lineage dd { margin: 0; overflow-wrap: anywhere; }
 .product-c3-error { color: var(--v3-danger); }
 .product-result-empty { display: flex; align-items: center; gap: 16px; min-height: 180px; color: var(--v3-fg-muted); }.product-result-empty strong { color: var(--v3-warning); }
-.product-result-metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: 1px; margin: 22px 0; background: var(--v3-border-subtle); }
-.product-result-metrics > div { display: grid; gap: 7px; min-height: 80px; padding: 14px; background: var(--v3-root); }.product-result-metrics span { color: var(--v3-fg-muted); }.product-result-metrics strong { overflow-wrap: anywhere; font: 14px "Cascadia Mono",Consolas,monospace; }
+.product-result-metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); margin: 22px 0; border-block: 1px solid var(--v3-border-subtle); }
+.product-result-metrics > div { display: grid; gap: 7px; min-height: 80px; padding: 14px; border-right: 1px solid var(--v3-border-subtle); border-bottom: 1px solid var(--v3-border-subtle); background: var(--v3-root); }.product-result-metrics span { color: var(--v3-fg-muted); }.product-result-metrics strong { overflow-wrap: anywhere; font: 14px "Cascadia Mono",Consolas,monospace; }
 .product-result-charts { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 18px; padding-bottom: 24px; }
 .product-result-chart { margin: 0; border-bottom: 1px solid var(--v3-border-subtle); }.product-result-chart figcaption { color: var(--v3-fg-muted); }.product-result-chart svg { display: block; width: 100%; height: 180px; }.product-result-chart polyline { fill: none; stroke: var(--v3-accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }.product-result-chart > div { display: flex; justify-content: space-between; color: var(--v3-fg-muted); font-size: 9px; }
 .product-result-tables details { padding: 12px 0; border-top: 1px solid var(--v3-border-subtle); }.product-result-tables summary { cursor: pointer; color: var(--v3-accent-text); }.product-result-table-scroll { max-height: 320px; overflow: auto; margin-top: 10px; }.product-result-table-scroll table { width: 100%; min-width: 760px; border-collapse: collapse; font-family: "Cascadia Mono",Consolas,monospace; }.product-result-table-scroll th,.product-result-table-scroll td { padding: 8px; border-bottom: 1px solid var(--v3-border-subtle); text-align: left; }.product-result-table-scroll th { position: sticky; top: 0; background: var(--v3-root); color: var(--v3-fg-muted); }
@@ -1408,3 +1444,39 @@ h1, h2, h3, strong, b { font-family: "Segoe UI Variable Display", "Segoe UI Vari
 .product-result-export { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 16px; border-top: 1px solid var(--v3-border-subtle); }.product-result-export span { color: var(--v3-fg-muted); overflow-wrap: anywhere; }
 @media (max-width: 1000px) { .product-c3-form { grid-template-columns: repeat(2,minmax(180px,1fr)); }.product-result-charts { grid-template-columns: 1fr; } }
 @media (max-width: 680px) { .product-c3-heading { align-items: stretch; flex-direction: column; }.product-c3-badges { justify-content: start; }.product-c3-form { grid-template-columns: 1fr; }.product-c3-command-row { align-items: stretch; flex-direction: column; } }
+
+/* V1.1 release typography gate. The legacy workbench intentionally remains
+   dense; only the PRODUCT entry receives the 13px readable-body contract. */
+.product-app-shell {
+  --product-body-font-size: 13px;
+  --product-metadata-font-size: 11px;
+  font-size: var(--product-body-font-size);
+}
+.product-app-shell :where(main, button, input, select, textarea, summary) { font-size: var(--product-body-font-size); }
+.product-app-shell :where(button, input, select, textarea, summary, [tabindex]):focus {
+  outline: 3px solid #83d8ff !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 2px rgba(9, 11, 17, .92), 0 0 0 4px rgba(131, 216, 255, .3) !important;
+}
+.product-app-shell main :where(p, span, label, button, input, select, textarea, summary, dt, dd) { font-size: var(--product-body-font-size) !important; }
+.product-app-shell :where(small, code, .product-truth-footer, .product-current-project, .product-c3-badges, .product-c3-lineage, .product-result-lineage, .product-data-lineage, .product-data-limit, .factor-lineage, .factor-chart figcaption, .action-receipt, .product-readout),
+.product-app-shell :where(.product-truth-footer, .product-current-project, .product-c3-badges, .product-c3-lineage, .product-result-lineage, .product-data-lineage, .product-data-limit, .factor-lineage, .factor-chart figcaption, .action-receipt, .product-readout) * {
+  font-size: var(--product-metadata-font-size) !important;
+}
+.product-app-shell :where(table, th, td, .factor-row, .analysis-list > div) { font-size: 12px !important; }
+.product-app-shell :where(table, .factor-row, .analysis-list > div) * { font-size: 12px !important; }
+
+@media (max-width: 960px) {
+  .product-brand { min-width: 112px; }
+  .product-brand span, .product-current-project small { display: none; }
+  .product-titlebar { gap: 5px; padding-left: 6px; }
+  .product-titlebar nav { gap: 0; }
+  .product-titlebar nav button { min-width: 54px; padding-inline: 4px; }
+  .product-current-project span { max-width: 90px; }
+}
+
+@media (max-width: 1200px) {
+  .product-runtime-panel .analysis-header { align-items: stretch; flex-direction: column; }
+  .product-runtime-panel .analysis-title { min-width: 0; }
+  .product-runtime-panel .experiment-trail { flex-wrap: wrap; }
+}

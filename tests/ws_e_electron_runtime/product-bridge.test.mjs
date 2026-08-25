@@ -743,7 +743,7 @@ test("getProjectHome uses Product Entry 1.1 and rejects date-coverage or closed-
   };
   const unavailableMetric = (reason) => ({ status: "INSUFFICIENT_SAMPLE", value: null, reason });
   const factor = {
-    schema_version: "v3.project-factor-summary/1.0.0",
+    schema_version: "v3.project-factor-summary/1.1.0",
     truth: "NOT_FORMAL",
     admission: "PRE_ALPHA",
     project_id: refs.projectId,
@@ -773,6 +773,8 @@ test("getProjectHome uses Product Entry 1.1 and rejects date-coverage or closed-
       output_type: "BOOLEAN_SERIES",
       row_count: 40
     }],
+    visual_preview_total_rows: 1,
+    visual_preview_projection: "TAIL_ASCENDING_MAX_256",
     visual_preview: [{
       session_date: "2026-01-05",
       instrument_id: "ins_000001",
@@ -806,6 +808,8 @@ test("getProjectHome uses Product Entry 1.1 and rejects date-coverage or closed-
         rank_icir: unavailableMetric("MINIMUM_VALID_IC_DATES"),
         yearly_distribution: []
       },
+      daily_result_count: 1,
+      daily_results_projection: "TAIL_ASCENDING_MAX_256",
       daily_results: [{
         session_date: "2026-01-05",
         label_session_date: "2026-01-12",
@@ -980,7 +984,7 @@ test("getProjectHome uses Product Entry 1.1 and rejects date-coverage or closed-
       analytics_id: analyticsId,
       content_sha256: analyticsContentSha,
       schema_version: "v3.backtest_result_analytics/1.1.0",
-      engine_version: "v3.a_share_daily_eod_engine/0.3.0-research",
+      engine_version: "v3.result_analytics_engine/1.1.0",
       core_analytics: {
         artifact_type: "BacktestResultAnalytics", analytics_id: `bra_sha256_${"d".repeat(64)}`,
         content_sha256: "d".repeat(64), schema_version: "v3.backtest_result_analytics/1.0.0",
@@ -1062,7 +1066,7 @@ test("getProjectHome uses Product Entry 1.1 and rejects date-coverage or closed-
       orders_export_artifact_id: `art_sha256_${"7".repeat(64)}`,
       fills_export_artifact_id: `art_sha256_${"8".repeat(64)}`,
       result_lineage_id: resultLineageId, lineage_artifact_id: lineageArtifactId, result_state: "VALID",
-      engine_version: analyticsPayload.engine_version, order_count: 1, fill_count: 1, diagnostic_count: 1,
+      engine_version: "v3.a_share_daily_eod_engine/0.3.0-research", order_count: 1, fill_count: 1, diagnostic_count: 1,
       first_fill_session_date: "2026-01-06", first_effective_session_date: "2026-01-06",
       assumption_mode: "STRICT_FAIL_CLOSED"
     };
@@ -1176,7 +1180,9 @@ test("getProjectHome uses Product Entry 1.1 and rejects date-coverage or closed-
       (candidate) => { candidate.read_model.factor.project_id = `prj_${"C".repeat(26)}`; },
       (candidate) => { candidate.read_model.factor.visual_preview[0].series[0].value = Infinity; },
       (candidate) => { candidate.read_model.factor.visual_preview[0].series = []; },
+      (candidate) => { candidate.read_model.factor.visual_preview_total_rows = 2; },
       (candidate) => { candidate.read_model.factor.analysis.daily_results[0].excluded_reason_counts = [{ reason: "WARMUP", count: 1 }]; },
+      (candidate) => { candidate.read_model.factor.analysis.daily_result_count = 2; },
       (candidate) => { candidate.read_model.backtest_policy_coverage.rule_profile_id = `rules_sha256_${"4".repeat(64)}`; },
       (candidate) => { delete candidate.read_model.backtest_policy_coverage; }
     ]) {

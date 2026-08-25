@@ -66,6 +66,8 @@ CONTEXT_ALLOW_LIST = ("notes", "benchmark_universe_version_id")
 STREAM_TICKET_TTL_SECONDS = 300
 MAX_STREAM_TICKETS = 4096
 STREAM_CHUNK_MAX_BYTES = 256 * 1024
+PRODUCT_FACTOR_HOME_PROJECTION_LIMIT = 256
+PRODUCT_FACTOR_HOME_PROJECTION = "TAIL_ASCENDING_MAX_256"
 
 
 def _response(request: Mapping[str, Any], read_model: Mapping[str, Any]) -> dict[str, Any]:
@@ -313,8 +315,67 @@ def _task_read_model(product: ProductRuntime, task_id: str) -> dict[str, Any]:
             """,
             (task.active_run_id, task_id, task.project_id),
         ).fetchone()
+        task_output_rows = connection.execute(
+            """
+            SELECT output_role, artifact_id
+            FROM task_output
+            WHERE task_id=?
+            ORDER BY output_role, ordinal
+            """,
+            (task_id,),
+        ).fetchall()
+        terminal_event = connection.execute(
+            """
+            SELECT payload_json
+            FROM task_event
+            WHERE task_id=? AND run_id=? AND event_type='TASK_SUCCEEDED'
+            ORDER BY project_sequence DESC
+            LIMIT 1
+            """,
+            (task_id, task.active_run_id),
+        ).fetchone()
     finally:
         connection.close()
+
+    def add_output(role: str, value: str) -> None:
+        current = outputs.get(role)
+        if current is not None and current != value:
+            raise TruthPreconditionFailedError(
+                f"Task output role {role!r} has conflicting durable values"
+            )
+        outputs[role] = value
+
+    for output in task_output_rows:
+        add_output(str(output["output_role"]), str(output["artifact_id"]))
+    if terminal_event is not None:
+        try:
+            terminal_payload = json.loads(str(terminal_event["payload_json"]))
+        except json.JSONDecodeError as error:
+            raise TruthPreconditionFailedError(
+                "Task success event payload is not valid JSON"
+            ) from error
+        if not isinstance(terminal_payload, dict):
+            raise TruthPreconditionFailedError(
+                "Task success event payload must be an object"
+            )
+        if "outputs" in terminal_payload:
+            terminal_outputs = terminal_payload["outputs"]
+            if not isinstance(terminal_outputs, dict):
+                raise TruthPreconditionFailedError(
+                    "Task success event outputs must be an object when present"
+                )
+            for role, value in terminal_outputs.items():
+                if (
+                    not isinstance(role, str)
+                    or role == ""
+                    or not isinstance(value, str)
+                    or value == ""
+                ):
+                    raise TruthPreconditionFailedError(
+                        "Task success event outputs must map non-empty string roles "
+                        "to non-empty string values"
+                    )
+                add_output(role, value)
     return {
         "read_model_version": "v3.task/1.0",
         "task_id": task.task_id,
@@ -1508,11 +1569,19 @@ class ProductEntryFacade:
                 )
             else:
                 output_names = tuple(study["outputs"])
+                visual_preview = tuple(study["visual_preview"])
+                daily_results = tuple(study["analysis"]["daily_results"])
+                projected_visual_preview = visual_preview[
+                    -PRODUCT_FACTOR_HOME_PROJECTION_LIMIT:
+                ]
+                projected_daily_results = daily_results[
+                    -PRODUCT_FACTOR_HOME_PROJECTION_LIMIT:
+                ]
                 read_model.update(
                     factor_state="AVAILABLE",
                     factor_unavailable_reason="NONE",
                     factor={
-                        "schema_version": "v3.project-factor-summary/1.0.0",
+                        "schema_version": "v3.project-factor-summary/1.1.0",
                         "truth": study["truth"],
                         "admission": study["admission"],
                         "project_id": study["project_id"],
@@ -1537,6 +1606,8 @@ class ProductEntryFacade:
                             {"name": name, **study["outputs"][name]}
                             for name in output_names
                         ),
+                        "visual_preview_total_rows": len(visual_preview),
+                        "visual_preview_projection": PRODUCT_FACTOR_HOME_PROJECTION,
                         "visual_preview": tuple(
                             {
                                 "session_date": row["session_date"],
@@ -1552,7 +1623,7 @@ class ProductEntryFacade:
                                     for name in output_names
                                 ),
                             }
-                            for row in study["visual_preview"]
+                            for row in projected_visual_preview
                         ),
                         "analysis": {
                             "factor_analysis_result_id": study["analysis"][
@@ -1560,6 +1631,8 @@ class ProductEntryFacade:
                             ],
                             "spec": study["analysis"]["spec"],
                             "aggregate": study["analysis"]["aggregate"],
+                            "daily_result_count": len(daily_results),
+                            "daily_results_projection": PRODUCT_FACTOR_HOME_PROJECTION,
                             "daily_results": tuple(
                                 {
                                     **{
@@ -1572,7 +1645,7 @@ class ProductEntryFacade:
                                         for pair in item["excluded_reason_counts"]
                                     ),
                                 }
-                                for item in study["analysis"]["daily_results"]
+                                for item in projected_daily_results
                             ),
                         },
                     },

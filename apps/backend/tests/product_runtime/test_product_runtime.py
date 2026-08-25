@@ -1112,7 +1112,11 @@ class BacktestServiceExperimentTests(_PortsCase):
         expanded_task = self.route(
             "TaskService.v1.getTask", task_id=expanded["body"]["task_id"]
         )
-        self.assertEqual(expanded_task["body"]["read_model"]["state"], "SUCCEEDED")
+        self.assertEqual(expanded_task["status"], "OK", expanded_task)
+        task_read_model = expanded_task["body"]["read_model"]
+        self.assertEqual(task_read_model["state"], "SUCCEEDED")
+        self.assertIn("manifest_artifact_id", task_read_model["outputs"])
+        self.assertNotIn("child_task_ids", task_read_model["outputs"])
         after = self.route(
             "BacktestService.v1.getExperiment", experiment_id=experiment_id
         )

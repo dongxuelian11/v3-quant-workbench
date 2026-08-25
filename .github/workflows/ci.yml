@@ -8,17 +8,141 @@ permissions:
   contents: read
 
 jobs:
-  verify-public-baseline:
+  authority-contract-quality:
+    name: Job A - authority, contract, and quality
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      V3_SOURCE_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - name: Checkout exact candidate with full history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Prove exact candidate checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$V3_SOURCE_GIT_SHA"
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           cache: npm
-      - uses: actions/setup-python@v6
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version-file: .python-version
-      - run: python -m pip install -r apps/backend/requirements.txt
-      - run: npm ci
-      - run: npm run validate:public
+      - name: Install repository-pinned application inputs
+        run: |
+          python -m pip install -r apps/backend/requirements.txt
+          npm ci
+      - name: Compile complete Python source and test inventory
+        run: python -m compileall -q apps/backend/src apps/backend/tests
+      - name: Validate authority
+        run: npm run validate:authority
+      - name: Validate frozen contracts and fixtures
+        run: npm run test:contracts
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Node unit and property tests
+        run: npm run test:unit
+      - name: Repository, secret, and SBOM truth
+        run: |
+          npm run secret-scan
+          npm run repo-audit
+          npm run sbom:check
+
+  backend-runtime:
+    name: Job B - backend runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      V3_SOURCE_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - name: Prove exact candidate checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$V3_SOURCE_GIT_SHA"
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Setup exact backend Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version-file: .python-version
+      - name: Install runtime test inputs
+        run: |
+          python -m pip install -r apps/backend/requirements.txt
+          npm ci
+      - name: Run recursively discovered backend suites
+        run: npm run test:backend
+      - name: Run Product runtime and V1.1 Golden-path smokes
+        run: |
+          npm run smoke:product-runtime
+          npm run smoke:product-data
+          npm run smoke:product-factor
+          npm run smoke:product-backtest
+          npm run smoke:product-result
+
+  windows-product-integration:
+    name: Job C - Windows product integration
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      V3_SOURCE_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - name: Prove exact candidate checkout
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD).Trim() -ne $env:V3_SOURCE_GIT_SHA) {
+            throw "Job C checkout is not the exact candidate"
+          }
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Setup exact backend Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version-file: .python-version
+      - name: Install product integration inputs
+        shell: pwsh
+        run: |
+          python -m pip install -r apps/backend/requirements.txt
+          npm.cmd ci
+      - name: Build and verify PRODUCT bundle truth
+        shell: pwsh
+        run: |
+          npm.cmd run build
+          npm.cmd run verify:product-bundle-truth
+          npm.cmd run smoke:frontend
+      - name: Run Electron runtime and persistence integration
+        shell: pwsh
+        run: |
+          npm.cmd run test:runtime
+          npm.cmd run smoke:electron:runtime
+      - name: Run Windows Product V1.1 smokes
+        shell: pwsh
+        run: |
+          npm.cmd run smoke:product-runtime
+          npm.cmd run smoke:product-data
+          npm.cmd run smoke:product-factor
+          npm.cmd run smoke:product-backtest
+          npm.cmd run smoke:product-result

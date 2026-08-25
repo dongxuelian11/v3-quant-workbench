@@ -537,6 +537,16 @@ class ProductResearchBacktestAcceptanceTests(unittest.TestCase):
                 finally:
                     connection.close()
                 self.assertEqual(task.state.value, "SUCCEEDED", terminal_events)
+                task_read_model = TaskFacade(product).get_task(
+                    {
+                        "request_id": "09ad3401-2c22-4b84-9079-d301cab05f90",
+                        "project_id": project["project_id"],
+                        "task_id": accepted["task_id"],
+                    }
+                )["read_model"]
+                self.assertEqual(task_read_model["state"], "SUCCEEDED")
+                self.assertIsNotNone(task_read_model["result_id"])
+                self.assertIn("BACKTEST_RUN_RESULT", task_read_model["outputs"])
                 read_model = service.get_backtest(
                     project_id=project["project_id"],
                     project_context_revision_id=imported[
@@ -569,6 +579,64 @@ class ProductResearchBacktestAcceptanceTests(unittest.TestCase):
                     )["assumption_mode"],
                     "STRICT_FAIL_CLOSED",
                 )
+                connection = product._connection()
+                try:
+                    terminal_row = connection.execute(
+                        "SELECT project_id,run_id,attempt_id,event_version,"
+                        "occurred_at,persisted_at FROM task_event "
+                        "WHERE task_id=? AND event_type='TASK_SUCCEEDED' "
+                        "ORDER BY project_sequence DESC LIMIT 1",
+                        (accepted["task_id"],),
+                    ).fetchone()
+                    self.assertIsNotNone(terminal_row)
+                    next_sequence = int(
+                        connection.execute(
+                            "SELECT COALESCE(MAX(project_sequence),0)+1 "
+                            "FROM task_event WHERE project_id=?",
+                            (project["project_id"],),
+                        ).fetchone()[0]
+                    )
+                    connection.execute(
+                        "INSERT INTO task_event("
+                        "task_event_id,project_id,project_sequence,task_id,run_id,"
+                        "attempt_id,event_type,event_version,payload_json,occurred_at,"
+                        "persisted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            mint_v3_id("tev_"),
+                            project["project_id"],
+                            next_sequence,
+                            accepted["task_id"],
+                            str(terminal_row["run_id"]),
+                            str(terminal_row["attempt_id"]),
+                            "TASK_SUCCEEDED",
+                            int(terminal_row["event_version"]),
+                            json.dumps(
+                                {
+                                    "result_id": task_read_model["result_id"],
+                                    "result_state": "VALID",
+                                    "outputs": [],
+                                },
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                            str(terminal_row["occurred_at"]),
+                            str(terminal_row["persisted_at"]),
+                        ),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                with self.assertRaisesRegex(
+                    TruthPreconditionFailedError,
+                    "outputs must be an object when present",
+                ):
+                    TaskFacade(product).get_task(
+                        {
+                            "request_id": "1b89fa89-4159-45e5-a90d-4d0a2a7de645",
+                            "project_id": project["project_id"],
+                            "task_id": accepted["task_id"],
+                        }
+                    )
             finally:
                 product.research_workers.shutdown_all()
 

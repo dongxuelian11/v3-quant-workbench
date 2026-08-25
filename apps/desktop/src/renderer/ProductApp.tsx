@@ -67,7 +67,7 @@ export function ProductApp() {
     </header>
 
     {activePage === "home"
-      ? <main className="product-home" data-product-page="home"><ProductRuntimePanel /></main>
+      ? <main className="product-home" data-product-page="home"><ProductRuntimePanel onNavigate={setActivePage} /></main>
       : activePage === "data" ? <ProductDataWorkspace />
         : activePage === "research" ? <ProductFactorWorkspace />
           : activePage === "backtest" ? <ProductBacktestWorkspace />

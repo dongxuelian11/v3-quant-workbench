@@ -1,5 +1,9 @@
+import type { ProductProjectHomeView } from "../../../../packages/contracts/src/index";
+
+export type ProductPageId = "home" | "data" | "research" | "backtest" | "results";
+
 export type ProductNavigationItem = Readonly<{
-  id: "home" | "data" | "research" | "backtest" | "results";
+  id: ProductPageId;
   label: string;
   available: boolean;
   reason: string | null;
@@ -34,4 +38,55 @@ export function selectCurrentProjectLabel(
   if (boundProject === null) return "尚未绑定";
   return projects.find((project) => project.projectId === boundProject.projectId)?.displayName
     ?? boundProject.projectId;
+}
+
+export type ProductHomeNextAction = Readonly<{
+  page: ProductPageId;
+  label: string;
+  reason: string;
+}>;
+
+export function selectProductHomeNextAction(
+  home: ProductProjectHomeView | null,
+): ProductHomeNextAction {
+  if (home === null) {
+    return Object.freeze({
+      page: "home",
+      label: "等待项目概览",
+      reason: "PROJECT_HOME_NOT_READY",
+    });
+  }
+  if (home.dataState !== "AVAILABLE") {
+    return Object.freeze({
+      page: "data",
+      label: "导入研究数据",
+      reason: home.dataUnavailableReason,
+    });
+  }
+  if (home.factorState !== "AVAILABLE") {
+    return Object.freeze({
+      page: "research",
+      label: "创建并运行因子研究",
+      reason: home.factorUnavailableReason,
+    });
+  }
+  if (home.strategyState !== "AVAILABLE") {
+    return Object.freeze({
+      page: "backtest",
+      label: "创建研究策略",
+      reason: home.strategyUnavailableReason,
+    });
+  }
+  if (home.backtestState !== "AVAILABLE" || home.backtest?.resultState !== "VALID") {
+    return Object.freeze({
+      page: "backtest",
+      label: "运行研究回测",
+      reason: home.backtestUnavailableReason,
+    });
+  }
+  return Object.freeze({
+    page: "results",
+    label: "查看最新有效结果",
+    reason: "VALID_RESULT_AVAILABLE",
+  });
 }

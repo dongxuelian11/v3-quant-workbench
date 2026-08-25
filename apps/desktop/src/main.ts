@@ -50,6 +50,7 @@ const PRODUCT_CLOSURE_SMOKE = process.argv.includes("--v3-product-closure-smoke"
 const PRODUCT_CLOSURE_SMOKE_PHASE = process.env.V3_PRODUCT_CLOSURE_SMOKE_PHASE ?? "";
 const PRODUCT_CLOSURE_SMOKE_OUTPUT = process.env.V3_PRODUCT_CLOSURE_SMOKE_OUTPUT ?? "";
 const PRODUCT_CLOSURE_PROVIDER_MODE = process.env.V3_PRODUCT_CLOSURE_PROVIDER_MODE;
+const PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE = process.env.V3_PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE;
 
 if (PACKAGED_RUNTIME_SMOKE || PRODUCT_CLOSURE_SMOKE) {
   if (process.platform !== "win32" || !PACKAGED_RUNTIME_SMOKE_USER_DATA || !isAbsolute(PACKAGED_RUNTIME_SMOKE_USER_DATA)) {
@@ -232,6 +233,12 @@ async function chooseResearchPackage(): Promise<string | null> {
 }
 
 async function chooseLocalDataSource(): Promise<string | null> {
+  if (PRODUCT_CLOSURE_SMOKE && PRODUCT_CLOSURE_SMOKE_PHASE.startsWith("v1-1-journey-")) {
+    if (!PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE || !isAbsolute(PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE)) {
+      throw new Error("V3_PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE must be an absolute path for a V1.1 packaged journey");
+    }
+    return resolve(PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE);
+  }
   const window = mainWindow !== null ? (BrowserWindow.fromWebContents(mainWindow.webContents) ?? mainWindow) : null;
   const options = {
     title: "选择本地 A 股日线数据",

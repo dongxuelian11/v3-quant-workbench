@@ -34,6 +34,9 @@ declare global {
     v3ProductClosureEvidence?: () => unknown;
     v3ProductClosureRunFirst?: (input: { displayName: string; notes: string; intent: ProductResearchSubmitIntent }) => Promise<void>;
     v3ProductClosureRunUnavailable?: (input: { displayName: string; notes: string; intent: ProductResearchSubmitIntent }) => Promise<void>;
+    v3ProductV11Evidence?: () => unknown;
+    v3ProductV11RunJourneyA?: () => Promise<void>;
+    v3ProductV11RunJourneyB?: () => Promise<void>;
   }
 }
 
@@ -124,6 +127,7 @@ interface ProductRuntimeState {
 
 const RUN_SPEC_PATTERN = /^btrs_sha256_[0-9a-f]{64}$/;
 const DATA_TASK_POLL_TIMEOUT_MS = 5 * 60_000;
+const TASK_EVENT_PAGE_LIMIT = 500;
 const RETRYABLE_PRODUCT_BACKTEST_CATEGORIES = new Set([
   "TRANSIENT_IO",
   "WORKER_LOST",
@@ -327,6 +331,7 @@ export function deriveSurface(state: {
   result: ProductResultView | null;
   task: ProductTaskView | null;
   runSpecId: string;
+  dataHome?: ProductProjectHomeView | null;
 }): ProductSurfaceState {
   const backendState = state.status?.backendState ?? "STARTING";
   // The binding state from the canonical product status is the authority:
@@ -344,6 +349,10 @@ export function deriveSurface(state: {
   if (state.inflight) return "REQUEST_IN_FLIGHT";
   if (state.result !== null) return "RESULT_AVAILABLE";
   if (state.task !== null) return "TASK_AVAILABLE";
+  // V1.1 Project Home is the primary product read model. The legacy B3
+  // RunSpec selector is a folded compatibility surface and must not downgrade
+  // a verified project overview to CANONICAL_RUN_SPEC_REQUIRED.
+  if (state.dataHome != null) return "PROJECT_BOUND";
   if (!RUN_SPEC_PATTERN.test(state.runSpecId)) return "CANONICAL_RUN_SPEC_REQUIRED";
   return "PROJECT_BOUND";
 }
@@ -1198,12 +1207,12 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       guardProjectScope(token);
       set((state) => isCurrentProjectScope(state, token) ? { ...state, backtestSubmission: outcome } : state);
       const deadline = Date.now() + DATA_TASK_POLL_TIMEOUT_MS;
-      let eventAfter = Math.max(0, (outcome.eventCursor ?? 0) - 1000);
+      let eventAfter = Math.max(0, (outcome.eventCursor ?? 0) - TASK_EVENT_PAGE_LIMIT);
       let task: ProductTaskView;
       while (true) {
         task = await bridge.getTask(outcome.taskId);
         guardProjectScope(token);
-        const events = await bridge.getTaskEvents(eventAfter, 1000);
+        const events = await bridge.getTaskEvents(eventAfter, TASK_EVENT_PAGE_LIMIT);
         guardProjectScope(token);
         eventAfter = events.highWatermark;
         const observedProgress = latestTaskProgress(events, outcome.taskId);
@@ -1268,7 +1277,7 @@ export const useProductRuntime = create<ProductRuntimeState>((set, get) => ({
       const deadline = Date.now() + DATA_TASK_POLL_TIMEOUT_MS;
       let eventAfter = 0;
       while (true) {
-        const events = await bridge.getTaskEvents(eventAfter, 1000);
+        const events = await bridge.getTaskEvents(eventAfter, TASK_EVENT_PAGE_LIMIT);
         guardProjectScope(token);
         eventAfter = events.highWatermark;
         const observedProgress = latestTaskProgress(events, task.taskId);
@@ -1380,6 +1389,102 @@ export const productClosureInitialRendererEvidence = projectInitialRendererEvide
   useProductRuntime.getInitialState(),
 );
 
+const V1_1_GOLDEN_FORMULA = `MJ:=AMOUNT/VOL/100;
+MA5:=MA(MJ,5);
+MA20:=MA(MJ,20);
+MA60:=MA(MJ,60);
+GOLDEN_CROSS:CROSS(MA20,MA60) AND MA5>MA20;
+DEATH_CROSS:CROSS(MA60,MA20) AND MA5<MA20;
+`;
+
+async function waitForProductReadyWithoutBinding(): Promise<void> {
+  const bridge = window.v3ProductRuntime;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const status = await bridge.getProductStatus().catch(() => null);
+    if (status?.backendState === "READY" && status.bindingState === "NO_CANONICAL_PROJECT_BOUND") return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("V1.1 packaged journey backend did not become READY before Project creation");
+}
+
+function requireV11State(label: string): ProductRuntimeState {
+  const state = useProductRuntime.getState();
+  if (state.errorMessage !== null || state.surface === "ERROR") {
+    throw new Error(`${label}: ${state.errorMessage ?? "renderer entered ERROR"}`);
+  }
+  return state;
+}
+
+function projectV11Evidence(state: ProductRuntimeState): Record<string, unknown> {
+  const home = state.dataHome;
+  const factor = home?.factor ?? null;
+  const analysis = factor?.analysis ?? null;
+  const firstAvailableDaily = analysis?.dailyResults.find((item) => item.status === "AVAILABLE") ?? null;
+  return {
+    surface: state.surface,
+    boundProject: state.boundProject,
+    projectScope: state.projectScope,
+    errorMessage: state.errorMessage,
+    data: home?.data ?? null,
+    factor: factor === null ? null : {
+      snapshotId: factor.snapshotId,
+      universeVersionId: factor.universeVersionId,
+      formulaDocumentVersionId: factor.formulaDocumentVersionId,
+      outputs: factor.outputs,
+      analysisOutputName: factor.analysisOutputName,
+      analysisArtifactId: factor.analysisArtifactId,
+      aggregate: analysis?.aggregate ?? null,
+      dailyResultCount: analysis?.dailyResults.length ?? 0,
+      firstAvailableDaily,
+    },
+    strategy: home?.strategy ?? null,
+    backtest: home?.backtest ?? null,
+    policyCoverage: home?.backtestPolicyCoverage ?? null,
+    localDataTask: state.dataTask === null ? null : {
+      taskId: state.dataTask.taskId,
+      runId: state.dataTask.runId,
+      state: state.dataTask.state,
+      operationId: state.dataTask.operationId,
+    },
+    factorTask: state.factorTask === null ? null : {
+      taskId: state.factorTask.taskId,
+      runId: state.factorTask.runId,
+      state: state.factorTask.state,
+      operationId: state.factorTask.operationId,
+    },
+    strategyTask: state.strategyTask === null ? null : {
+      taskId: state.strategyTask.taskId,
+      runId: state.strategyTask.runId,
+      state: state.strategyTask.state,
+      operationId: state.strategyTask.operationId,
+    },
+    backtestTask: state.backtestTask === null ? null : {
+      taskId: state.backtestTask.taskId,
+      runId: state.backtestTask.runId,
+      state: state.backtestTask.state,
+      operationId: state.backtestTask.operationId,
+    },
+    result: state.latestProductResult === null ? null : {
+      resultState: state.latestProductResult.resultState,
+      resultId: state.latestProductResult.resultId,
+      backtestResultId: state.latestProductResult.backtestResultId,
+      analyticsId: state.latestProductResult.analyticsId,
+      resultLineageId: state.latestProductResult.resultLineageId,
+      runId: state.latestProductResult.runId,
+      assumptionMode: state.latestProductResult.assumptionMode,
+      orderCount: state.latestProductResult.orders.rowCount,
+      fillCount: state.latestProductResult.fills.rowCount,
+      diagnosticCount: state.latestProductResult.diagnostics.rowCount,
+      holdingCount: state.latestProductResult.holdings.rowCount,
+      metrics: state.latestProductResult.metrics,
+      costSummary: state.latestProductResult.costSummary,
+      lineage: state.latestProductResult.lineage,
+      exports: state.latestProductResult.exports,
+    },
+  };
+}
+
 if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("v3-product-closure-smoke")) {
   window.v3ProductClosureEvidence = () => {
     const state = useProductRuntime.getState();
@@ -1448,6 +1553,108 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     }
     if (afterSubmit.lastResearch !== null || afterSubmit.task !== null || afterSubmit.result !== null || afterSubmit.artifactDescriptor !== null) {
       throw new Error("provider-unavailable smoke created a renderer-visible successful canonical chain");
+    }
+  };
+
+  window.v3ProductV11Evidence = () => projectV11Evidence(useProductRuntime.getState());
+
+  window.v3ProductV11RunJourneyA = async () => {
+    await waitForProductReadyWithoutBinding();
+    await useProductRuntime.getState().createProjectAndBind("我的第一个量化项目", "V1.1 packaged Golden Journey A");
+    requireV11State("Journey A Project activation");
+    await useProductRuntime.getState().importLocalData("SHARES");
+    requireV11State("Journey A local Data import");
+    await useProductRuntime.getState().submitFactorStudy({
+      formulaSource: V1_1_GOLDEN_FORMULA,
+      analysisOutputName: "MJ",
+    });
+    let state = requireV11State("Journey A Factor study");
+    const factor = state.dataHome?.factor;
+    if (state.dataHome?.data?.instrumentCount !== 1 || factor === null || factor === undefined) {
+      throw new Error("Journey A did not publish a single-instrument Data/Factor read model");
+    }
+    const aggregate = factor.analysis.aggregate;
+    if (
+      aggregate.icMean.status !== "INSUFFICIENT_SAMPLE"
+      || aggregate.rankIcMean.status !== "INSUFFICIENT_SAMPLE"
+      || aggregate.icMean.reason !== "CROSS_SECTION_REQUIRES_AT_LEAST_20_INSTRUMENTS"
+    ) {
+      throw new Error("Journey A did not preserve single-symbol cross-sectional honesty");
+    }
+    const entry = factor.outputs.find((item) => item.name === "GOLDEN_CROSS" && item.outputType === "BOOLEAN_SERIES");
+    const exit = factor.outputs.find((item) => item.name === "DEATH_CROSS" && item.outputType === "BOOLEAN_SERIES");
+    const profile = state.dataHome?.strategyAuthoringProfile;
+    const approximate = profile?.assumptionProfiles.find((item) => item.mode === "RESEARCH_APPROXIMATE");
+    if (entry === undefined || exit === undefined || profile === undefined || approximate === undefined) {
+      throw new Error("Journey A canonical Strategy inputs are unavailable");
+    }
+    const strategyIntent: ProductResearchStrategyIntent = {
+      entrySignalFactorVersionId: entry.factorDefinitionVersionId,
+      exitSignalFactorVersionId: exit.factorDefinitionVersionId,
+      positionSizing: "SINGLE_ASSET_FULL_WEIGHT",
+      maxPositions: 1,
+      grossExposure: "1",
+      initialCash: "1000000",
+      assumptionProfileId: approximate.assumptionProfileId,
+    };
+    await useProductRuntime.getState().previewResearchStrategy(strategyIntent);
+    requireV11State("Journey A Strategy preview");
+    await useProductRuntime.getState().publishResearchStrategy(strategyIntent);
+    state = requireV11State("Journey A Strategy publication");
+    const home = state.dataHome;
+    if (home?.data === null || home?.data === undefined || home.strategyState !== "AVAILABLE") {
+      throw new Error("Journey A canonical Strategy read model is unavailable");
+    }
+    const sessionStart = home.data.dateCoverageStart > home.backtestPolicyCoverage.coverageStart
+      ? home.data.dateCoverageStart
+      : home.backtestPolicyCoverage.coverageStart;
+    const sessionEnd = home.backtestPolicyCoverage.coverageEnd !== null
+      && home.backtestPolicyCoverage.coverageEnd < home.data.dateCoverageEnd
+      ? home.backtestPolicyCoverage.coverageEnd
+      : home.data.dateCoverageEnd;
+    const backtestIntent: ProductResearchBacktestIntent = {
+      sessionStart,
+      sessionEnd,
+      slippageBps: "10",
+      dailyVolumeParticipationRate: "0.1",
+    };
+    await useProductRuntime.getState().previewResearchBacktest(backtestIntent);
+    requireV11State("Journey A Backtest preflight");
+    await useProductRuntime.getState().submitResearchBacktest(backtestIntent);
+    state = requireV11State("Journey A Backtest");
+    if (
+      state.dataHome?.backtestState !== "AVAILABLE"
+      || state.dataHome.backtest?.resultState !== "VALID"
+      || state.latestProductResult?.resultState !== "VALID"
+      || state.latestProductResult.orders.rowCount < 1
+      || state.latestProductResult.fills.rowCount < 1
+    ) {
+      throw new Error("Journey A did not reach a canonical VALID Result with real orders/fills");
+    }
+  };
+
+  window.v3ProductV11RunJourneyB = async () => {
+    await waitForProductReadyWithoutBinding();
+    await useProductRuntime.getState().createProjectAndBind("横截面因子研究", "V1.1 packaged Golden Journey B");
+    requireV11State("Journey B Project activation");
+    await useProductRuntime.getState().importLocalData("SHARES");
+    requireV11State("Journey B local Data import");
+    await useProductRuntime.getState().submitFactorStudy({
+      formulaSource: "MJ:AMOUNT/VOL/100;",
+      analysisOutputName: "MJ",
+    });
+    const state = requireV11State("Journey B Factor Analysis");
+    const factor = state.dataHome?.factor;
+    const aggregate = factor?.analysis.aggregate;
+    if (
+      state.dataHome?.data?.instrumentCount !== 20
+      || aggregate === undefined
+      || aggregate.validDates < 20
+      || aggregate.icMean.status !== "AVAILABLE"
+      || aggregate.rankIcMean.status !== "AVAILABLE"
+      || factor?.analysis.dailyResults.some((item) => item.status === "AVAILABLE" && item.sampleSize !== 20)
+    ) {
+      throw new Error("Journey B did not produce the admitted 20-symbol cross-sectional analysis");
     }
   };
 }

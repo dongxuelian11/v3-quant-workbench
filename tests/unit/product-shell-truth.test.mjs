@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { PRODUCT_NAVIGATION, productNavigationFor, selectCurrentProjectLabel } from "../../apps/desktop/src/renderer/productShellModel.ts";
+import {
+  PRODUCT_NAVIGATION,
+  productNavigationFor,
+  selectCurrentProjectLabel,
+  selectProductHomeNextAction,
+} from "../../apps/desktop/src/renderer/productShellModel.ts";
 
 test("PRODUCT navigation enables only the connected Home and gives every deferred page a reason", () => {
   assert.deepEqual(PRODUCT_NAVIGATION.map((item) => item.id), ["home", "data", "research", "backtest", "results"]);
@@ -32,6 +37,79 @@ test("Home labels only the currently bound project and never falls back to anoth
   assert.equal(selectCurrentProjectLabel({ projectId: "prj_B" }, projects), "项目 B");
   assert.equal(selectCurrentProjectLabel({ projectId: "prj_C" }, projects), "prj_C");
   assert.equal(selectCurrentProjectLabel(null, projects), "尚未绑定");
+});
+
+test("V1.1 Home is a canonical project overview with switching and one backend-derived next action", async () => {
+  const source = await readFile(
+    new URL("../../apps/desktop/src/renderer/components/ProductRuntimePanel.tsx", import.meta.url),
+    "utf8"
+  );
+  assert.match(source, /onNavigate/);
+  assert.match(source, /dataHome/);
+  assert.match(source, /最近数据/);
+  assert.match(source, /最近研究/);
+  assert.match(source, /最近策略/);
+  assert.match(source, /最近回测与结果/);
+  assert.match(source, /下一步/);
+  assert.match(source, /切换项目/);
+  assert.match(source, /selectProductHomeNextAction/);
+  assert.match(source, /高级兼容入口（不属于 V1\.1 Golden Journey）/);
+});
+
+test("Home next action advances only from canonical Project Home states", () => {
+  const base = {
+    dataState: "EMPTY",
+    dataUnavailableReason: "NO_SNAPSHOT",
+    factorState: "EMPTY",
+    factorUnavailableReason: "NO_SNAPSHOT",
+    strategyState: "EMPTY",
+    strategyUnavailableReason: "NO_FACTOR_STUDY",
+    backtestState: "EMPTY",
+    backtestUnavailableReason: "NO_RESEARCH_STRATEGY",
+    backtest: null,
+  };
+  assert.deepEqual(selectProductHomeNextAction(null), {
+    page: "home",
+    label: "等待项目概览",
+    reason: "PROJECT_HOME_NOT_READY",
+  });
+  assert.deepEqual(selectProductHomeNextAction(base), {
+    page: "data",
+    label: "导入研究数据",
+    reason: "NO_SNAPSHOT",
+  });
+  assert.equal(selectProductHomeNextAction({ ...base, dataState: "AVAILABLE", factorUnavailableReason: "NO_FACTOR_STUDY" }).page, "research");
+  assert.deepEqual(selectProductHomeNextAction({
+    ...base,
+    dataState: "AVAILABLE",
+    factorState: "AVAILABLE",
+  }), {
+    page: "backtest",
+    label: "创建研究策略",
+    reason: "NO_FACTOR_STUDY",
+  });
+  assert.deepEqual(selectProductHomeNextAction({
+    ...base,
+    dataState: "AVAILABLE",
+    factorState: "AVAILABLE",
+    strategyState: "AVAILABLE",
+  }), {
+    page: "backtest",
+    label: "运行研究回测",
+    reason: "NO_RESEARCH_STRATEGY",
+  });
+  assert.deepEqual(selectProductHomeNextAction({
+    ...base,
+    dataState: "AVAILABLE",
+    factorState: "AVAILABLE",
+    strategyState: "AVAILABLE",
+    backtestState: "AVAILABLE",
+    backtest: { resultState: "VALID" },
+  }), {
+    page: "results",
+    label: "查看最新有效结果",
+    reason: "VALID_RESULT_AVAILABLE",
+  });
 });
 
 test("Backtest workspace exposes owner policy bounds, preview-before-publish, and durable phase feedback", async () => {

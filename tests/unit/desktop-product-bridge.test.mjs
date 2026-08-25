@@ -420,6 +420,11 @@ test("T4b: healthy states still derive exactly", () => {
   assert.equal(deriveSurface({ ...baseState, status: bound }), "PROJECT_BOUND");
 });
 
+test("T4c: a verified V1.1 Project Home is not downgraded by the legacy RunSpec selector", () => {
+  const bound = { backendState: "READY", bindingState: "PROJECT_BOUND", boundProject: { projectId: "p", projectContextRevisionId: "c", sessionId: "s" }, capabilities: [] };
+  assert.equal(deriveSurface({ ...baseState, status: bound, runSpecId: "", dataHome: { readModelVersion: "v3.project-home/1.1" } }), "PROJECT_BOUND");
+});
+
 test("UNAVAILABLE run-spec cannot be selected or submitted by the renderer store gate", async () => {
   const canonicalId = `btrs_sha256_${"e".repeat(64)}`;
   const unavailable = {

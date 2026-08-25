@@ -2062,13 +2062,15 @@
                     "analysis_output_name",
                     "analysis_artifact_id",
                     "outputs",
+                    "visual_preview_total_rows",
+                    "visual_preview_projection",
                     "visual_preview",
                     "analysis"
                   ],
                   "properties": {
                     "schema_version": {
                       "type": "string",
-                      "const": "v3.project-factor-summary/1.0.0"
+                      "const": "v3.project-factor-summary/1.1.0"
                     },
                     "truth": {
                       "type": "string",
@@ -2169,9 +2171,18 @@
                         }
                       }
                     },
+                    "visual_preview_total_rows": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000000
+                    },
+                    "visual_preview_projection": {
+                      "type": "string",
+                      "const": "TAIL_ASCENDING_MAX_256"
+                    },
                     "visual_preview": {
                       "type": "array",
-                      "maxItems": 5000,
+                      "maxItems": 256,
                       "items": {
                         "type": "object",
                         "additionalProperties": false,
@@ -2265,6 +2276,8 @@
                         "factor_analysis_result_id",
                         "spec",
                         "aggregate",
+                        "daily_result_count",
+                        "daily_results_projection",
                         "daily_results"
                       ],
                       "properties": {
@@ -2642,8 +2655,18 @@
                             }
                           }
                         },
+                        "daily_result_count": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 2000000
+                        },
+                        "daily_results_projection": {
+                          "type": "string",
+                          "const": "TAIL_ASCENDING_MAX_256"
+                        },
                         "daily_results": {
                           "type": "array",
+                          "maxItems": 256,
                           "items": {
                             "type": "object",
                             "additionalProperties": false,

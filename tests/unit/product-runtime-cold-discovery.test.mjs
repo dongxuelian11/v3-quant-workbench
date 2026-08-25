@@ -113,7 +113,7 @@ const FACTOR_HOME = {
   factorState: "AVAILABLE",
   factorUnavailableReason: "NONE",
   factor: {
-    schemaVersion: "v3.project-factor-summary/1.0.0",
+    schemaVersion: "v3.project-factor-summary/1.1.0",
     truth: "NOT_FORMAL",
     admission: "PRE_ALPHA",
     projectId: PROJECT,
@@ -653,7 +653,8 @@ test("ACC-C3-13 Strategy and Backtest adopt only exact terminal Tasks and canoni
         calls.push(`task:${taskId}`);
         return taskId === strategyTask.taskId ? strategyTask : backtestTask;
       },
-      async getTaskEvents() {
+      async getTaskEvents(_afterSequence, limit) {
+        assert.equal(limit, 500);
         calls.push("events");
         return {
           highWatermark: 40,
@@ -775,7 +776,11 @@ test("Task feedback retries only a persisted retry-admitted Product Backtest and
         return queued;
       },
       async getTask(taskId) { calls.push("task"); assert.equal(taskId, failed.taskId); return succeeded; },
-      async getTaskEvents() { calls.push("events"); return { highWatermark: 50, items: [] }; },
+      async getTaskEvents(_afterSequence, limit) {
+        assert.equal(limit, 500);
+        calls.push("events");
+        return { highWatermark: 50, items: [] };
+      },
       async getProjectHome() { calls.push("home"); return BACKTEST_HOME; },
       async getLatestProductResultDetails() { calls.push("details"); return RESULT_DETAILS; }
     }

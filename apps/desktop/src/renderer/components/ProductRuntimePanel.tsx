@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { capabilityTruth, describeError, useProductRuntime, type ProductSurfaceState } from "../productRuntimeStore";
+import { selectCurrentProjectLabel, selectProductHomeNextAction, type ProductPageId } from "../productShellModel";
 import type { ProductResearchSubmitIntent } from "../../../../../packages/contracts/src/index";
 
 /**
@@ -70,11 +71,12 @@ function CapabilityBadge({ label, code }: { label: string; code: string }) {
   return <span className={`connection-badge ${tone}`} title={`${code} · ${truth.truth_state}${reason}`}>{label} · {truth.truth_state}{reason}</span>;
 }
 
-export function ProductRuntimePanel() {
+export function ProductRuntimePanel({ onNavigate }: { readonly onNavigate?: (page: ProductPageId) => void }) {
   const surface = useProductRuntime((state) => state.surface);
   const status = useProductRuntime((state) => state.status);
   const boundProject = useProductRuntime((state) => state.boundProject);
   const projects = useProductRuntime((state) => state.projects);
+  const dataHome = useProductRuntime((state) => state.dataHome);
   const runSpecs = useProductRuntime((state) => state.runSpecs);
   const entryBusy = useProductRuntime((state) => state.entryBusy);
   const lastImport = useProductRuntime((state) => state.lastImport);
@@ -111,32 +113,49 @@ export function ProductRuntimePanel() {
 
   const backendReady = status?.backendState === "READY";
   const bound = boundProject !== null;
+  const currentProjectLabel = selectCurrentProjectLabel(boundProject, projects?.projects ?? []);
+  const nextAction = selectProductHomeNextAction(dataHome);
+  const projectOptions = projects?.projects ?? [];
   const selectedEntry = runSpecs?.specs.find((item) => item.runSpecId === runSpecId.trim()) ?? null;
   const selectedExecutable = selectedEntry?.status === "EXECUTABLE";
   const canSubmit = backendReady && bound && selectedExecutable && !inflight;
+  const dataSummary = dataHome?.dataState === "AVAILABLE" && dataHome.data !== null
+    ? `${dataHome.data.instrumentCount} 个标的 · ${dataHome.data.dateCoverageStart} 至 ${dataHome.data.dateCoverageEnd} · ${dataHome.data.sourceType}`
+    : `${dataHome?.dataState ?? "LOADING"} · ${dataHome?.dataUnavailableReason ?? "PROJECT_HOME_NOT_READY"}`;
+  const factorSummary = dataHome?.factorState === "AVAILABLE" && dataHome.factor !== null
+    ? `${dataHome.factor.analysisOutputName} · ${dataHome.factor.outputs.length} 个输出 · ${dataHome.factor.analysis.aggregate.validDates} 个有效评价日`
+    : `${dataHome?.factorState ?? "LOADING"} · ${dataHome?.factorUnavailableReason ?? "PROJECT_HOME_NOT_READY"}`;
+  const strategySummary = dataHome?.strategyState === "AVAILABLE" && dataHome.strategy !== null
+    ? `${dataHome.strategy.transitionCount} 次状态切换 · ${dataHome.strategy.decisionChainCount} 条 canonical 决策链`
+    : `${dataHome?.strategyState ?? "LOADING"} · ${dataHome?.strategyUnavailableReason ?? "PROJECT_HOME_NOT_READY"}`;
+  const backtestSummary = dataHome?.backtestState === "AVAILABLE" && dataHome.backtest !== null
+    ? `${dataHome.backtest.resultState} Result · ${dataHome.backtest.orderCount} 个订单 · ${dataHome.backtest.fillCount} 笔成交 · ${dataHome.backtest.assumptionMode}`
+    : `${dataHome?.backtestState ?? "LOADING"} · ${dataHome?.backtestUnavailableReason ?? "PROJECT_HOME_NOT_READY"}`;
 
   return <section className="panel-page product-runtime-panel" data-testid="product-runtime-panel" data-product-surface={surface}>
     <header className="analysis-header">
       <div className="analysis-title">
-        <small>正式产品运行时 · B3 LIVE</small>
-        <h1>Canonical 产品连接</h1>
+        <small>V1.1 可用研究产品 · PRODUCT_CONNECTED / PRE_ALPHA</small>
+        <h1>项目总览</h1>
         <p><span role="status" aria-live="polite" data-product-state={surface}>{SURFACE_COPY[surface]}</span></p>
       </div>
       <div className="experiment-trail">
         <span><small>版本</small>{status?.productVersion ?? "UNAVAILABLE"}</span>
         <span><small>后端</small>{status?.backendState ?? "UNKNOWN"}</span>
-        <span><small>绑定</small>{bound ? boundProject.projectId : "未绑定"}</span>
-        <span><small>Build</small>{status?.buildManifestId ?? "UNAVAILABLE"}</span>
+        <span><small>当前项目</small>{currentProjectLabel}</span>
         <button onClick={() => void refresh()} disabled={!status}>刷新状态</button>
       </div>
     </header>
     <div className="analysis-contextline">
-      <CapabilityBadge label="项目会话" code="ProjectSessionService"/>
-      <CapabilityBadge label="回测" code="BacktestService"/>
-      <CapabilityBadge label="Artifact" code="ArtifactService"/>
-      <CapabilityBadge label="Product Entry" code="ProductEntryService"/>
-      <CapabilityBadge label="任务" code="TaskService"/>
-      <CapabilityBadge label="结果" code="ResultService"/>
+      {dataHome === null
+        ? <span className="connection-badge unavailable">项目概览读取中</span>
+        : <>
+          <span className="connection-badge ok">{dataHome.maturity}</span>
+          <span className="connection-badge">{dataHome.admission}</span>
+          <span className="connection-badge">{dataHome.truth}</span>
+        </>}
+      <span>数据来源 · {dataHome?.data?.sourceType ?? "尚无数据"}</span>
+      <span>本地数据 PIT · {dataHome?.data?.pitState ?? "NOT_AVAILABLE"}</span>
     </div>
 
     {!bound && backendReady && <div className="product-connect" data-testid="product-connect">
@@ -167,7 +186,64 @@ export function ProductRuntimePanel() {
       </details>
     </div>}
 
-    {bound && <div className="product-run" data-testid="product-run">
+    {bound && <div className="product-home-overview" data-testid="product-home-overview">
+      <section className="product-project-switcher" aria-labelledby="product-project-switcher-title">
+        <div className="section-head"><div><small>Canonical Project Binding</small><h2 id="product-project-switcher-title">打开与切换项目</h2></div></div>
+        <label htmlFor="product-project-switch">切换项目</label>
+        <div className="product-project-switch-row">
+          <select id="product-project-switch" value={boundProject.projectId} disabled={entryBusy || projectOptions.length === 0} onChange={(event) => {
+            const candidate = projectOptions.find((project) => project.projectId === event.target.value);
+            if (candidate !== undefined && candidate.projectId !== boundProject.projectId) {
+              void useProductRuntime.getState().connect(candidate.projectId, candidate.projectContextRevisionId);
+            }
+          }}>
+            {!projectOptions.some((project) => project.projectId === boundProject.projectId)
+              && <option value={boundProject.projectId}>{currentProjectLabel}</option>}
+            {projectOptions.map((project) => <option key={project.projectId} value={project.projectId}>{project.displayName}</option>)}
+          </select>
+          {projects?.hasMore && <button data-action="load-next-project-page" disabled={entryBusy || projects.nextCursor === null} onClick={() => void loadNextProjectPage()}>加载更多项目</button>}
+        </div>
+        <p className="honest-note">项目切换只在主进程完成 binding、runtime、session 与 ProjectContext 验证后生效；旧项目的迟到结果不会进入当前概览。</p>
+        <details className="product-create-project">
+          <summary>创建新项目</summary>
+          <label>项目名称<input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="例如：A 股动量研究" aria-label="新项目名称" disabled={entryBusy}/></label>
+          <label>备注（可选）<input value={newProjectNotes} onChange={(event) => setNewProjectNotes(event.target.value)} placeholder="非金融元数据" aria-label="新项目备注" disabled={entryBusy}/></label>
+          <button className="primary" data-action="create-project" disabled={entryBusy || newProjectName.trim().length < 1} onClick={() => void createProjectAndBind(newProjectName.trim(), newProjectNotes.trim() === "" ? undefined : newProjectNotes.trim())}>{entryBusy ? "创建中…" : "创建并打开项目"}</button>
+        </details>
+      </section>
+
+      <section className="product-home-status" aria-labelledby="product-home-status-title">
+        <div className="section-head"><div><small>Backend-owned Project Home</small><h2 id="product-home-status-title">研究进度</h2></div></div>
+        <dl className="product-home-timeline">
+          <div><dt>最近数据</dt><dd>{dataSummary}</dd></div>
+          <div><dt>最近研究</dt><dd>{factorSummary}</dd></div>
+          <div><dt>最近策略</dt><dd>{strategySummary}</dd></div>
+          <div><dt>最近回测与结果</dt><dd>{backtestSummary}</dd></div>
+        </dl>
+      </section>
+
+      <section className="product-next-action" aria-labelledby="product-next-action-title">
+        <small>下一步</small>
+        <h2 id="product-next-action-title">{nextAction.label}</h2>
+        <p>{nextAction.reason}</p>
+        <button className="primary" disabled={nextAction.page === "home" || onNavigate === undefined} onClick={() => onNavigate?.(nextAction.page)}>
+          {nextAction.page === "home" ? "等待 canonical 概览" : `前往${nextAction.page === "data" ? "数据" : nextAction.page === "research" ? "研究" : nextAction.page === "backtest" ? "回测" : "结果"}`}
+        </button>
+      </section>
+    </div>}
+
+    {bound && <details className="product-compatibility" data-testid="product-compatibility">
+      <summary>高级兼容入口（不属于 V1.1 Golden Journey）</summary>
+      <div className="analysis-contextline">
+        <CapabilityBadge label="项目会话" code="ProjectSessionService"/>
+        <CapabilityBadge label="旧回测契约" code="BacktestService"/>
+        <CapabilityBadge label="Artifact" code="ArtifactService"/>
+        <CapabilityBadge label="Product Entry" code="ProductEntryService"/>
+        <CapabilityBadge label="任务" code="TaskService"/>
+        <CapabilityBadge label="结果" code="ResultService"/>
+      </div>
+      <p className="honest-note product-build-identity" title={status?.buildManifestId ?? "UNAVAILABLE"}>BuildManifest · {status?.buildManifestId ?? "UNAVAILABLE"}</p>
+      <div className="product-run" data-testid="product-run">
       <div className="section-head"><div><small>Product Entry · PRE_ALPHA / RESEARCH_ONLY</small><h2>从 canonical source 发起研究</h2></div></div>
       <p className="honest-note">这里只提交标的与日期意图。Provider、ConnectorVersion、原始字节、观察值与数值真值由 backend 解析并校验；当前结果明确标记为 PRODUCT_CONNECTED_CANDIDATE，不是 Formal Market State。</p>
       <div className="product-research-entry" data-testid="product-research-entry">
@@ -223,7 +299,8 @@ export function ProductRuntimePanel() {
         {result && <><dt>Result</dt><dd>{result.resultId} · {result.state}</dd></>}
         {artifactDescriptor && <><dt>SHA-256</dt><dd>{artifactDescriptor.sha256}</dd><dt>字节数</dt><dd>{artifactDescriptor.byteSize}</dd></>}
       </dl>}
-    </div>}
+      </div>
+    </details>}
 
     {surface === "BACKEND_DISCONNECTED" && <p className="honest-note">后端未连接：请确认 canonical backend（v3_backend.runtime.bootstrap）可启动。</p>}
     {surface === "BACKEND_RECONNECTING" && <p className="honest-note">后端连接已断开，正在进行有界重连；不会自动重放未知结果的非幂等操作。</p>}

@@ -19,6 +19,7 @@ function assertSourceContract(source, pattern, message) {
 }
 
 const packageJson = JSON.parse(await readRequired("package.json"));
+assert.equal(packageJson.version, "1.0.0", "V1.1 package version must remain gated until complete C4 acceptance");
 assert.equal(packageJson.main, "dist/apps/desktop/src/main.js", "Electron main entrypoint changed unexpectedly");
 assert.equal(packageJson.scripts["smoke:frontend"], "node scripts/public-frontend-smoke.mjs");
 assert.equal(packageJson.scripts["verify:product-bundle-truth"], "node scripts/verify-product-bundle-truth.mjs");
@@ -31,8 +32,25 @@ assert.match(packageJson.scripts.validate, /npm run smoke:electron/);
 assert.match(packageJson.scripts.validate, /npm run smoke:visual-evidence/);
 
 const workflow = await readRequired(".github/workflows/ci.yml");
-assertSourceContract(workflow, /run:\s*npm run validate:public/, "Public CI must use the repository-contained public validation chain");
-assert.doesNotMatch(workflow, /visual-restoration-screenshots|smoke:visual-evidence|smoke:electron/, "Public CI must not require local Electron/UAU evidence");
+function workflowJob(jobId, nextJobId) {
+  const start = workflow.indexOf(`  ${jobId}:\n`);
+  assert.notEqual(start, -1, `Public CI is missing ${jobId}`);
+  const end = nextJobId === undefined ? workflow.length : workflow.indexOf(`  ${nextJobId}:\n`, start + 1);
+  assert.notEqual(end, -1, `Public CI is missing ${nextJobId}`);
+  return workflow.slice(start, end);
+}
+const authorityJob = workflowJob("authority-contract-quality", "backend-runtime");
+const backendJob = workflowJob("backend-runtime", "windows-product-integration");
+const windowsJob = workflowJob("windows-product-integration");
+for (const command of ["validate:authority", "test:contracts", "typecheck", "lint", "test:unit"]) {
+  assertSourceContract(authorityJob, new RegExp(`npm run ${command.replaceAll(":", "\\:")}`), `Job A is missing ${command}`);
+}
+for (const command of ["test:backend", "smoke:product-runtime", "smoke:product-data", "smoke:product-factor", "smoke:product-backtest", "smoke:product-result"]) {
+  assertSourceContract(backendJob, new RegExp(`npm run ${command.replaceAll(":", "\\:")}`), `Job B is missing ${command}`);
+}
+assert.doesNotMatch(`${authorityJob}\n${backendJob}`, /visual-restoration-screenshots|smoke:visual-evidence|smoke:electron/, "Ubuntu Jobs A/B must not require local Electron/UAU evidence");
+assertSourceContract(windowsJob, /npm\.cmd run smoke:electron:runtime/, "Job C must exercise the hosted Windows Electron runtime");
+assert.doesNotMatch(windowsJob, /visual-restoration-screenshots|smoke:visual-evidence/, "Hosted Job C must not claim local UAU evidence");
 
 const gitignore = await readRequired(".gitignore");
 assertSourceContract(gitignore, /^\/deliverables\/\s*$/m, "Generated local evidence must remain ignored");
@@ -101,7 +119,7 @@ assertSourceContract(rendererEntrySource, /import \{ ProductApp \} from ["']\.\/
 assert.doesNotMatch(rendererEntrySource, /from ["']\.\/App["']|<App\s*\//, "Development workbench must not be the PRODUCT entry");
 const productAppSource = await readRequired("apps/desktop/src/renderer/ProductApp.tsx", 1000);
 assertSourceContract(productAppSource, /data-product-mode=["']PRODUCT["']/, "PRODUCT mode marker is missing");
-assertSourceContract(productAppSource, /<ProductRuntimePanel\s*\/>/, "Home must consume the canonical product runtime read model");
+assertSourceContract(productAppSource, /<ProductRuntimePanel\s+onNavigate=\{setActivePage\}\s*\/>/, "Home must consume the canonical product runtime read model and real navigation owner");
 assertSourceContract(productAppSource, /disabled=\{!item\.available\}/, "Deferred PRODUCT pages must render disabled");
 assertSourceContract(productAppSource, /data-unavailable-reason=\{item\.reason \?\? undefined\}/, "Deferred PRODUCT pages must expose their reason");
 assert.deepEqual(PRODUCT_NAVIGATION.map((item) => item.id), ["home", "data", "research", "backtest", "results"]);
@@ -124,4 +142,35 @@ for (const forbidden of ["cancelTask", "retryTask", "resumeTask", "openArtifactS
   const productSurface = preloadBridgeSource.slice(preloadBridgeSource.indexOf("createBackendRuntimeReadOnlyBridge"));
   assert.doesNotMatch(productSurface, new RegExp(`${forbidden}\\s*:`), `Renderer product bridge must not expose ${forbidden}`);
 }
-console.log(`Public frontend smoke PASS: truthful PRODUCT shell, one connected Home, four reasoned NOT_AVAILABLE pages, Electron security invariants, and ${new Set(referencedAssets).size} renderer assets verified without development fixtures.`);
+
+const readme = await readRequired("README.md", 1000);
+const currentStatus = await readRequired("docs/status/CURRENT_STATUS.md", 1000);
+const productSurfaceDoc = await readRequired("docs/architecture/PRODUCT_SURFACE.md", 1000);
+const deferredGaps = await readRequired("docs/status/V3_DEFERRED_GAPS.md", 1000);
+const v1History = await readRequired("docs/release/V1_0_RELEASE_CANDIDATE.md", 1000);
+const v11Candidate = await readRequired("docs/release/V1_1_RELEASE_CANDIDATE.md", 1000);
+
+for (const [document, token] of [
+  [readme, "V3 V1.1 Usable Research Product local candidate"],
+  [readme, "Hosted Jobs A-F"],
+  [currentStatus, "PRODUCT_CONNECTED / PRE_ALPHA / NOT_FORMAL"],
+  [currentStatus, "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED"],
+  [productSurfaceDoc, "ProductEntryService"],
+  [productSurfaceDoc, "PRODUCT_CONNECTED / PRE_ALPHA / NOT_FORMAL"],
+  [deferredGaps, "CLOSED_FOR_V1_1_PRODUCT_RESEARCH_PATH"],
+  [deferredGaps, "V1_1_HOSTED_JOBS_A_F = NOT_RUN"],
+  [v1History, "RELEASED AS PUBLIC PRERELEASE"],
+  [v11Candidate, "LOCAL CANDIDATE / UNPUSHED / C4 IN_PROGRESS"],
+  [v11Candidate, "Package version: `1.0.0` (`1.1.0` bump gated)"],
+]) {
+  assert.ok(document.includes(token), `current product documentation is missing ${token}`);
+}
+for (const staleClaim of [
+  "Desktop ↔ backend wiring | Not performed",
+  "Backtest / Result backend | Not rebuilt",
+  "Status: `PENDING EXACT-HEAD CI",
+]) {
+  assert.doesNotMatch(`${currentStatus}\n${v1History}`, new RegExp(staleClaim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `stale documentation claim remains: ${staleClaim}`);
+}
+
+console.log(`Public frontend smoke PASS: truthful staged PRODUCT navigation, connected V1.1 owner calls, Electron security invariants, current evidence-ceiling docs, and ${new Set(referencedAssets).size} renderer assets verified without development fixtures.`);

@@ -4,6 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
+      - ".github/workflows/ci.yml"
       - ".github/workflows/packaging-clean-machine-evidence.yml"
       - "apps/backend/**"
       - "apps/desktop/**"
@@ -13,13 +14,18 @@ on:
       - "scripts/packaged-clean-machine-evidence-prep.mjs"
       - "scripts/packaged-clean-machine-evidence.ps1"
       - "scripts/packaged-runtime-smoke.mjs"
+      - "scripts/contract-fixture-test.mjs"
+      - "scripts/public-frontend-smoke.mjs"
       - "scripts/prepare-packaged-backend.mjs"
       - "scripts/verify-package.mjs"
       - "scripts/verify-release.mjs"
       - "scripts/product-closure-packaged-e2e.mjs"
       - "scripts/product-release-packaged-e2e.mjs"
+      - "scripts/v1_1_product_release_packaged_e2e.mjs"
+      - "scripts/v1_1-release-clean-machine.ps1"
       - "scripts/v1-release-clean-machine.ps1"
       - "scripts/v1-release-catalog-probe.py"
+      - "tests/unit/v1-1-ci-workflow.test.mjs"
       - "docs/packaging/**"
       - "docs/release/**"
       - "docs/oss/**"
@@ -27,34 +33,35 @@ on:
   push:
     branches:
       - "main"
-      - "codex/v1-integrated-product-release-closure-01"
+      - "codex/v1-1-usable-research-product-01"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-package:
+  windows-package:
+    name: Job D - exact-head Windows package
     runs-on: windows-latest
     timeout-minutes: 120
     env:
       V3_SOURCE_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Checkout exact PR head
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           cache: npm
 
       - name: Setup exact CPython build input
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14.5"
           architecture: x64
@@ -65,7 +72,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $observed = (git rev-parse HEAD).Trim()
           if ($observed -ne $env:V3_SOURCE_GIT_SHA) {
-            throw "Job A checkout is not the exact PR head: expected=$env:V3_SOURCE_GIT_SHA observed=$observed"
+            throw "Job D checkout is not the exact candidate head: expected=$env:V3_SOURCE_GIT_SHA observed=$observed"
           }
           if ([string]::IsNullOrWhiteSpace($env:pythonLocation)) {
             throw "actions/setup-python did not expose pythonLocation"
@@ -80,7 +87,7 @@ jobs:
         shell: pwsh
         run: npm.cmd run sbom:check
 
-      - name: Build V1 Windows x64 package and NSIS installer
+      - name: Build V1.1 candidate Windows x64 package and NSIS installer
         shell: pwsh
         run: npm.cmd run package:win:release
 
@@ -93,31 +100,32 @@ jobs:
           node scripts/packaged-clean-machine-evidence-prep.mjs
           npm.cmd run smoke:product-release
 
-      - name: Assemble V1 release delivery artifact and bounded driver
+      - name: Assemble V1.1 release delivery artifact and bounded drivers
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $packageRoot = (Resolve-Path "artifacts\package\win-unpacked").Path
-          $outputRoot = Join-Path $env:GITHUB_WORKSPACE "artifacts\v1-release-delivery"
+          $outputRoot = Join-Path $env:GITHUB_WORKSPACE "artifacts\v1-1-release-delivery"
           New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
-          $zipPath = Join-Path $outputRoot "V3_V1_PRODUCT_RELEASE_PACKAGE.zip"
+          $zipPath = Join-Path $outputRoot "V3_V1_1_PRODUCT_RELEASE_PACKAGE.zip"
           & tar.exe -a -c -f $zipPath -C $packageRoot .
           if ($LASTEXITCODE -ne 0) { throw "tar delivery archive failed with exit code $LASTEXITCODE" }
           $zipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
-          "$zipHash  V3_V1_PRODUCT_RELEASE_PACKAGE.zip" | Set-Content -LiteralPath "$zipPath.sha256" -Encoding utf8 -NoNewline
+          "$zipHash  V3_V1_1_PRODUCT_RELEASE_PACKAGE.zip" | Set-Content -LiteralPath "$zipPath.sha256" -Encoding utf8 -NoNewline
           $installer = (Resolve-Path "artifacts\package\v3-quant-workbench-1.0.0-x64.exe").Path
           $installerTarget = Join-Path $outputRoot "v3-quant-workbench-1.0.0-x64.exe"
           Copy-Item -LiteralPath $installer -Destination $installerTarget
           $installerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerTarget).Hash.ToLowerInvariant()
           "$installerHash  v3-quant-workbench-1.0.0-x64.exe" | Set-Content -LiteralPath "$installerTarget.sha256" -Encoding utf8 -NoNewline
-          Copy-Item "scripts\v1-release-clean-machine.ps1" $outputRoot
-          Copy-Item "scripts\v1-release-catalog-probe.py" $outputRoot
+          Copy-Item "scripts\v1_1-release-clean-machine.ps1" $outputRoot
+          Copy-Item "scripts\v1_1_product_release_packaged_e2e.mjs" $outputRoot
+          Copy-Item "scripts\product-closure-packaged-e2e.mjs" $outputRoot
           Copy-Item "artifacts\package\V3_PACKAGE_EVIDENCE.json" $outputRoot
           Copy-Item "artifacts\package\V3_RELEASE_MANIFEST.json" $outputRoot
           Copy-Item "artifacts\package-level2\V3_PACKAGING_LEVEL2_BUILD_PIN.json" $outputRoot
           $os = Get-CimInstance Win32_OperatingSystem
           [ordered]@{
-            schema_version = "v3.v1-release-build-runner/1.0.0"
+            schema_version = "v3.v1-1-release-build-runner/1.0.0"
             job_id = $env:GITHUB_JOB
             runner_name = $env:RUNNER_NAME
             runner_os = $env:RUNNER_OS
@@ -128,43 +136,44 @@ jobs:
             source_git_sha = $env:V3_SOURCE_GIT_SHA
             source_git_tree_sha = (git rev-parse "HEAD^{tree}").Trim()
             product_version = "1.0.0"
-            package_artifact_name = "V3_V1_PRODUCT_RELEASE_PACKAGE.zip"
+            package_artifact_name = "V3_V1_1_PRODUCT_RELEASE_PACKAGE.zip"
             package_artifact_bytes = (Get-Item -LiteralPath $zipPath).Length
             package_artifact_sha256 = $zipHash
             installer_artifact_name = "v3-quant-workbench-1.0.0-x64.exe"
             installer_artifact_bytes = (Get-Item -LiteralPath $installerTarget).Length
             installer_artifact_sha256 = $installerHash
             release_manifest_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath "artifacts\package\V3_RELEASE_MANIFEST.json").Hash.ToLowerInvariant()
-          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $outputRoot "V3_V1_RELEASE_BUILD_RUNNER.json") -Encoding utf8
+          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $outputRoot "V3_V1_1_RELEASE_BUILD_RUNNER.json") -Encoding utf8
 
-      - name: Upload V1 release delivery and standalone acceptance driver
-        uses: actions/upload-artifact@v4
+      - name: Upload V1.1 release delivery and standalone acceptance drivers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: v3-v1-product-release-delivery
-          path: artifacts/v1-release-delivery
+          name: v3-v1-1-product-release-delivery
+          path: artifacts/v1-1-release-delivery
           if-no-files-found: error
           compression-level: 0
 
-  verify-clean-machine:
-    needs: build-package
+  windows-clean-machine:
+    name: Job E - V1.1 no-checkout clean machine
+    needs: windows-package
     runs-on: windows-latest
     timeout-minutes: 45
     env:
       V3_VERIFY_JOB_CHECKOUT_ACTION_PRESENT: "FALSE"
     steps:
-      - name: Prove Job B begins without checkout
+      - name: Prove Job E begins without checkout
         shell: pwsh
         working-directory: 'C:\'
         run: |
           $ErrorActionPreference = "Stop"
-          Write-Output "Job B pre-download probe started from $((Get-Location).Path); runner_temp=$env:RUNNER_TEMP; github_workspace=$env:GITHUB_WORKSPACE"
-          $inputRoot = Join-Path $env:RUNNER_TEMP "v3-v1-release-input"
-          $evidenceRoot = Join-Path $env:RUNNER_TEMP "v3-v1-release-evidence"
-          $preDownloadInventory = Join-Path $env:RUNNER_TEMP "v3-v1-pre-download.json"
-          "V3_V1_INPUT_ROOT=$inputRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "V3_V1_EVIDENCE_ROOT=$evidenceRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "V3_V1_PRE_DOWNLOAD_INVENTORY=$preDownloadInventory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $env:V3_V1_PRE_DOWNLOAD_INVENTORY = $preDownloadInventory
+          Write-Output "Job E pre-download probe started from $((Get-Location).Path); runner_temp=$env:RUNNER_TEMP; github_workspace=$env:GITHUB_WORKSPACE"
+          $inputRoot = Join-Path $env:RUNNER_TEMP "v3-v1-1-release-input"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "v3-v1-1-release-evidence"
+          $preDownloadInventory = Join-Path $env:RUNNER_TEMP "v3-v1-1-pre-download.json"
+          "V3_V1_1_INPUT_ROOT=$inputRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "V3_V1_1_EVIDENCE_ROOT=$evidenceRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "V3_V1_1_PRE_DOWNLOAD_INVENTORY=$preDownloadInventory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $env:V3_V1_1_PRE_DOWNLOAD_INVENTORY = $preDownloadInventory
           $workspace = $env:GITHUB_WORKSPACE
           if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
             New-Item -ItemType Directory -Force -Path $workspace | Out-Null
@@ -178,39 +187,150 @@ jobs:
           } catch { $gitRoot = "" }
           $global:LASTEXITCODE = 0
           if ($hits.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($gitRoot)) {
-            throw "Job B workspace contains repository source before artifact download: hits=$($hits -join ',') gitRoot=$gitRoot"
+            throw "Job E workspace contains repository source before artifact download: hits=$($hits -join ',') gitRoot=$gitRoot"
           }
           $entries = @(Get-ChildItem -LiteralPath $workspace -Force | Select-Object -ExpandProperty Name)
           [ordered]@{
-            schema_version = "v3.v1-release-pre-download/1.0.0"
+            schema_version = "v3.v1-1-release-pre-download/1.0.0"
             checkout_used = $false
             repository_source_tree_present = $false
             checkout_action_present = $false
             workspace = $workspace
             entries = $entries
-          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $env:V3_V1_PRE_DOWNLOAD_INVENTORY -Encoding utf8
+          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $env:V3_V1_1_PRE_DOWNLOAD_INVENTORY -Encoding utf8
 
-      - name: Download only Job A V1 release delivery and evidence driver
-        uses: actions/download-artifact@v4
+      - name: Download only Job D V1.1 release delivery and evidence drivers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: v3-v1-product-release-delivery
-          path: ${{ runner.temp }}\v3-v1-release-input
+          name: v3-v1-1-product-release-delivery
+          path: ${{ runner.temp }}\v3-v1-1-release-input
 
-      - name: Install and run standalone V1 clean-machine acceptance
+      - name: Install and run standalone V1.1 clean-machine acceptance
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $driver = Join-Path $env:V3_V1_INPUT_ROOT "v1-release-clean-machine.ps1"
+          $driver = Join-Path $env:V3_V1_1_INPUT_ROOT "v1_1-release-clean-machine.ps1"
           if (-not (Test-Path -LiteralPath $driver -PathType Leaf)) { throw "bounded evidence driver missing: $driver" }
-          & $driver -InputRoot $env:V3_V1_INPUT_ROOT -EvidenceRoot $env:V3_V1_EVIDENCE_ROOT
+          & $driver -InputRoot $env:V3_V1_1_INPUT_ROOT -EvidenceRoot $env:V3_V1_1_EVIDENCE_ROOT
 
-      - name: Upload V1 clean-machine evidence and bounded logs
+      - name: Upload V1.1 clean-machine evidence and bounded logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: v3-v1-release-clean-machine-evidence-${{ github.run_id }}
+          name: v3-v1-1-release-clean-machine-evidence-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}\v3-v1-release-evidence\**
-            ${{ runner.temp }}\v3-v1-pre-download.json
+            ${{ runner.temp }}\v3-v1-1-release-evidence\**
+            ${{ runner.temp }}\v3-v1-1-pre-download.json
+          if-no-files-found: warn
+          compression-level: 0
+
+  live-provider-acceptance:
+    name: Job F - exact-package live provider acceptance
+    needs: windows-package
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download only Job D exact candidate package and bounded driver
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: v3-v1-1-product-release-delivery
+          path: ${{ runner.temp }}\v3-v1-1-provider-input
+
+      - name: Run actual packaged AKShare capture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inputRoot = Join-Path $env:RUNNER_TEMP "v3-v1-1-provider-input"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "v3-v1-1-provider-evidence"
+          $packageRoot = Join-Path $env:RUNNER_TEMP "v3-v1-1-provider-package"
+          New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
+          New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
+          $zipPath = Join-Path $inputRoot "V3_V1_1_PRODUCT_RELEASE_PACKAGE.zip"
+          $hashLine = (Get-Content -Raw -LiteralPath "$zipPath.sha256").Trim()
+          $expectedHash = ([regex]::Match($hashLine, "^[0-9a-fA-F]{64}")).Value.ToLowerInvariant()
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
+          if ($expectedHash.Length -ne 64 -or $actualHash -ne $expectedHash) { throw "Job F package transfer hash mismatch" }
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $packageRoot
+
+          $release = Get-Content -Raw -LiteralPath (Join-Path $inputRoot "V3_RELEASE_MANIFEST.json") | ConvertFrom-Json
+          $buildRunner = Get-Content -Raw -LiteralPath (Join-Path $inputRoot "V3_V1_1_RELEASE_BUILD_RUNNER.json") | ConvertFrom-Json
+          $runtimeManifestPath = Join-Path $packageRoot "resources\backend-runtime\runtime-manifest.json"
+          $runtime = Get-Content -Raw -LiteralPath $runtimeManifestPath | ConvertFrom-Json
+          if ($runtime.source_git_sha -ne $release.source.git_sha -or $runtime.source_git_tree_sha -ne $release.source.git_tree_sha) {
+            throw "Job F package source identity mismatch"
+          }
+          if ($buildRunner.source_git_sha -ne $release.source.git_sha -or $buildRunner.source_git_tree_sha -ne $release.source.git_tree_sha) {
+            throw "Job F build runner source identity mismatch"
+          }
+
+          $appPath = Join-Path $packageRoot "v3-quant-workbench.exe"
+          $driverPath = Join-Path $inputRoot "product-closure-packaged-e2e.mjs"
+          $productReport = Join-Path $evidenceRoot "V3_V1_1_LIVE_PROVIDER_PRODUCT.json"
+          $stdoutPath = Join-Path $evidenceRoot "live-provider.stdout.log"
+          $stderrPath = Join-Path $evidenceRoot "live-provider.stderr.log"
+          $priorRunAsNode = [Environment]::GetEnvironmentVariable("ELECTRON_RUN_AS_NODE", "Process")
+          $priorPackageRoot = [Environment]::GetEnvironmentVariable("V3_PACKAGE_ROOT", "Process")
+          $priorReport = [Environment]::GetEnvironmentVariable("V3_PRODUCT_CLOSURE_REPORT", "Process")
+          try {
+            [Environment]::SetEnvironmentVariable("ELECTRON_RUN_AS_NODE", "1", "Process")
+            [Environment]::SetEnvironmentVariable("V3_PACKAGE_ROOT", $packageRoot, "Process")
+            [Environment]::SetEnvironmentVariable("V3_PRODUCT_CLOSURE_REPORT", $productReport, "Process")
+            $process = Start-Process -FilePath $appPath -WorkingDirectory $inputRoot -ArgumentList @($driverPath) `
+              -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -WindowStyle Hidden -PassThru
+            if (-not $process.WaitForExit(900000)) {
+              try { $process.Kill() } catch { }
+              [ordered]@{
+                schema_version = "v3.v1-1-live-provider-acceptance/1.0.0"
+                result = "FAIL_PROVIDER_ACCEPTANCE_TIMEOUT"
+                source_git_sha = [string]$release.source.git_sha
+                source_git_tree_sha = [string]$release.source.git_tree_sha
+                package_sha256 = $actualHash
+              } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $evidenceRoot "V3_V1_1_LIVE_PROVIDER_ACCEPTANCE.json") -Encoding utf8
+              throw "FAIL_PROVIDER_ACCEPTANCE_TIMEOUT: packaged product did not exit within 900 seconds"
+            }
+            $process.Refresh()
+            if ($process.ExitCode -ne 0) {
+              $logs = ((Get-Content -Raw -LiteralPath $stdoutPath -ErrorAction SilentlyContinue) + "`n" + (Get-Content -Raw -LiteralPath $stderrPath -ErrorAction SilentlyContinue))
+              $state = if ($logs -match "PROVIDER_ACQUISITION_UNAVAILABLE") { "BLOCKED_PROVIDER_ACCEPTANCE" } else { "FAIL_PROVIDER_ACCEPTANCE" }
+              [ordered]@{
+                schema_version = "v3.v1-1-live-provider-acceptance/1.0.0"
+                result = $state
+                source_git_sha = [string]$release.source.git_sha
+                source_git_tree_sha = [string]$release.source.git_tree_sha
+                package_sha256 = $actualHash
+                product_exit_code = [int]$process.ExitCode
+              } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $evidenceRoot "V3_V1_1_LIVE_PROVIDER_ACCEPTANCE.json") -Encoding utf8
+              throw "$state`: packaged product exited $($process.ExitCode)"
+            }
+          } finally {
+            [Environment]::SetEnvironmentVariable("ELECTRON_RUN_AS_NODE", $priorRunAsNode, "Process")
+            [Environment]::SetEnvironmentVariable("V3_PACKAGE_ROOT", $priorPackageRoot, "Process")
+            [Environment]::SetEnvironmentVariable("V3_PRODUCT_CLOSURE_REPORT", $priorReport, "Process")
+          }
+
+          $product = Get-Content -Raw -LiteralPath $productReport | ConvertFrom-Json
+          if ($product.result -ne "V3_V1_PRODUCT_CLOSURE_COMBINED_E2E_PASS_CANDIDATE") { throw "Job F product report did not pass" }
+          if ($product.source_truth.provider_id -ne "pvd_akshare_eastmoney_a_share_eod_v1") { throw "Job F provider identity mismatch" }
+          if ([string]::IsNullOrWhiteSpace([string]$product.source_truth.raw_payload_sha256)) { throw "Job F raw capture hash missing" }
+          [ordered]@{
+            schema_version = "v3.v1-1-live-provider-acceptance/1.0.0"
+            result = "PASS_CANDIDATE"
+            source_git_sha = [string]$release.source.git_sha
+            source_git_tree_sha = [string]$release.source.git_tree_sha
+            package_sha256 = $actualHash
+            provider_id = [string]$product.source_truth.provider_id
+            connector_version_id = [string]$product.source_truth.connector_version_id
+            provider_package_version = [string]$product.source_truth.package_version
+            raw_payload_sha256 = [string]$product.source_truth.raw_payload_sha256
+            maturity = "PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE"
+            formal_truth = "NOT_FORMAL"
+          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $evidenceRoot "V3_V1_1_LIVE_PROVIDER_ACCEPTANCE.json") -Encoding utf8
+
+      - name: Upload live provider acceptance truth
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v3-v1-1-live-provider-acceptance-${{ github.run_id }}
+          path: ${{ runner.temp }}\v3-v1-1-provider-evidence\**
           if-no-files-found: warn
           compression-level: 0

@@ -23,6 +23,7 @@
     "lint": "node scripts/lint.mjs",
     "test": "node --test tests/unit/*.test.mjs",
     "test:unit": "npm run test",
+    "test:contracts": "node scripts/contract-fixture-test.mjs",
     "test:backend": "node scripts/backend-foundation-test.mjs",
     "test:runtime": "node --test tests/ws_e_electron_runtime/*.test.mjs",
     "test:c1-faults": "node scripts/c1-fault-injection-test.mjs",
@@ -57,7 +58,8 @@
     "verify:release": "node scripts/verify-release.mjs",
     "smoke:packaged-win": "node scripts/packaged-runtime-smoke.mjs",
     "smoke:product-closure": "node scripts/product-closure-packaged-e2e.mjs",
-    "smoke:product-release": "node scripts/product-release-packaged-e2e.mjs"
+    "smoke:product-release:v1.0": "node scripts/product-release-packaged-e2e.mjs",
+    "smoke:product-release": "node scripts/v1_1_product_release_packaged_e2e.mjs"
   },
   "dependencies": {
     "@tanstack/react-table": "8.21.3",
