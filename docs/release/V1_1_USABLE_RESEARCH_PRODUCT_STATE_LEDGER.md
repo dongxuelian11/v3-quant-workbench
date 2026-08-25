@@ -5,55 +5,19 @@ Execute V3 V1.1 Usable Research Product as one bounded program, one branch, one 
 # TASK_PROGRESS
 
 - current_checkpoint: C4_USABILITY_RELEASE_QUALIFICATION
-- checkpoint_state: PUSH_AUTHORIZED; C4_ORDINARY_COMMIT_PENDING; C4_REMOTE_EVIDENCE_NOT_RUN
-- last_completed_action: The user explicitly authorized one ordinary C4 commit on the existing branch, push of only `codex/v1-1-usable-research-product-01`, and execution of hosted Jobs A-F against the resulting exact remote HEAD. No history rewrite, force push, merge, authority amendment, version promotion or evidence promotion was authorized. The locally qualified candidate and all literal `NOT_RUN` / `PENDING` ceilings remain unchanged until exact remote evidence exists.
-- exact_next_action: Reverify Authority and fresh Git/GitHub CURRENT; stage exactly the recorded 37 tracked plus 6 untracked C4 files; prove the staged P0 diff is empty and staged checks pass; create one ordinary C4 checkpoint commit; push only the same branch; verify local and remote HEAD identity; open/reuse the single PR; then bind and wait for exact-head Jobs A-F. Do not merge and do not promote independent review, physical scaling, user visual acceptance, clean release or provider availability without their exact evidence.
-- active_acceptance_id: C4_EXACT_HEAD_COMMIT_PUSH; ACC_C4_07_08_11_REMOTE_EVIDENCE_NOT_RUN
-- current_dirty_inventory: 37 tracked C4 files plus 6 untracked C4 driver/test/doc files. Generated package/diagnostic evidence remains ignored under D-drive `artifacts/`; the current V1.1 Journey directory was moved from C-drive TEMP to `artifacts/v3-v1-1-release-current-final`, and no generated file entered the tracked write set.
+- checkpoint_state: C4_COMMITTED_AND_PUSHED; FIRST_EXACT_HEAD_REMOTE_GATE_FAILED; BOUNDED_CORRECTION_LOCALLY_VALIDATED_READY_TO_COMMIT
+- last_completed_action: The single same-PR correction is locally complete across exactly five tracked files. Windows path aliasing now compares the selected regular file's already-captured identity when `realpath` returns a different long spelling, while direct symlinks plus pre-open/post-open/pre-transfer identity and content-hash fences remain intact. Job C explicitly clears `ELECTRON_SKIP_BINARY_DOWNLOAD`, runs the pinned Electron installer and proves the binary exists. The Linux child acceptance now exercises production `confirm_terminal_exit` and proves no cooperative cancellation. Focused workflow/local-data/worker tests, typecheck, lint, 35-module build, Electron runtime 121/121, real Electron restart smoke, Product Runtime 62/62 and one exact-current `validate:public` all PASS; the full gate reports Node 158/158, backend 41/41 suites / 74/74 files / 1080/1080, C1 30 Python + 79 Electron, docs/truth, secret scan, repo audit and 518-entry SBOM PASS.
+- exact_next_action: Reverify the five-file diff, P0 empty diff, Authority hashes, clean GitHub main and PR #50 exact current; stage only these five files; create one ordinary non-amended bounded correction commit on the same branch; push without force; verify PR #50 and remote branch equal the new HEAD; then wait for the synchronize-triggered exact-head Jobs A-F. Do not rerun or promote the failed `31a2cb3` evidence, do not merge, and keep provider/independent/user evidence literal.
+- active_acceptance_id: ACC_C4_REMOTE_GATE_BOUNDED_CORRECTION; ACC_C4_07_08_11_REMOTE_EVIDENCE_FAILED_NOT_COMPLETE
+- current_dirty_inventory: 5 tracked bounded correction files; zero untracked files. Generated build/test evidence remains ignored under the D-drive worktree `artifacts/` boundary, and no generated file entered the tracked write set.
 - files_currently_modified:
   - .github/workflows/ci.yml
-  - .github/workflows/packaging-clean-machine-evidence.yml
-  - docs/release/V1_1_USABLE_RESEARCH_PRODUCT_STATE_LEDGER.md
-  - docs/release/V1_1_RELEASE_CANDIDATE.md
-  - docs/release/V1_0_RELEASE_CANDIDATE.md
-  - docs/status/CURRENT_STATUS.md
-  - docs/status/V3_DEFERRED_GAPS.md
-  - docs/architecture/PRODUCT_SURFACE.md
-  - README.md
-  - apps/backend/src/v3_backend/runtime/product_runtime.py
-  - apps/backend/src/v3_backend/runtime/product_workers.py
-  - apps/backend/src/v3_backend/runtime/product_facades.py
-  - apps/backend/src/v3_backend/contracts/product_entry.py
   - apps/backend/tests/product_runtime/test_product_runtime_research.py
-  - apps/backend/tests/product_runtime/test_product_runtime.py
-  - apps/backend/tests/v1_1_factor/test_product_factor_entry.py
-  - apps/backend/tests/v1_1_local_data/test_product_data_entry.py
-  - apps/backend/tests/ws_a_contracts/fixtures/asl/product_entry.contract.json
-  - apps/backend/tests/ws_a_contracts/fixtures/conformance_manifest.json
-  - apps/desktop/src/main.ts
-  - apps/desktop/src/main/productClosureSmoke.ts
-  - apps/desktop/src/main/productRuntime/productBridge.ts
-  - apps/desktop/src/renderer/ProductApp.tsx
-  - apps/desktop/src/renderer/components/ProductResultsWorkspace.tsx
-  - apps/desktop/src/renderer/components/ProductRuntimePanel.tsx
-  - apps/desktop/src/renderer/productRuntimeStore.ts
-  - apps/desktop/src/renderer/productShellModel.ts
-  - apps/desktop/src/renderer/styles.css
-  - docs/backend/parallel/WS_A_CONTRACT_SEED_V1_READY.json
-  - package.json
-  - packages/contracts/src/index.ts
-  - scripts/contract-fixture-test.mjs
-  - scripts/product-closure-packaged-e2e.mjs
-  - scripts/public-frontend-smoke.mjs
-  - scripts/v1_1-release-clean-machine.ps1
-  - scripts/v1_1_product_release_packaged_e2e.mjs
-  - tests/unit/desktop-product-bridge.test.mjs
-  - tests/unit/product-runtime-cold-discovery.test.mjs
-  - tests/unit/product-shell-truth.test.mjs
+  - apps/desktop/src/main/productRuntime/localDataImport.ts
+  - docs/release/V1_1_USABLE_RESEARCH_PRODUCT_STATE_LEDGER.md
   - tests/unit/v1-1-ci-workflow.test.mjs
-  - tests/ws_e_electron_runtime/product-bridge.test.mjs
-  - tests/ws_e_electron_runtime/product-v1-1-release-smoke.test.mjs
 - tests:
+  - c4_exact_head_remote_gate_bounded_correction_local: PASS at LOCAL_WORKTREE scope — exact remote failure logs from runs 32810321139/32810405694 and 32810321181/32810405728 were traced through production source before editing. The corrected five-file delta passes workflow/local-data focus 9/9, isolated worker focus 1/1, Product Runtime 62/62, Electron runtime 121/121, real Electron capture/restart, typecheck/lint/build and the complete `validate:public` inventory (Node 158/158; backend 1080/1080; Electron 121/121; C1 30+79; remaining public gates PASS). Hosted correction-head execution remains NOT_RUN until the ordinary correction commit is pushed.
   - c4_documentation_truth_reconciliation: PASS at LOCAL_WORKTREE scope — source tracing confirmed the additive `ProductEntryService` V1.1 path is PRODUCT_CONNECTED while the legacy Formal `BacktestService` remains exact `UNAVAILABLE / FORMAL_EXECUTION_CONTRACT_NOT_CLOSED`; docs now state both facts. Read-only GitHub CURRENT proved historical V1.0 PR #49 MERGED, exact-main CI 32626717592 SUCCESS, packaging 32626717564 SUCCESS and public `v1.0.0` prerelease. The new docs guard rejects the former Desktop/Backtest “not rebuilt”, V1.0 PENDING and premature package-version claims; `npm.cmd run smoke:frontend` PASS. Hosted/clean-machine/provider/physical/user/review evidence remains unpromoted.
   - c4_final_source_effect_write_set_audit: PASS at LOCAL_CANDIDATE scope — the admitted-base-to-worktree lineage contains 145 tracked paths plus the six current untracked C4 files, all inside the recorded backend owners/contracts/tests, Desktop main/renderer/bridge, release/CI/docs and validation boundaries. P0 lineage diff is empty; all five authority hashes match; generated `artifacts/` evidence is ignored; no generated package is tracked; `git diff --check` PASS; package/package-lock root versions are exactly `1.0.0`; all workflow Actions are immutable audited SHAs and no floating Action ref exists. Actual source inspection confirms Project Home gates navigation from canonical read models, renderer calls the real Product bridge, owner payloads are resolved in backend/Main, and the broad Formal `BacktestService` remains fail-closed rather than being silently reinterpreted by the additive research path.
   - c4_final_validate_public: PASS — current post-documentation `npm.cmd run validate:public` exits 0: authority 1.0.2, typecheck/lint, Node 158/158, backend 41/41 suites / 74/74 discovered files / 1080/1080 plus compile gate, 35-module build and bundle/build-manifest truth, Electron runtime 121/121, C1 fault matrix (30 Python + 79 Electron), current documentation/frontend truth, secret/history scan over 747 current source files, repository audit and 518-entry SBOM all pass. BuildManifest remains correctly DIRTY.

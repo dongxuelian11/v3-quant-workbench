@@ -105,9 +105,20 @@ async function defaultIsReparsePoint(path: string, stat: BigIntStats): Promise<b
   if (stat.isSymbolicLink()) return true;
   const actual = resolve(await realpath(path));
   const requested = resolve(path);
-  return process.platform === "win32"
-    ? actual.toLowerCase() !== requested.toLowerCase()
-    : actual !== requested;
+  const sameResolvedPath = process.platform === "win32"
+    ? actual.toLowerCase() === requested.toLowerCase()
+    : actual === requested;
+  if (sameResolvedPath) return false;
+  if (process.platform !== "win32") return true;
+
+  // Windows may return the long canonical spelling for a legitimate 8.3
+  // selection (notably RUNNER~1 in hosted TEMP).  String inequality therefore
+  // does not prove that the selected file is a reparse point.  The already
+  // captured file identity does: an alias to the same regular file is safe,
+  // while a selected symlink was rejected above and any retarget/replacement
+  // remains fenced again after open and before transfer.
+  const resolvedStat = await lstat(actual, { bigint: true });
+  return fileIdentity(stat) !== fileIdentity(resolvedStat);
 }
 
 function requiredRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {

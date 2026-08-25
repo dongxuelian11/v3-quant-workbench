@@ -125,8 +125,12 @@ jobs:
       - name: Install product integration inputs
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           python -m pip install -r apps/backend/requirements.txt
+          Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD -ErrorAction SilentlyContinue
           npm.cmd ci
+          node node_modules/electron/install.js
+          node -e "const fs=require('node:fs'); const binary=require('electron'); fs.accessSync(binary); console.log('Electron runtime verified at ' + binary)"
       - name: Build and verify PRODUCT bundle truth
         shell: pwsh
         run: |

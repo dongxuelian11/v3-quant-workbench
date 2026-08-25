@@ -50,6 +50,9 @@ test("V1.1 unified product gate exposes diagnostic Jobs A-F", () => {
   }
 
   assert.match(jobC, /runs-on:\s*windows-latest/);
+  assert.match(jobC, /Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD/);
+  assert.match(jobC, /node node_modules\/electron\/install\.js/);
+  assert.match(jobC, /fs\.accessSync\(binary\)/);
   for (const command of ["build", "test:runtime", "verify:product-bundle-truth", "smoke:frontend", "smoke:electron:runtime", "smoke:product-data", "smoke:product-factor", "smoke:product-backtest", "smoke:product-result"]) {
     assert.match(jobC, new RegExp(`npm\\.cmd run ${command.replaceAll(":", "\\:")}`));
   }

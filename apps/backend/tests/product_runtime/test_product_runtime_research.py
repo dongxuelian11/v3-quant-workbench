@@ -582,11 +582,17 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     time.sleep(0.05)
                     task = product.task_persistence.read_task(task_id)
                 worker = product.research_workers.task_process(task_id)
-                if worker is not None:
-                    worker.join(timeout=2.0)
                 self.assertEqual(task.state.value, "SUCCEEDED")
                 self.assertIsNotNone(worker)
+                self.assertTrue(
+                    product.research_workers.confirm_terminal_exit(task_id),
+                    "canonical success requires the production terminal-exit boundary",
+                )
                 self.assertFalse(worker.is_alive())
+                trace = product.research_workers.termination_trace(task_id)
+                self.assertEqual(trace[0], "TERMINAL_EXIT_WAIT_STARTED")
+                self.assertEqual(trace[-1], "EXIT_CONFIRMED")
+                self.assertNotIn("COOPERATIVE_CANCEL_REQUESTED", trace)
             finally:
                 product.research_workers.shutdown_all()
 
