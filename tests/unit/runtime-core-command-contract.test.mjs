@@ -15,7 +15,7 @@ test("command ledger defaults carry durable binding and cursor fields", () => {
   assert.deepEqual(DEFAULT_WORKSPACE.executedCommands, {});
   assert.deepEqual(DEFAULT_WORKSPACE.projectEventCursors, {});
   assert.equal(DEFAULT_WORKSPACE.persistenceRevision, 0);
-  assert.equal(DEFAULT_WORKSPACE.runtimeMeta.storeSchemaVersion, 1);
+  assert.equal(DEFAULT_WORKSPACE.runtimeMeta.storeSchemaVersion, 2);
 });
 
 test("immediate duplicate command stays duplicate with the original count", () => {

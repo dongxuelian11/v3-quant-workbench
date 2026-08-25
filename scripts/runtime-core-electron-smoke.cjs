@@ -32,6 +32,7 @@ async function waitFor(win, source, label, attempts = 200) {
   }
   throw new Error(`Timed out waiting for ${label}`);
 }
+const backendReadyExpression = "window.v3ProductRuntime.getProductStatus().then((status)=>status.backendState==='READY').catch(()=>false)";
 
 app.whenReady().then(async () => {
   require(path.resolve(root, "dist/apps/desktop/src/main.js"));
@@ -42,7 +43,7 @@ app.whenReady().then(async () => {
     const command = { id: "runtime-core-smoke-001", name: "study.resume", issuedAt: new Date().toISOString() };
     if (phase === "capture") {
       console.log("[runtime-core-smoke] stage: waiting READY");
-      await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace][data-connection-state=READY]'))", "authenticated backend handshake + replay READY");
+      await waitFor(win, backendReadyExpression, "authenticated backend handshake + replay READY");
       console.log("[runtime-core-smoke] stage: runtimeInfo");
       const runtime = await evaluate(win, "window.v3Desktop.runtimeInfo()");
       if (runtime.agentEvidenceMode !== "DEVELOPMENT_INTEGRATION_FIXTURE") throw new Error(`fixture mode not bound ${JSON.stringify(runtime)}`);
@@ -82,7 +83,7 @@ app.whenReady().then(async () => {
       if (!(await evaluate(win, "window.v3Desktop.runtimeInfo().then((info)=>Boolean(info.storePath))"))) throw new Error("primary instance did not survive the secondary probe");
       console.log(`[runtime-core-smoke] capture: handshake READY, command accepted then duplicated, durable cursor=1, workspace persisted, single-instance secondary exit verified`);
     } else {
-      await waitFor(win, "Boolean(document.querySelector('[data-testid=agent-workspace][data-connection-state=READY]'))", "restart handshake + replay READY");
+      await waitFor(win, backendReadyExpression, "restart handshake + replay READY");
       const replay = await evaluate(win, `window.v3Desktop.executeCommand(${JSON.stringify(command)})`);
       if (!replay.duplicate || replay.executionCount !== 1) throw new Error(`restart duplicate failed ${JSON.stringify(replay)}`);
       const info = await evaluate(win, "window.v3Desktop.runtimeInfo()");

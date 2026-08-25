@@ -74,6 +74,19 @@
       "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime"
     },
     {
+      "name": "pyarrow",
+      "version": "23.0.1",
+      "role": "direct-runtime",
+      "source": "https://files.pythonhosted.org/packages/eb/3f/b1da7b61cd66566a4d4c8383d376c606d1c34a906c3f1cb35c479f59d1aa/pyarrow-23.0.1-cp314-cp314-win_amd64.whl",
+      "integrity": "sha256=3a4c85ef66c134161987c17b147d6bffdca4566f9a4c1d81a0a01cdf08414ea5",
+      "license": "Apache-2.0",
+      "license_files": [
+        "LICENSE.txt",
+        "NOTICE.txt"
+      ],
+      "native_runtime_concerns": "Python 3.14.5 win_amd64 packaged backend runtime; approximately 28.2 MB compressed wheel"
+    },
+    {
       "name": "pydantic",
       "version": "2.13.4",
       "role": "transitive",

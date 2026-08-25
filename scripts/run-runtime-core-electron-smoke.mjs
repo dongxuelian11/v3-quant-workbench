@@ -24,6 +24,9 @@ if (!backendPython && process.platform === "win32") {
 backendPython ||= process.platform === "win32" ? "python" : "python3";
 const records = [];
 const runId = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1296).toString(36)}`;
+const productStorageRoot = process.env.V3_PRODUCT_STORAGE_ROOT
+  ?? resolve(root, `deliverables/product-storage-runtime-core-${runId}`);
+await mkdir(productStorageRoot, { recursive: true });
 const electronArgs = [
   // Containerized Linux runners need these to start Chromium at all; they
   // are accepted no-ops on Windows and mirror the existing FR-1 smoke.
@@ -52,7 +55,8 @@ for (const phase of ["capture", "restart"]) {
       V3_SMOKE_PHASE: phase,
       V3_SMOKE_USER_DATA: `deliverables/electron-user-data-runtime-core-${runId}`,
       V3_AGENT_EVIDENCE_MODE: "DEVELOPMENT_INTEGRATION_FIXTURE",
-      V3_BACKEND_PYTHON: backendPython
+      V3_BACKEND_PYTHON: backendPython,
+      V3_PRODUCT_STORAGE_ROOT: productStorageRoot
     }
   });
   records.push({ phase, exitCode: result.status, stdout: result.stdout, stderr: result.stderr });

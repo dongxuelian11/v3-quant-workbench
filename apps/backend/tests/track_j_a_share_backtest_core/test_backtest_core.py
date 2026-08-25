@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import time
 import unittest
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -29,6 +30,9 @@ from v3_backend.domain.backtest_runtime import (
     MarketSession,
     MarketCostRule,
     ScheduledWeights,
+    ResearchExecutionInputs,
+    ResearchExecutionProfileV1,
+    ResearchLiquidityRow,
     Side,
     UnsupportedCorporateActionError,
     cn_a_share_2023_08_28_cost_policy,
@@ -134,6 +138,7 @@ class BacktestCoreGoldenTests(WeightSeamFixture):
         rules=None,
         timing=None,
         board_overrides=None,
+        engine_version="v3.a_share_daily_eod_engine/0.2.0",
     ):
         vectors = vectors or (self.risk_vector(),)
         normalized_vectors = tuple(item[1] if isinstance(item, tuple) else item for item in vectors)
@@ -167,10 +172,68 @@ class BacktestCoreGoldenTests(WeightSeamFixture):
             execution_timing_profile=timing or cn_a_share_2026_07_06_execution_timing_profile(),
             exact_references=refs,
             runtime_identity=self.runtime,
+            engine_version=engine_version,
         )
 
     def run_engine(self, **kwargs):
         return DeterministicAshareBacktestEngine().run(self.spec(**kwargs))
+
+    def research_execution_case(
+        self,
+        *,
+        profile: ResearchExecutionProfileV1,
+        vector=None,
+        initial_cash="100000",
+        initial_holdings=(),
+        volume_shares=1_000,
+    ):
+        vector = vector or self.risk_vector(
+            (TargetWeightRow("000001.SZ", "1"),), "0"
+        )
+        base = self.spec(
+            vectors=(vector,),
+            initial_cash=initial_cash,
+            initial_holdings=initial_holdings,
+        )
+        market_ref = next(
+            item for item in base.exact_references if item.reference_kind == "MARKET_DATA"
+        )
+        spec = BacktestRunSpec.create(
+            initial_cash=base.initial_cash,
+            initial_holdings=base.initial_holdings,
+            instruments=base.instruments,
+            sessions=base.sessions,
+            schedule=base.schedule,
+            rule_profile=base.rule_profile,
+            cost_policy=base.cost_policy,
+            execution_timing_profile=base.execution_timing_profile,
+            exact_references=(
+                *base.exact_references,
+                ExactInputReference(
+                    "RESEARCH_EXECUTION_POLICY",
+                    profile.profile_id,
+                    profile.content_sha256,
+                    PRE_ALPHA_CEILING,
+                ),
+            ),
+            runtime_identity=base.runtime_identity,
+            engine_version="v3.a_share_daily_eod_engine/0.3.0-research",
+        )
+        inputs = ResearchExecutionInputs.create(
+            profile=profile,
+            market_data_source_id=market_ref.source_id,
+            market_data_content_sha256=market_ref.content_sha256,
+            liquidity_rows=tuple(
+                ResearchLiquidityRow(
+                    session.session_date,
+                    instrument.instrument_id,
+                    volume_shares,
+                )
+                for session in spec.sessions
+                for instrument in spec.instruments
+            ),
+        )
+        return spec, inputs
 
     def test_01_simple_buy_hold_uses_canonical_w0_and_raw_price(self):
         vector = self.risk_vector((TargetWeightRow("000001.SZ", "0.5"),), "0.5")
@@ -180,6 +243,13 @@ class BacktestCoreGoldenTests(WeightSeamFixture):
         self.assertEqual(result.fills[0].raw_price, "10")
         self.assertEqual(result.target_quantity_vectors[0].source_weight_vector_id, vector.risk_adjusted_weight_vector_id)
         self.assertEqual(result.nav[-1].nav, "99982.79")
+
+    def test_01b_engine_rejects_a_version_it_does_not_implement(self):
+        spec = self.spec(engine_version="v3.a_share_daily_eod_engine/9.9.9")
+        with self.assertRaisesRegex(
+            BacktestContractError, "unsupported backtest engine version"
+        ):
+            DeterministicAshareBacktestEngine().run(spec)
 
     def test_02_same_day_sell_is_rejected_by_t_plus_one(self):
         cash = self.risk_vector((), "1")
@@ -456,6 +526,175 @@ class BacktestCoreGoldenTests(WeightSeamFixture):
         sell = self.cost().calculate(Board.SZSE_MAIN, Side.SELL, Decimal("100000"), DAY1)
         self.assertEqual(buy.stamp_duty, "0")
         self.assertEqual(sell.stamp_duty, "50")
+
+    def test_32_future_initial_holding_is_rejected_by_run_spec_preflight(self):
+        with self.assertRaisesRegex(
+            BacktestContractError,
+            "initial holding acquired_on exceeds first session",
+        ):
+            self.spec(
+                sessions=(self.session(DAY1), self.session(DAY2)),
+                initial_holdings=(InitialHolding("000001.SZ", 100, DAY2),),
+            )
+
+    def test_33_research_volume_cap_and_buy_slippage_are_actual_engine_inputs(self):
+        profile = ResearchExecutionProfileV1.create(
+            slippage_bps="10",
+            daily_volume_participation_rate="0.1",
+        )
+        spec, inputs = self.research_execution_case(profile=profile)
+
+        result = DeterministicAshareBacktestEngine().run(
+            spec, research_execution=inputs
+        )
+
+        self.assertEqual(result.fills[0].quantity, 100)
+        self.assertEqual(result.fills[0].raw_price, "10")
+        self.assertEqual(result.fills[0].execution_price, "10.01")
+        self.assertEqual(result.fills[0].participation_cap, 100)
+        self.assertEqual(result.diagnostics[0].code, DiagnosticCode.PARTIAL_VOLUME)
+        self.assertEqual(result.diagnostics[0].unfilled_quantity, 9900)
+
+    def test_34_research_sell_slippage_is_adverse_and_volume_bounded(self):
+        profile = ResearchExecutionProfileV1.create(
+            slippage_bps="10",
+            daily_volume_participation_rate="0.2",
+        )
+        cash = self.risk_vector((), "1")
+        spec, inputs = self.research_execution_case(
+            profile=profile,
+            vector=cash,
+            initial_cash="0",
+            initial_holdings=(
+                InitialHolding("000001.SZ", 1000, DAY1 - timedelta(days=1)),
+            ),
+        )
+
+        result = DeterministicAshareBacktestEngine().run(
+            spec, research_execution=inputs
+        )
+
+        self.assertEqual(result.fills[0].quantity, 200)
+        self.assertEqual(result.fills[0].execution_price, "9.99")
+        self.assertEqual(result.diagnostics[0].code, DiagnosticCode.PARTIAL_VOLUME)
+
+    def test_35_research_policy_and_market_payload_bindings_fail_closed(self):
+        profile = ResearchExecutionProfileV1.create(
+            slippage_bps="10",
+            daily_volume_participation_rate="0.1",
+        )
+        spec, inputs = self.research_execution_case(profile=profile)
+        changed = ResearchExecutionProfileV1.create(
+            slippage_bps="20",
+            daily_volume_participation_rate="0.1",
+        )
+        wrong_policy_inputs = ResearchExecutionInputs.create(
+            profile=changed,
+            market_data_source_id=inputs.market_data_source_id,
+            market_data_content_sha256=inputs.market_data_content_sha256,
+            liquidity_rows=inputs.liquidity_rows,
+        )
+        with self.assertRaisesRegex(BacktestContractError, "policy binding"):
+            DeterministicAshareBacktestEngine().run(
+                spec, research_execution=wrong_policy_inputs
+            )
+        wrong_market_inputs = ResearchExecutionInputs.create(
+            profile=profile,
+            market_data_source_id="different-market-owner",
+            market_data_content_sha256=inputs.market_data_content_sha256,
+            liquidity_rows=inputs.liquidity_rows,
+        )
+        with self.assertRaisesRegex(BacktestContractError, "market payload binding"):
+            DeterministicAshareBacktestEngine().run(
+                spec, research_execution=wrong_market_inputs
+            )
+        with self.assertRaisesRegex(BacktestContractError, "requires research execution"):
+            DeterministicAshareBacktestEngine().run(spec)
+
+    def test_36_research_liquidity_coverage_and_zero_volume_fail_closed(self):
+        profile = ResearchExecutionProfileV1.create(
+            slippage_bps="0",
+            daily_volume_participation_rate="0.1",
+        )
+        spec, inputs = self.research_execution_case(
+            profile=profile,
+            volume_shares=0,
+        )
+        result = DeterministicAshareBacktestEngine().run(
+            spec, research_execution=inputs
+        )
+        self.assertEqual(result.fills, ())
+        self.assertEqual(result.diagnostics[0].code, DiagnosticCode.NO_MARKET_VOLUME)
+        self.assertEqual(result.diagnostics[0].eligible_quantity, 0)
+        self.assertEqual(
+            result.diagnostics[0].unfilled_quantity,
+            result.orders[0].requested_quantity,
+        )
+
+        incomplete = ResearchExecutionInputs.create(
+            profile=profile,
+            market_data_source_id=inputs.market_data_source_id,
+            market_data_content_sha256=inputs.market_data_content_sha256,
+            liquidity_rows=inputs.liquidity_rows[:-1],
+        )
+        with self.assertRaisesRegex(BacktestContractError, "exactly cover"):
+            DeterministicAshareBacktestEngine().run(
+                spec, research_execution=incomplete
+            )
+
+    def test_37_research_profile_changes_run_fill_and_result_identity(self):
+        low = ResearchExecutionProfileV1.create(
+            slippage_bps="0",
+            daily_volume_participation_rate="0.1",
+        )
+        high = ResearchExecutionProfileV1.create(
+            slippage_bps="20",
+            daily_volume_participation_rate="0.2",
+        )
+        low_spec, low_inputs = self.research_execution_case(profile=low)
+        high_spec, high_inputs = self.research_execution_case(profile=high)
+        low_result = DeterministicAshareBacktestEngine().run(
+            low_spec, research_execution=low_inputs
+        )
+        high_result = DeterministicAshareBacktestEngine().run(
+            high_spec, research_execution=high_inputs
+        )
+        self.assertNotEqual(low_spec.run_spec_id, high_spec.run_spec_id)
+        self.assertNotEqual(low_result.fills[0].fill_id, high_result.fills[0].fill_id)
+        self.assertNotEqual(low_result.result_id, high_result.result_id)
+
+    def test_38_large_buy_affordability_is_bounded_and_cash_never_negative(self):
+        profile = ResearchExecutionProfileV1.create(
+            slippage_bps="10",
+            daily_volume_participation_rate="1",
+        )
+        spec, inputs = self.research_execution_case(
+            profile=profile,
+            initial_cash="1000000000000",
+            volume_shares=100_000_000_000,
+        )
+        started = time.monotonic()
+        result = DeterministicAshareBacktestEngine().run(
+            spec, research_execution=inputs
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 2.0)
+        self.assertEqual(result.diagnostics[0].code, DiagnosticCode.PARTIAL_CASH)
+        self.assertGreater(result.fills[0].quantity, 0)
+        self.assertEqual(result.fills[0].quantity % 100, 0)
+        self.assertGreaterEqual(Decimal(result.nav[-1].cash), Decimal(0))
+
+    def test_39_legacy_engine_wire_shape_does_not_gain_research_fields(self):
+        result = self.run_engine()
+        fill_wire = result.fills[0].to_wire()
+        diagnostic_wire = result.diagnostics[0].to_wire()
+        self.assertNotIn("execution_price", fill_wire)
+        self.assertNotIn("participation_cap", fill_wire)
+        self.assertNotIn("slippage_bps", fill_wire)
+        self.assertNotIn("eligible_quantity", diagnostic_wire)
+        self.assertNotIn("unfilled_quantity", diagnostic_wire)
+        self.assertNotIn("participation_cap", diagnostic_wire)
 
 
 if __name__ == "__main__":

@@ -19,10 +19,16 @@ import {
 import type { BackendRuntimeResolution } from "./main/backendRuntime/runtimeResolver";
 import { WorkspaceStore, WorkspaceStoreError } from "./main/runtimePersistence/workspaceStore";
 import { resolveAgentEvidenceRuntime } from "./main/agentEvidenceRuntime";
-import { runProductClosureSmoke as runProductClosureSmokeFlow, type ProductClosureSmokePhase } from "./main/productClosureSmoke";
+import {
+  productClosureSmokeHandshakeTimeoutMs,
+  runProductClosureSmoke as runProductClosureSmokeFlow,
+  type ProductClosureSmokePhase,
+} from "./main/productClosureSmoke";
 import {
   ProductBindingStore,
   ProductBridge,
+  LocalDataSourceBroker,
+  ArtifactExportBroker,
   productBindingPath,
   registerProductRuntimeIpc,
   registerUnavailableProductRuntimeIpc
@@ -48,6 +54,7 @@ const PRODUCT_CLOSURE_SMOKE = process.argv.includes("--v3-product-closure-smoke"
 const PRODUCT_CLOSURE_SMOKE_PHASE = process.env.V3_PRODUCT_CLOSURE_SMOKE_PHASE ?? "";
 const PRODUCT_CLOSURE_SMOKE_OUTPUT = process.env.V3_PRODUCT_CLOSURE_SMOKE_OUTPUT ?? "";
 const PRODUCT_CLOSURE_PROVIDER_MODE = process.env.V3_PRODUCT_CLOSURE_PROVIDER_MODE;
+const PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE = process.env.V3_PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE;
 
 if (PACKAGED_RUNTIME_SMOKE || PRODUCT_CLOSURE_SMOKE) {
   if (process.platform !== "win32" || !PACKAGED_RUNTIME_SMOKE_USER_DATA || !isAbsolute(PACKAGED_RUNTIME_SMOKE_USER_DATA)) {
@@ -208,6 +215,7 @@ function createBackendSupervisor(runtime: BackendRuntimeResolution): BackendSupe
       commit: (projectId, sequence) => store.commitProjectEventCursor(projectId, sequence)
     },
     backendModule: AGENT_EVIDENCE_RUNTIME.backendModule,
+    ...(PRODUCT_CLOSURE_SMOKE ? { handshakeTimeoutMs: productClosureSmokeHandshakeTimeoutMs() } : {}),
     ...(PRODUCT_CLOSURE_SMOKE && (PRODUCT_CLOSURE_PROVIDER_MODE === "DETERMINISTIC_SUCCESS" || PRODUCT_CLOSURE_PROVIDER_MODE === "DETERMINISTIC_UNAVAILABLE")
       ? { productReleaseAcceptanceProvider: PRODUCT_CLOSURE_PROVIDER_MODE }
       : {}),
@@ -229,6 +237,43 @@ async function chooseResearchPackage(): Promise<string | null> {
   return selection.filePaths[0] ?? null;
 }
 
+async function chooseLocalDataSource(): Promise<string | null> {
+  if (PRODUCT_CLOSURE_SMOKE && PRODUCT_CLOSURE_SMOKE_PHASE.startsWith("v1-1-journey-")) {
+    if (!PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE || !isAbsolute(PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE)) {
+      throw new Error("V3_PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE must be an absolute path for a V1.1 packaged journey");
+    }
+    return resolve(PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE);
+  }
+  const window = mainWindow !== null ? (BrowserWindow.fromWebContents(mainWindow.webContents) ?? mainWindow) : null;
+  const options = {
+    title: "选择本地 A 股日线数据",
+    properties: ["openFile"] as Array<"openFile">,
+    buttonLabel: "安全打开",
+    filters: [
+      { name: "A 股日线数据", extensions: ["csv", "parquet"] }
+    ]
+  };
+  const selection = window !== null
+    ? await dialog.showOpenDialog(window, options)
+    : await dialog.showOpenDialog(options);
+  if (selection.canceled || selection.filePaths.length !== 1) return null;
+  return selection.filePaths[0] ?? null;
+}
+
+async function chooseArtifactDestination(suggestedName: string): Promise<string | null> {
+  const window = mainWindow !== null ? (BrowserWindow.fromWebContents(mainWindow.webContents) ?? mainWindow) : null;
+  const options = {
+    title: "导出已验证 Artifact",
+    defaultPath: suggestedName,
+    buttonLabel: "导出"
+  };
+  const selection = window !== null
+    ? await dialog.showSaveDialog(window, options)
+    : await dialog.showSaveDialog(options);
+  if (selection.canceled || typeof selection.filePath !== "string") return null;
+  return selection.filePath;
+}
+
 function registerBackendRuntime(): void {
   if (!mainWindow || !backendSupervisor) throw new Error("BACKEND_RUNTIME_REGISTRATION_NOT_READY");
   backendRelay = new BackendRuntimeEventRelay(backendSupervisor, mainWindow.webContents);
@@ -236,7 +281,15 @@ function registerBackendRuntime(): void {
   backendRuntimeLifecycle = new BackendRuntimeLifecycle(backendSupervisor);
   backendSupervisor.on("diagnostic", (diagnostic) => console.error(JSON.stringify(diagnostic)));
   registerBackendRuntimeIpc(ipcMain, trusted, backendSupervisor, () => backendRelay?.evidenceSnapshot ?? null);
-  productBridge = new ProductBridge(backendSupervisor, store, productBindings, chooseResearchPackage);
+  productBridge = new ProductBridge(
+    backendSupervisor,
+    store,
+    productBindings,
+    chooseResearchPackage,
+    undefined,
+    new LocalDataSourceBroker({ chooseFile: chooseLocalDataSource }),
+    new ArtifactExportBroker({ chooseDestination: chooseArtifactDestination })
+  );
   registerProductRuntimeIpc(ipcMain, trusted, productBridge);
 }
 
@@ -642,6 +695,7 @@ async function gracefulShutdown(): Promise<void> {
     // store stay alive, then perform the final cursor/state flush. Only
     // then may the store be closed and the relay stopped.
     store.beginQuiesce();
+    await productBridge.dispose();
     await store.flush();
     if (backendRuntimeLifecycle && backendSupervisor) {
       await backendRuntimeLifecycle.onExplicitQuit(GRACEFUL_SHUTDOWN_DEADLINE_MS);

@@ -104,6 +104,33 @@ def _validate_canonical_finite_json(path: Path) -> None:
         raise FormatRejected("JSON bytes are not in canonical form")
 
 
+def _validate_flat_parquet(path: Path) -> None:
+    """Re-open admitted Parquet bytes at the final publication boundary."""
+
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise FormatRejected("the admitted PyArrow runtime is unavailable") from exc
+    try:
+        parquet = pq.ParquetFile(path)
+        if parquet.metadata.num_columns <= 0:
+            raise FormatRejected("Parquet must contain at least one column")
+        for field in parquet.schema_arrow:
+            if (
+                pa.types.is_nested(field.type)
+                or isinstance(field.type, pa.ExtensionType)
+                or pa.types.is_dictionary(field.type)
+                or pa.types.is_binary(field.type)
+                or pa.types.is_large_binary(field.type)
+            ):
+                raise FormatRejected("Parquet publication accepts flat primitive columns only")
+    except FormatRejected:
+        raise
+    except Exception as exc:
+        raise FormatRejected("invalid Parquet artifact") from exc
+
+
 def _validate_safe_payload(path: Path, safe_format_id: str | None) -> None:
     if safe_format_id == "utf8-text-v1":
         decoder = codecs.getincrementaldecoder("utf-8")("strict")
@@ -147,6 +174,9 @@ def _validate_safe_payload(path: Path, safe_format_id: str | None) -> None:
     if safe_format_id == "canonical-finite-json-v1":
         _validate_canonical_finite_json(path)
         return
+    if safe_format_id == "flat-parquet-v1":
+        _validate_flat_parquet(path)
+        return
     if safe_format_id is None:
         raise FormatRejected("publishable payload lacks an admitted safe-format validator")
     raise FormatRejected(f"unknown safe-format validator: {safe_format_id}")
@@ -158,6 +188,75 @@ class StagingReceipt:
     sha256: str
     byte_size: int
     created_at: datetime
+
+
+class BoundedStagingWriter:
+    """One exclusive incremental Artifact staging lease.
+
+    The writer owns the open handle and the running content identity, so a
+    framed transport can stage bounded chunks without assembling the source
+    in memory or reopening a caller-controlled path.
+    """
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        staging_root: Path,
+        staging_token: str,
+        max_bytes: int,
+        created_at: datetime,
+    ) -> None:
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+            raise ValueError("max_bytes must be a positive integer")
+        self._path = path
+        self._staging_root = staging_root
+        self._staging_token = staging_token
+        self._max_bytes = max_bytes
+        self._created_at = created_at
+        self._digest = hashlib.sha256()
+        self._byte_size = 0
+        self._handle = path.open("xb")
+        self._closed = False
+
+    @property
+    def byte_size(self) -> int:
+        return self._byte_size
+
+    def write(self, payload: bytes) -> int:
+        if self._closed:
+            raise ValueError("staging writer is closed")
+        if not isinstance(payload, bytes) or not payload:
+            raise TypeError("staging chunk must be non-empty bytes")
+        observed = self._byte_size + len(payload)
+        if observed > self._max_bytes:
+            raise IntegrityMismatch("staged payload exceeds max_bytes")
+        self._handle.write(payload)
+        self._digest.update(payload)
+        self._byte_size = observed
+        return observed
+
+    def finish(self) -> StagingReceipt:
+        if self._closed:
+            raise ValueError("staging writer is closed")
+        self._handle.flush()
+        os.fsync(self._handle.fileno())
+        self._handle.close()
+        self._closed = True
+        _fsync_directory(self._staging_root)
+        return StagingReceipt(
+            self._staging_token,
+            self._digest.hexdigest(),
+            self._byte_size,
+            self._created_at,
+        )
+
+    def abort(self) -> None:
+        if not self._closed:
+            self._handle.close()
+            self._closed = True
+        self._path.unlink(missing_ok=True)
+        _fsync_directory(self._staging_root)
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +295,18 @@ class FileSystemArtifactStore:
 
         return self.stage_stream(BytesIO(payload))
 
+    def begin_staging(self, *, max_bytes: int) -> BoundedStagingWriter:
+        """Open an exclusive bounded writer for correlated chunk transport."""
+
+        token = secrets.token_urlsafe(32)
+        return BoundedStagingWriter(
+            path=self._staging_path(token),
+            staging_root=self.staging_root,
+            staging_token=token,
+            max_bytes=max_bytes,
+            created_at=_utc_now(),
+        )
+
     def stage_stream(self, stream: BinaryIO, *, max_bytes: int | None = None) -> StagingReceipt:
         if max_bytes is not None and (not isinstance(max_bytes, int) or max_bytes < 0):
             raise ValueError("max_bytes must be a non-negative integer")
@@ -226,6 +337,15 @@ class FileSystemArtifactStore:
             finally:
                 raise
         return StagingReceipt(token, digest.hexdigest(), byte_size, created_at)
+
+    def open_staged(self, staging_token: str) -> BinaryIO:
+        """Open immutable staged bytes for validation before publication."""
+
+        path = self._staging_path(staging_token)
+        if not path.exists():
+            raise StagingNotFound("staging token does not identify staged bytes")
+        _require_regular_file(path, "staging entry")
+        return path.open("rb")
 
     def recover_staging(self) -> tuple[StagingReceipt, ...]:
         recovered: list[StagingReceipt] = []
@@ -336,15 +456,61 @@ class FileSystemArtifactStore:
         return PublicationResult(descriptor, deduplicated, storage_key_for_sha256(actual_sha256))
 
     def read_bytes(self, artifact_id: str, *, max_bytes: int | None = None) -> bytes:
+        with self.open_verified(artifact_id, max_bytes=max_bytes) as handle:
+            return handle.read()
+
+    def open_verified(
+        self,
+        artifact_id: str,
+        *,
+        expected_sha256: str | None = None,
+        expected_byte_size: int | None = None,
+        max_bytes: int | None = None,
+    ) -> BinaryIO:
+        """Open one verified immutable payload without loading it into memory.
+
+        Hashing and the returned stream use the same open file handle, avoiding a
+        path re-open boundary between verification and the consumer read.
+        """
+
         digest = sha256_from_artifact_id(artifact_id)
+        if expected_sha256 is not None:
+            validate_sha256(expected_sha256)
+            if expected_sha256 != digest:
+                raise IntegrityMismatch("declared SHA-256 does not match artifact identity")
+        if expected_byte_size is not None and (
+            not isinstance(expected_byte_size, int)
+            or isinstance(expected_byte_size, bool)
+            or expected_byte_size < 0
+        ):
+            raise ValueError("expected_byte_size must be a non-negative integer")
+        if max_bytes is not None and (
+            not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 0
+        ):
+            raise ValueError("max_bytes must be a non-negative integer")
+
         path = self._final_path(digest)
-        _require_regular_file(path, "published artifact")
-        if max_bytes is not None and path.stat().st_size > max_bytes:
-            raise IntegrityMismatch("artifact exceeds read bound")
-        observed_digest, _ = _hash_file(path)
-        if observed_digest != digest:
-            raise IntegrityMismatch("published bytes no longer match artifact identity")
-        return path.read_bytes()
+        handle = path.open("rb")
+        try:
+            mode = os.fstat(handle.fileno()).st_mode
+            if not stat.S_ISREG(mode):
+                raise IntegrityMismatch("published artifact must be a regular file")
+            observed = hashlib.sha256()
+            byte_size = 0
+            while chunk := handle.read(_CHUNK_SIZE):
+                observed.update(chunk)
+                byte_size += len(chunk)
+                if max_bytes is not None and byte_size > max_bytes:
+                    raise IntegrityMismatch("artifact exceeds read bound")
+            if observed.hexdigest() != digest:
+                raise IntegrityMismatch("published bytes no longer match artifact identity")
+            if expected_byte_size is not None and byte_size != expected_byte_size:
+                raise IntegrityMismatch("declared byte size does not match artifact bytes")
+            handle.seek(0)
+            return handle
+        except BaseException:
+            handle.close()
+            raise
 
     def delete_published_bytes(self, artifact_id: str) -> bool:
         digest = sha256_from_artifact_id(artifact_id)

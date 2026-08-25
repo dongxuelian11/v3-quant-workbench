@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from v3_backend.provenance.canonical_hash import canonical_sha256
 
 from .model import (
@@ -18,6 +18,8 @@ from .model import (
     LedgerKind,
     Order,
     PositionLedgerEntry,
+    ResearchExecutionInputs,
+    ResearchExecutionProfileV1,
     Side,
     TargetQuantityRow,
     TargetQuantityVector,
@@ -30,9 +32,168 @@ from .model import (
 class DeterministicAshareBacktestEngine:
     """Pure daily/EOD research engine. No I/O or execution adapter is present."""
 
-    def run(self, spec: BacktestRunSpec) -> BacktestRunResult:
+    legacy_engine_version = "v3.a_share_daily_eod_engine/0.2.0"
+    research_engine_version = "v3.a_share_daily_eod_engine/0.3.0-research"
+
+    @classmethod
+    def _validate_execution_inputs(
+        cls,
+        spec: BacktestRunSpec,
+        research_execution: ResearchExecutionInputs | None,
+    ) -> tuple[
+        ResearchExecutionProfileV1 | None,
+        dict[tuple[object, str], int],
+    ]:
+        if spec.engine_version == cls.legacy_engine_version:
+            if research_execution is not None:
+                raise BacktestContractError(
+                    "legacy engine does not accept research execution inputs"
+                )
+            return None, {}
+        if spec.engine_version != cls.research_engine_version:
+            raise BacktestContractError("unsupported backtest engine version")
+        if not isinstance(research_execution, ResearchExecutionInputs):
+            raise BacktestContractError(
+                "research engine requires research execution inputs"
+            )
+        research_execution.assert_canonical()
+
+        policy_refs = tuple(
+            item
+            for item in spec.exact_references
+            if item.reference_kind == "RESEARCH_EXECUTION_POLICY"
+        )
+        if len(policy_refs) != 1 or (
+            policy_refs[0].source_id != research_execution.profile.profile_id
+            or policy_refs[0].content_sha256
+            != research_execution.profile.content_sha256
+            or policy_refs[0].truth_admission
+            != research_execution.profile.truth_admission
+        ):
+            raise BacktestContractError(
+                "research execution policy binding does not match exact reference"
+            )
+
+        market_refs = tuple(
+            item
+            for item in spec.exact_references
+            if item.reference_kind == "MARKET_DATA"
+        )
+        if len(market_refs) != 1 or (
+            market_refs[0].source_id
+            != research_execution.market_data_source_id
+            or market_refs[0].content_sha256
+            != research_execution.market_data_content_sha256
+        ):
+            raise BacktestContractError(
+                "research market payload binding does not match exact reference"
+            )
+
+        liquidity = {
+            (row.session_date, row.instrument_id): row.volume_shares
+            for row in research_execution.liquidity_rows
+        }
+        expected_keys = {
+            (session.session_date, instrument.instrument_id)
+            for session in spec.sessions
+            for instrument in spec.instruments
+        }
+        if set(liquidity) != expected_keys:
+            raise BacktestContractError(
+                "research liquidity payload must exactly cover run sessions and instruments"
+            )
+        return research_execution.profile, liquidity
+
+    @staticmethod
+    def _execution_price(
+        raw_price: str,
+        side: Side,
+        profile: ResearchExecutionProfileV1,
+        price_tick: str,
+    ) -> Decimal:
+        raw = _d(raw_price)
+        tick = _d(price_tick)
+        if tick <= 0:
+            raise BacktestContractError("price_tick must be positive")
+        slip = _d(profile.slippage_bps) / Decimal("10000")
+        adjusted = raw * (Decimal(1) + slip if side is Side.BUY else Decimal(1) - slip)
+        if adjusted <= 0:
+            raise BacktestContractError("slippage-adjusted execution price must be positive")
+        rounding = ROUND_CEILING if side is Side.BUY else ROUND_FLOOR
+        tick_units = (adjusted / tick).to_integral_value(rounding=rounding)
+        return tick_units * tick
+
+    @staticmethod
+    def _participation_cap(
+        *,
+        requested_quantity: int,
+        volume_shares: int,
+        participation_rate: str,
+        side: Side,
+        buy_minimum_quantity: int,
+        buy_quantity_step: int,
+        sell_odd_lot_in_one_order: bool,
+    ) -> int:
+        raw_cap = int(
+            (Decimal(volume_shares) * _d(participation_rate)).to_integral_value(
+                rounding=ROUND_FLOOR
+            )
+        )
+        if side is Side.BUY:
+            if raw_cap < buy_minimum_quantity:
+                return 0
+            return buy_minimum_quantity + (
+                (raw_cap - buy_minimum_quantity) // buy_quantity_step
+            ) * buy_quantity_step
+        if sell_odd_lot_in_one_order and requested_quantity <= raw_cap:
+            return requested_quantity
+        return (raw_cap // buy_quantity_step) * buy_quantity_step
+
+    @staticmethod
+    def _max_affordable_buy_quantity(
+        *,
+        candidate_quantity: int,
+        minimum_quantity: int,
+        quantity_step: int,
+        execution_price: Decimal,
+        cash: Decimal,
+        cost_policy,
+        board,
+        session_date,
+    ) -> int:
+        if candidate_quantity < minimum_quantity:
+            return 0
+        lowest_quantity = candidate_quantity - (
+            (candidate_quantity - minimum_quantity) // quantity_step
+        ) * quantity_step
+        low_index = 0
+        high_index = (candidate_quantity - lowest_quantity) // quantity_step
+        best_quantity = 0
+        while low_index <= high_index:
+            middle = (low_index + high_index) // 2
+            quantity = lowest_quantity + middle * quantity_step
+            consideration = Decimal(quantity) * execution_price
+            costs = cost_policy.calculate(
+                board, Side.BUY, consideration, session_date
+            )
+            if consideration + costs.total <= cash:
+                best_quantity = quantity
+                low_index = middle + 1
+            else:
+                high_index = middle - 1
+        return best_quantity
+
+    def run(
+        self,
+        spec: BacktestRunSpec,
+        *,
+        research_execution: ResearchExecutionInputs | None = None,
+    ) -> BacktestRunResult:
         if not isinstance(spec, BacktestRunSpec):
             raise TypeError("spec must be BacktestRunSpec")
+        research_profile, liquidity = self._validate_execution_inputs(
+            spec, research_execution
+        )
         instrument_map = {item.instrument_id: item for item in spec.instruments}
         first_date = spec.sessions[0].session_date
         quantity = {item.instrument_id: 0 for item in spec.instruments}
@@ -161,34 +322,143 @@ class DeterministicAshareBacktestEngine:
 
                     fill_qty = order.requested_quantity
                     result_code = DiagnosticCode.FILLED
+                    participation_cap = None
+                    eligible_quantity = None
+                    execution_price = _d(order.raw_limit_price)
+                    if research_profile is not None:
+                        participation_cap = self._participation_cap(
+                            requested_quantity=order.requested_quantity,
+                            volume_shares=liquidity[
+                                (session.session_date, order.instrument_id)
+                            ],
+                            participation_rate=research_profile.daily_volume_participation_rate,
+                            side=order.side,
+                            buy_minimum_quantity=rule.buy_minimum_quantity,
+                            buy_quantity_step=rule.buy_quantity_step,
+                            sell_odd_lot_in_one_order=rule.sell_odd_lot_in_one_order,
+                        )
+                        if participation_cap == 0:
+                            diagnostics.append(
+                                ExecutionDiagnostic(
+                                    order.order_id,
+                                    DiagnosticCode.NO_MARKET_VOLUME,
+                                    order.requested_quantity,
+                                    0,
+                                    "admitted volume participation cap is below an executable lot",
+                                    0,
+                                    order.requested_quantity,
+                                    0,
+                                )
+                            )
+                            continue
+                        fill_qty = min(fill_qty, participation_cap)
+                        if fill_qty < order.requested_quantity:
+                            result_code = DiagnosticCode.PARTIAL_VOLUME
+                        execution_price = self._execution_price(
+                            order.raw_limit_price,
+                            order.side,
+                            research_profile,
+                            rule.price_tick,
+                        )
                     if order.side is Side.SELL:
+                        before_sellable = fill_qty
                         fill_qty = min(fill_qty, sellable[order.instrument_id])
                         if fill_qty == 0:
-                            diagnostics.append(ExecutionDiagnostic(order.order_id, DiagnosticCode.NO_SELLABLE_QUANTITY, order.requested_quantity, 0, "T+1 sellable quantity is zero"))
+                            diagnostics.append(
+                                ExecutionDiagnostic(
+                                    order.order_id,
+                                    DiagnosticCode.NO_SELLABLE_QUANTITY,
+                                    order.requested_quantity,
+                                    0,
+                                    "T+1 sellable quantity is zero",
+                                    0 if research_profile is not None else None,
+                                    order.requested_quantity if research_profile is not None else None,
+                                    participation_cap,
+                                )
+                            )
                             continue
-                        if fill_qty < order.requested_quantity:
+                        if fill_qty < before_sellable:
                             result_code = DiagnosticCode.PARTIAL_T_PLUS_ONE
+                        if research_profile is not None:
+                            eligible_quantity = fill_qty
                     else:
-                        if fill_qty < rule.buy_minimum_quantity:
-                            diagnostics.append(ExecutionDiagnostic(order.order_id, DiagnosticCode.BELOW_BUY_LOT, order.requested_quantity, 0, "quantity is below pinned buy minimum"))
+                        if order.requested_quantity < rule.buy_minimum_quantity:
+                            diagnostics.append(
+                                ExecutionDiagnostic(
+                                    order.order_id,
+                                    DiagnosticCode.BELOW_BUY_LOT,
+                                    order.requested_quantity,
+                                    0,
+                                    "quantity is below pinned buy minimum",
+                                    0 if research_profile is not None else None,
+                                    order.requested_quantity if research_profile is not None else None,
+                                    participation_cap,
+                                )
+                            )
                             continue
-                        while fill_qty >= rule.buy_minimum_quantity:
-                            consideration = Decimal(fill_qty) * _d(order.raw_limit_price)
-                            costs = spec.cost_policy.calculate(instrument_map[order.instrument_id].board, Side.BUY, consideration, session.session_date)
-                            if consideration + costs.total <= cash:
-                                break
-                            fill_qty -= rule.buy_quantity_step
+                        if research_profile is not None:
+                            eligible_quantity = fill_qty
+                        fill_qty = self._max_affordable_buy_quantity(
+                            candidate_quantity=fill_qty,
+                            minimum_quantity=rule.buy_minimum_quantity,
+                            quantity_step=rule.buy_quantity_step,
+                            execution_price=execution_price,
+                            cash=cash,
+                            cost_policy=spec.cost_policy,
+                            board=instrument_map[order.instrument_id].board,
+                            session_date=session.session_date,
+                        )
                         if fill_qty < rule.buy_minimum_quantity:
-                            diagnostics.append(ExecutionDiagnostic(order.order_id, DiagnosticCode.PARTIAL_CASH, order.requested_quantity, 0, "insufficient cash after explicit costs"))
+                            diagnostics.append(
+                                ExecutionDiagnostic(
+                                    order.order_id,
+                                    DiagnosticCode.PARTIAL_CASH,
+                                    order.requested_quantity,
+                                    0,
+                                    "insufficient cash after explicit costs",
+                                    eligible_quantity,
+                                    order.requested_quantity if research_profile is not None else None,
+                                    participation_cap,
+                                )
+                            )
                             continue
-                        if fill_qty < order.requested_quantity:
+                        if eligible_quantity is not None and fill_qty < eligible_quantity:
+                            result_code = DiagnosticCode.PARTIAL_CASH
+                        elif research_profile is None and fill_qty < order.requested_quantity:
                             result_code = DiagnosticCode.PARTIAL_CASH
 
-                    consideration = Decimal(fill_qty) * _d(order.raw_limit_price)
+                    consideration = Decimal(fill_qty) * execution_price
                     costs = spec.cost_policy.calculate(instrument_map[order.instrument_id].board, order.side, consideration, session.session_date)
                     fill_payload = {"order_id": order.order_id, "quantity": fill_qty, "raw_price": order.raw_limit_price, "costs": costs.to_wire()}
+                    if research_profile is not None:
+                        fill_payload.update(
+                            {
+                                "execution_price": decimal_text(
+                                    execution_price, "execution_price"
+                                ),
+                                "participation_cap": participation_cap,
+                                "slippage_bps": research_profile.slippage_bps,
+                            }
+                        )
                     fill_id = "fill_sha256_" + canonical_sha256(fill_payload)
-                    fill = Fill(fill_id, order.order_id, session.session_date, order.instrument_id, order.side, fill_qty, order.raw_limit_price, decimal_text(consideration, "consideration"), costs)
+                    fill = Fill(
+                        fill_id,
+                        order.order_id,
+                        session.session_date,
+                        order.instrument_id,
+                        order.side,
+                        fill_qty,
+                        order.raw_limit_price,
+                        decimal_text(consideration, "consideration"),
+                        costs,
+                        decimal_text(execution_price, "execution_price")
+                        if research_profile is not None
+                        else None,
+                        participation_cap,
+                        research_profile.slippage_bps
+                        if research_profile is not None
+                        else None,
+                    )
                     fills.append(fill)
                     if order.side is Side.BUY:
                         cash -= consideration
@@ -211,7 +481,20 @@ class DeterministicAshareBacktestEngine:
                         cash_sequence += 1
                     position_ledger.append(PositionLedgerEntry(position_sequence, session.session_date, order.instrument_id, pos_delta, quantity[order.instrument_id], sellable[order.instrument_id], fill_id))
                     position_sequence += 1
-                    diagnostics.append(ExecutionDiagnostic(order.order_id, result_code, order.requested_quantity, fill_qty, result_code.value))
+                    diagnostics.append(
+                        ExecutionDiagnostic(
+                            order.order_id,
+                            result_code,
+                            order.requested_quantity,
+                            fill_qty,
+                            result_code.value,
+                            eligible_quantity,
+                            order.requested_quantity - fill_qty
+                            if research_profile is not None
+                            else None,
+                            participation_cap,
+                        )
+                    )
 
             holdings_value = Decimal(0)
             for instrument_id in sorted(quantity):

@@ -34,18 +34,53 @@ class MockProcess extends EventEmitter {
   stderr = new PassThrough();
   pid = 4321;
   terminated = false;
+  killed = false;
+  exited = false;
+  constructor() {
+    super();
+    this.exitPromise = new Promise((resolve) => {
+      this.once("exit", () => { this.exited = true; resolve(); });
+    });
+  }
   onExit(listener) { this.once("exit", listener); }
   terminate() {
     if (this.terminated) return;
     this.terminated = true;
     queueMicrotask(() => this.emit("exit", 0, null));
   }
+  kill() {
+    if (this.exited) return;
+    this.killed = true;
+    queueMicrotask(() => this.emit("exit", null, "SIGKILL"));
+  }
+  isAlive() { return !this.exited; }
+  async waitForExit(deadlineAt) {
+    if (!this.isAlive()) return true;
+    const remaining = Math.max(0, deadlineAt - Date.now());
+    return Promise.race([
+      this.exitPromise.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), remaining))
+    ]);
+  }
+}
+
+class StubbornProcess extends MockProcess {
+  terminateCalls = 0;
+  killCalls = 0;
+  terminated = false;
+
+  terminate() { this.terminateCalls += 1; }
+  kill() { this.killCalls += 1; }
+  isAlive() { return true; }
+  async waitForExit() { return false; }
 }
 
 class ShutdownBackend {
   decoder = new FrameDecoder();
   prepareResponses = [];
   commitResponses = [];
+  prepareRequests = [];
+  commitRequests = [];
   shutdownReadyCount = 0;
   shutdownCommittedCount = 0;
   ackSequences = [];
@@ -82,14 +117,25 @@ class ShutdownBackend {
       this.send({ kind: "events.replayComplete", last_sequence: after, next_after_sequence: after, high_watermark: 0, has_more: false });
     } else if (message.kind === "runtime.prepareShutdown") {
       this.shutdownReadyCount += 1;
+      this.prepareRequests.push(message);
       if (this.mode === "happy" || this.mode === "noCommit" || this.mode === "injectEvent") {
         if (this.mode === "injectEvent") this.pushEvent(1);
-        this.send({ kind: "runtime.shutdownReady", deadline_at: message.deadline_at });
+        this.send({
+          kind: "runtime.shutdownReady",
+          deadline_at: message.deadline_at,
+          ...(message.control_request_id === undefined ? {} : { control_request_id: message.control_request_id }),
+          ...(message.runtime_generation === undefined ? {} : { runtime_generation: message.runtime_generation })
+        });
       }
     } else if (message.kind === "runtime.commitShutdown") {
       this.shutdownCommittedCount += 1;
+      this.commitRequests.push(message);
       if (this.mode === "happy" || this.mode === "injectEvent") {
-        this.send({ kind: "runtime.shutdownCommitted" });
+        this.send({
+          kind: "runtime.shutdownCommitted",
+          ...(message.control_request_id === undefined ? {} : { control_request_id: message.control_request_id }),
+          ...(message.runtime_generation === undefined ? {} : { runtime_generation: message.runtime_generation })
+        });
         queueMicrotask(() => this.process.emit("exit", 0, null));
       }
     } else if (message.kind === "events.ack") {
@@ -123,6 +169,18 @@ class ShutdownMockFactory {
   }
 }
 
+class StubbornShutdownMockFactory {
+  spawnCount = 0;
+  spawn() {
+    this.spawnCount += 1;
+    const process = new StubbornProcess();
+    const backend = new ShutdownBackend(process, "silent");
+    setImmediate(() => backend.hello());
+    this.spawnResult = { process, backend };
+    return process;
+  }
+}
+
 function create(factory, overrides = {}, cursorPort) {
   return new BackendSupervisor({
     pythonExecutable: "python.exe",
@@ -146,6 +204,13 @@ test("happy prepare/commit shutdown handshake completes", async () => {
   assert.equal(supervisor.state, "STOPPED");
   assert.equal(factory.spawnResult.backend.shutdownReadyCount, 1);
   assert.equal(factory.spawnResult.backend.shutdownCommittedCount, 1);
+  const [prepare] = factory.spawnResult.backend.prepareRequests;
+  const [commit] = factory.spawnResult.backend.commitRequests;
+  assert.match(prepare.control_request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.match(commit.control_request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(commit.control_request_id, prepare.control_request_id);
+  assert.equal(commit.runtime_generation, prepare.runtime_generation);
+  assert.equal(Number.isSafeInteger(prepare.runtime_generation), true);
   // The backend exits by itself after commitShutdown; the supervisor must
   // observe the exit and reach STOPPED without spawning any fallback.
 });
@@ -170,6 +235,26 @@ test("commit timeout forces a shutdown fallback", async () => {
   assert.equal(supervisor.state, "STOPPED");
   assert.equal(factory.spawnResult.process.terminated, true);
   assert.equal(factory.spawnResult.backend.shutdownReadyCount, 1);
+});
+
+test("unconfirmed backend exit fails closed and fences the next generation", async () => {
+  const factory = new StubbornShutdownMockFactory();
+  const supervisor = create(factory);
+  await supervisor.start();
+  await waitFor(() => supervisor.state === "READY");
+
+  await assert.rejects(
+    supervisor.shutdown(10),
+    (error) => error.code === "BACKEND_EXIT_NOT_CONFIRMED"
+  );
+  assert.equal(factory.spawnResult.process.terminateCalls, 1);
+  assert.equal(factory.spawnResult.process.killCalls, 1);
+  assert.notEqual(supervisor.state, "STOPPED");
+  await assert.rejects(
+    supervisor.start(),
+    (error) => error.code === "BACKEND_EXIT_NOT_CONFIRMED"
+  );
+  assert.equal(factory.spawnCount, 1, "no replacement generation may spawn while the old PID is alive");
 });
 
 test("shutdown quiesce rejects late user mutations, drains queued work, and keeps cursor commits alive", async () => {

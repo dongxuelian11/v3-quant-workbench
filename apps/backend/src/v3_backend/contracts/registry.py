@@ -48,9 +48,11 @@ OPERATIONS = MappingProxyType({
 SERVICE_COUNT = len(SERVICE_CONTRACTS)
 OPERATION_COUNT = len(OPERATIONS)
 # Bounded non-P0 Product Entry expansion (task-authorized): the original
-# frozen v1 registry (17 services / 64 operations) must remain an exact
-# subset; only the ProductEntryService addition may change the totals.
-if SERVICE_COUNT != 18 or OPERATION_COUNT != 67:
+# frozen v1 registry (17 services / 64 operations) remains an exact subset;
+# Product Entry now owns three preserved 1.0 operations plus additive 1.1
+# local-data/factor/Strategy preview/publish, Backtest preflight/command and
+# project-home query.
+if SERVICE_COUNT != 18 or OPERATION_COUNT != 74:
     raise RuntimeError(f'frozen registry mismatch: services={SERVICE_COUNT}, operations={OPERATION_COUNT}')
 
 def get_operation(operation_id: str):

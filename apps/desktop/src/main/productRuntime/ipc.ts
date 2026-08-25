@@ -17,19 +17,31 @@ export const PRODUCT_RUNTIME_CHANNELS = Object.freeze({
   capabilities: "productRuntime:capabilities",
   boundProject: "productRuntime:boundProject",
   projectContext: "productRuntime:projectContext",
+  projectHome: "productRuntime:projectHome",
+  latestProductResultDetails: "productRuntime:latestProductResultDetails",
   restoreSession: "productRuntime:restoreSession",
   connectExistingProject: "productRuntime:connectExistingProject",
   listTasks: "productRuntime:listTasks",
   getTask: "productRuntime:getTask",
+  retryResearchBacktest: "productRuntime:retryResearchBacktest",
   getTaskEvents: "productRuntime:getTaskEvents",
   getResult: "productRuntime:getResult",
   getArtifactDescriptor: "productRuntime:getArtifactDescriptor",
   openArtifactStream: "productRuntime:openArtifactStream",
+  readArtifactBytes: "productRuntime:readArtifactBytes",
+  exportArtifact: "productRuntime:exportArtifact",
   submitExistingBacktestRunSpec: "productRuntime:submitExistingBacktestRunSpec",
   createProject: "productRuntime:createProject",
   listProjects: "productRuntime:listProjects",
   listBacktestRunSpecs: "productRuntime:listBacktestRunSpecs",
   importResearchPackage: "productRuntime:importResearchPackage",
+  chooseLocalDataSource: "productRuntime:chooseLocalDataSource",
+  importLocalDataset: "productRuntime:importLocalDataset",
+  submitFactorStudy: "productRuntime:submitFactorStudy",
+  previewResearchStrategy: "productRuntime:previewResearchStrategy",
+  publishResearchStrategy: "productRuntime:publishResearchStrategy",
+  previewResearchBacktest: "productRuntime:previewResearchBacktest",
+  submitResearchBacktest: "productRuntime:submitResearchBacktest",
   submitResearch: "productRuntime:submitResearch"
 } as const);
 
@@ -49,6 +61,14 @@ function requiredString(item: Record<string, unknown>, name: string): string {
   const value = item[name];
   if (typeof value !== "string" || value.length === 0 || value.length > 4096) {
     throw new ProductAdapterError("INVALID_ARGUMENT", `${name} must be a bounded non-empty string`);
+  }
+  return value;
+}
+
+function requiredInteger(item: Record<string, unknown>, name: string, minimum: number, maximum: number): number {
+  const value = item[name];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", `${name} must be an integer in [${minimum}, ${maximum}]`);
   }
   return value;
 }
@@ -73,6 +93,8 @@ export function registerProductRuntimeIpc(
   handle(PRODUCT_RUNTIME_CHANNELS.capabilities, () => bridge.getCapabilities());
   handle(PRODUCT_RUNTIME_CHANNELS.boundProject, () => bridge.getBoundProject());
   handle(PRODUCT_RUNTIME_CHANNELS.projectContext, () => bridge.getProjectContext());
+  handle(PRODUCT_RUNTIME_CHANNELS.projectHome, () => bridge.getProjectHome());
+  handle(PRODUCT_RUNTIME_CHANNELS.latestProductResultDetails, () => bridge.getLatestProductResultDetails());
   handle(PRODUCT_RUNTIME_CHANNELS.restoreSession, () => bridge.restoreSession());
   handle(PRODUCT_RUNTIME_CHANNELS.connectExistingProject, (value) => {
     const item = assertObject(value, ["projectId", "projectContextRevisionId"]);
@@ -83,33 +105,42 @@ export function registerProductRuntimeIpc(
   });
   handle(PRODUCT_RUNTIME_CHANNELS.listTasks, (value) => {
     if (value === undefined) return bridge.listTasks();
-    const item = assertObject(value, ["service", "state"]);
-    if (item.service !== undefined && item.service !== "ProductEntryService") {
+    const item = assertObject(value, ["filter", "cursor", "pageSize"]);
+    const filter = item.filter === undefined ? {} : assertObject(item.filter, ["service", "state"]);
+    if (filter.service !== undefined && filter.service !== "ProductEntryService") {
       throw new ProductAdapterError("INVALID_ARGUMENT", "task list service filter is not admitted");
     }
-    if (item.state !== undefined && item.state !== "SUCCEEDED") {
+    if (filter.state !== undefined && filter.state !== "SUCCEEDED") {
       throw new ProductAdapterError("INVALID_ARGUMENT", "task list state filter is not admitted");
     }
     return bridge.listTasks({
-      ...(item.service === undefined ? {} : { service: item.service as "ProductEntryService" }),
-      ...(item.state === undefined ? {} : { state: item.state as "SUCCEEDED" })
+      filter: {
+        ...(filter.service === undefined ? {} : { service: filter.service as "ProductEntryService" }),
+        ...(filter.state === undefined ? {} : { state: filter.state as "SUCCEEDED" })
+      },
+      ...(item.cursor === undefined ? {} : { cursor: requiredString(item, "cursor") }),
+      ...(item.pageSize === undefined ? {} : { pageSize: requiredInteger(item, "pageSize", 1, 100) })
     });
   });
   handle(PRODUCT_RUNTIME_CHANNELS.getTask, (value) => {
     const item = assertObject(value, ["taskId"]);
     return bridge.getTask(requiredString(item, "taskId"));
   });
+  handle(PRODUCT_RUNTIME_CHANNELS.retryResearchBacktest, (value) => {
+    const item = assertObject(value, ["taskId"]);
+    return bridge.retryResearchBacktest(requiredString(item, "taskId"));
+  });
   handle(PRODUCT_RUNTIME_CHANNELS.getTaskEvents, (value) => {
     const item = assertObject(value, ["afterSequence", "limit"]);
     const afterSequence = item.afterSequence;
     const limit = item.limit;
-    if (!Number.isInteger(afterSequence) || Number(afterSequence) < 0) {
+    if (typeof afterSequence !== "number" || !Number.isInteger(afterSequence) || afterSequence < 0) {
       throw new ProductAdapterError("INVALID_ARGUMENT", "afterSequence must be a non-negative integer");
     }
-    if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 500) {
+    if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 500) {
       throw new ProductAdapterError("INVALID_ARGUMENT", "limit must be an integer in [1, 500]");
     }
-    return bridge.getTaskEvents(Number(afterSequence), Number(limit));
+    return bridge.getTaskEvents(afterSequence, limit);
   });
   handle(PRODUCT_RUNTIME_CHANNELS.getResult, (value) => {
     const item = assertObject(value, ["resultId"]);
@@ -122,6 +153,17 @@ export function registerProductRuntimeIpc(
   handle(PRODUCT_RUNTIME_CHANNELS.openArtifactStream, (value) => {
     const item = assertObject(value, ["artifactId"]);
     return bridge.openArtifactStream(requiredString(item, "artifactId"));
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.readArtifactBytes, (value) => {
+    const item = assertObject(value, ["artifactId"]);
+    return bridge.readArtifactBytes(requiredString(item, "artifactId"));
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.exportArtifact, (value) => {
+    const item = assertObject(value, ["artifactId", "suggestedName"]);
+    return bridge.exportArtifact({
+      artifactId: requiredString(item, "artifactId"),
+      suggestedName: requiredString(item, "suggestedName")
+    });
   });
   handle(PRODUCT_RUNTIME_CHANNELS.submitExistingBacktestRunSpec, (value) => {
     const item = assertObject(value, ["runSpecId"]);
@@ -136,9 +178,40 @@ export function registerProductRuntimeIpc(
     }
     return bridge.createProject({ displayName, ...(notes === undefined ? {} : { notes }) });
   });
-  handle(PRODUCT_RUNTIME_CHANNELS.listProjects, () => bridge.listProjects());
-  handle(PRODUCT_RUNTIME_CHANNELS.listBacktestRunSpecs, () => bridge.listBacktestRunSpecs());
+  const pageRequest = (value: unknown) => {
+    if (value === undefined) return undefined;
+    const item = assertObject(value, ["cursor", "pageSize"]);
+    return {
+      ...(item.cursor === undefined ? {} : { cursor: requiredString(item, "cursor") }),
+      ...(item.pageSize === undefined ? {} : { pageSize: requiredInteger(item, "pageSize", 1, 100) })
+    };
+  };
+  handle(PRODUCT_RUNTIME_CHANNELS.listProjects, (value) => bridge.listProjects(pageRequest(value)));
+  handle(PRODUCT_RUNTIME_CHANNELS.listBacktestRunSpecs, (value) => bridge.listBacktestRunSpecs(pageRequest(value)));
   handle(PRODUCT_RUNTIME_CHANNELS.importResearchPackage, () => bridge.importResearchPackage());
+  handle(PRODUCT_RUNTIME_CHANNELS.chooseLocalDataSource, (value) => {
+    if (value !== undefined) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "chooseLocalDataSource does not accept a payload");
+    }
+    return bridge.chooseLocalDataSource();
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.importLocalDataset, (value) => {
+    const item = assertObject(value, ["capabilityToken", "volumeUnit", "amountUnit", "timezone", "adjustment"]);
+    const volumeUnit = item.volumeUnit;
+    if (volumeUnit !== "SHARES" && volumeUnit !== "HANDS") {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "volumeUnit must be SHARES or HANDS");
+    }
+    if (item.amountUnit !== "CNY" || item.timezone !== "Asia/Shanghai" || item.adjustment !== "UNADJUSTED") {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "local-data semantic declarations are not admitted");
+    }
+    return bridge.importLocalDataset({
+      capabilityToken: requiredString(item, "capabilityToken"),
+      volumeUnit,
+      amountUnit: "CNY",
+      timezone: "Asia/Shanghai",
+      adjustment: "UNADJUSTED"
+    });
+  });
   handle(PRODUCT_RUNTIME_CHANNELS.submitResearch, (intentPayload) => {
     const intentFields = assertObject(intentPayload, ["symbol", "startDate", "endDate"]);
     return bridge.submitResearch({
@@ -146,6 +219,69 @@ export function registerProductRuntimeIpc(
       startDate: requiredString(intentFields, "startDate"),
       endDate: requiredString(intentFields, "endDate")
     });
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.submitFactorStudy, (intentPayload) => {
+    const intent = assertObject(intentPayload, ["formulaSource", "analysisOutputName"]);
+    if (typeof intent.formulaSource !== "string" || intent.formulaSource.trim().length === 0 || intent.formulaSource.length > 65_536) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "formulaSource must be bounded non-empty TDX text");
+    }
+    return bridge.submitFactorStudy({
+      formulaSource: intent.formulaSource,
+      analysisOutputName: requiredString(intent, "analysisOutputName")
+    });
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.publishResearchStrategy, (intentPayload) => {
+    const intent = assertObject(intentPayload, [
+      "entrySignalFactorVersionId", "exitSignalFactorVersionId", "positionSizing",
+      "maxPositions", "grossExposure", "initialCash", "assumptionProfileId"
+    ]);
+    if (intent.positionSizing !== "SINGLE_ASSET_FULL_WEIGHT" && intent.positionSizing !== "EQUAL_WEIGHT_ACTIVE_SIGNALS") {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "positionSizing is not admitted");
+    }
+    return bridge.publishResearchStrategy({
+      entrySignalFactorVersionId: requiredString(intent, "entrySignalFactorVersionId"),
+      exitSignalFactorVersionId: requiredString(intent, "exitSignalFactorVersionId"),
+      positionSizing: intent.positionSizing,
+      maxPositions: requiredInteger(intent, "maxPositions", 1, 20),
+      grossExposure: requiredString(intent, "grossExposure"),
+      initialCash: requiredString(intent, "initialCash"),
+      assumptionProfileId: requiredString(intent, "assumptionProfileId")
+    });
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.previewResearchStrategy, (intentPayload) => {
+    const intent = assertObject(intentPayload, [
+      "entrySignalFactorVersionId", "exitSignalFactorVersionId", "positionSizing",
+      "maxPositions", "grossExposure", "initialCash", "assumptionProfileId"
+    ]);
+    if (intent.positionSizing !== "SINGLE_ASSET_FULL_WEIGHT" && intent.positionSizing !== "EQUAL_WEIGHT_ACTIVE_SIGNALS") {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "positionSizing is not admitted");
+    }
+    return bridge.previewResearchStrategy({
+      entrySignalFactorVersionId: requiredString(intent, "entrySignalFactorVersionId"),
+      exitSignalFactorVersionId: requiredString(intent, "exitSignalFactorVersionId"),
+      positionSizing: intent.positionSizing,
+      maxPositions: requiredInteger(intent, "maxPositions", 1, 20),
+      grossExposure: requiredString(intent, "grossExposure"),
+      initialCash: requiredString(intent, "initialCash"),
+      assumptionProfileId: requiredString(intent, "assumptionProfileId")
+    });
+  });
+  const researchBacktestIntent = (intentPayload: unknown) => {
+    const intent = assertObject(intentPayload, [
+      "sessionStart", "sessionEnd", "slippageBps", "dailyVolumeParticipationRate"
+    ]);
+    return {
+      sessionStart: requiredString(intent, "sessionStart"),
+      sessionEnd: requiredString(intent, "sessionEnd"),
+      slippageBps: requiredString(intent, "slippageBps"),
+      dailyVolumeParticipationRate: requiredString(intent, "dailyVolumeParticipationRate")
+    };
+  };
+  handle(PRODUCT_RUNTIME_CHANNELS.previewResearchBacktest, (intentPayload) => {
+    return bridge.previewResearchBacktest(researchBacktestIntent(intentPayload));
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.submitResearchBacktest, (intentPayload) => {
+    return bridge.submitResearchBacktest(researchBacktestIntent(intentPayload));
   });
   return () => {
     for (const channel of Object.values(PRODUCT_RUNTIME_CHANNELS)) ipcMain.removeHandler(channel);

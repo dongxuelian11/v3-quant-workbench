@@ -32,6 +32,7 @@ from .artifacts import (
 )
 from .binding import (
     BoundInputReference,
+    ExactUniverseReference,
     ExternalReferenceResolution,
     StrategyEvaluationBindingVersion,
 )
@@ -170,9 +171,34 @@ def encode_score_payload(
     decision_time: datetime,
     values: tuple[str | None, ...],
 ) -> bytes:
-    """Canonical test/owner helper; publication still belongs to the Artifact Store."""
+    """Compatibility wrapper over the exact-Universe score owner boundary."""
 
-    if len(values) != len(binding.universe.instrument_ids):
+    return encode_score_payload_for_universe(
+        definition=definition,
+        universe=binding.universe,
+        binding_key=binding_key,
+        decision_time=decision_time,
+        values=values,
+    )
+
+
+def encode_score_payload_for_universe(
+    *,
+    definition: StrategyDefinitionVersion,
+    universe: ExactUniverseReference,
+    binding_key: str,
+    decision_time: datetime,
+    values: tuple[str | None, ...],
+) -> bytes:
+    """Encode owner values against an exact Universe before a Strategy binding exists."""
+
+    if not isinstance(definition, StrategyDefinitionVersion):
+        raise TypeError("definition must be StrategyDefinitionVersion")
+    if not isinstance(universe, ExactUniverseReference):
+        raise TypeError("universe must be ExactUniverseReference")
+    if not isinstance(binding_key, str) or not binding_key or binding_key != binding_key.strip():
+        raise FormalStrategyEvaluationError("binding_key must be exact non-empty text")
+    if len(values) != len(universe.instrument_ids):
         raise FormalStrategyEvaluationError("score values must match exact Universe length")
     normalized: list[str | None] = []
     for value in values:
@@ -192,10 +218,10 @@ def encode_score_payload(
         "binding_key": binding_key,
         "payload_role": SCORE_PAYLOAD_ROLE,
         "decision_time": _wire_time(decision_time),
-        "universe_version_id": binding.universe.universe_version_id,
-        "membership_artifact_id": binding.universe.membership_artifact_id,
-        "membership_sha256": binding.universe.membership_sha256,
-        "instrument_ids": list(binding.universe.instrument_ids),
+        "universe_version_id": universe.universe_version_id,
+        "membership_artifact_id": universe.membership_artifact_id,
+        "membership_sha256": universe.membership_sha256,
+        "instrument_ids": list(universe.instrument_ids),
         "values": normalized,
     }
     return json.dumps(
@@ -571,5 +597,6 @@ __all__ = (
     "FormalStrategyEvaluationService",
     "FormalStrategyInputRequest",
     "encode_score_payload",
+    "encode_score_payload_for_universe",
     "strategy_payload_context_identity",
 )

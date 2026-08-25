@@ -38,6 +38,43 @@ test("valid persisted state loads without quarantine", async () => {
   assert.equal(loaded.state.persistenceRevision, 3);
 });
 
+test("V1 workspace migrates to V2 with an exact backup and no truncation", async () => {
+  const legacy = { ...structuredClone(DEFAULT_WORKSPACE), activeProject: "Legacy Project", runtimeMeta: { storeSchemaVersion: 1 } };
+  const original = JSON.stringify(legacy);
+  const { store, storePath } = await freshStore(original);
+  const loaded = await store.load();
+  assert.equal(loaded.initializedFresh, false);
+  assert.equal(loaded.state.runtimeMeta.storeSchemaVersion, 2);
+  assert.match(loaded.migrationBackupPath, /\.backup-v1-\d+-[0-9a-f]{8}$/);
+  assert.equal(await readFile(loaded.migrationBackupPath, "utf8"), original);
+  assert.equal(JSON.parse(await readFile(storePath, "utf8")).activeProject, "Legacy Project");
+});
+
+test("V1 migration write failure rolls the exact original file back", async () => {
+  const legacy = { ...structuredClone(DEFAULT_WORKSPACE), runtimeMeta: { storeSchemaVersion: 1 } };
+  const original = JSON.stringify(legacy);
+  const { storePath } = await freshStore(original);
+  const real = await import("node:fs/promises");
+  const blocked = new WorkspaceStore(storePath, {
+    fileOps: {
+      readFile: (path) => real.readFile(path, "utf8"),
+      writeFileDurable: async () => { throw new Error("injected migration write failure"); },
+      rename: (from, to) => real.rename(from, to),
+      mkdir: (path) => real.mkdir(path, { recursive: true }),
+      unlinkBestEffort: async (path) => { try { await real.unlink(path); } catch { /* ignore */ } }
+    }
+  });
+  await assert.rejects(blocked.load(), (error) => error instanceof WorkspaceStoreError && error.code === "WORKSPACE_STORE_MIGRATION_FAILED");
+  assert.equal(await readFile(storePath, "utf8"), original);
+});
+
+test("workspace schema rejects oversized strings instead of persisting unbounded state", async () => {
+  const { store } = await freshStore();
+  await store.load();
+  const oversized = { ...structuredClone(DEFAULT_WORKSPACE), activeProject: "x".repeat(513) };
+  await assert.rejects(store.saveUserState(oversized), (error) => error instanceof WorkspaceStoreError && error.code === "WORKSPACE_STORE_INVALID_STATE");
+});
+
 test("malformed JSON is quarantined and never overwritten", async () => {
   const { store, storePath } = await freshStore("{ not json !");
   const loaded = await store.load();

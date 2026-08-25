@@ -11,5 +11,9 @@ pydantic-ai-slim==2.27.0
 # zoneinfo (for example Asia/Shanghai) during Product Runtime bootstrap.
 tzdata==2025.3
 
+# V1.1 bounded local Parquet metadata inspection and batch ingestion.
+# The packaged Windows runtime must carry this exact wheel; runtime install is forbidden.
+pyarrow==23.0.1
+
 # Track E process-isolated deterministic model worker.
 -r requirements-model-runtime-v0.txt

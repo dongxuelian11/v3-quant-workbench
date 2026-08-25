@@ -166,7 +166,7 @@ export const DEFAULT_WORKSPACE: PersistedWorkspace = {
   executedCommands: {},
   projectEventCursors: {},
   persistenceRevision: 0,
-  runtimeMeta: { storeSchemaVersion: 1 },
+  runtimeMeta: { storeSchemaVersion: 2 },
   savedAt: null
 };
 
@@ -247,11 +247,28 @@ export interface ProductTaskAttemptView {
   readonly ordinal: number;
   readonly state: string;
   readonly errorCategory: string | null;
+  readonly reasonCode: string | null;
 }
 
 export interface ProductTaskListFilter {
   readonly service?: "ProductEntryService";
   readonly state?: "SUCCEEDED";
+}
+
+export interface ProductPageRequest {
+  /** Opaque owner-issued keyset cursor; callers must not parse or mint it. */
+  readonly cursor?: string;
+  readonly pageSize?: number;
+}
+
+export interface ProductTaskPageRequest extends ProductPageRequest {
+  readonly filter?: ProductTaskListFilter;
+}
+
+export interface ProductTasksListView {
+  readonly tasks: readonly ProductTaskView[];
+  readonly hasMore: boolean;
+  readonly nextCursor: string | null;
 }
 
 export interface ProductTaskView {
@@ -273,11 +290,27 @@ export interface ProductTaskView {
 
 export interface ProductTaskEventView {
   readonly eventId: string;
+  readonly taskId: string;
   readonly projectSequence: number;
   readonly eventType: string;
   readonly occurredAt: string;
   /** Canonical result identity recorded by the durable TASK_SUCCEEDED event. */
   readonly resultId: string | null;
+  readonly progress: ProductTaskProgressView | null;
+}
+
+export type ProductTaskProgressPhase =
+  | "ACQUIRING"
+  | "VALIDATING"
+  | "COMPUTING"
+  | "PUBLISHING"
+  | "RECONCILING";
+
+export interface ProductTaskProgressView {
+  readonly phase: ProductTaskProgressPhase;
+  readonly completedUnits: number;
+  readonly totalUnits: number;
+  readonly workUnit: string;
 }
 
 export interface ProductTaskEventsView {
@@ -312,6 +345,34 @@ export interface ArtifactStreamTicketView {
   readonly ticketId: string;
   readonly artifactId: string;
 }
+
+export interface ArtifactStreamBytesView {
+  readonly artifactId: string;
+  readonly sha256: string;
+  readonly byteSize: number;
+  readonly bytes: Uint8Array;
+}
+
+/** Renderer intent only; Electron main owns the native destination capability. */
+export interface ProductArtifactExportIntent {
+  readonly artifactId: string;
+  readonly suggestedName: string;
+}
+
+/** Cancellation is literal NOT_RUN and never creates a backend Task. */
+export type ProductArtifactExportOutcomeView =
+  | { readonly state: "NOT_RUN" }
+  | {
+      readonly state: "COMPLETED";
+      readonly taskId: string;
+      readonly runId: string;
+      readonly artifactId: string;
+      readonly manifestArtifactId: string;
+      readonly displayName: string;
+      readonly sha256: string;
+      readonly byteSize: number;
+      readonly completedAt: string;
+    };
 
 export interface BacktestSubmitOutcomeView {
   readonly taskId: string;
@@ -355,6 +416,7 @@ export interface ProjectListItemView {
 export interface ProjectsListView {
   readonly projects: readonly ProjectListItemView[];
   readonly hasMore: boolean;
+  readonly nextCursor: string | null;
 }
 
 export interface RunSpecEntryView {
@@ -372,7 +434,7 @@ export interface RunSpecEntryView {
 export interface RunSpecsListView {
   readonly specs: readonly RunSpecEntryView[];
   readonly hasMore: boolean;
-  readonly nextAfterArtifactId: string | null;
+  readonly nextCursor: string | null;
 }
 
 /** Target-canonical-authority research package reuse outcome. */
@@ -409,6 +471,560 @@ export interface ProductResearchSubmitOutcomeView {
   readonly eventCursor?: number;
 }
 
+/** Renderer-visible native selection: deliberately excludes every path. */
+export interface LocalDataSourceSelectionView {
+  readonly displayName: string;
+  readonly byteSize: number;
+  readonly mediaType: "text/csv" | "application/vnd.apache.parquet";
+  readonly capabilityToken: string;
+}
+
+/** Explicit user-supplied local-data semantics plus a one-use main capability. */
+export interface ProductLocalDataImportIntent {
+  readonly capabilityToken: string;
+  readonly volumeUnit: "SHARES" | "HANDS";
+  readonly amountUnit: "CNY";
+  readonly timezone: "Asia/Shanghai";
+  readonly adjustment: "UNADJUSTED";
+}
+
+export interface ProductLocalDataImportOutcomeView {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly acceptedState: "QUEUED";
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly checkpointResume: "UNAVAILABLE";
+  readonly retry: "NEW_ATTEMPT_SAME_RUN_FROM_START";
+  readonly sourceArtifactId: string;
+  readonly eventCursor?: number;
+}
+
+export interface ProductFactorStudyIntent {
+  readonly formulaSource: string;
+  readonly analysisOutputName: string;
+}
+
+export interface ProductFactorStudyOutcomeView {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly acceptedState: "QUEUED";
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly checkpointResume: "UNAVAILABLE";
+  readonly retry: "NEW_ATTEMPT_SAME_RUN_FROM_START";
+  readonly formulaDocumentVersionId: string;
+  readonly analysisOutputName: string;
+  readonly eventCursor?: number;
+}
+
+export interface ProductFactorMetricView {
+  readonly status: "AVAILABLE" | "INSUFFICIENT_SAMPLE" | "NOT_AVAILABLE";
+  readonly value: number | null;
+  readonly reason: string | null;
+}
+
+export interface ProductFactorDailyAnalysisView {
+  readonly sessionDate: string;
+  readonly labelSessionDate: string;
+  readonly status: "AVAILABLE" | "INSUFFICIENT_SAMPLE" | "NOT_AVAILABLE";
+  readonly reason: string | null;
+  readonly universeSize: number;
+  readonly sampleSize: number;
+  readonly coverage: number;
+  readonly missingRate: number;
+  readonly ic: ProductFactorMetricView;
+  readonly rankIc: ProductFactorMetricView;
+  readonly quantileReturns: readonly number[] | null;
+  readonly longShortSpread: number | null;
+  readonly turnover: ProductFactorMetricView;
+  readonly diagnostics: readonly string[];
+  readonly excludedReasonCounts: readonly Readonly<{ reason: string; count: number }>[];
+}
+
+export interface ProductFactorSummaryView {
+  readonly schemaVersion: "v3.project-factor-summary/1.1.0";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly snapshotId: string;
+  readonly universeVersionId: string;
+  readonly sourceManifestArtifactId: string;
+  readonly sourceManifestSha256: string;
+  readonly formulaDocumentVersionId: string;
+  readonly formulaDocumentArtifactId: string;
+  readonly analysisOutputName: string;
+  readonly analysisArtifactId: string;
+  readonly outputs: readonly Readonly<{
+    name: string;
+    factorDefinitionVersionId: string;
+    factorDefinitionArtifactId: string;
+    materializationId: string;
+    materializationArtifactId: string;
+    outputType: "FLOAT_SERIES" | "BOOLEAN_SERIES";
+    rowCount: number;
+  }>[];
+  readonly visualPreviewTotalRows: number;
+  readonly visualPreviewProjection: "TAIL_ASCENDING_MAX_256";
+  readonly visualPreview: readonly Readonly<{
+    sessionDate: string;
+    instrumentId: string;
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number | null;
+    volumeShares: number | null;
+    amountCny: number | null;
+    series: Readonly<Record<string, number | boolean | null>>;
+  }>[];
+  readonly analysis: Readonly<{
+    factorAnalysisResultId: string;
+    spec: Readonly<{
+      forwardReturnHorizonSessions: 5;
+      quantiles: 5;
+      minimumInstrumentsPerDate: 20;
+      minimumValidIcDates: 20;
+      formationPrice: "RAW_CLOSE";
+      labelPrice: "RAW_CLOSE";
+      signalAvailability: "AFTER_SESSION_CLOSE";
+    }>;
+    aggregate: Readonly<{
+      validDates: number;
+      icMean: ProductFactorMetricView;
+      icStd: ProductFactorMetricView;
+      icir: ProductFactorMetricView;
+      rankIcMean: ProductFactorMetricView;
+      rankIcStd: ProductFactorMetricView;
+      rankIcir: ProductFactorMetricView;
+      yearlyDistribution: readonly Readonly<{
+        year: number;
+        validDates: number;
+        icMean: ProductFactorMetricView;
+        icStd: ProductFactorMetricView;
+        icir: ProductFactorMetricView;
+      }>[];
+    }>;
+    dailyResultCount: number;
+    dailyResultsProjection: "TAIL_ASCENDING_MAX_256";
+    dailyResults: readonly ProductFactorDailyAnalysisView[];
+  }>;
+}
+
+export interface ProductDataReadModelView {
+  readonly schemaVersion: "v3.product-data-read-model/1.0.0";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly displayName: string;
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly sourceType: "LOCAL_USER_SUPPLIED";
+  readonly pitState: "PIT_UNPROVABLE";
+  readonly mediaType: "text/csv" | "application/vnd.apache.parquet";
+  readonly rowCount: number;
+  readonly instrumentCount: number;
+  readonly dateCoverageStart: string;
+  readonly dateCoverageEnd: string;
+  readonly partitionCount: number;
+  readonly universeRole: "USER_DEFINED_STATIC";
+  readonly qualityStatus: "PASS";
+  readonly validationProfileId: "svp_local_user_supplied_v1";
+  readonly capabilityReasons: Readonly<{
+    pit: "PIT_UNPROVABLE";
+    revision: "PROVIDER_REVISION_UNKNOWN";
+    calendar: "OBSERVED_LOCAL_ROWS_NOT_FORMAL_TRADING_CALENDAR";
+    status: "SOURCE_COLUMN_ABSENT_OR_NULL_WHEN_NOT_PROVIDED";
+  }>;
+  readonly volumeUnit: "SHARES";
+  readonly amountUnit: "CNY";
+  readonly adjustment: "UNADJUSTED";
+  readonly rawCaptureId: string;
+  readonly rawContentHash: string;
+  readonly snapshotId: string;
+  readonly normalizedPayloadHash: string;
+  readonly universeVersionId: string;
+  readonly importedAt: string;
+  readonly rawArtifactId: string;
+}
+
+export type ProductStrategyPositionSizing =
+  | "SINGLE_ASSET_FULL_WEIGHT"
+  | "EQUAL_WEIGHT_ACTIVE_SIGNALS";
+
+export type ProductResearchAssumptionMode =
+  | "RESEARCH_APPROXIMATE"
+  | "STRICT_FAIL_CLOSED";
+
+export interface ProductResearchAssumptionProfileView {
+  readonly mode: ProductResearchAssumptionMode;
+  readonly assumptionProfileId: string;
+}
+
+export interface ProductStrategyProfileRefsView {
+  readonly costPolicyVersionId: string;
+  readonly executionPolicyVersionId: string;
+  readonly riskPolicySetVersionId: string;
+  readonly assumptionProfileId: string;
+}
+
+export interface ProductStrategyAuthoringProfileView {
+  readonly schemaVersion: "v3.product-strategy-authoring-profile/1.0.0";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly positionSizingOptions: readonly ProductStrategyPositionSizing[];
+  readonly maxPositionsMin: 1;
+  readonly maxPositionsMax: 20;
+  readonly grossExposureMin: "0";
+  readonly grossExposureMax: "1";
+  readonly rebalance: "NEXT_OPEN_AFTER_SIGNAL";
+  readonly profileRefs: ProductStrategyProfileRefsView;
+  readonly assumptionProfiles: readonly ProductResearchAssumptionProfileView[];
+}
+
+export interface ProductStrategySummaryView {
+  readonly schemaVersion: "v3.project-strategy-summary/1.0.0";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly snapshotId: string;
+  readonly universeVersionId: string;
+  readonly researchStrategySpecId: string;
+  readonly strategyVersionId: string;
+  readonly entrySignalFactorVersionId: string;
+  readonly exitSignalFactorVersionId: string;
+  readonly profileRefs: ProductStrategyProfileRefsView;
+  readonly transitionCount: number;
+  readonly decisionChainCount: number;
+}
+
+export interface ProductBacktestSummaryView {
+  readonly schemaVersion: "v3.project-backtest-summary/1.0.0";
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly researchBacktestRequestId: string;
+  readonly researchStrategySpecId: string;
+  readonly snapshotId: string;
+  readonly universeVersionId: string;
+  readonly runId: string;
+  readonly runSpecId: string;
+  readonly resultId: string;
+  readonly backtestResultId: string;
+  readonly resultArtifactId: string;
+  readonly analyticsId: string;
+  readonly analyticsArtifactId: string;
+  readonly summaryExportArtifactId: string;
+  readonly ordersExportArtifactId: string;
+  readonly fillsExportArtifactId: string;
+  readonly resultLineageId: string;
+  readonly lineageArtifactId: string;
+  readonly resultState: "VALID";
+  readonly engineVersion: string;
+  readonly orderCount: number;
+  readonly fillCount: number;
+  readonly diagnosticCount: number;
+  readonly firstFillSessionDate: string | null;
+  readonly firstEffectiveSessionDate: string | null;
+  readonly assumptionMode: ProductResearchAssumptionMode;
+}
+
+export interface ProductBacktestPolicyCoverageView {
+  readonly schemaVersion: "v3.product-backtest-policy-coverage/1.0.0";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly coverageStart: string;
+  readonly coverageEnd: string | null;
+  readonly ruleProfileId: string;
+  readonly costPolicyId: string;
+  readonly executionTimingProfileId: string;
+  readonly commissionRate: string;
+  readonly minimumCommissionCny: string;
+  readonly stampDutySellRate: string;
+  readonly resourceEstimate: Readonly<{
+    resourceClass: "PRODUCT_BACKTEST_CPU";
+    cpuSlots: 1;
+    memoryLimitBytes: 1073741824;
+    scratchLimitBytes: 1073741824;
+    checkpointResume: "UNAVAILABLE";
+  }>;
+}
+
+export interface ProductResearchStrategyIntent {
+  readonly entrySignalFactorVersionId: string;
+  readonly exitSignalFactorVersionId: string;
+  readonly positionSizing: ProductStrategyPositionSizing;
+  readonly maxPositions: number;
+  readonly grossExposure: string;
+  readonly initialCash: string;
+  readonly assumptionProfileId: string;
+}
+
+export interface ProductResearchStrategyOutcomeView {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly acceptedState: "QUEUED";
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly checkpointResume: "UNAVAILABLE";
+  readonly retry: "NEW_ATTEMPT_SAME_RUN_FROM_START";
+  readonly researchStrategySpecId: string;
+  readonly eventCursor?: number;
+}
+
+export interface ProductResearchStrategyPreviewView {
+  readonly schemaVersion: "v3.product-strategy-preview/1.0.0";
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly snapshotId: string;
+  readonly universeVersionId: string;
+  readonly researchStrategySpecId: string;
+  readonly strategyDefinitionVersionId: string;
+  readonly entrySignalFactorVersionId: string;
+  readonly exitSignalFactorVersionId: string;
+  readonly profileRefs: ProductStrategyProfileRefsView;
+  readonly assumptionMode: ProductResearchAssumptionMode;
+  readonly transitionCount: number;
+  readonly plannedDecisionChainCount: number;
+  readonly sideEffects: "NONE";
+}
+
+export interface ProductResearchBacktestIntent {
+  readonly sessionStart: string;
+  readonly sessionEnd: string;
+  readonly slippageBps: string;
+  readonly dailyVolumeParticipationRate: string;
+}
+
+export interface ProductResearchBacktestOutcomeView {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly acceptedState: "QUEUED";
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly checkpointResume: "UNAVAILABLE";
+  readonly retry: "NEW_ATTEMPT_SAME_RUN_FROM_START";
+  readonly researchBacktestRequestId: string;
+  readonly eventCursor?: number;
+}
+
+export interface ProductResearchBacktestPreviewView {
+  readonly schemaVersion: "v3.product-backtest-preflight/1.0.0";
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly status: "PASS";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly researchStrategySpecId: string;
+  readonly researchBacktestRequestId: string;
+  readonly snapshotId: string;
+  readonly universeVersionId: string;
+  readonly sessionStart: string;
+  readonly sessionEnd: string;
+  readonly slippageBps: string;
+  readonly dailyVolumeParticipationRate: string;
+  readonly commissionRate: string;
+  readonly minimumCommissionCny: string;
+  readonly stampDutySellRate: string;
+  readonly assumptionMode: ProductResearchAssumptionMode;
+  readonly policyRefs: Readonly<{
+    ruleProfileId: string;
+    costPolicyId: string;
+    executionTimingProfileId: string;
+    riskPolicySetVersionId: string;
+  }>;
+  readonly resourceEstimate: ProductBacktestPolicyCoverageView["resourceEstimate"];
+  readonly sideEffects: "NONE";
+}
+
+export interface ProductResultMetricView {
+  readonly status: "AVAILABLE" | "INSUFFICIENT_SAMPLE" | "NOT_AVAILABLE";
+  readonly value: string | null;
+  readonly reason: string | null;
+}
+
+export interface ProductResultOrderRowView {
+  readonly orderId: string;
+  readonly sessionDate: string;
+  readonly instrumentId: string;
+  readonly side: "BUY" | "SELL";
+  readonly requestedQuantity: number;
+  readonly rawLimitPrice: string;
+}
+
+export interface ProductResultFillRowView {
+  readonly fillId: string;
+  readonly orderId: string;
+  readonly sessionDate: string;
+  readonly instrumentId: string;
+  readonly side: "BUY" | "SELL";
+  readonly quantity: number;
+  readonly rawPrice: string;
+  readonly executionPrice: string | null;
+  readonly consideration: string;
+  readonly commission: string;
+  readonly stampDuty: string;
+  readonly transferFee: string;
+  readonly exchangeFee: string;
+  readonly totalFees: string;
+  readonly participationCap: number | null;
+  readonly slippageBps: string | null;
+}
+
+export interface ProductResultDiagnosticRowView {
+  readonly orderId: string;
+  readonly code: string;
+  readonly requestedQuantity: number;
+  readonly eligibleQuantity: number | null;
+  readonly filledQuantity: number;
+  readonly unfilledQuantity: number | null;
+  readonly participationCap: number | null;
+  readonly detail: string;
+}
+
+export interface ProductResultHoldingRowView {
+  readonly sessionDate: string;
+  readonly instrumentId: string;
+  readonly quantity: number;
+  readonly sellableQuantity: number;
+  readonly rawClose: string;
+  readonly marketValue: string;
+}
+
+export interface ProductResultTablePreview<T> {
+  readonly rowCount: number;
+  readonly preview: readonly T[];
+  readonly truncated: boolean;
+  readonly sourceArtifactId: string;
+}
+
+export interface ProductLatestResultDetailsView {
+  readonly schemaVersion: "v3.product-result-details/1.0.0";
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly resultState: "VALID";
+  readonly resultId: string;
+  readonly backtestResultId: string;
+  readonly analyticsId: string;
+  readonly resultLineageId: string;
+  readonly runId: string;
+  readonly runSpecId: string;
+  readonly engineVersion: string;
+  readonly assumptionMode: ProductResearchAssumptionMode;
+  readonly metrics: Readonly<{
+    startNav: ProductResultMetricView;
+    endNav: ProductResultMetricView;
+    totalReturn: ProductResultMetricView;
+    annualizedReturn: ProductResultMetricView;
+    annualizedVolatility: ProductResultMetricView;
+    maxDrawdown: ProductResultMetricView;
+    sharpe: ProductResultMetricView;
+    sortino: ProductResultMetricView;
+    calmar: ProductResultMetricView;
+  }>;
+  readonly navSeries: readonly Readonly<{
+    sessionDate: string;
+    nav: string;
+    sessionReturn: ProductResultMetricView;
+    cumulativeReturn: ProductResultMetricView;
+  }>[];
+  readonly drawdownSeries: readonly Readonly<{ sessionDate: string; drawdown: ProductResultMetricView }>[];
+  readonly exposureSeries: readonly Readonly<{
+    sessionDate: string;
+    grossExposure: ProductResultMetricView;
+    netExposure: ProductResultMetricView;
+    heldInstrumentCount: number;
+  }>[];
+  readonly periodReturns: Readonly<{
+    monthly: readonly Readonly<{
+      periodLabel: string;
+      startDate: string;
+      endDate: string;
+      periodReturn: ProductResultMetricView;
+    }>[];
+    yearly: readonly Readonly<{
+      periodLabel: string;
+      startDate: string;
+      endDate: string;
+      periodReturn: ProductResultMetricView;
+    }>[];
+  }>;
+  readonly costSummary: Readonly<{
+    fillCount: number;
+    grossTradedNotional: string;
+    totalFees: string;
+    turnover: ProductResultMetricView;
+  }>;
+  readonly concentration: Readonly<{
+    peakSinglePositionWeight: ProductResultMetricView;
+    peakSessionDate: string | null;
+    peakInstrumentId: string | null;
+    averageHeldInstrumentCount: ProductResultMetricView;
+    maximumHeldInstrumentCount: number;
+  }>;
+  readonly benchmarkStatus: "AVAILABLE" | "BENCHMARK_NOT_AVAILABLE";
+  readonly orders: ProductResultTablePreview<ProductResultOrderRowView>;
+  readonly fills: ProductResultTablePreview<ProductResultFillRowView>;
+  readonly diagnostics: ProductResultTablePreview<ProductResultDiagnosticRowView>;
+  readonly holdings: ProductResultTablePreview<ProductResultHoldingRowView>;
+  readonly lineage: Readonly<{
+    rawCaptureId: string;
+    rawArtifactId: string;
+    snapshotId: string;
+    universeVersionId: string;
+    entryFactorVersionId: string;
+    exitFactorVersionId: string;
+    researchStrategySpecId: string;
+    strategyVersionId: string;
+    riskPolicySetVersionId: string;
+    runSpecArtifactId: string;
+    resultArtifactId: string;
+    analyticsArtifactId: string;
+    lineageArtifactId: string;
+  }>;
+  readonly exports: Readonly<{
+    summaryJsonArtifactId: string;
+    ordersCsvArtifactId: string;
+    fillsCsvArtifactId: string;
+    analyticsJsonArtifactId: string;
+  }>;
+}
+
+export interface ProductProjectHomeView {
+  readonly readModelVersion: "v3.project-home/1.1";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly maturity: "PRODUCT_CONNECTED";
+  readonly truth: "NOT_FORMAL";
+  readonly admission: "PRE_ALPHA";
+  readonly localImportState: "AVAILABLE";
+  readonly dataState: "EMPTY" | "AVAILABLE" | "UNAVAILABLE";
+  readonly dataUnavailableReason: "NONE" | "NO_SNAPSHOT" | "DATA_READ_MODEL_NOT_AVAILABLE";
+  readonly data: ProductDataReadModelView | null;
+  readonly factorState: "EMPTY" | "AVAILABLE" | "UNAVAILABLE";
+  readonly factorUnavailableReason: "NONE" | "NO_SNAPSHOT" | "NO_FACTOR_STUDY" | "FACTOR_READ_MODEL_NOT_AVAILABLE";
+  readonly factor: ProductFactorSummaryView | null;
+  readonly strategyAuthoringProfile: ProductStrategyAuthoringProfileView;
+  readonly backtestPolicyCoverage: ProductBacktestPolicyCoverageView;
+  readonly strategyState: "EMPTY" | "AVAILABLE" | "UNAVAILABLE";
+  readonly strategyUnavailableReason: "NONE" | "NO_FACTOR_STUDY" | "NO_RESEARCH_STRATEGY" | "STRATEGY_READ_MODEL_NOT_AVAILABLE";
+  readonly strategy: ProductStrategySummaryView | null;
+  readonly backtestState: "EMPTY" | "AVAILABLE" | "UNAVAILABLE";
+  readonly backtestUnavailableReason: "NONE" | "NO_RESEARCH_STRATEGY" | "NO_VALID_BACKTEST" | "BACKTEST_READ_MODEL_NOT_AVAILABLE";
+  readonly backtest: ProductBacktestSummaryView | null;
+}
+
 /**
  * Narrow typed product bridge exposed to the renderer. There is deliberately
  * no generic request(operationId, payload) member: every method maps to one
@@ -420,20 +1036,26 @@ export interface V3ProductRuntimeBridge {
   getCapabilities(): Promise<readonly ProductCapabilityView[]>;
   getBoundProject(): Promise<ProductBindingRefs | null>;
   getProjectContext(): Promise<ProjectContextView>;
+  /** Project-scoped, summary-only readback; never contains raw bytes or paths. */
+  getProjectHome(): Promise<ProductProjectHomeView>;
   restoreSession(): Promise<SessionRestoreView>;
   connectExistingProject(request: ConnectExistingProjectRequest): Promise<ProjectContextView>;
-  listTasks(filter?: ProductTaskListFilter): Promise<readonly ProductTaskView[]>;
+  listTasks(request?: ProductTaskPageRequest): Promise<ProductTasksListView>;
   getTask(taskId: string): Promise<ProductTaskView>;
+  /** Retry one persisted, retry-admitted Product research Backtest from immutable Run inputs. */
+  retryResearchBacktest(taskId: string): Promise<ProductTaskView>;
   getTaskEvents(afterSequence: number, limit: number): Promise<ProductTaskEventsView>;
   getResult(resultId: string): Promise<ProductResultView>;
   getArtifactDescriptor(artifactId: string): Promise<ArtifactDescriptorView>;
   openArtifactStream(artifactId: string): Promise<ArtifactStreamTicketView>;
+  readArtifactBytes(artifactId: string): Promise<ArtifactStreamBytesView>;
+  exportArtifact(request: ProductArtifactExportIntent): Promise<ProductArtifactExportOutcomeView>;
   submitExistingBacktestRunSpec(runSpecId: string): Promise<BacktestSubmitOutcomeView>;
   /** Projectless clean-start entry: backend mints all canonical identities. */
   createProject(request: CreateProjectRequest): Promise<ProjectCreatedView>;
-  listProjects(): Promise<ProjectsListView>;
+  listProjects(request?: ProductPageRequest): Promise<ProjectsListView>;
   /** Durable run-spec discovery with actual-artifact verification. */
-  listBacktestRunSpecs(): Promise<RunSpecsListView>;
+  listBacktestRunSpecs(request?: ProductPageRequest): Promise<RunSpecsListView>;
   /**
    * Target-authority reuse: the Electron main process owns the file chooser and
    * reads the selected V3 research package; the renderer never receives or
@@ -441,6 +1063,21 @@ export interface V3ProductRuntimeBridge {
    * package's source authority. Null = user cancelled the chooser.
    */
   importResearchPackage(): Promise<ImportResearchPackageOutcomeView | null>;
+  /** Native chooser result; null means cancellation and creates no Task. */
+  chooseLocalDataSource(): Promise<LocalDataSourceSelectionView | null>;
+  /** Transfer through backend staging, then submit only the immutable raw ref. */
+  importLocalDataset(request: ProductLocalDataImportIntent): Promise<ProductLocalDataImportOutcomeView>;
+  /** Queue a real backend Factor study; renderer supplies no data/owner IDs or values. */
+  submitFactorStudy(request: ProductFactorStudyIntent): Promise<ProductFactorStudyOutcomeView>;
+  /** Resolve exact Factor/Profile refs from fresh Home and queue Strategy publication. */
+  previewResearchStrategy(request: ProductResearchStrategyIntent): Promise<ProductResearchStrategyPreviewView>;
+  /** Publish only after the renderer has shown a matching side-effect-free preview. */
+  publishResearchStrategy(request: ProductResearchStrategyIntent): Promise<ProductResearchStrategyOutcomeView>;
+  /** Resolve the latest exact Strategy from fresh Home and queue a research Backtest. */
+  previewResearchBacktest(request: ProductResearchBacktestIntent): Promise<ProductResearchBacktestPreviewView>;
+  submitResearchBacktest(request: ProductResearchBacktestIntent): Promise<ProductResearchBacktestOutcomeView>;
+  /** Rebuild bounded charts/tables/lineage from the latest VALID canonical artifacts. */
+  getLatestProductResultDetails(): Promise<ProductLatestResultDetailsView>;
   /**
    * Product-connected, research-only source admission. The renderer supplies
    * only symbol/date intent; provider refs and the transport envelope are

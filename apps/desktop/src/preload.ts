@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   ArtifactDescriptorView,
+  ArtifactStreamBytesView,
   ArtifactStreamTicketView,
   BacktestSubmitOutcomeView,
   ConnectExistingProjectRequest,
@@ -8,6 +9,21 @@ import type {
   DesktopBridge,
   DesktopCommandEnvelope,
   ImportResearchPackageOutcomeView,
+  LocalDataSourceSelectionView,
+  ProductLocalDataImportIntent,
+  ProductLocalDataImportOutcomeView,
+  ProductLatestResultDetailsView,
+  ProductArtifactExportIntent,
+  ProductArtifactExportOutcomeView,
+  ProductFactorStudyIntent,
+  ProductFactorStudyOutcomeView,
+  ProductProjectHomeView,
+  ProductResearchBacktestIntent,
+  ProductResearchBacktestOutcomeView,
+  ProductResearchBacktestPreviewView,
+  ProductResearchStrategyIntent,
+  ProductResearchStrategyOutcomeView,
+  ProductResearchStrategyPreviewView,
   ProductResearchSubmitIntent,
   ProductResearchSubmitOutcomeView,
   PersistedWorkspace,
@@ -16,7 +32,9 @@ import type {
   ProductResultView,
   ProductStatusView,
   ProductTaskEventsView,
-  ProductTaskListFilter,
+  ProductTaskPageRequest,
+  ProductTasksListView,
+  ProductPageRequest,
   ProductTaskView,
   ProjectContextView,
   ProjectCreatedView,
@@ -118,28 +136,40 @@ const productRuntimeBridge: V3ProductRuntimeBridge = Object.freeze({
   getCapabilities: () => invokeProduct<readonly ProductCapabilityView[]>("productRuntime:capabilities"),
   getBoundProject: () => invokeProduct<ProductBindingRefs | null>("productRuntime:boundProject"),
   getProjectContext: () => invokeProduct<ProjectContextView>("productRuntime:projectContext"),
+  getProjectHome: () => invokeProduct<ProductProjectHomeView>("productRuntime:projectHome"),
+  getLatestProductResultDetails: () => invokeProduct<ProductLatestResultDetailsView>("productRuntime:latestProductResultDetails"),
   restoreSession: () => invokeProduct<SessionRestoreView>("productRuntime:restoreSession"),
   connectExistingProject: (request: ConnectExistingProjectRequest) => invokeProduct<ProjectContextView>("productRuntime:connectExistingProject", {
     projectId: request.projectId,
     projectContextRevisionId: request.projectContextRevisionId
   }),
-  listTasks: (filter?: ProductTaskListFilter) => invokeProduct<readonly ProductTaskView[]>("productRuntime:listTasks", filter === undefined ? undefined : {
-    ...(filter.service === undefined ? {} : { service: filter.service }),
-    ...(filter.state === undefined ? {} : { state: filter.state })
-  }),
+  listTasks: (request?: ProductTaskPageRequest) => invokeProduct<ProductTasksListView>("productRuntime:listTasks", request),
   getTask: (taskId: string) => invokeProduct<ProductTaskView>("productRuntime:getTask", { taskId }),
+  retryResearchBacktest: (taskId: string) => invokeProduct<ProductTaskView>("productRuntime:retryResearchBacktest", { taskId }),
   getTaskEvents: (afterSequence: number, limit: number) => invokeProduct<ProductTaskEventsView>("productRuntime:getTaskEvents", { afterSequence, limit }),
   getResult: (resultId: string) => invokeProduct<ProductResultView>("productRuntime:getResult", { resultId }),
   getArtifactDescriptor: (artifactId: string) => invokeProduct<ArtifactDescriptorView>("productRuntime:getArtifactDescriptor", { artifactId }),
   openArtifactStream: (artifactId: string) => invokeProduct<ArtifactStreamTicketView>("productRuntime:openArtifactStream", { artifactId }),
+  readArtifactBytes: (artifactId: string) => invokeProduct<ArtifactStreamBytesView>("productRuntime:readArtifactBytes", { artifactId }),
+  exportArtifact: (request: ProductArtifactExportIntent) => invokeProduct<ProductArtifactExportOutcomeView>("productRuntime:exportArtifact", {
+    artifactId: request.artifactId,
+    suggestedName: request.suggestedName
+  }),
   submitExistingBacktestRunSpec: (runSpecId: string) => invokeProduct<BacktestSubmitOutcomeView>("productRuntime:submitExistingBacktestRunSpec", { runSpecId }),
   createProject: (request: CreateProjectRequest) => invokeProduct<ProjectCreatedView>("productRuntime:createProject", {
     displayName: request.displayName,
     ...(request.notes === undefined ? {} : { notes: request.notes })
   }),
-  listProjects: () => invokeProduct<ProjectsListView>("productRuntime:listProjects"),
-  listBacktestRunSpecs: () => invokeProduct<RunSpecsListView>("productRuntime:listBacktestRunSpecs"),
+  listProjects: (request?: ProductPageRequest) => invokeProduct<ProjectsListView>("productRuntime:listProjects", request),
+  listBacktestRunSpecs: (request?: ProductPageRequest) => invokeProduct<RunSpecsListView>("productRuntime:listBacktestRunSpecs", request),
   importResearchPackage: () => invokeProduct<ImportResearchPackageOutcomeView | null>("productRuntime:importResearchPackage"),
+  chooseLocalDataSource: () => invokeProduct<LocalDataSourceSelectionView | null>("productRuntime:chooseLocalDataSource"),
+  importLocalDataset: (request: ProductLocalDataImportIntent) => invokeProduct<ProductLocalDataImportOutcomeView>("productRuntime:importLocalDataset", request),
+  submitFactorStudy: (request: ProductFactorStudyIntent) => invokeProduct<ProductFactorStudyOutcomeView>("productRuntime:submitFactorStudy", request),
+  previewResearchStrategy: (request: ProductResearchStrategyIntent) => invokeProduct<ProductResearchStrategyPreviewView>("productRuntime:previewResearchStrategy", request),
+  publishResearchStrategy: (request: ProductResearchStrategyIntent) => invokeProduct<ProductResearchStrategyOutcomeView>("productRuntime:publishResearchStrategy", request),
+  previewResearchBacktest: (request: ProductResearchBacktestIntent) => invokeProduct<ProductResearchBacktestPreviewView>("productRuntime:previewResearchBacktest", request),
+  submitResearchBacktest: (request: ProductResearchBacktestIntent) => invokeProduct<ProductResearchBacktestOutcomeView>("productRuntime:submitResearchBacktest", request),
   submitResearch: (request: ProductResearchSubmitIntent) => invokeProduct<ProductResearchSubmitOutcomeView>("productRuntime:submitResearch", request)
 });
 

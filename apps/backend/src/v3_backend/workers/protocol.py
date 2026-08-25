@@ -84,6 +84,32 @@ class Progress:
     completed: int
     total: int
     counters: Mapping[str, int]
+    phase: str = "UNSPECIFIED"
+    work_unit: str = "items"
+
+
+@dataclass(frozen=True)
+class WorkerHello:
+    protocol_version: str
+    resource_lease_token: str
+
+
+@dataclass(frozen=True)
+class WorkerHeartbeat:
+    sequence: int
+    rss_bytes: int
+    scratch_bytes: int
+
+
+@dataclass(frozen=True)
+class WorkerAcknowledge:
+    protocol_version: str
+    resource_lease_token: str
+
+
+@dataclass(frozen=True)
+class WorkerCancel:
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -110,15 +136,43 @@ class WorkerTerminal:
     safe_message: str | None = None
 
 
-WorkerResponse = Progress | CheckpointProposal | StagedOutputProposal | WorkerTerminal
+WorkerResponse = (
+    WorkerHello
+    | WorkerHeartbeat
+    | Progress
+    | CheckpointProposal
+    | StagedOutputProposal
+    | WorkerTerminal
+)
+WorkerCommand = WorkerAcknowledge | WorkerCancel
+
+
+def validate_command(command: WorkerCommand) -> WorkerCommand:
+    payload = dict(vars(command))
+    _validate_bounded_json(payload)
+    if isinstance(command, WorkerAcknowledge):
+        if command.protocol_version != PROTOCOL_VERSION or not command.resource_lease_token:
+            raise ValueError("invalid worker acknowledgement")
+    elif isinstance(command, WorkerCancel):
+        if not command.reason or len(command.reason) > 256:
+            raise ValueError("invalid worker cancellation")
+    return command
 
 
 def validate_response(response: WorkerResponse) -> WorkerResponse:
     payload = dict(vars(response))
     _validate_bounded_json(payload)
-    if isinstance(response, Progress):
+    if isinstance(response, WorkerHello):
+        if response.protocol_version != PROTOCOL_VERSION or not response.resource_lease_token:
+            raise ValueError("invalid worker hello")
+    elif isinstance(response, WorkerHeartbeat):
+        if response.sequence < 1 or response.rss_bytes < 0 or response.scratch_bytes < 0:
+            raise ValueError("invalid worker heartbeat")
+    elif isinstance(response, Progress):
         if response.completed < 0 or response.total < 0 or response.completed > response.total:
             raise ValueError("invalid progress counters")
+        if not response.phase or not response.work_unit:
+            raise ValueError("progress phase and work unit are required")
     elif isinstance(response, (CheckpointProposal, StagedOutputProposal)):
         if not response.staged_name or response.staged_name.startswith(("/", "\\")) or ".." in response.staged_name:
             raise ValueError("staged output must be namespace-relative")

@@ -5,6 +5,7 @@ from enum import StrEnum
 
 
 class ErrorCategory(StrEnum):
+    INTERNAL_ERROR = "INTERNAL_ERROR"
     TRANSIENT_IO = "TRANSIENT_IO"
     WORKER_LOST = "WORKER_LOST"
     PROVIDER_THROTTLED = "PROVIDER_THROTTLED"

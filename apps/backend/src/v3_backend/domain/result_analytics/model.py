@@ -892,10 +892,211 @@ class BacktestResultAnalytics:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ExposureSeriesRow:
+    session_date: date
+    gross_exposure: AnalyticsMetric
+    net_exposure: AnalyticsMetric
+    held_instrument_count: int
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "session_date": self.session_date.isoformat(),
+            "gross_exposure": self.gross_exposure.to_wire(),
+            "net_exposure": self.net_exposure.to_wire(),
+            "held_instrument_count": self.held_instrument_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PositionConcentrationSummary:
+    peak_single_position_weight: AnalyticsMetric
+    peak_session_date: date | None
+    peak_instrument_id: str | None
+    average_held_instrument_count: AnalyticsMetric
+    maximum_held_instrument_count: int
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "peak_single_position_weight": self.peak_single_position_weight.to_wire(),
+            "peak_session_date": (
+                self.peak_session_date.isoformat()
+                if self.peak_session_date is not None
+                else None
+            ),
+            "peak_instrument_id": self.peak_instrument_id,
+            "average_held_instrument_count": (
+                self.average_held_instrument_count.to_wire()
+            ),
+            "maximum_held_instrument_count": self.maximum_held_instrument_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProductBacktestResultAnalytics:
+    """Additive V1.1 product projection over the immutable V0 analytics owner."""
+
+    analytics_id: str
+    content_sha256: str
+    engine_version: str
+    core: BacktestResultAnalytics
+    calmar: AnalyticsMetric
+    exposure_series: tuple[ExposureSeriesRow, ...]
+    concentration: PositionConcentrationSummary
+    order_count: int
+    fill_count: int
+    diagnostic_count: int
+    truth_admission: TruthAdmissionState
+
+    schema_version: ClassVar[str] = "v3.backtest_result_analytics/1.1.0"
+
+    @property
+    def source_result_id(self) -> str:
+        return self.core.source_result_id
+
+    @property
+    def source_result_content_sha256(self) -> str:
+        return self.core.source_result_content_sha256
+
+    @property
+    def analytics_policy_id(self) -> str:
+        return self.core.analytics_policy_id
+
+    @property
+    def analytics_policy_content_sha256(self) -> str:
+        return self.core.analytics_policy_content_sha256
+
+    @property
+    def benchmark_series_id(self) -> str | None:
+        return self.core.benchmark_series_id
+
+    @property
+    def benchmark_content_sha256(self) -> str | None:
+        return self.core.benchmark_content_sha256
+
+    @classmethod
+    def _payload_from_values(cls, values: dict[str, object]) -> dict[str, object]:
+        return {
+            "schema_version": cls.schema_version,
+            "engine_version": values["engine_version"],
+            "core_analytics": values["core"].to_wire(),
+            "supplemental_metrics": {"calmar": values["calmar"].to_wire()},
+            "exposure_series": [
+                row.to_wire() for row in values["exposure_series"]
+            ],
+            "concentration": values["concentration"].to_wire(),
+            "table_summary": {
+                "order_count": values["order_count"],
+                "fill_count": values["fill_count"],
+                "diagnostic_count": values["diagnostic_count"],
+            },
+            "truth_admission": values["truth_admission"].to_wire(),
+        }
+
+    def assert_canonical(self) -> None:
+        _sha(self.content_sha256, "product analytics content_sha256")
+        _text(self.engine_version, "product analytics engine_version")
+        if type(self.core) is not BacktestResultAnalytics:
+            raise ResultAnalyticsError("core analytics must be BacktestResultAnalytics")
+        self.core.assert_canonical()
+        if self.truth_admission != self.core.truth_admission:
+            raise ResultAnalyticsError("product/core analytics truth binding mismatch")
+        if type(self.calmar) is not AnalyticsMetric:
+            raise ResultAnalyticsError("calmar must be AnalyticsMetric")
+        if not isinstance(self.exposure_series, tuple) or any(
+            type(row) is not ExposureSeriesRow
+            or type(row.gross_exposure) is not AnalyticsMetric
+            or type(row.net_exposure) is not AnalyticsMetric
+            or type(row.held_instrument_count) is not int
+            or row.held_instrument_count < 0
+            for row in self.exposure_series
+        ):
+            raise ResultAnalyticsError("exposure series must contain typed bounded rows")
+        expected_dates = tuple(row.session_date for row in self.core.return_series)
+        if tuple(row.session_date for row in self.exposure_series) != expected_dates:
+            raise ResultAnalyticsError("exposure series must exactly align with NAV dates")
+        for row in self.exposure_series:
+            if (
+                row.gross_exposure.status is not MetricStatus.AVAILABLE
+                or row.net_exposure.status is not MetricStatus.AVAILABLE
+                or Decimal(row.gross_exposure.value) < 0
+                or Decimal(row.gross_exposure.value)
+                < abs(Decimal(row.net_exposure.value))
+            ):
+                raise ResultAnalyticsError("exposure metrics are inconsistent")
+        if type(self.concentration) is not PositionConcentrationSummary:
+            raise ResultAnalyticsError("concentration must be typed")
+        if (
+            type(self.concentration.peak_single_position_weight)
+            is not AnalyticsMetric
+            or type(self.concentration.average_held_instrument_count)
+            is not AnalyticsMetric
+            or type(self.concentration.maximum_held_instrument_count) is not int
+            or self.concentration.maximum_held_instrument_count < 0
+        ):
+            raise ResultAnalyticsError("concentration metrics are invalid")
+        peak_available = (
+            self.concentration.peak_single_position_weight.status
+            is MetricStatus.AVAILABLE
+        )
+        if peak_available != (
+            self.concentration.peak_session_date is not None
+            and self.concentration.peak_instrument_id is not None
+        ):
+            raise ResultAnalyticsError("concentration peak binding is incomplete")
+        if self.concentration.peak_instrument_id is not None:
+            _text(
+                self.concentration.peak_instrument_id,
+                "concentration peak instrument_id",
+            )
+        for value, name in (
+            (self.order_count, "order_count"),
+            (self.fill_count, "fill_count"),
+            (self.diagnostic_count, "diagnostic_count"),
+        ):
+            if type(value) is not int or value < 0:
+                raise ResultAnalyticsError(f"{name} must be a non-negative integer")
+        values = {
+            field: getattr(self, field)
+            for field in self.__dataclass_fields__
+            if field not in {"analytics_id", "content_sha256", "schema_version"}
+        }
+        digest = canonical_sha256(self._payload_from_values(values))
+        if self.content_sha256 != digest or self.analytics_id != "bra_sha256_" + digest:
+            raise ResultAnalyticsError("product analytics identity/content mismatch")
+
+    def to_wire(self) -> dict[str, object]:
+        values = {
+            field: getattr(self, field)
+            for field in self.__dataclass_fields__
+            if field not in {"analytics_id", "content_sha256", "schema_version"}
+        }
+        return {
+            "artifact_type": "ProductBacktestResultAnalytics",
+            "analytics_id": self.analytics_id,
+            "content_sha256": self.content_sha256,
+            **self._payload_from_values(values),
+        }
+
+
 def _create_backtest_result_analytics(**values: object) -> BacktestResultAnalytics:
     payload = BacktestResultAnalytics._payload_from_values(values)
     digest = canonical_sha256(payload)
     analytics = BacktestResultAnalytics(
+        analytics_id="bra_sha256_" + digest,
+        content_sha256=digest,
+        **values,
+    )
+    analytics.assert_canonical()
+    return analytics
+
+
+def _create_product_backtest_result_analytics(
+    **values: object,
+) -> ProductBacktestResultAnalytics:
+    payload = ProductBacktestResultAnalytics._payload_from_values(values)
+    digest = canonical_sha256(payload)
+    analytics = ProductBacktestResultAnalytics(
         analytics_id="bra_sha256_" + digest,
         content_sha256=digest,
         **values,
@@ -915,8 +1116,11 @@ __all__ = [
     "DrawdownEpisode",
     "DrawdownRecoveryStatus",
     "DrawdownSeriesRow",
+    "ExposureSeriesRow",
     "MetricStatus",
     "PeriodReturnRow",
+    "PositionConcentrationSummary",
+    "ProductBacktestResultAnalytics",
     "RelativeReturnRow",
     "ResultAnalyticsError",
     "ResultAnalyticsPolicyVersion",

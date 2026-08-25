@@ -1,6 +1,7 @@
 from .evaluator import (
     BooleanScalar,
     BooleanSeries,
+    DeterministicPanelEvaluator,
     DeterministicReferenceEvaluator,
     EvaluationResult,
     FactorScalar,
@@ -9,6 +10,9 @@ from .evaluator import (
     FloatScalar,
     FloatSeries,
     OperatorBackend,
+    PanelEvaluationResult,
+    PanelInputRow,
+    PanelValueRow,
     Scalar,
     Series,
 )
@@ -22,6 +26,7 @@ from .evaluation import (
 from .ir import (
     AvailabilitySemantics,
     BackendBinding,
+    EvaluationAxis,
     ExternalExpressionTranslator,
     FactorDefinitionVersion,
     FactorIrError,
@@ -41,6 +46,7 @@ from .ir import (
     UnsafeFactorExpression,
     ValueType,
     default_operator_registry,
+    panel_operator_registry,
     signal_compatible_operator_registry,
     validate_factor_node,
 )
@@ -68,7 +74,9 @@ __all__ = [
     "BooleanScalar",
     "BooleanSeries",
     "CoreUpstreamAuthority",
+    "DeterministicPanelEvaluator",
     "DeterministicReferenceEvaluator",
+    "EvaluationAxis",
     "EvaluationResult",
     "ExternalExpressionTranslator",
     "CanonicalJsonArtifactPublisher",
@@ -108,6 +116,9 @@ __all__ = [
     "OperatorSpec",
     "ParameterKind",
     "ParameterSpec",
+    "PanelEvaluationResult",
+    "PanelInputRow",
+    "PanelValueRow",
     "Scalar",
     "Series",
     "UnknownOperator",
@@ -116,6 +127,7 @@ __all__ = [
     "ValueType",
     "default_operator_registry",
     "factor_payload_context_identity",
+    "panel_operator_registry",
     "signal_compatible_operator_registry",
     "validate_factor_node",
 ]

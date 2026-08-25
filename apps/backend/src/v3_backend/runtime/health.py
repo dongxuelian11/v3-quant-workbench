@@ -19,10 +19,12 @@ class RuntimeHealth:
         if self.started_monotonic == 0.0:
             self.started_monotonic = time.monotonic()
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, control_request_id: str, runtime_generation: int) -> dict[str, Any]:
         manifest = dict(self.build_manifest or {})
         return {
             "kind": "runtime.health",
+            "control_request_id": control_request_id,
+            "runtime_generation": runtime_generation,
             "backend_instance_id": self.backend_instance_id,
             "backend_version": self.backend_version,
             "state": "READY" if self.accepting_requests else "DRAINING",

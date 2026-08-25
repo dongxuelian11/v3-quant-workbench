@@ -59,21 +59,26 @@ const STRATEGY_VALIDATION = ["not-run", "valid", "invalid"];
 const MODEL_FAMILIES = ["LightGBM", "XGBoost", "CatBoost", "sklearn-linear", "sklearn-tree-ensemble", "PyTorch-deep", "custom-plugin"];
 const SPLIT_PLANS = ["chronological", "rolling", "expanding", "purge-embargo", "walk-forward"];
 const STUDY_STATES = ["ready", "running", "paused", "cancelled", "checkpointed", "completed"];
+const WORKSPACE_STORE_SCHEMA_VERSION = 2;
+const MAX_WORKSPACE_SERIALIZED_CHARS = 4 * 1024 * 1024;
+const boundedString = { type: "string", minLength: 1, maxLength: 512 };
+const boundedNullableString = { type: ["string", "null"], minLength: 1, maxLength: 512 };
+const boundedStringArray = { type: "array", maxItems: 4096, items: boundedString };
 
 const strategySchema = {
   type: "object",
   additionalProperties: false,
   required: ["id", "version", "mode", "code", "acceptedHunks", "rejectedHunks", "selectedNodeId", "validation", "handoffId"],
   properties: {
-    id: { type: "string" },
+    id: boundedString,
     version: { type: "integer", minimum: 0 },
     mode: { enum: STRATEGY_MODES },
-    code: { type: "string" },
-    acceptedHunks: { type: "array", items: { type: "string" } },
-    rejectedHunks: { type: "array", items: { type: "string" } },
-    selectedNodeId: { type: ["string", "null"] },
+    code: { type: "string", maxLength: 262144 },
+    acceptedHunks: boundedStringArray,
+    rejectedHunks: boundedStringArray,
+    selectedNodeId: boundedNullableString,
     validation: { enum: STRATEGY_VALIDATION },
-    handoffId: { type: ["string", "null"] }
+    handoffId: boundedNullableString
   }
 };
 
@@ -83,48 +88,49 @@ const modelSchema = {
   required: ["family", "datasetVersion", "label", "splitPlan", "selectedRunIds", "studyState", "checkpoint", "modelVersion", "predictionSignalVersion"],
   properties: {
     family: { enum: MODEL_FAMILIES },
-    datasetVersion: { type: "string" },
-    label: { type: "string" },
+    datasetVersion: boundedString,
+    label: boundedString,
     splitPlan: { enum: SPLIT_PLANS },
-    selectedRunIds: { type: "array", items: { type: "string" } },
+    selectedRunIds: boundedStringArray,
     studyState: { enum: STUDY_STATES },
     checkpoint: { type: "integer", minimum: 0 },
-    modelVersion: { type: ["string", "null"] },
-    predictionSignalVersion: { type: ["string", "null"] }
+    modelVersion: boundedNullableString,
+    predictionSignalVersion: boundedNullableString
   }
 };
 
 const runtimeFieldSchemas = {
-  executedCommandIds: { type: "array", items: { type: "string" } },
-  commandExecutionCount: { type: "object", additionalProperties: { type: "integer", minimum: 1 } },
+  executedCommandIds: { type: "array", maxItems: 10000, uniqueItems: true, items: boundedString },
+  commandExecutionCount: { type: "object", maxProperties: 10000, additionalProperties: { type: "integer", minimum: 1 } },
   executedCommands: {
     type: "object",
+    maxProperties: 10000,
     additionalProperties: {
       type: "object",
       additionalProperties: false,
       required: ["name", "issuedAt"],
-      properties: { name: { type: "string" }, issuedAt: { type: "string" } }
+      properties: { name: boundedString, issuedAt: { type: "string", minLength: 1, maxLength: 64 } }
     }
   },
-  projectEventCursors: { type: "object", additionalProperties: { type: "integer", minimum: 0 } },
+  projectEventCursors: { type: "object", maxProperties: 10000, additionalProperties: { type: "integer", minimum: 0 } },
   persistenceRevision: { type: "integer", minimum: 0 },
   runtimeMeta: {
     type: "object",
     additionalProperties: false,
     required: ["storeSchemaVersion"],
-    properties: { storeSchemaVersion: { type: "integer", minimum: 1 } }
+    properties: { storeSchemaVersion: { const: WORKSPACE_STORE_SCHEMA_VERSION } }
   },
-  savedAt: { type: ["string", "null"] }
+  savedAt: { type: ["string", "null"], maxLength: 64 }
 };
 
 const userFieldSchemas = {
   activeLab: { enum: LAB_IDS },
   inspectorOpen: { type: "boolean" },
   bottomOpen: { type: "boolean" },
-  activeProject: { type: "string" },
-  selectedAsset: { type: ["string", "null"] },
+  activeProject: { type: "string", maxLength: 512 },
+  selectedAsset: { type: ["string", "null"], maxLength: 512 },
   selectedUniverseMode: { enum: UNIVERSE_MODES },
-  dockLayouts: { type: "object" },
+  dockLayouts: { type: "object", maxProperties: 5 },
   strategy: strategySchema,
   model: modelSchema
 };
@@ -140,15 +146,7 @@ const persistedWorkspaceSchema = {
 // mirrors runtime-owned ledger fields), but the main process must never
 // apply renderer-supplied runtime-owned fields. They are accepted by the
 // closed shape check and then stripped by pickUserFields.
-const ignoredRendererRuntimeFields = {
-  executedCommandIds: { type: "array" },
-  commandExecutionCount: { type: "object" },
-  executedCommands: { type: "object" },
-  projectEventCursors: { type: "object" },
-  persistenceRevision: { type: "integer" },
-  runtimeMeta: { type: "object" },
-  savedAt: { type: ["string", "null"] }
-};
+const ignoredRendererRuntimeFields = runtimeFieldSchemas;
 
 const userStateSchema = {
   type: "object",
@@ -183,7 +181,7 @@ function materialize(parsed: PersistedWorkspace): PersistedWorkspace {
     executedCommands: { ...(base.executedCommands ?? {}), ...(parsed.executedCommands ?? {}) },
     projectEventCursors: { ...(base.projectEventCursors ?? {}), ...(parsed.projectEventCursors ?? {}) },
     persistenceRevision: parsed.persistenceRevision ?? 0,
-    runtimeMeta: parsed.runtimeMeta ?? { storeSchemaVersion: 1 }
+    runtimeMeta: parsed.runtimeMeta ?? { storeSchemaVersion: WORKSPACE_STORE_SCHEMA_VERSION }
   };
 }
 
@@ -196,6 +194,7 @@ export interface WorkspaceLoadResult {
   state: PersistedWorkspace;
   initializedFresh: boolean;
   quarantinedPath: string | null;
+  migrationBackupPath: string | null;
 }
 
 export interface WorkspaceStoreOptions {
@@ -228,6 +227,7 @@ export class WorkspaceStore {
   private quiescing = false;
   private shuttingDown = false;
   quarantinePath: string | null = null;
+  migrationBackupPath: string | null = null;
 
   constructor(storePath: string, options: WorkspaceStoreOptions = {}) {
     this.storePath = storePath;
@@ -262,7 +262,7 @@ export class WorkspaceStore {
     } catch (error) {
       const code = errorCodeOf(error);
       if (code === "ENOENT") {
-        return { state: structuredClone(this.state), initializedFresh: true, quarantinedPath: null };
+        return { state: structuredClone(this.state), initializedFresh: true, quarantinedPath: null, migrationBackupPath: null };
       }
       if (code === "EACCES" || code === "EPERM") {
         throw new WorkspaceStoreError("WORKSPACE_STORE_PERMISSION_DENIED", `cannot read workspace store (${code}); refusing to initialize defaults over it`, error);
@@ -270,18 +270,51 @@ export class WorkspaceStore {
       throw new WorkspaceStoreError("WORKSPACE_STORE_READ_FAILED", `workspace store read failed (${String(code)}); refusing to initialize defaults over it`, error);
     }
     let parsed: unknown;
+    if (raw.length > MAX_WORKSPACE_SERIALIZED_CHARS) {
+      throw new WorkspaceStoreError("WORKSPACE_STORE_TOO_LARGE", "workspace store exceeds the bounded serialized size; original file preserved");
+    }
     try {
       parsed = JSON.parse(raw);
     } catch (error) {
       await this.quarantine(error, "malformed JSON");
-      return { state: structuredClone(this.state), initializedFresh: true, quarantinedPath: this.quarantinePath };
+      return { state: structuredClone(this.state), initializedFresh: true, quarantinedPath: this.quarantinePath, migrationBackupPath: null };
+    }
+    const version = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as { runtimeMeta?: { storeSchemaVersion?: unknown } }).runtimeMeta?.storeSchemaVersion ?? 1
+      : null;
+    if (version === 1) {
+      const migrated = structuredClone(parsed) as PersistedWorkspace;
+      migrated.runtimeMeta = { storeSchemaVersion: WORKSPACE_STORE_SCHEMA_VERSION };
+      if (!validatePersisted(migrated)) {
+        throw new WorkspaceStoreError("WORKSPACE_STORE_MIGRATION_REQUIRED", "V1 workspace cannot migrate to bounded V2 without data loss; original file preserved");
+      }
+      const backup = `${this.storePath}.backup-v1-${Date.now()}-${randomBytes(4).toString("hex")}`;
+      await this.fileOps.rename(this.storePath, backup).catch((error) => {
+        throw new WorkspaceStoreError("WORKSPACE_STORE_MIGRATION_BACKUP_FAILED", "V1 workspace backup failed; original file preserved", error);
+      });
+      try {
+        await this.persist(migrated);
+      } catch (error) {
+        try {
+          await this.fileOps.rename(backup, this.storePath);
+        } catch (rollbackError) {
+          throw new WorkspaceStoreError("WORKSPACE_STORE_MIGRATION_ROLLBACK_FAILED", "V1 migration failed and exact backup rollback also failed", rollbackError);
+        }
+        throw new WorkspaceStoreError("WORKSPACE_STORE_MIGRATION_FAILED", "V1 migration failed; exact original file restored", error);
+      }
+      this.migrationBackupPath = backup;
+      this.state = materialize(migrated);
+      return { state: structuredClone(this.state), initializedFresh: false, quarantinedPath: null, migrationBackupPath: backup };
+    }
+    if (version !== WORKSPACE_STORE_SCHEMA_VERSION) {
+      throw new WorkspaceStoreError("WORKSPACE_STORE_VERSION_UNSUPPORTED", "workspace store schema version is unsupported; original file preserved");
     }
     if (!validatePersisted(parsed)) {
       await this.quarantine(null, `schema invalid: ${(validatePersisted.errors ?? []).map((entry) => `${entry.instancePath} ${entry.message ?? ""}`).join("; ")}`);
-      return { state: structuredClone(this.state), initializedFresh: true, quarantinedPath: this.quarantinePath };
+      return { state: structuredClone(this.state), initializedFresh: true, quarantinedPath: this.quarantinePath, migrationBackupPath: null };
     }
     this.state = materialize(parsed as PersistedWorkspace);
-    return { state: structuredClone(this.state), initializedFresh: false, quarantinedPath: null };
+    return { state: structuredClone(this.state), initializedFresh: false, quarantinedPath: null, migrationBackupPath: null };
   }
 
   saveUserState(userSnapshot: PersistedWorkspace): Promise<PersistedWorkspace> {
@@ -388,6 +421,9 @@ export class WorkspaceStore {
   private async persist(next: PersistedWorkspace): Promise<void> {
     const temporary = `${this.storePath}.${process.pid}.${this.tempCounter++}.tmp`;
     const serialized = JSON.stringify(next, null, 2);
+    if (serialized.length > MAX_WORKSPACE_SERIALIZED_CHARS) {
+      throw new WorkspaceStoreError("WORKSPACE_STORE_TOO_LARGE", "workspace store exceeds the bounded serialized size");
+    }
     try {
       await this.fileOps.mkdir(dirname(this.storePath));
       await this.fileOps.writeFileDurable(temporary, serialized);

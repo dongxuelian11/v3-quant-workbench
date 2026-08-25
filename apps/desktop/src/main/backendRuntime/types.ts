@@ -53,6 +53,9 @@ export interface BackendProcess {
   readonly stderr: Readable;
   onExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
   terminate(): void;
+  kill(): void;
+  isAlive(): boolean;
+  waitForExit(deadlineAt: number): Promise<boolean>;
 }
 
 export interface BackendProcessFactory {
@@ -113,6 +116,8 @@ export interface RuntimeResponseError {
 
 export interface RequestOptions {
   readonly contractVersion?: string;
+  /** Exact ASL major.minor expected by the selected operation contract. */
+  readonly expectedApiVersion?: "1.0" | "1.1";
   readonly idempotencyKey?: string;
   readonly timeoutMs?: number;
   readonly deadlineAt?: string;
@@ -140,3 +145,25 @@ export interface OpenArtifactStreamInput {
   readonly artifactId: string;
   readonly range?: Readonly<Record<string, unknown>>;
 }
+
+export interface ConsumeArtifactStreamInput {
+  readonly ticketId: string;
+  readonly artifactId: string;
+  readonly expectedSha256: string;
+  readonly expectedByteSize: number;
+}
+
+export interface ArtifactStreamBytes {
+  readonly artifactId: string;
+  readonly sha256: string;
+  readonly byteSize: number;
+  readonly bytes: Uint8Array;
+}
+
+export interface ArtifactStreamReceipt {
+  readonly artifactId: string;
+  readonly sha256: string;
+  readonly byteSize: number;
+}
+
+export type ArtifactStreamSink = (chunk: Uint8Array, offset: number) => Promise<void>;

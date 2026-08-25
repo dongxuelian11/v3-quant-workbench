@@ -61,8 +61,11 @@ app.whenReady().then(async () => {
 
     const statusBefore = await evaluate(win, "window.v3ProductRuntime.getProductStatus()");
     const caps = Object.fromEntries(statusBefore.capabilities.map((capability) => [capability.code, capability]));
-    for (const service of ["ProjectSessionService", "ArtifactService", "BacktestService"]) {
+    for (const service of ["ProjectSessionService", "ArtifactService", "ProductEntryService"]) {
       if (caps[service]?.truth_state !== "FORMAL") throw new Error(`${service} must be FORMAL`);
+    }
+    if (caps.BacktestService?.truth_state !== "UNAVAILABLE" || caps.BacktestService?.reason_code !== "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED") {
+      throw new Error("BacktestService must stay UNAVAILABLE until the formal execution contract closes");
     }
     if (caps.TaskService?.truth_state !== "UNAVAILABLE" || caps.TaskService?.reason_code !== "PRODUCT_OPERATION_SET_INCOMPLETE") {
       throw new Error(`TaskService must be honestly incomplete: ${JSON.stringify(caps.TaskService)}`);

@@ -8,6 +8,7 @@ import type {
   ProductTaskAttemptView,
   ProductTaskEventView,
   ProductTaskEventsView,
+  ProductTasksListView,
   ProductTaskView,
   ProjectContextView,
   SessionRestoreView
@@ -21,11 +22,13 @@ import type {
 
 export class ProductAdapterError extends Error {
   readonly code: string;
+  override readonly cause?: unknown;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, cause?: unknown) {
     super(message);
     this.code = code;
     this.name = "ProductAdapterError";
+    this.cause = cause;
   }
 }
 
@@ -139,7 +142,8 @@ export function adaptTask(raw: unknown): ProductTaskView {
     attemptId: optionalStringField(attemptRaw, "attempt_id"),
     ordinal: intField(attemptRaw, "ordinal"),
     state: stringField(attemptRaw, "state"),
-    errorCategory: optionalStringField(attemptRaw, "error_category")
+    errorCategory: optionalStringField(attemptRaw, "error_category"),
+    reasonCode: optionalStringField(attemptRaw, "reason_code")
   });
   const outputsRaw = record(model.outputs, "task outputs");
   const outputs: Record<string, string> = {};
@@ -166,12 +170,25 @@ export function adaptTask(raw: unknown): ProductTaskView {
   });
 }
 
-export function adaptTaskList(raw: unknown): readonly ProductTaskView[] {
+export function adaptTaskList(raw: unknown): ProductTasksListView {
   const body = record(raw, "response body");
   const model = record(body.read_model, "task list read model");
   const items = model.items;
   if (!Array.isArray(items)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "task list items must be an array");
-  return Object.freeze(items.map((entry) => adaptTask({ read_model: entry })));
+  const hasMore = model.has_more;
+  const nextCursor = model.next_cursor;
+  if (typeof hasMore !== "boolean") throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "task list has_more must be boolean");
+  if (nextCursor !== null && (typeof nextCursor !== "string" || nextCursor.length < 1 || nextCursor.length > 2048)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "task list next_cursor must be null or a bounded opaque string");
+  }
+  if (hasMore !== (nextCursor !== null)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "task list cursor does not match has_more");
+  }
+  return Object.freeze({
+    tasks: Object.freeze(items.map((entry) => adaptTask({ read_model: entry }))),
+    hasMore,
+    nextCursor: nextCursor as string | null
+  });
 }
 
 export function adaptTaskEvents(raw: unknown): ProductTaskEventsView {
@@ -183,22 +200,49 @@ export function adaptTaskEvents(raw: unknown): ProductTaskEventsView {
     const item = record(entry, "task event");
     const eventType = stringField(item, "event_type");
     let resultId: string | null = null;
+    let progress: ProductTaskEventView["progress"] = null;
     if (eventType === "TASK_SUCCEEDED") {
-      const body = item.body;
-      if (body !== null && typeof body === "object" && !Array.isArray(body)) {
-        const outputs = (body as Record<string, unknown>).outputs;
+      const eventBody = item.body;
+      if (eventBody !== null && typeof eventBody === "object" && !Array.isArray(eventBody)) {
+        const direct = (eventBody as Record<string, unknown>).result_id;
+        if (typeof direct === "string" && direct.length > 0) resultId = direct;
+        const outputs = (eventBody as Record<string, unknown>).outputs;
         if (outputs !== null && typeof outputs === "object" && !Array.isArray(outputs)) {
           const candidate = (outputs as Record<string, unknown>).result_id;
           if (typeof candidate === "string" && candidate.length > 0) resultId = candidate;
         }
       }
+    } else if (eventType === "TASK_PROGRESS") {
+      const eventBody = record(item.body, "task progress body");
+      const keys = Object.keys(eventBody).sort().join(",");
+      const phase = eventBody.phase;
+      const completedUnits = eventBody.completed_units;
+      const totalUnits = eventBody.total_units;
+      const workUnit = eventBody.work_unit;
+      if (
+        keys !== "completed_units,phase,total_units,work_unit"
+        || !["ACQUIRING", "VALIDATING", "COMPUTING", "PUBLISHING", "RECONCILING"].includes(String(phase))
+        || !Number.isSafeInteger(completedUnits) || Number(completedUnits) < 0
+        || !Number.isSafeInteger(totalUnits) || Number(totalUnits) < 1 || Number(completedUnits) > Number(totalUnits)
+        || typeof workUnit !== "string" || workUnit.length < 1 || workUnit.length > 128
+      ) {
+        throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "task progress event is invalid");
+      }
+      progress = Object.freeze({
+        phase: phase as NonNullable<ProductTaskEventView["progress"]>["phase"],
+        completedUnits: Number(completedUnits),
+        totalUnits: Number(totalUnits),
+        workUnit
+      });
     }
     return Object.freeze({
       eventId: stringField(item, "event_id"),
+      taskId: stringField(item, "task_id"),
       projectSequence: intField(item, "project_sequence"),
       eventType,
       occurredAt: stringField(item, "occurred_at"),
-      resultId
+      resultId,
+      progress
     });
   });
   return Object.freeze({ items: Object.freeze(items), highWatermark: intField(model, "high_watermark") });

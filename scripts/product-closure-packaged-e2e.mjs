@@ -4,6 +4,11 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
+import { failedProviderReport } from "./product-provider-acceptance.mjs";
+
+// This driver is executed by the transferred Electron binary in Node mode.
+// Its package-copy and identity checks need the archive itself as a raw file.
+process.noAsar = true;
 
 const execFileAsync = promisify(execFile);
 const root = resolve(import.meta.dirname, "..");
@@ -118,6 +123,14 @@ function assertSmokeRun(run, smoke, phase) {
   }
 }
 
+async function persistFailedSmoke(run, smoke, phase) {
+  await writeFile(
+    reportPath,
+    JSON.stringify(failedProviderReport(run, smoke, phase), null, 2) + "\n",
+    "utf8",
+  );
+}
+
 function canonicalIdentity(smoke, phase) {
   const flow = smoke.flow;
   const context = flow?.projectContext;
@@ -161,7 +174,7 @@ async function queryPackagedSourceEvidence(pythonPath, pythonRoot, catalogPath, 
     "    request = metadata.get('request', {}) if isinstance(metadata, dict) else {}",
     "    if row['provider_id'] != 'pvd_akshare_eastmoney_a_share_eod_v1': continue",
     "    if row['connector_version_id'] != 'cov_akshare_eod_research_v1' or row['provider_dataset'] != 'CN_A_SHARE_EOD': continue",
-    "    if request.get('symbol') != '600519' or request.get('start_date') != '20250701' or request.get('end_date') != '20250710': continue",
+    "    if request.get('symbol') != '600519' or request.get('start_date') != '20260106' or request.get('end_date') != '20260107': continue",
     "    print(json.dumps({'raw_capture_id': row['raw_capture_id'], 'provider_id': row['provider_id'], 'connector_version_id': row['connector_version_id'], 'provider_dataset': row['provider_dataset'], 'requested_start': request.get('start_date'), 'requested_end': request.get('end_date'), 'captured_at': row['captured_at'], 'acquired_at': metadata.get('acquired_at'), 'available_time': row['available_time'], 'available_time_evidence': metadata.get('available_time_evidence'), 'provider_revision_id': None, 'revision_evidence': metadata.get('revision_evidence'), 'provider_package_version': metadata.get('provider_package_version'), 'provider_repository_revision': metadata.get('provider_repository_revision'), 'raw_payload_sha256': row['content_hash'], 'raw_capture_id_from_hash': 'raw_sha256_' + row['content_hash'], 'source_artifact_id': row['artifact_id'], 'source_artifact_id_from_hash': 'art_sha256_' + row['content_hash'], 'state': row['state'], 'provenance_complete': row['provenance_complete'], 'record_request': request}, ensure_ascii=False))",
     "    break",
     "else:",
@@ -212,6 +225,7 @@ const runtimeEnvBase = { ...process.env };
 for (const key of [
   "V3_BACKEND_PYTHON", "V3_PYTHON", "V3_BACKEND_WORKING_DIRECTORY", "V3_PACKAGED_PYTHON_ROOT", "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE",
   "NODE_PATH", "npm_config_prefix", "ELECTRON_RUN_AS_NODE", "V3_PRODUCT_STORAGE_ROOT", "V3_RESEARCH_PACKAGE_TRANSPORT_PATH", "V3_AGENT_EVIDENCE_MODE",
+  "V3_PRODUCT_CLOSURE_PROVIDER_MODE", "V3_PRODUCT_V1_1_SMOKE_LOCAL_DATA_SOURCE",
   "V3_PACKAGED_SMOKE_PHASE", "V3_PACKAGED_SMOKE_OUTPUT", "V3_PRODUCT_CLOSURE_SMOKE_PHASE", "V3_PRODUCT_CLOSURE_SMOKE_OUTPUT"
 ]) delete runtimeEnvBase[key];
 delete runtimeEnvBase.Path;
@@ -230,6 +244,9 @@ for (const [phase, name] of [["create-submit", "first"], ["reopen-discover", "re
   const outputPath = join(evidenceRoot, name + ".json");
   const productRun = await runProduct(executable, installRoot, runtimeEnvBase, phase, outputPath);
   const smoke = await readJson(outputPath);
+  if (productRun.code !== 0 || productRun.signal !== null || smoke.success !== true) {
+    await persistFailedSmoke(productRun, smoke, phase);
+  }
   assertSmokeRun(productRun, smoke, phase);
   runs.push({ phase, product_run: productRun, smoke });
 }
@@ -263,7 +280,7 @@ const sourceEvidence = await queryPackagedSourceEvidence(
 assert(sourceEvidence.provider_package_version === "1.18.84", "persisted source evidence package version mismatch");
 assert(sourceEvidence.provider_id === "pvd_akshare_eastmoney_a_share_eod_v1", "persisted source provider mismatch");
 assert(sourceEvidence.connector_version_id === "cov_akshare_eod_research_v1", "persisted source connector mismatch");
-assert(sourceEvidence.requested_start === "20250701" && sourceEvidence.requested_end === "20250710", "persisted source request range mismatch");
+assert(sourceEvidence.requested_start === "20260106" && sourceEvidence.requested_end === "20260107", "persisted source request range mismatch");
 assert(Number.isInteger(sourceEvidence.provenance_complete) && sourceEvidence.provenance_complete === 0, "source provenance ceiling was not preserved as incomplete");
 assert(sourceEvidence.available_time === null && sourceEvidence.available_time_evidence === "UNKNOWN", "source available-time truth was promoted");
 assert(sourceEvidence.revision_evidence === "UNKNOWN" && sourceEvidence.provider_revision_id === null, "source revision truth was promoted");

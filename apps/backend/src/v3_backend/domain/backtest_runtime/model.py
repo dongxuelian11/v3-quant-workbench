@@ -62,6 +62,8 @@ class DiagnosticCode(str, Enum):
     FILLED = "FILLED"
     PARTIAL_CASH = "PARTIAL_CASH"
     PARTIAL_T_PLUS_ONE = "PARTIAL_T_PLUS_ONE"
+    PARTIAL_VOLUME = "PARTIAL_VOLUME"
+    NO_MARKET_VOLUME = "NO_MARKET_VOLUME"
     SUSPENDED = "SUSPENDED"
     NOT_TRADABLE = "NOT_TRADABLE"
     BUY_RESTRICTED = "BUY_RESTRICTED"
@@ -132,6 +134,180 @@ class ExactInputReference:
             "source_id": self.source_id,
             "content_sha256": self.content_sha256,
             "truth_admission": self.truth_admission.to_wire(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchExecutionProfileV1:
+    profile_id: str
+    content_sha256: str
+    slippage_bps: str
+    daily_volume_participation_rate: str
+    assumption_mode: str
+    truth_admission: TruthAdmissionState
+
+    schema_version: ClassVar[str] = "v3.research-execution-profile/1.0.0"
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        slippage_bps: str,
+        daily_volume_participation_rate: str,
+        assumption_mode: str = "RESEARCH_APPROXIMATE",
+    ) -> ResearchExecutionProfileV1:
+        slippage = decimal_text(
+            slippage_bps, "slippage_bps", non_negative=True
+        )
+        participation = decimal_text(
+            daily_volume_participation_rate,
+            "daily_volume_participation_rate",
+            non_negative=True,
+        )
+        if _d(slippage) > Decimal("10000"):
+            raise BacktestContractError("slippage_bps exceeds 10000")
+        if not Decimal(0) < _d(participation) <= Decimal(1):
+            raise BacktestContractError(
+                "daily_volume_participation_rate must be in (0,1]"
+            )
+        if assumption_mode not in {
+            "RESEARCH_APPROXIMATE",
+            "STRICT_FAIL_CLOSED",
+        }:
+            raise BacktestContractError(
+                "research execution assumption_mode is not admitted"
+            )
+        payload = {
+            "schema_version": cls.schema_version,
+            "slippage_bps": slippage,
+            "daily_volume_participation_rate": participation,
+            "assumption_mode": assumption_mode,
+            "truth_admission": PRE_ALPHA_CEILING.to_wire(),
+        }
+        digest = canonical_sha256(payload)
+        return cls(
+            "rep_sha256_" + digest,
+            digest,
+            slippage,
+            participation,
+            assumption_mode,
+            PRE_ALPHA_CEILING,
+        )
+
+    def assert_canonical(self) -> None:
+        rebuilt = type(self).create(
+            slippage_bps=self.slippage_bps,
+            daily_volume_participation_rate=self.daily_volume_participation_rate,
+            assumption_mode=self.assumption_mode,
+        )
+        if rebuilt != self:
+            raise BacktestContractError("research execution profile identity drifted")
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "profile_id": self.profile_id,
+            "content_sha256": self.content_sha256,
+            "slippage_bps": self.slippage_bps,
+            "daily_volume_participation_rate": self.daily_volume_participation_rate,
+            "assumption_mode": self.assumption_mode,
+            "truth_admission": self.truth_admission.to_wire(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchLiquidityRow:
+    session_date: date
+    instrument_id: str
+    volume_shares: int
+
+    def __post_init__(self) -> None:
+        _text(self.instrument_id, "instrument_id")
+        if (
+            not isinstance(self.volume_shares, int)
+            or isinstance(self.volume_shares, bool)
+            or self.volume_shares < 0
+        ):
+            raise BacktestContractError("volume_shares must be a non-negative integer")
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "session_date": self.session_date.isoformat(),
+            "instrument_id": self.instrument_id,
+            "volume_shares": self.volume_shares,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchExecutionInputs:
+    input_id: str
+    content_sha256: str
+    profile: ResearchExecutionProfileV1
+    market_data_source_id: str
+    market_data_content_sha256: str
+    liquidity_rows: tuple[ResearchLiquidityRow, ...]
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        profile: ResearchExecutionProfileV1,
+        market_data_source_id: str,
+        market_data_content_sha256: str,
+        liquidity_rows: tuple[ResearchLiquidityRow, ...],
+    ) -> ResearchExecutionInputs:
+        if not isinstance(profile, ResearchExecutionProfileV1):
+            raise TypeError("profile must be ResearchExecutionProfileV1")
+        profile.assert_canonical()
+        _text(market_data_source_id, "market_data_source_id")
+        _sha(market_data_content_sha256, "market_data_content_sha256")
+        if not isinstance(liquidity_rows, tuple) or any(
+            not isinstance(row, ResearchLiquidityRow) for row in liquidity_rows
+        ):
+            raise BacktestContractError("research liquidity rows are required")
+        ordered = tuple(
+            sorted(liquidity_rows, key=lambda row: (row.session_date, row.instrument_id))
+        )
+        if not ordered:
+            raise BacktestContractError("research liquidity rows are required")
+        keys = tuple((row.session_date, row.instrument_id) for row in ordered)
+        if len(keys) != len(set(keys)):
+            raise BacktestContractError("research liquidity rows must be unique")
+        payload = {
+            "profile": profile.to_wire(),
+            "market_data_source_id": market_data_source_id,
+            "market_data_content_sha256": market_data_content_sha256,
+            "liquidity_rows": [row.to_wire() for row in ordered],
+        }
+        digest = canonical_sha256(payload)
+        return cls(
+            "rexi_sha256_" + digest,
+            digest,
+            profile,
+            market_data_source_id,
+            market_data_content_sha256,
+            ordered,
+        )
+
+    def assert_canonical(self) -> None:
+        rebuilt = type(self).create(
+            profile=self.profile,
+            market_data_source_id=self.market_data_source_id,
+            market_data_content_sha256=self.market_data_content_sha256,
+            liquidity_rows=self.liquidity_rows,
+        )
+        if rebuilt != self:
+            raise BacktestContractError("research execution inputs identity drifted")
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "schema_version": "v3.research-execution-inputs/1.0.0",
+            "input_id": self.input_id,
+            "content_sha256": self.content_sha256,
+            "profile": self.profile.to_wire(),
+            "market_data_source_id": self.market_data_source_id,
+            "market_data_content_sha256": self.market_data_content_sha256,
+            "liquidity_rows": [row.to_wire() for row in self.liquidity_rows],
         }
 
 
@@ -708,6 +884,11 @@ class BacktestRunSpec:
         holdings = tuple(sorted(initial_holdings, key=lambda x: x.instrument_id))
         if len({x.instrument_id for x in holdings}) != len(holdings) or any(x.instrument_id not in instrument_ids for x in holdings):
             raise BacktestContractError("initial holdings must be unique and inside exact universe")
+        first_session_date = ordered_sessions[0].session_date
+        if any(item.acquired_on > first_session_date for item in holdings):
+            raise BacktestContractError(
+                "initial holding acquired_on exceeds first session"
+            )
         refs = tuple(sorted(exact_references, key=lambda x: (x.reference_kind, x.source_id)))
         kinds = {x.reference_kind for x in refs}
         required = {"SNAPSHOT", "MARKET_DATA", "TRADING_CALENDAR", "UNIVERSE", "CORPORATE_ACTIONS", "OFFICIAL_TRADING_HOURS", "OFFICIAL_COST_RULES"}
@@ -810,9 +991,21 @@ class Fill:
     raw_price: str
     consideration: str
     costs: CostBreakdown
+    execution_price: str | None = None
+    participation_cap: int | None = None
+    slippage_bps: str | None = None
 
     def to_wire(self):
-        return {"fill_id": self.fill_id, "order_id": self.order_id, "session_date": self.session_date.isoformat(), "instrument_id": self.instrument_id, "side": self.side.value, "quantity": self.quantity, "raw_price": self.raw_price, "consideration": self.consideration, "costs": self.costs.to_wire()}
+        wire = {"fill_id": self.fill_id, "order_id": self.order_id, "session_date": self.session_date.isoformat(), "instrument_id": self.instrument_id, "side": self.side.value, "quantity": self.quantity, "raw_price": self.raw_price, "consideration": self.consideration, "costs": self.costs.to_wire()}
+        if self.execution_price is not None:
+            wire.update(
+                {
+                    "execution_price": self.execution_price,
+                    "participation_cap": self.participation_cap,
+                    "slippage_bps": self.slippage_bps,
+                }
+            )
+        return wire
 
 
 @dataclass(frozen=True, slots=True)
@@ -822,9 +1015,21 @@ class ExecutionDiagnostic:
     requested_quantity: int
     filled_quantity: int
     detail: str
+    eligible_quantity: int | None = None
+    unfilled_quantity: int | None = None
+    participation_cap: int | None = None
 
     def to_wire(self):
-        return {"order_id": self.order_id, "code": self.code.value, "requested_quantity": self.requested_quantity, "filled_quantity": self.filled_quantity, "detail": self.detail}
+        wire = {"order_id": self.order_id, "code": self.code.value, "requested_quantity": self.requested_quantity, "filled_quantity": self.filled_quantity, "detail": self.detail}
+        if self.eligible_quantity is not None:
+            wire.update(
+                {
+                    "eligible_quantity": self.eligible_quantity,
+                    "unfilled_quantity": self.unfilled_quantity,
+                    "participation_cap": self.participation_cap,
+                }
+            )
+        return wire
 
 
 @dataclass(frozen=True, slots=True)
@@ -981,6 +1186,9 @@ __all__ = [
     "DiagnosticCode",
     "ExactInputReference",
     "ExecutionTimingProfileVersion",
+    "ResearchExecutionInputs",
+    "ResearchExecutionProfileV1",
+    "ResearchLiquidityRow",
     "ExecutionDiagnostic",
     "ExpiredScheduledWeightsError",
     "Fill",

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { ProductBindingStore, parsePersistedBinding, productBindingPath } from "../../apps/desktop/src/main/productRuntime/bindingStore.ts";
-import { adaptCapabilities, adaptResearchSubmit, adaptTask, ProductAdapterError } from "../../apps/desktop/src/main/productRuntime/adapters.ts";
+import { adaptCapabilities, adaptResearchSubmit, adaptTask, adaptTaskEvents, ProductAdapterError } from "../../apps/desktop/src/main/productRuntime/adapters.ts";
 import {
   CreateProjectIntentStore,
   createProjectIntentPath,
@@ -23,6 +23,16 @@ test("binding store rejects invalid persisted shapes and accepts canonical refs"
     assert.equal(parsePersistedBinding({ schemaVersion: 1, projectId: "../escape", projectContextRevisionId: "c", sessionId: "s", savedAt: "x" }), null);
     assert.equal(parsePersistedBinding({ schemaVersion: 1, projectId: "p", projectContextRevisionId: "c", sessionId: "s" }), null);
     assert.equal(await store.load(), null);
+    await writeFile(productBindingPath(dir), "{not-json", "utf8");
+    await assert.rejects(
+      () => new ProductBindingStore(productBindingPath(dir)).load(),
+      (error) => error.code === "BINDING_STORE_CORRUPT"
+    );
+    await assert.rejects(
+      () => new ProductBindingStore(dir).load(),
+      (error) => error.code === "BINDING_STORE_IO_FAILED",
+      "only ENOENT may be interpreted as an unbound product"
+    );
     const persisted = await store.persist(REFS);
     assert.equal(persisted.projectId, REFS.projectId);
     const reloaded = new ProductBindingStore(productBindingPath(dir));
@@ -182,10 +192,49 @@ test("adapters fail closed on shape drift and admit honest capability reasons", 
   assert.throws(() => adaptTask({ read_model: { read_model_version: "v3.task/9.9" } }), ProductAdapterError);
   const good = adaptCapabilities([
     { code: "TaskService", truth_state: "UNAVAILABLE", reason_code: "PRODUCT_OPERATION_SET_INCOMPLETE" },
-    { code: "BacktestService", truth_state: "FORMAL" }
+    { code: "BacktestService", truth_state: "UNAVAILABLE", reason_code: "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED" }
   ]);
   assert.equal(good[0].reason_code, "PRODUCT_OPERATION_SET_INCOMPLETE");
-  assert.equal(good[1].truth_state, "FORMAL");
+  assert.equal(good[1].truth_state, "UNAVAILABLE");
+  assert.equal(good[1].reason_code, "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED");
+});
+
+test("Task progress adapter preserves exact task identity and rejects phase drift", () => {
+  const response = {
+    read_model: {
+      high_watermark: 12,
+      items: [{
+        event_id: "tev_progress01",
+        task_id: "tsk_progress01",
+        project_sequence: 12,
+        event_type: "TASK_PROGRESS",
+        occurred_at: "2026-08-24T00:00:00Z",
+        body: {
+          phase: "RECONCILING",
+          completed_units: 3,
+          total_units: 4,
+          work_unit: "RESULT_RECONCILIATION"
+        }
+      }]
+    }
+  };
+  const adapted = adaptTaskEvents(response);
+  assert.equal(adapted.items[0].taskId, "tsk_progress01");
+  assert.deepEqual(adapted.items[0].progress, {
+    phase: "RECONCILING",
+    completedUnits: 3,
+    totalUnits: 4,
+    workUnit: "RESULT_RECONCILIATION"
+  });
+  const wrongPhase = structuredClone(response);
+  wrongPhase.read_model.items[0].body.phase = "COMPLETE";
+  assert.throws(() => adaptTaskEvents(wrongPhase), ProductAdapterError);
+  const impossibleUnits = structuredClone(response);
+  impossibleUnits.read_model.items[0].body.completed_units = 5;
+  assert.throws(() => adaptTaskEvents(impossibleUnits), ProductAdapterError);
+  const extraProgressField = structuredClone(response);
+  extraProgressField.read_model.items[0].body.percent = 75;
+  assert.throws(() => adaptTaskEvents(extraProgressField), ProductAdapterError);
 });
 
 test("renderer-facing bridge contract stays free of generic transport members", async () => {
@@ -202,13 +251,17 @@ test("renderer-facing bridge contract stays free of generic transport members", 
   assert.match(ipc, /productRuntime:submitExistingBacktestRunSpec/);
   // Every registration uses one of the frozen typed channels; no dynamic
   // channel or renderer-supplied operation id reaches ipcMain.handle.
-  // Product Entry adds createProject / listProjects / listBacktestRunSpecs /
-  // importResearchPackage (typed, no generic transport surface).
+  // Product Entry Data/Factor/Strategy/Backtest/Result paths remain individually typed. The two
+  // unavailable-runtime registrations deliberately reuse status/capabilities.
   const registrations = [...ipc.matchAll(/handle\((PRODUCT_RUNTIME_CHANNELS\.[A-Za-z]+)/g)].map((match) => match[1]);
-  assert.equal(registrations.length, 20);
-  assert.equal(new Set(registrations).size, 18);
+  assert.equal(registrations.length, 32);
+  assert.equal(new Set(registrations).size, 30);
+  assert.match(ipc, /PRODUCT_RUNTIME_CHANNELS\.previewResearchBacktest/);
   assert.doesNotMatch(ipc, /operation_?[Ii]d/);
   assert.match(ipc, /trusted\(event\)/);
+  const panel = await readFile(new URL("../../apps/desktop/src/renderer/components/ProductRuntimePanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /function VirtualizedRows/);
+  assert.match(panel, /className="product-virtual-list"/);
 });
 
 test("Product Entry research adapter preserves explicit PRE_ALPHA truth and rejects numeric drift", () => {
@@ -298,7 +351,7 @@ test("S1-S4: Product Entry discovery admits only FORMAL capability", async (t) =
     {
       name: "S4 FORMAL preserves normal project discovery",
       truthState: "FORMAL",
-      expectedProjects: { projects: [{ projectId: "prj_formal", projectContextRevisionId: "pcr_formal", displayName: "正式项目", createdAt: "2026-08-20T00:00:00Z" }], hasMore: false },
+      expectedProjects: { projects: [{ projectId: "prj_formal", projectContextRevisionId: "pcr_formal", displayName: "正式项目", createdAt: "2026-08-20T00:00:00Z" }], hasMore: false, nextCursor: null },
       expectedCalls: 1
     }
   ];
@@ -367,6 +420,11 @@ test("T4b: healthy states still derive exactly", () => {
   assert.equal(deriveSurface({ ...baseState, status: bound }), "PROJECT_BOUND");
 });
 
+test("T4c: a verified V1.1 Project Home is not downgraded by the legacy RunSpec selector", () => {
+  const bound = { backendState: "READY", bindingState: "PROJECT_BOUND", boundProject: { projectId: "p", projectContextRevisionId: "c", sessionId: "s" }, capabilities: [] };
+  assert.equal(deriveSurface({ ...baseState, status: bound, runSpecId: "", dataHome: { readModelVersion: "v3.project-home/1.1" } }), "PROJECT_BOUND");
+});
+
 test("UNAVAILABLE run-spec cannot be selected or submitted by the renderer store gate", async () => {
   const canonicalId = `btrs_sha256_${"e".repeat(64)}`;
   const unavailable = {
@@ -382,7 +440,7 @@ test("UNAVAILABLE run-spec cannot be selected or submitted by the renderer store
       diagnostic: "source bytes unavailable"
     }],
     hasMore: false,
-    nextAfterArtifactId: null
+    nextCursor: null
   };
   assert.equal(executableRunSpecSelection(unavailable, canonicalId), null);
   assert.equal(executableRunSpecSelection({ ...unavailable, specs: [{ ...unavailable.specs[0], status: "EXECUTABLE" }] }, canonicalId), canonicalId);

@@ -59,6 +59,14 @@ class FakeFactory:
         return process
 
 
+class FailingFactory:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def spawn(self, request: WorkerRequest) -> FakeProcess:
+        raise self.error
+
+
 def request_for(attempt_id: str, run_id: str) -> WorkerRequest:
     return WorkerRequest(
         attempt_id=attempt_id,
@@ -84,6 +92,37 @@ class WorkerAndResourceTests(unittest.TestCase):
         factory = FakeFactory()
         workers = WorkerSupervisor(governor, leases, tasks, identities, factory)
         return clock, tasks, persistence, leases_port, governor, factory, workers
+
+    def test_spawn_error_classification_never_promotes_unknown_failure_to_retryable(self) -> None:
+        for error, expected in (
+            (OSError("temporary process creation failure"), "TRANSIENT_IO"),
+            (RuntimeError("unknown process factory defect"), "INTERNAL_ERROR"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                clock = MutableClock()
+                tasks, persistence, _, identities, _ = make_supervisor(clock)
+                leases = LeaseManager(InMemoryLeasePersistence(), clock)
+                governor = ResourceGovernor(FakeResourceSampler())
+                workers = WorkerSupervisor(
+                    governor,
+                    leases,
+                    tasks,
+                    identities,
+                    FailingFactory(error),
+                )
+                _, run, attempt = tasks.accept(
+                    PROJECT_ID,
+                    "ModelService.v1.train",
+                    run_identity(),
+                )
+                with self.assertRaises(type(error)):
+                    workers.dispatch(
+                        request_for(attempt.attempt_id, run.run_id),
+                        OperationProfile("ModelService.v1.train", "CPU"),
+                    )
+                failed = persistence.attempts[attempt.attempt_id]
+                self.assertEqual(failed.state, AttemptState.FAILED)
+                self.assertEqual(failed.terminal_error_category, expected)
 
     def test_conservative_default_admits_only_one_worker(self) -> None:
         _, tasks, _, _, _, _, workers = self.make_worker_system()

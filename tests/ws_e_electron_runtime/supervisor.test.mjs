@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
@@ -29,12 +30,33 @@ class MockProcess extends EventEmitter {
   stderr = new PassThrough();
   pid = 4321;
   terminated = false;
+  exited = false;
+  constructor() {
+    super();
+    this.exitPromise = new Promise((resolve) => {
+      this.once("exit", () => { this.exited = true; resolve(); });
+    });
+  }
 
   onExit(listener) { this.once("exit", listener); }
   terminate() {
     if (this.terminated) return;
     this.terminated = true;
     queueMicrotask(() => this.emit("exit", 0, null));
+  }
+  kill() {
+    if (this.exited) return;
+    this.terminated = true;
+    queueMicrotask(() => this.emit("exit", null, "SIGKILL"));
+  }
+  isAlive() { return !this.exited; }
+  async waitForExit(deadlineAt) {
+    if (!this.isAlive()) return true;
+    const remaining = Math.max(0, deadlineAt - Date.now());
+    return Promise.race([
+      this.exitPromise.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), remaining))
+    ]);
   }
   crash() {
     if (this.terminated) return;
@@ -71,7 +93,15 @@ class MockBackend {
   requestMode = "ok";
   queuedRequests = [];
   healthMode = "ok";
-  queuedHealthRequests = 0;
+  queuedHealthRequests = [];
+  productEntryMode = "ok";
+  queuedProductEntryRequests = [];
+  localDataMode = "ok";
+  queuedLocalDataRequests = [];
+  artifactStreamMode = "ok";
+  queuedArtifactStreamRequests = [];
+  artifactExportMode = "ok";
+  queuedArtifactExportRequests = [];
 
   constructor(process, index, protocol = "v3.local/1.0") {
     this.process = process;
@@ -136,14 +166,47 @@ class MockBackend {
       this.respondOk(message);
     } else if (message.kind === "runtime.health") {
       if (this.healthMode === "queue") {
-        this.queuedHealthRequests += 1;
+        this.queuedHealthRequests.push(message);
         return;
       }
-      this.respondHealth();
+      this.respondHealth(message);
+    } else if (message.kind === "productEntry.listProjects") {
+      if (this.productEntryMode === "queue") {
+        this.queuedProductEntryRequests.push(message);
+        return;
+      }
+      this.respondProductEntry(message);
+    } else if (message.kind === "localData.beginTransfer") {
+      if (this.localDataMode === "queue") {
+        this.queuedLocalDataRequests.push(message);
+        return;
+      }
+      this.respondLocalData(message);
+    } else if (message.kind === "artifactStream.consume") {
+      if (this.artifactStreamMode === "queue") {
+        this.queuedArtifactStreamRequests.push(message);
+        return;
+      }
+      this.respondArtifactStream(message, Buffer.from("artifact-stream", "utf8"));
+    } else if (message.kind === "artifactExport.complete" || message.kind === "artifactExport.fail") {
+      if (this.artifactExportMode === "queue") {
+        this.queuedArtifactExportRequests.push(message);
+        return;
+      }
+      this.respondArtifactExport(message);
     } else if (message.kind === "runtime.prepareShutdown") {
-      this.send({ kind: "runtime.shutdownReady", deadline_at: message.deadline_at });
+      this.send({
+        kind: "runtime.shutdownReady",
+        deadline_at: message.deadline_at,
+        control_request_id: message.control_request_id,
+        runtime_generation: message.runtime_generation
+      });
     } else if (message.kind === "runtime.commitShutdown") {
-      this.send({ kind: "runtime.shutdownCommitted" });
+      this.send({
+        kind: "runtime.shutdownCommitted",
+        control_request_id: message.control_request_id,
+        runtime_generation: message.runtime_generation
+      });
       queueMicrotask(() => this.process.emit("exit", 0, null));
     }
   }
@@ -159,8 +222,85 @@ class MockBackend {
       this.send({ kind: "response", request_id: message.request_id, status: "OK", body });
   }
 
-  respondHealth() {
-    this.send({ kind: "runtime.health", backend_instance_id: `backend-${this.index}`, state: "READY", uptime_seconds: 1 });
+  respondHealth(request = this.queuedHealthRequests.shift()) {
+    const response = {
+      kind: "runtime.health",
+      backend_instance_id: `backend-${this.index}`,
+      state: "READY",
+      uptime_seconds: 1
+    };
+    if (request?.control_request_id !== undefined) response.control_request_id = request.control_request_id;
+    if (request?.runtime_generation !== undefined) response.runtime_generation = request.runtime_generation;
+    this.send(response);
+  }
+
+  respondProductEntry(request = this.queuedProductEntryRequests.shift()) {
+    const response = {
+      kind: "productEntry.projectsListed",
+      projects: [],
+      has_more: false
+    };
+    if (request?.control_request_id !== undefined) response.control_request_id = request.control_request_id;
+    if (request?.runtime_generation !== undefined) response.runtime_generation = request.runtime_generation;
+    this.send(response);
+  }
+
+  respondLocalData(request = this.queuedLocalDataRequests.shift()) {
+    this.send({
+      kind: "localData.transferReady",
+      transfer_id: `ldt_${"0".repeat(26)}`,
+      next_offset: 0,
+      max_chunk_bytes: 262144,
+      control_request_id: request.control_request_id,
+      runtime_generation: request.runtime_generation
+    });
+  }
+
+  respondArtifactStream(request, payload, overrides = {}) {
+    const artifactSha = createHash("sha256").update(payload).digest("hex");
+    const artifactId = `art_sha256_${artifactSha}`;
+    let offset = 0;
+    for (let start = 0; start < payload.byteLength; start += 128 * 1024) {
+      const part = payload.subarray(start, Math.min(payload.byteLength, start + 128 * 1024));
+      this.send({
+        kind: "artifactStream.chunk",
+        ticket_id: request.ticket_id,
+        artifact_id: artifactId,
+        offset,
+        payload_base64: part.toString("base64"),
+        chunk_sha256: createHash("sha256").update(part).digest("hex"),
+        control_request_id: request.control_request_id,
+        runtime_generation: request.runtime_generation,
+        ...overrides
+      });
+      offset += part.byteLength;
+    }
+    this.send({
+      kind: "artifactStream.complete",
+      ticket_id: request.ticket_id,
+      artifact_id: artifactId,
+      total_byte_count: payload.byteLength,
+      artifact_sha256: artifactSha,
+      range_start: 0,
+      range_end_exclusive: payload.byteLength,
+      control_request_id: request.control_request_id,
+      runtime_generation: request.runtime_generation
+    });
+  }
+
+  respondArtifactExport(request, overrides = {}) {
+    this.send({
+      kind: request.kind === "artifactExport.complete"
+        ? "artifactExport.completed"
+        : "artifactExport.failed",
+      task_id: request.task_id,
+      ...(request.kind === "artifactExport.complete"
+        ? { manifest_artifact_id: `art_sha256_${"c".repeat(64)}` }
+        : {}),
+      control_request_id: request.control_request_id,
+      runtime_generation: request.runtime_generation,
+      ...overrides
+    });
   }
 
   flushRequestsInReverse() {
@@ -246,27 +386,343 @@ test("supervisor owns fixed spawn, handshake, capabilities, correlation, cancel,
   assert.equal(factory.specs.length, 1, "no legacy fallback process may be spawned");
 });
 
-test("late same-generation health response after caller timeout keeps the backend connected", async () => {
+test("timed-out health releases its slot and a late correlated reply cannot satisfy the next request", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  const diagnostics = [];
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.healthMode = "queue";
+
+  const timedOutHealth = supervisor.getHealth(10);
+  await waitFor(() => backend.queuedHealthRequests.length === 1);
+  await assert.rejects(timedOutHealth, (error) => error.code === "BACKEND_TIMEOUT");
+  const firstRequest = backend.queuedHealthRequests[0];
+  assert.match(firstRequest.control_request_id, /^[0-9a-f-]{36}$/);
+  assert.equal(Number.isSafeInteger(firstRequest.runtime_generation), true);
+
+  const recoveredHealthPromise = supervisor.getHealth(200);
+  let recoveredSettled = false;
+  void recoveredHealthPromise.finally(() => { recoveredSettled = true; }).catch(() => undefined);
+  await waitFor(() => backend.queuedHealthRequests.length === 2);
+  const secondRequest = backend.queuedHealthRequests[1];
+  assert.notEqual(secondRequest.control_request_id, firstRequest.control_request_id);
+  assert.equal(secondRequest.runtime_generation, firstRequest.runtime_generation);
+
+  backend.respondHealth(firstRequest);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(recoveredSettled, false, "the late first reply must not settle the second health request");
+  await waitFor(() => diagnostics.some((item) => item.code === "LATE_CONTROL_RESPONSE_DISCARDED"));
+
+  backend.respondHealth(secondRequest);
+  const recoveredHealth = await recoveredHealthPromise;
+  assert.equal(recoveredHealth.state, "READY");
+  assert.equal(supervisor.state, "READY");
+  assert.equal(factory.processes[0].terminated, false);
+  supervisor.stopNow();
+});
+
+test("concurrent health calls in one runtime generation coalesce onto one control frame", async () => {
   const factory = new MockFactory();
   const supervisor = create(factory, { autoReconnect: false });
   await supervisor.start();
   const backend = factory.backends[0];
   backend.healthMode = "queue";
 
-  const timedOutHealth = supervisor.getHealth(10);
-  await waitFor(() => backend.queuedHealthRequests === 1);
-  await assert.rejects(timedOutHealth, (error) => error.code === "BACKEND_TIMEOUT");
-  await assert.rejects(supervisor.getHealth(10), (error) => error.code === "CONFLICT");
+  const first = supervisor.getHealth(200);
+  const second = supervisor.getHealth(200);
+  try {
+    await waitFor(() => backend.queuedHealthRequests.length >= 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(backend.queuedHealthRequests.length, 1);
 
-  backend.respondHealth();
-  await waitFor(() => supervisor.healthReply === undefined);
+    backend.respondHealth();
+    const [firstHealth, secondHealth] = await Promise.all([first, second]);
+    assert.deepEqual(secondHealth, firstHealth);
+    assert.equal(supervisor.state, "READY");
+  } finally {
+    supervisor.stopNow();
+    await Promise.allSettled([first, second]);
+  }
+});
+
+test("health control tombstones stay bounded and a known late reply reopens one slot", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  const diagnostics = [];
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.healthMode = "queue";
+
+  try {
+    for (let index = 0; index < 256; index += 1) {
+      await assert.rejects(supervisor.getHealth(0), (error) => error.code === "BACKEND_TIMEOUT");
+    }
+    assert.equal(backend.queuedHealthRequests.length, 256);
+    await assert.rejects(
+      supervisor.getHealth(200),
+      (error) => error.code === "CONTROL_CORRELATION_CAPACITY"
+        && error.details.max_tombstones === 256
+        && error.details.timed_out_correlations === 256
+    );
+    assert.equal(backend.queuedHealthRequests.length, 256, "capacity rejection must not emit a frame");
+
+    backend.respondHealth(backend.queuedHealthRequests[0]);
+    await waitFor(() => diagnostics.some((item) => item.code === "LATE_CONTROL_RESPONSE_DISCARDED"));
+
+    const recovered = supervisor.getHealth(200);
+    await waitFor(() => backend.queuedHealthRequests.length === 257);
+    backend.respondHealth(backend.queuedHealthRequests.at(-1));
+    assert.equal((await recovered).state, "READY");
+  } finally {
+    supervisor.stopNow();
+  }
+});
+
+test("timed-out Product Entry control releases its slot and discards its correlated late reply", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  const diagnostics = [];
+  supervisor.on("diagnostic", (item) => diagnostics.push(item));
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.productEntryMode = "queue";
+  const frame = {
+    kind: "productEntry.listProjects",
+    protocol_version: "v3.product-entry/1.0.0",
+    limit: 50,
+    after_project_id: null
+  };
+
+  const timedOut = supervisor.productEntryControl(frame, 10);
+  await waitFor(() => backend.queuedProductEntryRequests.length === 1);
+  await assert.rejects(timedOut, (error) => error.code === "BACKEND_TIMEOUT");
+  const firstRequest = backend.queuedProductEntryRequests[0];
+  assert.match(firstRequest.control_request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+
+  const recovered = supervisor.productEntryControl(frame, 200);
+  let recoveredSettled = false;
+  void recovered.finally(() => { recoveredSettled = true; }).catch(() => undefined);
+  try {
+    await waitFor(() => backend.queuedProductEntryRequests.length === 2);
+    const secondRequest = backend.queuedProductEntryRequests[1];
+    assert.notEqual(secondRequest.control_request_id, firstRequest.control_request_id);
+    assert.equal(secondRequest.runtime_generation, firstRequest.runtime_generation);
+
+    backend.respondProductEntry(firstRequest);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(recoveredSettled, false);
+    await waitFor(() => diagnostics.some((item) => item.code === "LATE_CONTROL_RESPONSE_DISCARDED"));
+
+    backend.respondProductEntry(secondRequest);
+    assert.deepEqual((await recovered).projects, []);
+    assert.equal(supervisor.state, "READY");
+  } finally {
+    supervisor.stopNow();
+    await Promise.allSettled([recovered]);
+  }
+});
+
+test("local-data control is correlated, generation-fenced and rejects every path field before transport", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  const frame = {
+    kind: "localData.beginTransfer",
+    protocol_version: "v3.local-data-transfer/1.0.0",
+    project_id: PROJECT_ID,
+    project_context_revision_id: REVISION_ID,
+    display_name: "bars.csv",
+    media_type: "text/csv",
+    expected_byte_size: 128
+  };
+  try {
+    const before = backend.received.length;
+    await assert.rejects(
+      () => supervisor.localDataControl({ ...frame, path: "D:\\secret\\bars.csv" }),
+      (error) => error.code === "INVALID_ARGUMENT"
+    );
+    assert.equal(backend.received.length, before, "path-bearing frame must not reach the backend");
+    backend.localDataMode = "queue";
+    const pending = supervisor.localDataControl(frame, 200);
+    await waitFor(() => backend.queuedLocalDataRequests.length === 1);
+    const request = backend.queuedLocalDataRequests[0];
+    assert.match(request.control_request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(Number.isSafeInteger(request.runtime_generation), true);
+    assert.equal("path" in request, false);
+    backend.respondLocalData(request);
+    assert.deepEqual(await pending, {
+      kind: "localData.transferReady",
+      transfer_id: `ldt_${"0".repeat(26)}`,
+      next_offset: 0,
+      max_chunk_bytes: 262144
+    });
+  } finally {
+    supervisor.stopNow();
+  }
+});
+
+test("ACC-C3-09 artifact stream verifies correlated chunks and exact complete identity", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  const payload = Buffer.alloc(300 * 1024 + 17, 0x61);
+  const sha256 = createHash("sha256").update(payload).digest("hex");
+  const artifactId = `art_sha256_${sha256}`;
+  backend.artifactStreamMode = "queue";
+  try {
+    const pending = supervisor.consumeArtifactStream({
+      ticketId: `stk_${"0".repeat(26)}`,
+      artifactId,
+      expectedSha256: sha256,
+      expectedByteSize: payload.byteLength
+    }, 500);
+    await waitFor(() => backend.queuedArtifactStreamRequests.length === 1);
+    const request = backend.queuedArtifactStreamRequests[0];
+    assert.equal(request.project_id, PROJECT_ID);
+    assert.equal(request.project_context_revision_id, REVISION_ID);
+    backend.respondArtifactStream(request, payload);
+    const result = await pending;
+    assert.equal(result.artifactId, artifactId);
+    assert.equal(result.sha256, sha256);
+    assert.deepEqual(Buffer.from(result.bytes), payload);
+  } finally {
+    supervisor.stopNow();
+  }
+});
+
+test("ACC-C3-10 artifact stream writes through a bounded sink before resolving its receipt", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  const payload = Buffer.alloc(300 * 1024 + 17, 0x62);
+  const sha256 = createHash("sha256").update(payload).digest("hex");
+  const artifactId = `art_sha256_${sha256}`;
+  const written = [];
+  backend.artifactStreamMode = "queue";
+  try {
+    const pending = supervisor.streamArtifactToSink({
+      ticketId: `stk_${"3".repeat(26)}`,
+      artifactId,
+      expectedSha256: sha256,
+      expectedByteSize: payload.byteLength
+    }, async (chunk, offset) => {
+      assert.equal(offset, written.reduce((total, item) => total + item.byteLength, 0));
+      assert.ok(chunk.byteLength <= 256 * 1024);
+      await Promise.resolve();
+      written.push(Buffer.from(chunk));
+    }, 500);
+    await waitFor(() => backend.queuedArtifactStreamRequests.length === 1);
+    backend.respondArtifactStream(backend.queuedArtifactStreamRequests[0], payload);
+    assert.deepEqual(await pending, {
+      artifactId,
+      sha256,
+      byteSize: payload.byteLength
+    });
+    assert.deepEqual(Buffer.concat(written), payload);
+  } finally {
+    supervisor.stopNow();
+  }
+});
+
+test("ACC-C3-10 artifact export completion/failure controls are correlated and main-owned", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  backend.artifactExportMode = "queue";
+  try {
+    const completion = supervisor.artifactExportControl({
+      kind: "artifactExport.complete",
+      protocol_version: "v3.artifact-export/1.0.0",
+      project_id: PROJECT_ID,
+      project_context_revision_id: REVISION_ID,
+      task_id: `tsk_${"4".repeat(26)}`,
+      destination_token: "edc_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      display_name: "result.json",
+      artifact_id: `art_sha256_${"a".repeat(64)}`,
+      sha256: "a".repeat(64),
+      byte_size: 12,
+      completed_at: "2026-08-24T00:00:00.000Z"
+    }, 500);
+    await waitFor(() => backend.queuedArtifactExportRequests.length === 1);
+    const request = backend.queuedArtifactExportRequests[0];
+    assert.equal(request.kind, "artifactExport.complete");
+    assert.match(request.control_request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(Number.isSafeInteger(request.runtime_generation), true);
+    backend.respondArtifactExport(request);
+    assert.deepEqual(await completion, {
+      kind: "artifactExport.completed",
+      task_id: `tsk_${"4".repeat(26)}`,
+      manifest_artifact_id: `art_sha256_${"c".repeat(64)}`
+    });
+
+    const failure = supervisor.artifactExportControl({
+      kind: "artifactExport.fail",
+      protocol_version: "v3.artifact-export/1.0.0",
+      project_id: PROJECT_ID,
+      project_context_revision_id: REVISION_ID,
+      task_id: `tsk_${"5".repeat(26)}`,
+      destination_token: "edc_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+      reason_code: "ARTIFACT_EXPORT_WRITE_FAILED"
+    }, 500);
+    await waitFor(() => backend.queuedArtifactExportRequests.length === 2);
+    backend.respondArtifactExport(backend.queuedArtifactExportRequests[1]);
+    assert.deepEqual(await failure, {
+      kind: "artifactExport.failed",
+      task_id: `tsk_${"5".repeat(26)}`
+    });
+  } finally {
+    supervisor.stopNow();
+  }
+});
+
+test("ACC-C3-09 artifact stream rejects wrong generation and corrupt chunk hash", async () => {
+  const factory = new MockFactory();
+  const supervisor = create(factory, { autoReconnect: false, requestTimeoutMs: 50 });
+  await supervisor.start();
+  const backend = factory.backends[0];
+  const payload = Buffer.from("verified artifact bytes", "utf8");
+  const sha256 = createHash("sha256").update(payload).digest("hex");
+  const artifactId = `art_sha256_${sha256}`;
+  backend.artifactStreamMode = "queue";
+  const pending = supervisor.consumeArtifactStream({
+    ticketId: `stk_${"1".repeat(26)}`,
+    artifactId,
+    expectedSha256: sha256,
+    expectedByteSize: payload.byteLength
+  }, 80);
+  await waitFor(() => backend.queuedArtifactStreamRequests.length === 1);
+  const request = backend.queuedArtifactStreamRequests[0];
+  backend.send({
+    kind: "artifactStream.chunk",
+    ticket_id: request.ticket_id,
+    artifact_id: artifactId,
+    offset: 0,
+    payload_base64: payload.toString("base64"),
+    chunk_sha256: "0".repeat(64),
+    control_request_id: request.control_request_id,
+    runtime_generation: request.runtime_generation + 1
+  });
+  await assert.rejects(pending, (error) => error.code === "BACKEND_TIMEOUT");
   assert.equal(supervisor.state, "READY");
-  assert.equal(factory.processes[0].terminated, false);
 
-  backend.healthMode = "ok";
-  const recoveredHealth = await supervisor.getHealth();
-  assert.equal(recoveredHealth.state, "READY");
-  supervisor.stopNow();
+  const corrupt = supervisor.consumeArtifactStream({
+    ticketId: `stk_${"2".repeat(26)}`,
+    artifactId,
+    expectedSha256: sha256,
+    expectedByteSize: payload.byteLength
+  }, 200);
+  await waitFor(() => backend.queuedArtifactStreamRequests.length === 2);
+  const corruptRequest = backend.queuedArtifactStreamRequests[1];
+  backend.respondArtifactStream(corruptRequest, payload, { chunk_sha256: "0".repeat(64) });
+  await assert.rejects(corrupt);
+  assert.notEqual(supervisor.state, "READY");
 });
 
 test("release acceptance provider is absent by default and forwarded only when explicitly configured", async () => {

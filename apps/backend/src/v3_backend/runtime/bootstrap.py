@@ -46,6 +46,7 @@ def _build_ports(args: argparse.Namespace) -> RuntimePorts:
     return build_product_ports(
         storage_root,
         research_provider_factory=provider_factory,
+        research_provider_mode=acceptance_provider,
     )
 
 

@@ -32,6 +32,7 @@ from ...domain.data_truth.provider import (
     ProviderNeutralObservationBatch,
     RawCaptureSubmission,
 )
+from ...domain.data_truth.provider_ingestion import NormalizationError, normalize_a_share_eod
 from ...provenance.canonical_hash import canonical_json_bytes, canonical_sha256
 
 
@@ -454,8 +455,17 @@ class AkshareAShareEodAdapter:
             "field_capability_policy_artifact_id": self.field_capability_policy().policy_artifact_id,
             "raw_payload": raw_payload,
         }
-        return RawCaptureSubmission(
+        submission = RawCaptureSubmission(
             envelope=envelope,
             source_metadata=_freeze(metadata),
             observations=observations,
         )
+        if not records:
+            raise ProviderAcquisitionError("AKShare response contained no observations")
+        try:
+            normalize_a_share_eod(submission)
+        except NormalizationError as error:
+            raise ProviderAcquisitionError(
+                "AKShare response failed provider-neutral normalization"
+            ) from error
+        return submission

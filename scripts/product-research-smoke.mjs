@@ -223,7 +223,7 @@ async function runDesktopTypedAcceptance() {
   const userDataDirectory = await mkdtemp(join(tmpdir(), "v3-product-research-desktop-userdata-"));
   const providerDirectory = await makeProviderBoundaryWorkingDirectory("pass");
   const modules = await makeProductRuntimeModules();
-  const { useProductRuntime } = await import("../dist/apps/desktop/src/renderer/productRuntimeStore.js");
+  const { useProductRuntime } = await import("../apps/desktop/src/renderer/productRuntimeStore.ts");
   let supervisorA = null;
   let supervisorB = null;
   try {
@@ -355,7 +355,7 @@ async function runSourceUnavailableAcceptance() {
   const userDataDirectory = await mkdtemp(join(tmpdir(), "v3-product-research-unavailable-userdata-"));
   const providerDirectory = await makeProviderBoundaryWorkingDirectory("unavailable");
   const modules = await makeProductRuntimeModules();
-  const { useProductRuntime } = await import("../dist/apps/desktop/src/renderer/productRuntimeStore.js");
+  const { useProductRuntime } = await import("../apps/desktop/src/renderer/productRuntimeStore.ts");
   let supervisor = null;
   try {
     process.env.V3_PRODUCT_STORAGE_ROOT = storageRoot;
@@ -380,7 +380,7 @@ async function runSourceUnavailableAcceptance() {
     assert.equal(state.artifactDescriptor, null);
     assert.match(state.errorMessage ?? "", /AKShare|provider|unavailable|dependency/i);
     assert.equal(supervisor.state, "READY", "source failure must not fake success or tear down healthy transport");
-    assert.deepEqual(await bridge.listTasks(), [], "source failure must not mint a fake canonical Task");
+    assert.deepEqual((await bridge.listTasks()).tasks, [], "source failure must not mint a fake canonical Task");
     return { status: "PASS", error: state.errorMessage, transport: supervisor.state, fakeSuccess: false };
   } finally {
     await stopSupervisor(supervisor).catch(() => undefined);

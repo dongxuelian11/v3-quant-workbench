@@ -119,11 +119,17 @@ async function catalogEvidence(pythonPath, pythonRoot, catalogPath, cwd, env) {
     "import json,sqlite3,sys",
     "c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True)",
     "c.row_factory=sqlite3.Row",
-    "counts={t:c.execute('select count(*) from '+t).fetchone()[0] for t in ('task','run','result','raw_capture','artifact')}",
+    "counts={t:c.execute('select count(*) from '+t).fetchone()[0] for t in ('task','run','task_attempt','result','raw_capture','data_snapshot','dataset_version','artifact')}",
     "row=c.execute('select source_metadata_json from raw_capture_truth_descriptor order by rowid desc limit 1').fetchone()",
     "metadata=json.loads(row['source_metadata_json']) if row is not None else None",
     "roles=[r[0] for r in c.execute('select semantic_role from artifact order by semantic_role')]",
-    "print(json.dumps({'counts':counts,'source_metadata':metadata,'artifact_roles':roles},ensure_ascii=True,sort_keys=True))",
+    "task=c.execute('select task_id,project_id,operation_id,state from task order by rowid desc limit 1').fetchone()",
+    "attempt=c.execute('select a.attempt_id,a.run_id,a.state,a.error_code from task_attempt a order by a.rowid desc limit 1').fetchone()",
+    "failure=c.execute(\"select task_id,run_id,attempt_id,payload_json from task_event where event_type='TASK_FAILED' order by rowid desc limit 1\").fetchone()",
+    "context_ref=c.execute(\"select artifact_id from artifact_reference where owner_type='Run' and role='EXECUTION_CONTEXT' order by rowid desc limit 1\").fetchone()",
+    "failed_event=None if failure is None else {**dict(failure),'payload':json.loads(failure['payload_json'])}",
+    "if failed_event is not None: failed_event.pop('payload_json')",
+    "print(json.dumps({'counts':counts,'source_metadata':metadata,'artifact_roles':roles,'latest_task':None if task is None else dict(task),'latest_attempt':None if attempt is None else dict(attempt),'failed_event':failed_event,'execution_context_artifact_id':None if context_ref is None else context_ref['artifact_id']},ensure_ascii=True,sort_keys=True))",
     "c.close()",
   ].join("\n");
   const result = await execFileAsync(pythonPath, ["-c", probe, catalogPath], {
@@ -200,12 +206,23 @@ const unavailableOutput = join(unavailable.paths.evidence, "unavailable.json");
 const unavailableRun = await runProduct(executable, installRoot, unavailable.env, "provider-unavailable", "DETERMINISTIC_UNAVAILABLE", unavailableOutput);
 const unavailableSmoke = JSON.parse(await readFile(unavailableOutput, "utf8"));
 assertRun(unavailableRun, unavailableSmoke, "provider-unavailable", "DETERMINISTIC_UNAVAILABLE");
-assert(unavailableSmoke.flow.tasks.length === 0 && unavailableSmoke.flow.successful_canonical_chain_count === 0, "provider unavailable minted a Task chain");
+const unavailableTask = unavailableSmoke.flow.failedTask;
+assert(unavailableSmoke.flow.tasks.tasks.length === 1 && unavailableSmoke.flow.successful_canonical_chain_count === 0, "provider unavailable did not preserve its single failed Task without a successful chain");
+assert(unavailableTask.state === "FAILED" && unavailableTask.operationId === "ProductEntryService.v1.submitResearch" && unavailableTask.projectId === unavailableSmoke.flow.projectContext.projectId, "provider unavailable Task identity or state is invalid");
+assert(unavailableTask.resultId === null && unavailableTask.outputs.BACKTEST_RUN_RESULT === undefined, "provider unavailable Task published Result truth");
+assert(JSON.stringify(Object.keys(unavailableTask.outputs)) === JSON.stringify(["EXECUTION_CONTEXT"]) && unavailableTask.outputs.EXECUTION_CONTEXT.startsWith("art_sha256_"), "provider unavailable Task did not preserve exactly its durable execution context");
+assert(unavailableTask.attempt?.state === "FAILED" && unavailableTask.attempt.errorCategory === "INVALID_ARGUMENT" && unavailableTask.attempt.reasonCode === "PROVIDER_ACQUISITION_UNAVAILABLE", "provider unavailable Task lost its exact terminal reason");
 assert(unavailableSmoke.flow.rendererEvidence.currentRendererState.errorMessage.includes("PROVIDER_ACQUISITION_UNAVAILABLE"), "provider unavailable error is not explicit");
 const unavailableCatalog = join(unavailable.paths.local, "v3-quant-workbench/product/catalog.sqlite3");
 const failed = await catalogEvidence(pythonPath, pythonRoot, unavailableCatalog, backendRoot, unavailable.env);
-assert(failed.counts.task === 0 && failed.counts.run === 0 && failed.counts.result === 0 && failed.counts.raw_capture === 0, "provider unavailable created fake canonical market/research data");
-assert(failed.counts.artifact === 1 && JSON.stringify(failed.artifact_roles) === JSON.stringify(["DATA_TRUTH_CAPABILITY_POLICY"]), "provider unavailable created an artifact other than the real admission policy");
+assert(failed.counts.task === 1 && failed.counts.run === 1 && failed.counts.task_attempt === 1, "provider unavailable did not preserve exactly one durable Task/Run/Attempt chain");
+assert(failed.counts.result === 0 && failed.counts.raw_capture === 0 && failed.counts.data_snapshot === 0 && failed.counts.dataset_version === 0, "provider unavailable created fake canonical market/research data");
+assert(failed.counts.artifact === 2 && JSON.stringify(failed.artifact_roles) === JSON.stringify(["DATA_TRUTH_CAPABILITY_POLICY", "PRODUCT_EXECUTION_CONTEXT"]), "provider unavailable created artifacts beyond admission policy and durable execution context");
+assert(failed.latest_task?.task_id === unavailableTask.taskId && failed.latest_task?.state === "FAILED" && failed.latest_task?.operation_id === "ProductEntryService.v1.submitResearch", "catalog Task does not match the packaged failed Task");
+assert(failed.latest_attempt?.attempt_id === unavailableTask.attempt.attemptId && failed.latest_attempt?.state === "FAILED" && failed.latest_attempt?.error_code === "INVALID_ARGUMENT", "catalog Attempt does not match the packaged failed Task");
+assert(failed.execution_context_artifact_id === unavailableTask.outputs.EXECUTION_CONTEXT, "catalog Run execution context does not match the packaged failed Task output");
+assert(failed.failed_event?.task_id === unavailableTask.taskId && failed.failed_event?.run_id === unavailableTask.runId && failed.failed_event?.attempt_id === unavailableTask.attempt.attemptId, "catalog failure event identity does not match the packaged failed Task");
+assert(failed.failed_event?.payload?.error_type === "CapabilityUnavailableError" && failed.failed_event?.payload?.error_category === "INVALID_ARGUMENT" && failed.failed_event?.payload?.reason_code === "PROVIDER_ACQUISITION_UNAVAILABLE", "catalog failure event lost its exact provider reason");
 
 const installAfter = await directoryIdentity(installRoot);
 assert(JSON.stringify(installBefore) === JSON.stringify(installAfter), "packaged install tree mutated during acceptance");
@@ -233,6 +250,10 @@ const report = {
     retry_later: true,
     canonical_counts: failed.counts,
     artifact_roles: failed.artifact_roles,
+    failed_task_id: unavailableTask.taskId,
+    failed_run_id: unavailableTask.runId,
+    failed_attempt_id: unavailableTask.attempt.attemptId,
+    execution_context_artifact_id: unavailableTask.outputs.EXECUTION_CONTEXT,
     fallback_used: false,
   },
   full_app_exit: true,

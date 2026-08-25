@@ -30,10 +30,11 @@ class MigrationTests(unittest.TestCase):
                     "0002_data_truth",
                     "0003_portfolio_riskpolicy_owner",
                     "0004_risk_application_publication",
+                    "0005_task_execution_deadline",
                 ),
             )
-            self.assertEqual(result.schema_report.table_count, 73)
-            self.assertEqual(result.schema_report.user_version, 4)
+            self.assertEqual(result.schema_report.table_count, 75)
+            self.assertEqual(result.schema_report.user_version, 5)
             connection = connect_catalog(path)
             try:
                 tables = {
@@ -51,6 +52,96 @@ class MigrationTests(unittest.TestCase):
                     ),
                     0,
                 )
+            finally:
+                connection.close()
+
+    def test_c1_migration_adds_publication_foundation_immutable_session_binding_and_cursor_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.sqlite3"
+            apply_migrations(path, application_version="test")
+            connection = connect_catalog(path)
+            try:
+                tables = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                self.assertTrue({"task_output", "publication_intent"}.issubset(tables))
+                task_columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(task)")
+                }
+                attempt_columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(task_attempt)")
+                }
+                self.assertIn("execution_deadline_at", task_columns)
+                self.assertIn("execution_deadline_at", attempt_columns)
+                indexes = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'"
+                    )
+                }
+                self.assertTrue(
+                    {
+                        "idx_task_discovery_cursor",
+                        "idx_project_discovery_cursor",
+                        "idx_runspec_reference_cursor",
+                        "idx_task_output_artifact",
+                        "idx_publication_intent_recovery",
+                    }.issubset(indexes)
+                )
+                now = "2026-08-23T00:00:00Z"
+                connection.execute(
+                    "INSERT INTO project(project_id,display_name,created_at,state) VALUES(?,?,?,'ACTIVE')",
+                    ("prj_" + "A" * 26, "A", now),
+                )
+                connection.execute(
+                    "INSERT INTO project(project_id,display_name,created_at,state) VALUES(?,?,?,'ACTIVE')",
+                    ("prj_" + "B" * 26, "B", now),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO project_context_revision(
+                      project_context_revision_id,project_id,revision_no,context_json,
+                      canonical_hash,created_by,created_at
+                    ) VALUES(?,?,1,'{}',?,'test',?)
+                    """,
+                    ("pcr_" + "A" * 26, "prj_" + "A" * 26, "a" * 64, now),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO project_context_revision(
+                      project_context_revision_id,project_id,revision_no,context_json,
+                      canonical_hash,created_by,created_at
+                    ) VALUES(?,?,1,'{}',?,'test',?)
+                    """,
+                    ("pcr_" + "B" * 26, "prj_" + "B" * 26, "b" * 64, now),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO desktop_session(
+                      session_id,project_id,project_context_revision_id,state,opened_at
+                    ) VALUES(?,?,?,'OPEN',?)
+                    """,
+                    ("ses_valid", "prj_" + "A" * 26, "pcr_" + "A" * 26, now),
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "UPDATE desktop_session SET project_id=?,project_context_revision_id=? WHERE session_id='ses_valid'",
+                        ("prj_" + "B" * 26, "pcr_" + "B" * 26),
+                    )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO desktop_session(
+                          session_id,project_id,project_context_revision_id,state,opened_at
+                        ) VALUES(?,?,?,'OPEN',?)
+                        """,
+                        ("ses_mismatch", "prj_" + "A" * 26, "pcr_" + "B" * 26, now),
+                    )
             finally:
                 connection.close()
 
@@ -213,10 +304,11 @@ class MigrationTests(unittest.TestCase):
                     "0002_data_truth",
                     "0003_portfolio_riskpolicy_owner",
                     "0004_risk_application_publication",
+                    "0005_task_execution_deadline",
                 ),
             )
-            self.assertEqual(len(upgraded.backups), 3)
-            self.assertEqual(upgraded.schema_report.user_version, 4)
+            self.assertEqual(len(upgraded.backups), 4)
+            self.assertEqual(upgraded.schema_report.user_version, 5)
             connection = connect_catalog(path)
             try:
                 self.assertIsNone(
@@ -230,7 +322,7 @@ class MigrationTests(unittest.TestCase):
             finally:
                 connection.close()
 
-    def test_upgrade_exact_version_3_database_to_version_4(self) -> None:
+    def test_upgrade_exact_version_3_database_to_current_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             versions = root / "versions"
@@ -266,6 +358,9 @@ class MigrationTests(unittest.TestCase):
                 application_version="v4-risk-application",
                 backup_dir=root / "backups-v4",
             )
-            self.assertEqual(upgraded.applied, ("0004_risk_application_publication",))
-            self.assertEqual(upgraded.schema_report.user_version, 4)
-            self.assertEqual(len(upgraded.backups), 1)
+            self.assertEqual(
+                upgraded.applied,
+                ("0004_risk_application_publication", "0005_task_execution_deadline"),
+            )
+            self.assertEqual(upgraded.schema_report.user_version, 5)
+            self.assertEqual(len(upgraded.backups), 2)

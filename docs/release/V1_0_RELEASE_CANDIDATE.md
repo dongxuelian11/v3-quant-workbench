@@ -1,13 +1,27 @@
 # V3 V1.0 Product Release Candidate
 
-Status: `PENDING EXACT-HEAD CI / PRE-ALPHA / RESEARCH-ONLY`
+Status: `RELEASED AS PUBLIC PRERELEASE / PRE-ALPHA / RESEARCH-ONLY`
 
 Version: `1.0.0`
 
-This document describes the single V1.0 candidate produced by task
-`V3-V1-INTEGRATED-PRODUCT-RELEASE-CLOSURE-20260822-01`. It does not claim that
-the final pull request is accepted or merged, and it does not promote any path
-to `PRODUCTION_AVAILABLE`.
+This document is the historical record for the single V1.0 candidate produced
+by task `V3-V1-INTEGRATED-PRODUCT-RELEASE-CLOSURE-20260822-01`. PR #49 was
+merged into `main` on 2026-08-23 as exact commit
+`02c5b8748170569ffc436f3bf5d2f682c21d2811`; the `v1.0.0` tag points to that
+commit and the public GitHub release is a prerelease. This closure does not
+promote any path to `PRODUCTION_AVAILABLE`.
+
+## Final exact-main closure
+
+| Evidence | Final state |
+|---|---|
+| PR | [#49](https://github.com/dongxuelian11/v3-quant-workbench/pull/49) `MERGED`; head `41f769aca426aa4c82ff9d9b5d31c0c015c2bb1d`; merge/main `02c5b8748170569ffc436f3bf5d2f682c21d2811` |
+| exact-main CI | [run 32626717592](https://github.com/dongxuelian11/v3-quant-workbench/actions/runs/32626717592) `SUCCESS` on `02c5b8748170569ffc436f3bf5d2f682c21d2811` |
+| packaging / clean-machine workflow | [run 32626717564](https://github.com/dongxuelian11/v3-quant-workbench/actions/runs/32626717564) `SUCCESS` on the same exact main |
+| tag / release | [`v1.0.0`](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.0.0) points to exact main and was published as a public prerelease on 2026-08-23 |
+
+These are historical V1.0 facts. They are not evidence for the unpushed V1.1
+candidate or its redesigned Jobs A-F.
 
 ## Frozen product scope
 
@@ -89,7 +103,6 @@ bounded evidence.
   advanced auto-update, and production signing remain V1.1/Post-V1 work.
 - Agent execution/publish authority remains `NOT_AVAILABLE / NOT_RUN`.
 
-The authoritative deferred entries remain in
-`docs/status/V3_DEFERRED_GAPS.md`. Final exact-head identities and CI run IDs
-belong in the task State Ledger and final independent-review handoff, not in
-this pre-CI document.
+The current deferred entries remain in `docs/status/V3_DEFERRED_GAPS.md`.
+V1.1 evidence and remaining gates are tracked separately in
+`V1_1_RELEASE_CANDIDATE.md` and the V1.1 State Ledger.

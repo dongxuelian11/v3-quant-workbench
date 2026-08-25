@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, BinaryIO
 
 from v3_backend.contracts.registry import SERVICE_CONTRACTS
@@ -37,6 +38,19 @@ class RuntimePorts:
     # Narrow, versioned projectless Product Entry bootstrap seam.  None keeps
     # productEntry.* control frames fail-closed (unknown control frame).
     product_entry_control: Callable[[str, Mapping[str, Any]], dict[str, Any]] | None = None
+    # Project-bound local source staging. Bytes arrive only as correlated,
+    # bounded chunks and are published by the backend Artifact owner.
+    local_data_control: Callable[[str, Mapping[str, Any]], dict[str, Any]] | None = None
+    # Project-bound immutable Artifact reads. One consume request may emit
+    # multiple correlated chunk frames followed by one terminal frame.
+    artifact_stream_control: (
+        Callable[[str, Mapping[str, Any]], Iterable[Mapping[str, Any]]] | None
+    ) = None
+    # Electron owns the native destination. These correlated receipts are the
+    # only path that may finalize or fail an already accepted export Task.
+    artifact_export_control: (
+        Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None
+    ) = None
 
 
 class RuntimeSession:
@@ -104,21 +118,78 @@ class RuntimeSession:
                     raise ProtocolViolation("events.ack fields do not match the closed wire shape")
                 self.events.acknowledge(message["project_sequence"])
             elif message.get("kind") == "runtime.health":
-                if set(message) != {"kind"}:
-                    raise ProtocolViolation("runtime.health request has unknown fields")
-                write_frame(sink, self.health.snapshot())
+                control_request_id, runtime_generation = self._control_correlation(message)
+                write_frame(
+                    sink,
+                    self.health.snapshot(
+                        control_request_id=control_request_id,
+                        runtime_generation=runtime_generation,
+                    ),
+                )
             elif str(message.get("kind", "")).startswith("productEntry."):
                 self._handle_product_entry(message, sink)
+            elif str(message.get("kind", "")).startswith("localData."):
+                self._handle_local_data(message, sink)
+            elif str(message.get("kind", "")).startswith("artifactStream."):
+                self._handle_artifact_stream(message, sink)
+            elif str(message.get("kind", "")).startswith("artifactExport."):
+                self._handle_artifact_export(message, sink)
             elif message.get("kind") == "runtime.prepareShutdown":
                 self._prepare_shutdown(message, sink)
             elif message.get("kind") == "runtime.commitShutdown":
-                if set(message) != {"kind"} or self.health.accepting_requests:
+                control_request_id, runtime_generation = self._control_correlation(message)
+                if self.health.accepting_requests:
                     raise ProtocolViolation("runtime.commitShutdown requires a prepared runtime")
                 self.ports.commit_shutdown()
-                write_frame(sink, {"kind": "runtime.shutdownCommitted"})
+                write_frame(sink, {
+                    "kind": "runtime.shutdownCommitted",
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
+                })
                 return
             else:
                 raise ProtocolViolation("unknown runtime control frame")
+
+    @staticmethod
+    def _control_correlation(
+        message: Mapping[str, Any],
+        payload_fields: set[str] | frozenset[str] = frozenset(),
+    ) -> tuple[str, int]:
+        required = {"kind", "control_request_id", "runtime_generation", "deadline_at"}
+        if set(message) != required | set(payload_fields):
+            raise ProtocolViolation("control request fields do not match the closed wire shape")
+
+        control_request_id = message["control_request_id"]
+        try:
+            parsed_id = uuid.UUID(control_request_id)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ProtocolViolation("control_request_id must be a canonical UUIDv7") from exc
+        if (
+            not isinstance(control_request_id, str)
+            or str(parsed_id) != control_request_id.lower()
+            or parsed_id.version != 7
+        ):
+            raise ProtocolViolation("control_request_id must be a canonical UUIDv7")
+
+        runtime_generation = message["runtime_generation"]
+        if (
+            isinstance(runtime_generation, bool)
+            or not isinstance(runtime_generation, int)
+            or runtime_generation < 1
+            or runtime_generation > 9_007_199_254_740_991
+        ):
+            raise ProtocolViolation("runtime_generation must be a positive safe integer")
+
+        deadline = message["deadline_at"]
+        if deadline is not None:
+            if not isinstance(deadline, str) or not deadline.endswith("Z"):
+                raise ProtocolViolation("deadline_at must be RFC3339 UTC or null")
+            try:
+                datetime.fromisoformat(deadline[:-1] + "+00:00")
+            except ValueError as exc:
+                raise ProtocolViolation("deadline_at must be RFC3339 UTC or null") from exc
+
+        return control_request_id, runtime_generation
 
     def _handle_replay(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
         if set(message) != {"kind", "after_sequence", "limit"}:
@@ -137,22 +208,20 @@ class RuntimeSession:
         })
 
     def _prepare_shutdown(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
-        if set(message) != {"kind", "deadline_at"}:
-            raise ProtocolViolation("runtime.prepareShutdown fields do not match the closed wire shape")
+        control_request_id, runtime_generation = self._control_correlation(message)
         deadline = message["deadline_at"]
-        if deadline is not None and not isinstance(deadline, str):
-            raise ProtocolViolation("shutdown deadline must be a string or null")
         self.health.accepting_requests = False
         truth = self.ports.prepare_shutdown(deadline)
-        response: dict[str, Any] = {
+        response: dict[str, Any] = dict(truth) if isinstance(truth, Mapping) else {}
+        response.update({
             "kind": "runtime.shutdownReady",
+            "control_request_id": control_request_id,
+            "runtime_generation": runtime_generation,
             "deadline_at": deadline,
-            "execution_mode": "SYNCHRONOUS_IN_PROCESS",
-            "active_task_policy": "DRAIN_BEFORE_SHUTDOWN",
-            "checkpoint_resume": "UNAVAILABLE",
-        }
-        if isinstance(truth, Mapping):
-            response.update(dict(truth))
+        })
+        response.setdefault("execution_mode", "SYNCHRONOUS_IN_PROCESS")
+        response.setdefault("active_task_policy", "DRAIN_BEFORE_SHUTDOWN")
+        response.setdefault("checkpoint_resume", "UNAVAILABLE")
         write_frame(sink, response)
 
     def _handle_product_entry(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
@@ -167,26 +236,269 @@ class RuntimeSession:
 
         if self.ports.product_entry_control is None:
             raise ProtocolViolation("product entry control frames are not bound in this runtime")
+        kind = str(message["kind"])
+        payload_fields = {
+            "productEntry.createProject": {"protocol_version", "display_name", "idempotency_key", "notes"},
+            "productEntry.listProjects": {"protocol_version", "limit", "after_project_id"},
+        }.get(kind)
+        if payload_fields is None:
+            raise ProtocolViolation("unknown product entry control frame")
+        control_request_id, runtime_generation = self._control_correlation(message, payload_fields)
+        owner_message = {
+            key: value
+            for key, value in message.items()
+            if key not in {"control_request_id", "runtime_generation", "deadline_at"}
+        }
         if not self.health.accepting_requests:
             write_frame(
                 sink,
                 {
                     "kind": "productEntry.error",
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
                     "code": "RESOURCE_REJECTED",
                     "message": "runtime is draining and rejects new commands",
                     "retryable": False,
                 },
             )
             return
-        kind = str(message["kind"])
         try:
-            write_frame(sink, self.ports.product_entry_control(kind, message))
+            response = dict(self.ports.product_entry_control(kind, owner_message))
+            response.update({
+                "control_request_id": control_request_id,
+                "runtime_generation": runtime_generation,
+            })
+            write_frame(sink, response)
         except Exception as exc:
             error = map_exception(exc)
             write_frame(
                 sink,
                 {
                     "kind": "productEntry.error",
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
+                    "code": error.code.value,
+                    "message": error.message,
+                    "retryable": error.retryable,
+                },
+            )
+
+    def _handle_local_data(self, message: Mapping[str, Any], sink: BinaryIO) -> None:
+        """Closed project-bound staging protocol for native local file bytes."""
+        from v3_backend.errors.mapping import map_exception
+
+        if self.ports.local_data_control is None:
+            raise ProtocolViolation("local-data control frames are not bound in this runtime")
+        kind = str(message["kind"])
+        payload_fields = {
+            "localData.beginTransfer": {
+                "protocol_version", "project_id", "project_context_revision_id",
+                "display_name", "media_type", "expected_byte_size",
+            },
+            "localData.appendChunk": {
+                "protocol_version", "transfer_id", "offset", "payload_base64", "chunk_sha256",
+            },
+            "localData.finishTransfer": {
+                "protocol_version", "transfer_id", "expected_sha256", "expected_byte_size",
+            },
+            "localData.abortTransfer": {"protocol_version", "transfer_id"},
+        }.get(kind)
+        if payload_fields is None:
+            raise ProtocolViolation("unknown local-data control frame")
+        control_request_id, runtime_generation = self._control_correlation(message, payload_fields)
+        owner_message = {
+            key: value
+            for key, value in message.items()
+            if key not in {"control_request_id", "runtime_generation", "deadline_at"}
+        }
+        if not self.health.accepting_requests:
+            write_frame(sink, {
+                "kind": "localData.error",
+                "control_request_id": control_request_id,
+                "runtime_generation": runtime_generation,
+                "code": "RESOURCE_REJECTED",
+                "message": "runtime is draining and rejects new local-data transfers",
+                "retryable": False,
+            })
+            return
+        try:
+            response = dict(self.ports.local_data_control(kind, owner_message))
+            response.update({
+                "control_request_id": control_request_id,
+                "runtime_generation": runtime_generation,
+            })
+            write_frame(sink, response)
+        except Exception as exc:
+            error = map_exception(exc)
+            write_frame(sink, {
+                "kind": "localData.error",
+                "control_request_id": control_request_id,
+                "runtime_generation": runtime_generation,
+                "code": error.code.value,
+                "message": error.message,
+                "retryable": error.retryable,
+            })
+
+    def _handle_artifact_stream(
+        self, message: Mapping[str, Any], sink: BinaryIO
+    ) -> None:
+        """Emit one correlated immutable stream and exactly one terminal frame."""
+
+        from v3_backend.errors.mapping import map_exception
+
+        if self.ports.artifact_stream_control is None:
+            raise ProtocolViolation(
+                "artifact-stream control frames are not bound in this runtime"
+            )
+        kind = str(message["kind"])
+        payload_fields = {
+            "artifactStream.consume": {
+                "protocol_version",
+                "ticket_id",
+                "project_id",
+                "project_context_revision_id",
+            }
+        }.get(kind)
+        if payload_fields is None:
+            raise ProtocolViolation("unknown artifact-stream control frame")
+        control_request_id, runtime_generation = self._control_correlation(
+            message, payload_fields
+        )
+        owner_message = {
+            key: value
+            for key, value in message.items()
+            if key not in {"control_request_id", "deadline_at"}
+        }
+        if not self.health.accepting_requests:
+            write_frame(
+                sink,
+                {
+                    "kind": "artifactStream.error",
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
+                    "code": "RESOURCE_REJECTED",
+                    "message": "runtime is draining and rejects artifact streams",
+                    "retryable": False,
+                },
+            )
+            return
+        terminal_seen = False
+        try:
+            for owner_response in self.ports.artifact_stream_control(
+                kind, owner_message
+            ):
+                response = dict(owner_response)
+                response_kind = response.get("kind")
+                if terminal_seen or response_kind not in {
+                    "artifactStream.chunk",
+                    "artifactStream.complete",
+                }:
+                    raise ProtocolViolation(
+                        "artifact-stream owner emitted an invalid frame sequence"
+                    )
+                terminal_seen = response_kind == "artifactStream.complete"
+                response.update(
+                    {
+                        "control_request_id": control_request_id,
+                        "runtime_generation": runtime_generation,
+                    }
+                )
+                write_frame(sink, response)
+            if not terminal_seen:
+                raise ProtocolViolation(
+                    "artifact-stream owner omitted the terminal complete frame"
+                )
+        except ProtocolViolation:
+            raise
+        except Exception as exc:
+            error = map_exception(exc)
+            write_frame(
+                sink,
+                {
+                    "kind": "artifactStream.error",
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
+                    "code": error.code.value,
+                    "message": error.message,
+                    "retryable": error.retryable,
+                    "details": dict(error.details or {}),
+                },
+            )
+
+    def _handle_artifact_export(
+        self, message: Mapping[str, Any], sink: BinaryIO
+    ) -> None:
+        """Accept only correlated native destination completion/failure receipts."""
+
+        from v3_backend.errors.mapping import map_exception
+
+        if self.ports.artifact_export_control is None:
+            raise ProtocolViolation(
+                "artifact-export control frames are not bound in this runtime"
+            )
+        kind = str(message["kind"])
+        payload_fields = {
+            "artifactExport.complete": {
+                "protocol_version",
+                "project_id",
+                "project_context_revision_id",
+                "task_id",
+                "destination_token",
+                "display_name",
+                "artifact_id",
+                "sha256",
+                "byte_size",
+                "completed_at",
+            },
+            "artifactExport.fail": {
+                "protocol_version",
+                "project_id",
+                "project_context_revision_id",
+                "task_id",
+                "destination_token",
+                "reason_code",
+            },
+        }.get(kind)
+        if payload_fields is None:
+            raise ProtocolViolation("unknown artifact-export control frame")
+        control_request_id, runtime_generation = self._control_correlation(
+            message, payload_fields
+        )
+        owner_message = {
+            key: value
+            for key, value in message.items()
+            if key not in {"control_request_id", "runtime_generation", "deadline_at"}
+        }
+        if not self.health.accepting_requests:
+            write_frame(
+                sink,
+                {
+                    "kind": "artifactExport.error",
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
+                    "code": "RESOURCE_REJECTED",
+                    "message": "runtime is draining and rejects export receipts",
+                    "retryable": False,
+                },
+            )
+            return
+        try:
+            response = dict(self.ports.artifact_export_control(kind, owner_message))
+            response.update(
+                {
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
+                }
+            )
+            write_frame(sink, response)
+        except Exception as exc:
+            error = map_exception(exc)
+            write_frame(
+                sink,
+                {
+                    "kind": "artifactExport.error",
+                    "control_request_id": control_request_id,
+                    "runtime_generation": runtime_generation,
                     "code": error.code.value,
                     "message": error.message,
                     "retryable": error.retryable,

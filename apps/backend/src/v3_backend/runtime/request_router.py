@@ -4,19 +4,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from v3_backend.contracts.registry import OPERATIONS
 from v3_backend.errors.codes import ErrorCode
+from v3_backend.errors import ResourceRejectedError
 from v3_backend.errors.mapping import ErrorEnvelopeV1, map_exception
 
 from .framed_stdio import ProtocolViolation
 
 OperationHandler = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+MAX_RETAINED_RESPONSES = 4096
+DEFAULT_RESPONSE_CACHE_TTL_SECONDS = 300.0
+MAX_RESPONSE_CACHE_TTL_SECONDS = 3600.0
+_REQUEST_DEADLINE_AT: ContextVar[str | None] = ContextVar(
+    "v3_request_deadline_at", default=None
+)
+
+
+def current_request_deadline_at() -> str | None:
+    """Return the deadline owned by the active transport invocation, if any."""
+    return _REQUEST_DEADLINE_AT.get()
 
 
 @dataclass(frozen=True)
@@ -82,16 +97,41 @@ class RequestEnvelope:
 class RequestRouter:
     """Validates transport envelopes and dispatches only frozen operation IDs."""
 
-    def __init__(self, handlers: Mapping[str, OperationHandler]) -> None:
+    def __init__(
+        self,
+        handlers: Mapping[str, OperationHandler],
+        *,
+        response_cache_limit: int = MAX_RETAINED_RESPONSES,
+        response_cache_ttl_seconds: float = DEFAULT_RESPONSE_CACHE_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         unknown = sorted(set(handlers) - set(OPERATIONS))
         if unknown:
             raise ValueError("handlers contain non-frozen operation IDs: " + ", ".join(unknown))
+        if not 1 <= response_cache_limit <= MAX_RETAINED_RESPONSES:
+            raise ValueError(
+                f"response_cache_limit must be between 1 and {MAX_RETAINED_RESPONSES}"
+            )
+        if not 0 < response_cache_ttl_seconds <= MAX_RESPONSE_CACHE_TTL_SECONDS:
+            raise ValueError(
+                "response_cache_ttl_seconds must be greater than zero and no more than "
+                f"{MAX_RESPONSE_CACHE_TTL_SECONDS}"
+            )
         self._handlers = dict(handlers)
-        self._seen: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._response_cache_limit = response_cache_limit
+        self._response_cache_ttl_seconds = float(response_cache_ttl_seconds)
+        self._clock = clock
+        self._seen: OrderedDict[
+            str, tuple[str, dict[str, Any], float]
+        ] = OrderedDict()
 
     @property
     def bound_operation_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._handlers))
+
+    @property
+    def retained_response_count(self) -> int:
+        return len(self._seen)
 
     def route(self, wire: Mapping[str, Any]) -> dict[str, Any]:
         request_id = wire.get("request_id") if isinstance(wire, Mapping) else None
@@ -99,13 +139,27 @@ class RequestRouter:
         try:
             envelope = RequestEnvelope.from_wire(wire)
             fingerprint = self._fingerprint(wire)
+            now = self._clock()
+            self._prune_expired(now)
             prior = self._seen.get(envelope.request_id)
             if prior is not None:
                 if prior[0] != fingerprint:
                     raise ProtocolViolation("duplicate request_id has conflicting content")
+                self._seen[envelope.request_id] = (
+                    prior[0],
+                    prior[1],
+                    now + self._response_cache_ttl_seconds,
+                )
+                self._seen.move_to_end(envelope.request_id)
                 return dict(prior[1])
             response = self._dispatch(envelope)
-            self._seen[envelope.request_id] = (fingerprint, response)
+            self._seen[envelope.request_id] = (
+                fingerprint,
+                response,
+                now + self._response_cache_ttl_seconds,
+            )
+            while len(self._seen) > self._response_cache_limit:
+                self._seen.popitem(last=False)
             return dict(response)
         except ProtocolViolation:
             raise
@@ -127,7 +181,21 @@ class RequestRouter:
                 "error": error.to_wire(),
             }
 
+    def _prune_expired(self, now: float) -> None:
+        while self._seen:
+            request_id, cached = next(iter(self._seen.items()))
+            if cached[2] > now:
+                return
+            del self._seen[request_id]
+
     def _dispatch(self, envelope: RequestEnvelope) -> dict[str, Any]:
+        if envelope.deadline_at is not None:
+            deadline = datetime.fromisoformat(envelope.deadline_at[:-1] + "+00:00")
+            if deadline <= datetime.now(timezone.utc):
+                raise ResourceRejectedError(
+                    "request deadline expired before dispatch",
+                    details={"reason_code": "DEADLINE_EXPIRED"},
+                )
         operation = OPERATIONS.get(envelope.operation_id)
         if operation is None:
             raise ValueError(f"unknown frozen operation ID: {envelope.operation_id}")
@@ -165,7 +233,11 @@ class RequestRouter:
                     correlation_id=envelope.request_id,
                 ),
             )
-        response_body = handler(request_dto)
+        deadline_token = _REQUEST_DEADLINE_AT.set(envelope.deadline_at)
+        try:
+            response_body = handler(request_dto)
+        finally:
+            _REQUEST_DEADLINE_AT.reset(deadline_token)
         validated = operation.validate_response(response_body)
         return {
             "kind": "response",

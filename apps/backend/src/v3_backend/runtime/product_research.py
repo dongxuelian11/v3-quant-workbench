@@ -121,7 +121,7 @@ from v3_backend.domain.strategies import (
     SCORE_PAYLOAD_ROLE,
     SCORE_PAYLOAD_SCHEMA_FINGERPRINT,
     default_component_registry,
-    encode_score_payload,
+    encode_score_payload_for_universe,
 )
 from v3_backend.domain.weights import RuntimeIdentity
 from v3_backend.errors.exceptions import (
@@ -1671,18 +1671,6 @@ def _strategy_features_result(build: _StrategyFeatureBuild) -> _StrategyFeatures
     )
 
 
-def _placeholder_owner_reference() -> CanonicalOwnerArtifactReference:
-    return CanonicalOwnerArtifactReference(
-        artifact_type="PREDICTION_SIGNAL",
-        owner_namespace="PREDICTION_SIGNAL_VERSION",
-        owner_id="sgv_placeholder",
-        owner_version="0" * 64,
-        payload_role=SCORE_PAYLOAD_ROLE,
-        artifact_id="art_sha256_" + "0" * 64,
-        content_sha256="0" * 64,
-    )
-
-
 def _strategy_binding(build: _StrategyBindingBuild) -> StrategyEvaluationBindingVersion:
     context = build.context
     return StrategyEvaluationBindingVersion.create(
@@ -1705,37 +1693,24 @@ def _strategy_binding(build: _StrategyBindingBuild) -> StrategyEvaluationBinding
     )
 
 
-def _temporary_strategy_binding(
-    context: _StrategyBuildContext,
-    universe: _StrategyUniverse,
-    features: _StrategyFeatures,
-    definition: StrategyIr,
-) -> StrategyEvaluationBindingVersion:
-    return _strategy_binding(
-        _StrategyBindingBuild(
-            context, universe, features, definition, _placeholder_owner_reference()
-        )
-    )
-
-
 def _publish_score_owner(
     context: _StrategyBuildContext,
+    universe: _StrategyUniverse,
     definition: StrategyIr,
-    temporary_binding: StrategyEvaluationBindingVersion,
 ) -> tuple[str, str]:
-    score_payload = _score_payload(context, definition, temporary_binding)
+    score_payload = _score_payload(context, universe, definition)
     score_sha = hashlib.sha256(score_payload).hexdigest()
     return _publish_score_artifact(context, score_payload, score_sha)
 
 
 def _score_payload(
     context: _StrategyBuildContext,
+    universe: _StrategyUniverse,
     definition: StrategyIr,
-    temporary_binding: StrategyEvaluationBindingVersion,
 ) -> bytes:
-    return encode_score_payload(
+    return encode_score_payload_for_universe(
         definition=definition,
-        binding=temporary_binding,
+        universe=universe.universe_ref,
         binding_key="scores",
         decision_time=context.decision_time,
         values=(str(context.records[0].close),),
@@ -1829,8 +1804,7 @@ def _build_strategy_owner(
     features: _StrategyFeatures,
 ) -> _StrategyOwner:
     definition = _research_strategy_definition()
-    temporary_binding = _temporary_strategy_binding(context, universe, features, definition)
-    score_artifact_id, score_sha = _publish_score_owner(context, definition, temporary_binding)
+    score_artifact_id, score_sha = _publish_score_owner(context, universe, definition)
     signal_id = _signal_id(features, score_artifact_id)
     owner_reference = _signal_owner_reference(signal_id, score_sha, score_artifact_id)
     binding = _strategy_binding(
@@ -2447,6 +2421,7 @@ class _PreparedResearchRequest:
     semantic: dict[str, Any]
     request_hash: str
     scope: str
+    execution_deadline_at: str | None
 
 
 @dataclass(frozen=True)
@@ -2715,6 +2690,26 @@ def _research_context_wire(
     }
 
 
+def _queued_research_context_wire(request: _PreparedResearchRequest) -> dict[str, Any]:
+    """Durable acceptance intent; actual source refs exist only after child capture."""
+    return {
+        "schema_version": RESEARCH_CONTEXT_SCHEMA_VERSION,
+        "context_kind": RESEARCH_CONTEXT_KIND,
+        "project_id": request.project_id,
+        "project_context_revision_id": request.project_context_revision_id,
+        "research_profile_id": RESEARCH_PROFILE_ID,
+        "strategy_profile_id": RESEARCH_STRATEGY_PROFILE_ID,
+        "source_intent": request.source_intent,
+        "source_refs": {},
+        "core_pipeline_run_id": None,
+        "core_pipeline_run_receipt_id": None,
+        "assumption_profile_id": RESEARCH_PROFILE_ID,
+        "research_classification": ["RESEARCH_ONLY", "APPROXIMATE"],
+        "truth_admission": PRE_ALPHA_CEILING.to_wire(),
+        "execution_state": "QUEUED_BEFORE_PROVIDER_CAPTURE",
+    }
+
+
 def _research_semantic(
     intent: ProductResearchSubmission,
     source_intent: dict[str, str],
@@ -2771,6 +2766,7 @@ class ProductResearchService:
             semantic=semantic,
             request_hash=request_hash,
             scope=scope,
+            execution_deadline_at=intent.execution_deadline_at,
         )
 
     def _replay_if_known(self, request: _PreparedResearchRequest) -> dict[str, Any] | None:
@@ -2865,7 +2861,53 @@ class ProductResearchService:
                 execution.request.request_hash,
                 _accept_outcome_json,
             ),
+            execution_deadline_at=execution.request.execution_deadline_at,
         )
+
+    def _accept_request(
+        self,
+        request: _PreparedResearchRequest,
+        *,
+        inline_worker: bool = False,
+    ) -> _TaskHandles:
+        context_artifact_id = self.product.execution._persist_context_artifact(
+            _queued_research_context_wire(request),
+            provenance="prv_product_research_intent_" + request.request_hash,
+        )
+        return _TaskHandles(
+            *self.product.execution._create_task(
+                operation_id=PRODUCT_RESEARCH_OPERATION,
+                project_id=request.project_id,
+                project_context_revision_id=request.project_context_revision_id,
+                normalized_input_hash=canonical_sha256(request.semantic),
+                context_artifact_id=context_artifact_id,
+                idempotency=(request.scope, request.request_hash, _accept_outcome_json),
+                execution_deadline_at=request.execution_deadline_at,
+                inline_worker=inline_worker,
+            )
+        )
+
+    def _execute_accepted_inline(
+        self,
+        request: _PreparedResearchRequest,
+        handles: _TaskHandles,
+    ) -> dict[str, Any]:
+        try:
+            self.product.execution._transition_to_running(
+                handles.task,
+                handles.run,
+                handles.attempt,
+            )
+        except Exception as error:
+            self.product.execution._finish_failure(
+                handles.task,
+                handles.run,
+                handles.attempt,
+                error=error,
+                category=classify_execution_error(error),
+            )
+            raise
+        return self.execute_accepted(request, handles)
 
     def _build_core_pipeline(
         self,
@@ -2897,10 +2939,11 @@ class ProductResearchService:
                 read_uow.rollback()
             connection.close()
 
-    def _run_task(self, execution: _ResearchExecution, handles: _TaskHandles) -> dict[str, Any]:
-        self.product.execution._transition_to_running(
-            handles.task, handles.run, handles.attempt
-        )
+    def _run_pipeline_and_publish(
+        self,
+        execution: _ResearchExecution,
+        handles: _TaskHandles,
+    ) -> dict[str, Any]:
         event_cursor = self.product.latest_event_sequence(execution.request.project_id)
         pipeline_result = self._run_core_pipeline(execution)
         _require_pipeline_success(pipeline_result)
@@ -2908,8 +2951,19 @@ class ProductResearchService:
             self.product,
             _research_result_request(execution, handles.run.run_id, pipeline_result),
         )
+        task_outputs = {
+            role: str(outputs[role])
+            for role in (
+                "result_id",
+                "result_artifact_id",
+                "result_artifact_sha256",
+                "lineage_artifact_id",
+                "pipeline_run_id",
+                "maturity",
+            )
+        }
         self.product.execution._finish_success(
-            handles.task, handles.run, handles.attempt, outputs=outputs
+            handles.task, handles.run, handles.attempt, outputs=task_outputs
         )
         return _research_accept_outcome(
             handles.task.task_id, handles.run.run_id, event_cursor=event_cursor
@@ -2921,8 +2975,32 @@ class ProductResearchService:
         handles: _TaskHandles,
     ) -> dict[str, Any]:
         try:
-            return self._run_task(execution, handles)
-        except BaseException as error:
+            self.product.execution._transition_to_running(
+                handles.task,
+                handles.run,
+                handles.attempt,
+            )
+            return self._run_pipeline_and_publish(execution, handles)
+        except Exception as error:
+            self.product.execution._finish_failure(
+                handles.task,
+                handles.run,
+                handles.attempt,
+                error=error,
+                category=classify_execution_error(error),
+            )
+            raise
+
+    def execute_accepted(
+        self,
+        request: _PreparedResearchRequest,
+        handles: _TaskHandles,
+    ) -> dict[str, Any]:
+        try:
+            capture = self._capture_source(request)
+            execution = self._build_execution(request, capture)
+            return self._run_pipeline_and_publish(execution, handles)
+        except Exception as error:
             self.product.execution._finish_failure(
                 handles.task,
                 handles.run,
@@ -2937,10 +3015,35 @@ class ProductResearchService:
         replay = self._replay_if_known(request)
         if replay is not None:
             return replay
-        capture = self._capture_source(request)
-        execution = self._build_execution(request, capture)
-        handles = _TaskHandles(*self._accept_task(execution))
-        return self._execute_task(execution, handles)
+        if self.product.research_workers is not None:
+            workers = self.product.research_workers
+            reservation = workers.reserve_capacity()
+            handles: _TaskHandles | None = None
+            try:
+                handles = self._accept_request(request)
+                workers.start(
+                    request,
+                    handles,
+                    reservation_token=reservation,
+                )
+            except Exception as error:
+                workers.release_capacity(reservation)
+                if handles is not None:
+                    self.product.execution._finish_failure(
+                        handles.task,
+                        handles.run,
+                        handles.attempt,
+                        error=error,
+                        category=classify_execution_error(error),
+                    )
+                raise
+            return _research_accept_outcome(
+                handles.task.task_id,
+                handles.run.run_id,
+                event_cursor=self.product.latest_event_sequence(request.project_id),
+            )
+        handles = self._accept_request(request, inline_worker=True)
+        return self._execute_accepted_inline(request, handles)
 
 
 __all__ = [

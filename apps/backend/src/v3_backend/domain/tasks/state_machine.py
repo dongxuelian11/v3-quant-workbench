@@ -37,6 +37,7 @@ TASK_TRANSITIONS: dict[tuple[TaskState, str], TaskState] = {
     (TaskState.PAUSE_REQUESTED, "CANCEL_REQUESTED"): TaskState.CANCEL_REQUESTED,
     (TaskState.PAUSED, "CANCEL_REQUESTED"): TaskState.CANCEL_REQUESTED,
     (TaskState.RUNNING, "ALL_REQUIRED_ARTIFACTS_PUBLISHED"): TaskState.SUCCEEDED,
+    (TaskState.QUEUED, "ATTEMPT_FAILED_NO_RETRY"): TaskState.FAILED,
     (TaskState.RUNNING, "ATTEMPT_FAILED_NO_RETRY"): TaskState.FAILED,
     (TaskState.CANCEL_REQUESTED, "WORKER_CANCELLED_OR_TERMINATED"): TaskState.CANCELLED,
     (TaskState.RUNNING, "CHILDREN_TERMINAL_MIXED"): TaskState.PARTIAL,
@@ -105,6 +106,7 @@ def transition_attempt(state: AttemptState, event: str) -> AttemptState:
 
 RUN_TRANSITIONS = {
     (RunState.SEALED, "ATTEMPT_ACTIVATED"): RunState.ACTIVE,
+    (RunState.SEALED, "TASK_TERMINAL_NO_ACTIVE_ATTEMPT"): RunState.TERMINAL,
     (RunState.ACTIVE, "TASK_TERMINAL_NO_ACTIVE_ATTEMPT"): RunState.TERMINAL,
 }
 

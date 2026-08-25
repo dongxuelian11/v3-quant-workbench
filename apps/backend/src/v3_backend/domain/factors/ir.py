@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from types import MappingProxyType
@@ -41,6 +41,12 @@ class AvailabilitySemantics(StrEnum):
 class MissingSemantics(StrEnum):
     PROPAGATE = "PROPAGATE"
     DIVIDE_BY_ZERO_IS_MISSING = "DIVIDE_BY_ZERO_IS_MISSING"
+
+
+class EvaluationAxis(StrEnum):
+    ELEMENTWISE = "ELEMENTWISE"
+    TIME_SERIES_PER_INSTRUMENT = "TIME_SERIES_PER_INSTRUMENT"
+    CROSS_SECTION_PER_DATE = "CROSS_SECTION_PER_DATE"
 
 
 class BackendBinding(StrEnum):
@@ -102,6 +108,7 @@ class OperatorSpec:
     lookback_parameter: str | None = None
     lag_parameter: str | None = None
     complexity_weight: int = 1
+    evaluation_axis: EvaluationAxis | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.semantic_version:
@@ -152,7 +159,7 @@ class OperatorSpec:
         return self.fixed_lag + values[self.lag_parameter]
 
     def to_wire(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "name": self.name,
             "semantic_version": self.semantic_version,
             "arity": self.arity,
@@ -169,6 +176,11 @@ class OperatorSpec:
             "lag_parameter": self.lag_parameter,
             "complexity_weight": self.complexity_weight,
         }
+        # Legacy registries predate explicit panel axes. Omitting the field for
+        # those specs preserves every already-addressed registry/factor hash.
+        if self.evaluation_axis is not None:
+            payload["evaluation_axis"] = self.evaluation_axis.value
+        return payload
 
 
 class OperatorRegistry:
@@ -628,9 +640,82 @@ def signal_compatible_operator_registry() -> OperatorRegistry:
     return OperatorRegistry(_signal_compatible_operator_specs())
 
 
+def _panel_operator_specs() -> tuple[OperatorSpec, ...]:
+    elementwise = {
+        "ADD",
+        "SUBTRACT",
+        "MULTIPLY",
+        "DIVIDE",
+        "GT",
+        "GTE",
+        "LT",
+        "LTE",
+        "EQ",
+        "NE",
+        "AND",
+        "OR",
+        "NOT",
+    }
+    time_series = {"LAG", "SMA", "CROSS", "LEAD"}
+    existing = tuple(
+        replace(
+            spec,
+            backend_binding=(
+                BackendBinding.NATIVE_REFERENCE if spec.name == "SMA" else spec.backend_binding
+            ),
+            evaluation_axis=(
+                EvaluationAxis.ELEMENTWISE
+                if spec.name in elementwise
+                else EvaluationAxis.TIME_SERIES_PER_INSTRUMENT
+            ),
+        )
+        for spec in _signal_compatible_operator_specs()
+        if spec.name in elementwise | time_series
+    )
+    series = ValueType.FLOAT_SERIES
+    boolean = ValueType.BOOLEAN_SERIES
+    window_parameter = (ParameterSpec("timeperiod", ParameterKind.INTEGER, 1, 250),)
+    additions = (
+        OperatorSpec(
+            "EMA", "1.0.0", 1, (series,), series, 0, 0,
+            MissingSemantics.PROPAGATE, True, True, BackendBinding.NATIVE_REFERENCE,
+            parameters=(ParameterSpec("timeperiod", ParameterKind.INTEGER, 2, 250),),
+            lookback_parameter="timeperiod", complexity_weight=2,
+            evaluation_axis=EvaluationAxis.TIME_SERIES_PER_INSTRUMENT,
+        ),
+        *(
+            OperatorSpec(
+                name, "1.0.0", 1, (series,), series, 0, 0,
+                MissingSemantics.PROPAGATE, True, True, BackendBinding.NATIVE_REFERENCE,
+                parameters=window_parameter, lookback_parameter="timeperiod", complexity_weight=2,
+                evaluation_axis=EvaluationAxis.TIME_SERIES_PER_INSTRUMENT,
+            )
+            for name in ("HHV", "LLV", "SUM", "STD")
+        ),
+        OperatorSpec(
+            "IF", "1.0.0", 3, (boolean, series, series), series, 0, 0,
+            MissingSemantics.PROPAGATE, True, True, BackendBinding.NATIVE_REFERENCE,
+            evaluation_axis=EvaluationAxis.ELEMENTWISE,
+        ),
+        OperatorSpec(
+            "RANK", "1.0.0", 1, (series,), series, 0, 0,
+            MissingSemantics.PROPAGATE, True, True, BackendBinding.NATIVE_REFERENCE,
+            evaluation_axis=EvaluationAxis.CROSS_SECTION_PER_DATE,
+        ),
+    )
+    return (*existing, *additions)
+
+
+def panel_operator_registry() -> OperatorRegistry:
+    """Additive V1.1 registry with explicit instrument/date evaluation axes."""
+
+    return OperatorRegistry(_panel_operator_specs())
+
+
 __all__ = [
     "AvailabilitySemantics",
     "BackendBinding",
+    "EvaluationAxis",
     "ExternalExpressionTranslator",
     "FactorDefinitionVersion",
     "FactorIrError",
@@ -651,5 +736,6 @@ __all__ = [
     "ValueType",
     "default_operator_registry",
     "signal_compatible_operator_registry",
+    "panel_operator_registry",
     "validate_factor_node",
 ]
