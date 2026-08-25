@@ -878,6 +878,39 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(catalog.read_bytes()).hexdigest(), source_sha256)
             self.assertTrue(state_path.is_file())
 
+    def test_recovery_maps_missing_backup_to_stable_integrity_error(self) -> None:
+        class SimulatedProcessCrash(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._create_exact_v5_catalog(root)
+            source_sha256 = hashlib.sha256(catalog.read_bytes()).hexdigest()
+
+            def crash_before_replace(phase: str) -> None:
+                if phase == "AFTER_STAGE_STATE_BEFORE_REPLACE":
+                    raise SimulatedProcessCrash()
+
+            with self.assertRaises(SimulatedProcessCrash):
+                upgrade_catalog(
+                    catalog,
+                    application_version="missing-recovery-backup-test",
+                    backup_dir=root / "backups",
+                    fault_hook=crash_before_replace,
+                )
+            state_path = root / ".catalog.sqlite3.upgrade-state.v1.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            Path(str(state["backup_path"])).unlink()
+
+            with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                ProductRuntime(root)
+            self.assertEqual(
+                raised.exception.code.value,
+                "CATALOG_UPGRADE_INTEGRITY_FAILED",
+            )
+            self.assertEqual(hashlib.sha256(catalog.read_bytes()).hexdigest(), source_sha256)
+            self.assertTrue(state_path.is_file())
+
     def test_recovery_refuses_malformed_state_as_a_stable_integrity_error(self) -> None:
         class SimulatedProcessCrash(BaseException):
             pass

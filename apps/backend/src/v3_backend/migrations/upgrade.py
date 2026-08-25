@@ -531,6 +531,16 @@ def _read_persisted_receipt(
             connection.close()
 
 
+def _recovery_file_evidence(path: Path, role: str) -> BackupEvidence:
+    try:
+        return database_file_evidence(path)
+    except OSError as error:
+        raise CatalogUpgradeIntegrityError(
+            f"Catalog upgrade recovery {role} is missing or unreadable",
+            details={"phase": "RECOVERY_FILE_EVIDENCE", "role": role},
+        ) from error
+
+
 def _reconcile_upgrade_state(
     path: Path,
     backup_root: Path,
@@ -566,20 +576,20 @@ def _reconcile_upgrade_state(
         )
 
     backup_path = Path(str(state["backup_path"])).resolve()
-    backup_evidence = database_file_evidence(backup_path)
+    backup_evidence = _recovery_file_evidence(backup_path, "backup")
     if backup_evidence.sha256 != state["backup_sha256"]:
         raise CatalogUpgradeIntegrityError("Catalog upgrade backup bytes drifted")
     if _read_prefix(backup_path, migrations) != source_count:
         raise CatalogUpgradeIntegrityError("Catalog upgrade backup prefix drifted")
 
-    current_evidence = database_file_evidence(path)
+    current_evidence = _recovery_file_evidence(path, "Catalog")
     staged_path = Path(str(state["staged_path"])).resolve()
     if current_evidence.sha256 == receipt.source_catalog_sha256:
         if not staged_path.is_file():
             raise CatalogUpgradeIntegrityError(
                 "Catalog still matches the source but its verified stage is missing"
             )
-        staged_evidence = database_file_evidence(staged_path)
+        staged_evidence = _recovery_file_evidence(staged_path, "stage")
         if staged_evidence.sha256 != receipt.staged_sha256_before_replace:
             raise CatalogUpgradeIntegrityError("Catalog upgrade staged bytes drifted")
         _validate_current(staged_path)
