@@ -14,6 +14,7 @@ import json
 import inspect
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -43,7 +44,11 @@ from v3_backend.runtime.product_runtime import (
 from v3_backend.runtime import product_runtime as product_runtime_module
 from v3_backend.runtime import product_research as product_research_module
 from v3_backend.domain.tasks.entities import TaskState
-from v3_backend.runtime.product_facades import ArtifactFacade, BacktestFacade
+from v3_backend.runtime.product_facades import (
+    ArtifactFacade,
+    BacktestFacade,
+    ProjectSessionFacade,
+)
 from v3_backend.runtime.product_entry import create_project
 
 from .helpers import build_product_golden_project
@@ -344,6 +349,106 @@ class ProjectSessionTests(_PortsCase):
             idempotency_key="revise-key-0003",
         )
         self.assert_error(stale, ErrorCode.CONFLICT.value)
+
+    def test_concurrent_cross_project_open_has_one_winner_and_one_stable_conflict(
+        self,
+    ) -> None:
+        other = create_project(
+            self.product,
+            display_name="Concurrent other project",
+            idempotency_key="concurrent-session-other-project",
+        )
+        session_id = mint_uuid7()
+        first_router = RequestRouter(self.ports.operation_handlers)
+        second_router = RequestRouter(self.ports.operation_handlers)
+
+        def open_project(
+            router: RequestRouter, project_id: str, revision_id: str
+        ) -> dict:
+            return self._route_with(
+                router,
+                "ProjectSessionService.v1.openProject",
+                _project_id=project_id,
+                _pcr_id=revision_id,
+                project_locator=f"v3:{project_id}",
+                session_id=session_id,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = (
+                executor.submit(
+                    open_project,
+                    first_router,
+                    self.setup.project_id,
+                    self.setup.project_context_revision_id,
+                ),
+                executor.submit(
+                    open_project,
+                    second_router,
+                    other["project_id"],
+                    other["project_context_revision_id"],
+                ),
+            )
+            responses = tuple(future.result() for future in futures)
+
+        self.assertEqual(sorted(response["status"] for response in responses), ["ERROR", "OK"])
+        conflict = next(response for response in responses if response["status"] == "ERROR")
+        self.assertEqual(
+            conflict["error"]["code"],
+            ErrorCode.SESSION_PROJECT_BINDING_CONFLICT.value,
+        )
+        winner = self.setup.project_id if responses[0]["status"] == "OK" else other["project_id"]
+        connection = self.product._connection(read_only=True)
+        try:
+            rows = connection.execute(
+                "SELECT project_id FROM desktop_session"
+            ).fetchall()
+        finally:
+            connection.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(str(rows[0]["project_id"]), winner)
+
+    def test_open_rechecks_current_revision_after_acquiring_the_write_lock(self) -> None:
+        session_router = RequestRouter(ProjectSessionFacade(self.product).handlers())
+        second_ports = build_product_ports(self.storage_root)
+        second_router = RequestRouter(second_ports.operation_handlers)
+        original_connection = self.product._connection
+        advanced = False
+
+        def connection_with_interleaved_revision(*, read_only: bool = False):
+            nonlocal advanced
+            if not read_only and not advanced:
+                advanced = True
+                revised = self._route_with(
+                    second_router,
+                    "ProjectSessionService.v1.reviseProjectContext",
+                    base_revision_id=self.setup.project_context_revision_id,
+                    patch={"context_fields": {"notes": "interleaved revision"}},
+                    idempotency_key="open-project-interleaved-revision",
+                )
+                self.assertEqual(revised["status"], "OK", revised)
+            return original_connection(read_only=read_only)
+
+        self.product._connection = connection_with_interleaved_revision
+        try:
+            stale_open = self._route_with(
+                session_router,
+                "ProjectSessionService.v1.openProject",
+                project_locator=f"v3:{self.setup.project_id}",
+                session_id=mint_uuid7(),
+            )
+        finally:
+            self.product._connection = original_connection
+
+        self.assert_error(stale_open, ErrorCode.TRUTH_PRECONDITION_FAILED.value)
+        connection = original_connection(read_only=True)
+        try:
+            self.assertEqual(
+                int(connection.execute("SELECT COUNT(*) FROM desktop_session").fetchone()[0]),
+                0,
+            )
+        finally:
+            connection.close()
 
 
 class GoldenExecutionTests(_PortsCase):

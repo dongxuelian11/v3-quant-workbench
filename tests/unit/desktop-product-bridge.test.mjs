@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -40,6 +40,27 @@ test("binding store rejects invalid persisted shapes and accepts canonical refs"
     assert.equal(loaded.projectId, REFS.projectId);
     assert.equal(loaded.sessionId, REFS.sessionId);
     await assert.rejects(() => store.persist({ projectId: "a".repeat(4000), projectContextRevisionId: "c", sessionId: "s" }), TypeError);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("binding store isolates a canonically conflicting active session", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-conflict-"));
+  try {
+    const path = productBindingPath(dir);
+    const store = new ProductBindingStore(path);
+    const persisted = await store.persist(REFS);
+    const isolatedPath = await store.isolateActive("SESSION_PROJECT_BINDING_CONFLICT");
+    assert.equal(store.current, null);
+    await assert.rejects(() => readFile(path, "utf8"), (error) => error.code === "ENOENT");
+    assert.equal(JSON.parse(await readFile(isolatedPath, "utf8")).sessionId, persisted.sessionId);
+    assert.equal(
+      (await readdir(dir)).filter((name) =>
+        name.startsWith("v3-product-binding.json.isolated.SESSION_PROJECT_BINDING_CONFLICT.")
+      ).length,
+      1
+    );
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }

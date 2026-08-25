@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import os
+import sqlite3
 import time
 import uuid
 import unittest
@@ -660,6 +661,44 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 self.assertEqual(trace[-1], "EXIT_CONFIRMED")
                 self.assertNotIn("COOPERATIVE_CANCEL_REQUESTED", trace)
             finally:
+                product.research_workers.shutdown_all()
+
+    @unittest.skipUnless(os.name == "nt", "Windows holds live WAL sidecar handles")
+    def test_worker_verifies_current_catalog_without_reentering_startup_upgrade(self) -> None:
+        # Regression 2026-08-26: worker startup tried to remove the parent's
+        # live WAL sidecars and failed the accepted task with PermissionError.
+        with tempfile.TemporaryDirectory(prefix="v3-product-research-live-catalog-") as directory:
+            product = ProductRuntime(
+                Path(directory),
+                research_worker_config=ProductResearchWorkerConfig(
+                    provider_mode=DETERMINISTIC_SUCCESS,
+                ),
+            )
+            live_reader = sqlite3.connect(product.database_path, isolation_level=None)
+            try:
+                live_reader.execute("PRAGMA journal_mode = WAL")
+                live_reader.execute("BEGIN")
+                live_reader.execute("SELECT COUNT(*) FROM task").fetchone()
+                project = create_project(
+                    product,
+                    display_name="Live Catalog worker",
+                    notes=None,
+                    idempotency_key="create-live-catalog-worker",
+                )
+                response = _facade_handler(product, "ProductEntryService.v1.submitResearch")(
+                    _request(project["project_id"], project["project_context_revision_id"])
+                )
+                task_id = response["read_model"]["task_id"]
+                deadline = time.monotonic() + 15.0
+                task = product.task_persistence.read_task(task_id)
+                while task.state.value not in {"SUCCEEDED", "FAILED", "CANCELLED"} and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    task = product.task_persistence.read_task(task_id)
+                self.assertEqual(task.state.value, "SUCCEEDED")
+                self.assertTrue(product.research_workers.confirm_terminal_exit(task_id))
+            finally:
+                live_reader.rollback()
+                live_reader.close()
                 product.research_workers.shutdown_all()
 
     def test_acc_c1_05_queued_research_stays_responsive_and_cancel_stops_actual_child(self) -> None:

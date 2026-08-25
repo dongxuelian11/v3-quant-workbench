@@ -2175,8 +2175,41 @@ export class ProductBridge {
 
   async restoreSession(): Promise<SessionRestoreView> {
     const refs = this.requireBindingOrPendingRevalidation();
-    const response = await this.supervisor.request("ProjectSessionService.v1.restoreSession", { session_id: refs.sessionId });
-    return adaptSessionRestore(response);
+    try {
+      const response = await this.supervisor.request("ProjectSessionService.v1.restoreSession", { session_id: refs.sessionId });
+      return adaptSessionRestore(response);
+    } catch (error) {
+      const code = error !== null && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : null;
+      if (code !== "SESSION_PROJECT_BINDING_CONFLICT") throw error;
+      try {
+        await this.bindings.isolateActive(code);
+      } catch (isolationError) {
+        this.clearContext();
+        this.bindingOutcome = {
+          state: "BINDING_STALE",
+          code: "BINDING_ACTIVE_ISOLATION_FAILED",
+          message: isolationError instanceof Error ? isolationError.message : String(isolationError)
+        };
+        throw new ProductAdapterError(
+          "BINDING_ACTIVE_ISOLATION_FAILED",
+          "conflicting persisted session was rejected but its active binding could not be safely isolated",
+          isolationError
+        );
+      }
+      this.clearContext();
+      this.bindingOutcome = {
+        state: "BINDING_STALE",
+        code,
+        message: "persisted session belongs to a different canonical project; reopen the intended project"
+      };
+      throw new ProductAdapterError(
+        code,
+        "persisted session belongs to a different canonical project; reopen the intended project",
+        error
+      );
+    }
   }
 
   /**

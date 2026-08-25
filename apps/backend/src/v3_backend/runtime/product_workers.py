@@ -201,10 +201,9 @@ def _product_worker_main(
             from .product_release_acceptance import product_release_acceptance_provider_factory
 
             provider_factory = product_release_acceptance_provider_factory(launch.provider_mode)
-        product = ProductRuntime(
+        product = ProductRuntime.for_worker(
             Path(launch.storage_root),
             research_provider_factory=provider_factory,
-            reconcile_on_start=False,
         )
         with product.task_persistence.begin() as unit:
             handles = _TaskHandles(

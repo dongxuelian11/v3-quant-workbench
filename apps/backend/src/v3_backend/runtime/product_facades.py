@@ -26,6 +26,7 @@ from v3_backend.errors.exceptions import (
     InvalidArgumentError,
     NotFoundError,
     ResourceRejectedError,
+    SessionProjectBindingConflictError,
     TruthPreconditionFailedError,
 )
 from v3_backend.provenance.canonical_hash import canonical_sha256
@@ -147,7 +148,7 @@ class ProjectSessionFacade:
         project_id = str(request["project_id"])
         project_context_revision_id = str(request["project_context_revision_id"])
         session_id = str(request["session_id"])
-        project = self.product.require_project(project_id)
+        self.product.require_project(project_id)
         current = self.product.current_revision(project_id)
         if current["project_context_revision_id"] != project_context_revision_id:
             raise TruthPreconditionFailedError(
@@ -155,9 +156,63 @@ class ProjectSessionFacade:
             )
         now = wire_time(datetime.now(timezone.utc))
         row_id = _session_row_id(session_id)
+
+        # Fast domain preflight before taking a write lock. The guarded read is
+        # repeated inside BEGIN IMMEDIATE below to close the concurrency race.
+        existing_connection = self.product._connection(read_only=True)
+        try:
+            existing = existing_connection.execute(
+                "SELECT project_id FROM desktop_session WHERE session_id=?",
+                (row_id,),
+            ).fetchone()
+        finally:
+            existing_connection.close()
+        if existing is not None and str(existing["project_id"]) != project_id:
+            raise SessionProjectBindingConflictError(
+                "session UUID is already bound to a different project"
+            )
+
         connection = self.product._connection()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            locked_project = connection.execute(
+                "SELECT state FROM project WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            if locked_project is None:
+                raise NotFoundError(f"unknown project: {project_id}")
+            if str(locked_project["state"]) != "ACTIVE":
+                raise ConflictError(f"project is not ACTIVE: {project_id}")
+            locked_current = connection.execute(
+                """
+                SELECT project_context_revision_id
+                FROM project_context_revision
+                WHERE project_id=?
+                ORDER BY revision_no DESC
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            if locked_current is None:
+                raise NotFoundError(f"project has no context revision: {project_id}")
+            if (
+                str(locked_current["project_context_revision_id"])
+                != project_context_revision_id
+            ):
+                raise TruthPreconditionFailedError(
+                    "openProject requires the current (non-superseded) project context revision"
+                )
+            locked_existing = connection.execute(
+                "SELECT project_id FROM desktop_session WHERE session_id=?",
+                (row_id,),
+            ).fetchone()
+            if (
+                locked_existing is not None
+                and str(locked_existing["project_id"]) != project_id
+            ):
+                raise SessionProjectBindingConflictError(
+                    "session UUID is already bound to a different project"
+                )
             connection.execute(
                 """
                 INSERT INTO desktop_session(
@@ -165,7 +220,8 @@ class ProjectSessionFacade:
                 ) VALUES(?,?,?,'OPEN',?,0)
                 ON CONFLICT(session_id) DO UPDATE SET
                     project_context_revision_id=excluded.project_context_revision_id,
-                    state='OPEN', closed_at=NULL, opened_at=excluded.opened_at
+                    state='OPEN', closed_at=NULL, opened_at=excluded.opened_at,
+                    row_version=desktop_session.row_version+1
                 """,
                 (row_id, project_id, project_context_revision_id, now),
             )
@@ -271,7 +327,9 @@ class ProjectSessionFacade:
         if session is None:
             raise NotFoundError(f"unknown desktop session: {session_id}")
         if str(session["project_id"]) != project_id:
-            raise TruthPreconditionFailedError("session belongs to a different project")
+            raise SessionProjectBindingConflictError(
+                "session UUID is already bound to a different project"
+            )
         read_model = _session_restore_read_model(self.product, session)
         read_model["session_id"] = session_id
         return _response(request, read_model)

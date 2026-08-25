@@ -104,7 +104,7 @@ from v3_backend.errors.exceptions import (
     TruthPreconditionFailedError,
     V3ContractError,
 )
-from v3_backend.migrations import apply_migrations
+from v3_backend.migrations.upgrade import require_current_catalog, upgrade_catalog
 from v3_backend.provenance.canonical_hash import canonical_json_bytes, canonical_sha256
 from v3_backend.repositories.unit_of_work import TransactionMode
 
@@ -2283,15 +2283,45 @@ class ProductRuntime:
         research_worker_config: ProductResearchWorkerConfig | None = None,
         reconcile_on_start: bool = True,
     ) -> None:
-        self.storage_root = Path(storage_root).resolve()
-        self.database_path = self.storage_root / CATALOG_FILENAME
-        self.artifact_root = self.storage_root / ARTIFACT_DIRNAME
-        self.storage_root.mkdir(parents=True, exist_ok=True)
-        apply_migrations(
+        self._initialize_storage_paths(storage_root)
+        upgrade_catalog(
             self.database_path,
             application_version=MIGRATION_APPLICATION_VERSION,
             backup_dir=self.storage_root / "backups",
         )
+        self._initialize_services(
+            research_provider_factory,
+            research_worker_config,
+            reconcile_on_start,
+        )
+
+    @classmethod
+    def for_worker(
+        cls,
+        storage_root: str | Path,
+        *,
+        research_provider_factory=None,
+    ) -> "ProductRuntime":
+        """Open the parent's live Catalog without acquiring upgrade ownership."""
+
+        product = cls.__new__(cls)
+        product._initialize_storage_paths(storage_root)
+        require_current_catalog(product.database_path)
+        product._initialize_services(research_provider_factory, None, False)
+        return product
+
+    def _initialize_storage_paths(self, storage_root: str | Path) -> None:
+        self.storage_root = Path(storage_root).resolve()
+        self.database_path = self.storage_root / CATALOG_FILENAME
+        self.artifact_root = self.storage_root / ARTIFACT_DIRNAME
+        self.storage_root.mkdir(parents=True, exist_ok=True)
+
+    def _initialize_services(
+        self,
+        research_provider_factory,
+        research_worker_config: ProductResearchWorkerConfig | None,
+        reconcile_on_start: bool,
+    ) -> None:
         self.artifact_store = FileSystemArtifactStore(
             self.artifact_root, policy=product_artifact_policy()
         )
@@ -2299,6 +2329,21 @@ class ProductRuntime:
         self.event_replay = ProductEventReplay(self.database_path)
         self.spec_codec = ResearchRunSpecCodec(self)
         self.execution = ProductExecution(self)
+        self._initialize_worker_manager(research_worker_config)
+        self._initialize_domain_services(research_provider_factory)
+        self.idempotency = DurableIdempotency()
+        self._shutdown_prepared = False
+        self._shutdown_committed = False
+        self._cancellation_lock = RLock()
+        if reconcile_on_start:
+            self._reconcile_startup_state()
+        else:
+            self._record_unreconciled_startup()
+
+    def _initialize_worker_manager(
+        self,
+        research_worker_config: ProductResearchWorkerConfig | None,
+    ) -> None:
         if research_worker_config is not None:
             from .product_workers import ProductResearchWorkerManager
 
@@ -2312,6 +2357,8 @@ class ProductRuntime:
         # manager is now shared by additive Product Entry work kinds rather than
         # creating a second Task/Worker state machine.
         self.research_workers = self.product_workers
+
+    def _initialize_domain_services(self, research_provider_factory) -> None:
         from .product_research import ProductResearchService
         from .product_data import ProductDataService
         from .product_factor import ProductFactorStudyService
@@ -2330,32 +2377,30 @@ class ProductRuntime:
         self.backtest = ProductResearchBacktestService(self)
         self.results = ProductResultService(self)
         self.local_data_transfers = ProductLocalDataTransferService(self)
-        self.idempotency = DurableIdempotency()
-        self._shutdown_prepared = False
-        self._shutdown_committed = False
-        self._cancellation_lock = RLock()
-        if reconcile_on_start:
-            # Publication recovery owns a cataloged Result before generic
-            # worker-loss reconciliation is allowed to fail its Task.
-            from .product_publication import ProductBacktestPublication
 
-            publication_summary = ProductBacktestPublication(self).recover_pending()
-            worker_summary = self._reconcile_execution_state()
-            self.reconciliation_summary = {
-                **worker_summary,
-                **publication_summary,
-            }
-        else:
-            self.reconciliation_summary = {
-                "active_leases_revoked": 0,
-                "expired_leases_reconciled": 0,
-                "attempts_lost": 0,
-                "tasks_failed": 0,
-                "workers_stopped": 0,
-                "publication_intents_seen": 0,
-                "publication_finalized": 0,
-                "publication_failed": 0,
-            }
+    def _reconcile_startup_state(self) -> None:
+        # Publication recovery owns a cataloged Result before generic
+        # worker-loss reconciliation is allowed to fail its Task.
+        from .product_publication import ProductBacktestPublication
+
+        publication_summary = ProductBacktestPublication(self).recover_pending()
+        worker_summary = self._reconcile_execution_state()
+        self.reconciliation_summary = {
+            **worker_summary,
+            **publication_summary,
+        }
+
+    def _record_unreconciled_startup(self) -> None:
+        self.reconciliation_summary = {
+            "active_leases_revoked": 0,
+            "expired_leases_reconciled": 0,
+            "attempts_lost": 0,
+            "tasks_failed": 0,
+            "workers_stopped": 0,
+            "publication_intents_seen": 0,
+            "publication_finalized": 0,
+            "publication_failed": 0,
+        }
 
     # -- catalog access ------------------------------------------------------
 

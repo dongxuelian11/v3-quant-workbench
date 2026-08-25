@@ -31,10 +31,11 @@ class MigrationTests(unittest.TestCase):
                     "0003_portfolio_riskpolicy_owner",
                     "0004_risk_application_publication",
                     "0005_task_execution_deadline",
+                    "0006_catalog_upgrade_session_integrity",
                 ),
             )
-            self.assertEqual(result.schema_report.table_count, 75)
-            self.assertEqual(result.schema_report.user_version, 5)
+            self.assertEqual(result.schema_report.table_count, 76)
+            self.assertEqual(result.schema_report.user_version, 6)
             connection = connect_catalog(path)
             try:
                 tables = {
@@ -133,6 +134,10 @@ class MigrationTests(unittest.TestCase):
                         "UPDATE desktop_session SET project_id=?,project_context_revision_id=? WHERE session_id='ses_valid'",
                         ("prj_" + "B" * 26, "pcr_" + "B" * 26),
                     )
+                connection.execute(
+                    "UPDATE desktop_session SET project_context_revision_id=? WHERE session_id='ses_valid'",
+                    ("pcr_" + "A" * 26,),
+                )
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
                         """
@@ -305,10 +310,11 @@ class MigrationTests(unittest.TestCase):
                     "0003_portfolio_riskpolicy_owner",
                     "0004_risk_application_publication",
                     "0005_task_execution_deadline",
+                    "0006_catalog_upgrade_session_integrity",
                 ),
             )
-            self.assertEqual(len(upgraded.backups), 4)
-            self.assertEqual(upgraded.schema_report.user_version, 5)
+            self.assertEqual(len(upgraded.backups), 5)
+            self.assertEqual(upgraded.schema_report.user_version, 6)
             connection = connect_catalog(path)
             try:
                 self.assertIsNone(
@@ -360,7 +366,11 @@ class MigrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 upgraded.applied,
-                ("0004_risk_application_publication", "0005_task_execution_deadline"),
+                (
+                    "0004_risk_application_publication",
+                    "0005_task_execution_deadline",
+                    "0006_catalog_upgrade_session_integrity",
+                ),
             )
-            self.assertEqual(upgraded.schema_report.user_version, 5)
-            self.assertEqual(len(upgraded.backups), 2)
+            self.assertEqual(upgraded.schema_report.user_version, 6)
+            self.assertEqual(len(upgraded.backups), 3)

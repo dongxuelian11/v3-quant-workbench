@@ -190,6 +190,38 @@ export class ProductBindingStore {
     return this.commit(staged);
   }
 
+  /**
+   * Remove a canonically rejected active binding from the restart path while
+   * retaining its exact bytes for bounded diagnosis.
+   */
+  async isolateActive(reasonCode: string): Promise<string | null> {
+    if (this.cached === null) return null;
+    if (!validId(reasonCode)) {
+      throw new TypeError("binding isolation reason must be a bounded stable code");
+    }
+    const isolated = `${this.bindingPath}.isolated.${reasonCode}.${Date.now()}.${process.pid}`;
+    try {
+      await this.fileOps.rename(this.bindingPath, isolated);
+    } catch (error) {
+      throw new ProductBindingStoreError(
+        "BINDING_ACTIVE_ISOLATION_FAILED",
+        "canonically rejected active binding could not be isolated",
+        error
+      );
+    }
+    this.cached = null;
+    try {
+      await this.fileOps.syncCommitDirectory(dirname(this.bindingPath), isolated);
+    } catch (error) {
+      throw new ProductBindingStoreError(
+        "BINDING_ACTIVE_ISOLATION_DURABILITY_UNCERTAIN",
+        "active binding was isolated but directory durability could not be confirmed",
+        error
+      );
+    }
+    return isolated;
+  }
+
   private async isolatePendingAfterCrash(): Promise<void> {
     try {
       await this.fileOps.readFile(this.pendingPath);

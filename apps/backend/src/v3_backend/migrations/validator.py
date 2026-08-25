@@ -4,13 +4,21 @@ import sqlite3
 from dataclasses import dataclass
 
 
-EXPECTED_USER_VERSION = 5
+EXPECTED_USER_VERSION = 6
+REQUIRED_TRIGGERS = frozenset(
+    {
+        "desktop_session_project_binding_immutable_guard",
+        "desktop_session_project_context_owner_insert_guard",
+        "desktop_session_project_context_owner_update_guard",
+    }
+)
 EXPECTED_TABLES = frozenset(
     {
         "artifact",
         "artifact_reference",
         "backtest_run_spec",
         "checkpoint",
+        "catalog_upgrade_receipt",
         "connector",
         "connector_admission",
         "connector_capability",
@@ -105,6 +113,27 @@ def _table_names(connection: sqlite3.Connection) -> frozenset[str]:
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
     )
     return frozenset(str(row[0]) for row in rows)
+
+
+def _trigger_names(connection: sqlite3.Connection) -> frozenset[str]:
+    rows = connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
+    return frozenset(str(row[0]) for row in rows)
+
+
+def _validate_required_trigger_shapes(connection: sqlite3.Connection) -> None:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+        ("desktop_session_project_binding_immutable_guard",),
+    ).fetchone()
+    sql = " ".join(str(row[0]).casefold().split()) if row is not None else ""
+    if (
+        "before update of project_id on desktop_session" not in sql
+        or "when new.project_id<>old.project_id" not in sql
+        or "project_context_revision_id" in sql
+    ):
+        raise SchemaValidationError(
+            "desktop session binding trigger does not preserve same-project revision refresh"
+        )
 
 
 def _invariant_violations(connection: sqlite3.Connection) -> list[str]:
@@ -205,6 +234,13 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
         extra = sorted(tables - EXPECTED_TABLES)
         raise SchemaValidationError(f"schema table mismatch: missing={missing}, extra={extra}")
 
+    missing_triggers = sorted(REQUIRED_TRIGGERS - _trigger_names(connection))
+    if missing_triggers:
+        raise SchemaValidationError(
+            f"required schema triggers are missing: {missing_triggers}"
+        )
+    _validate_required_trigger_shapes(connection)
+
     user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if user_version != EXPECTED_USER_VERSION:
         raise SchemaValidationError(
@@ -223,12 +259,16 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
         "0003_portfolio_riskpolicy_owner",
         "0004_risk_application_publication",
         "0005_task_execution_deadline",
+        "0006_catalog_upgrade_session_integrity",
     ):
         raise SchemaValidationError(f"unexpected applied migration sequence: {applied!r}")
 
-    fk_violations = tuple(tuple(row) for row in connection.execute("PRAGMA foreign_key_check"))
-    if fk_violations:
-        raise SchemaValidationError(f"foreign key violations: {fk_violations!r}")
+    first_fk_violation = connection.execute("PRAGMA foreign_key_check").fetchone()
+    if first_fk_violation is not None:
+        raise SchemaValidationError(
+            f"foreign key violation: {tuple(first_fk_violation)!r}"
+        )
+    fk_violations: tuple[tuple[object, ...], ...] = ()
 
     integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
     if integrity != "ok":
