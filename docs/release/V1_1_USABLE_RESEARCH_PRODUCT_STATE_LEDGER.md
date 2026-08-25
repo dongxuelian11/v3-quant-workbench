@@ -1,33 +1,34 @@
 # TASK_GOAL
 
-Execute V3 V1.1 Usable Research Product as one bounded program, one branch, one final PR, and four checkpoint commits. A first-time user must be able to complete a truthful A-share research journey without source code or demo substitution. Preserve PRE_ALPHA / RESEARCH_ONLY / NOT_FORMAL truth, exact canonical ownership, the existing dirty root, and compaction-safe progress. After C1-C4, re-audit source and observable product effects against this goal before any push decision.
+Execute V3 V1.1 Usable Research Product as one bounded program, one branch, and one final PR. Continue correcting exact PR #50 on `codex/v1-1-usable-research-product-01` until exact-head Jobs A-F satisfy the repository merge gate, then stop at `OPEN / UNMERGED / STOP_FOR_INDEPENDENT_REVIEW`; this authorization does not permit merge. A first-time user must be able to complete a truthful A-share research journey without source code or demo substitution. Preserve PRE_ALPHA / RESEARCH_ONLY / NOT_FORMAL truth, exact canonical ownership, the existing dirty root, and compaction-safe progress. Do not reopen completed C1-C4 work except where an exact-head failure proves a bounded regression.
 
 # TASK_PROGRESS
 
 - current_checkpoint: C4_USABILITY_RELEASE_QUALIFICATION
-- checkpoint_state: C4_COMMITTED_AND_PUSHED; FIRST_AND_SECOND_BOUNDED_CORRECTIONS_PUSHED; THIRD_BOUNDED_CORRECTION_LOCAL_VALIDATION_PASS_AND_READY_FOR_ORDINARY_COMMIT
-- last_completed_action: Third bounded correction final source/effect audit PASS at the unchanged admitted head `801fcc3cb7942d41e11ad7a39612107b758df3bb`. Job B now admits only the two legitimate terminate traces ending `EXIT_CONFIRMED`; Job C uses an awaited, checksum-bound Electron 39.8.10 installer; Job F's legacy Product Research path polls the exact Task to a terminal state, validates Task/Run/Project/operation and Result/Artifact identities, and preserves exact provider reason without fallback. The final Windows package passes identity verification and packaged create/reopen/provider-unavailable E2E; final `validate:public` exits 0. P0 diff is empty, all authority hashes match, the write set is bounded, and original dirty root is preserved. Fresh GitHub CURRENT is still the pre-correction remote head `801fcc3cb7942d41e11ad7a39612107b758df3bb`; PR #50 remains OPEN / UNMERGED / BLOCKED.
-- exact_next_action: Create one ordinary non-amended third-correction commit on `codex/v1-1-usable-research-product-01`, non-force push the same branch, bind the exact new remote HEAD, then observe only that HEAD's Jobs A-F. Keep PR #50 OPEN / UNMERGED and classify Job F literally as PASS_CANDIDATE, BLOCKED_PROVIDER_ACCEPTANCE on exact `PROVIDER_ACQUISITION_UNAVAILABLE`, or FAIL; do not add fallback or reuse old-head evidence.
-- active_acceptance_id: ACC_C4_THIRD_BOUNDED_CORRECTION_EXACT_HEAD_A_F
-- current_dirty_inventory: 16 bounded source/Ledger files = 14 tracked modifications plus 2 new files. All generated package, test, SQLite, report and Electron-cache evidence remains ignored under D-drive `artifacts/`; zero generated artifacts are tracked.
+- checkpoint_state: C4_COMMITTED_AND_PUSHED; THIRD_BOUNDED_CORRECTION_EXACT_HEAD_PARTIAL_PASS; CONTINUED_BOUNDED_CORRECTION_LOCAL_GATES_COMPLETE
+- last_completed_action: The exact dirty candidate rebuilt successfully into a Windows x64 package and NSIS installer using the hash-locked CPython 3.14.5 input. `verify:package` and the V1.1 local-data Product journey pass at PACKAGED_SAME_MACHINE / PASS_CANDIDATE. One local Product-level live-provider attempt then returned the exact structured `BLOCKED_PROVIDER_ACCEPTANCE` shape: one failed Task, zero successful canonical chains, only the verified EXECUTION_CONTEXT output and a truthful unavailable renderer. This is BLOCKED / NOT_FORMAL, never PASS; no further local provider probe is permitted.
+- exact_next_action: Re-audit the complete 11-file source/write set, workflow action pins, Authority hashes, P0 diff and Git/GitHub CURRENT; if unchanged, create one ordinary commit and non-force push the same branch, then use only the new exact remote HEAD Jobs A-F.
+- active_acceptance_id: ACC_C4_CONTINUED_BOUNDED_CORRECTION_EXACT_HEAD_A_F
+- current_dirty_inventory: 11 bounded files = 9 tracked modifications plus 2 new files, all in the recorded C/F workflow, adapter, Desktop smoke, driver, test and Ledger owners. Downloaded/generated evidence remains ignored under D-drive `artifacts/`; zero generated artifacts are tracked.
 - files_currently_modified:
-  - .github/workflows/ci.yml
-  - apps/backend/src/v3_backend/runtime/product_facades.py
-  - apps/backend/src/v3_backend/runtime/product_research.py
-  - apps/backend/src/v3_backend/runtime/product_runtime.py
-  - apps/backend/tests/product_runtime/test_product_runtime_research.py
+  - .github/workflows/packaging-clean-machine-evidence.yml
+  - apps/backend/src/v3_backend/adapters/market_data/akshare.py
+  - apps/backend/tests/ws_f_data_truth/test_real_a_share_provider_v0.py
   - apps/desktop/src/main/productClosureSmoke.ts
-  - apps/desktop/src/main/productRuntime/adapters.ts
-  - apps/desktop/src/renderer/productRuntimeStore.ts
   - docs/release/V1_1_USABLE_RESEARCH_PRODUCT_STATE_LEDGER.md
-  - packages/contracts/src/index.ts
   - scripts/ensure-electron-binary.mjs
   - scripts/product-closure-packaged-e2e.mjs
-  - scripts/product-release-packaged-e2e.mjs
+  - scripts/product-provider-acceptance.mjs
   - tests/unit/electron-binary-installer.test.mjs
-  - tests/unit/product-runtime-cold-discovery.test.mjs
+  - tests/unit/product-provider-acceptance.test.mjs
   - tests/unit/v1-1-ci-workflow.test.mjs
 - tests:
+  - c4_continued_bounded_correction_precommit_audit: PASS — fresh GitHub CURRENT immediately before staging proves local/tracking/API remote branch head `b4d958fc19db35d5edd65f4617cc56f16d53d47f`, main `02c5b8748170569ffc436f3bf5d2f682c21d2811`, and PR #50 OPEN / UNMERGED / BLOCKED / MERGEABLE with zero reviews. Old-head A/B/D/E PASS and C/F FAIL are retained only as historical evidence and will not be reused. The exact 11-file write set is unchanged; both workflows parse; all 17 Action refs across both workflow files are pinned to exact audited 40-hex SHAs; `git diff --check` passes; P0 diff is empty; Authority 1.0.2 validates and all five hashes exactly match the Manifest.
+  - c4_continued_bounded_correction_package_and_product: PASS_CANDIDATE / BLOCKED_PROVIDER_ACCEPTANCE — the current dirty source rebuilt the Windows x64 package and NSIS installer using exact CPython 3.14.5 executable SHA-256 `3adbbf2af609e206e3ca18cd55fc7c4b52f5c8bb8218dd99fd5a9e50d7a193cd` and license SHA-256 `935cf13e19f8c31b497d20b05d73623431a226b230c3599bc30fa3348979bc68`. `verify:package` passes for 1,050,007,253 bytes / 13,904 files / tree SHA-256 `4980d899808f58ca934fb15acef200528c64e35c14af83b38a63f036942e4e8f`, embedded CPython 3.14.5, 52 dependencies, AKShare 1.18.84 and PyArrow 23.0.1. The packaged V1.1 local Data/Factor/Strategy/Backtest/Result journeys and cold identity reconstruction return PASS_CANDIDATE with the package tree unchanged. A single local Product-level live-provider attempt returned `PROVIDER_ACQUISITION_UNAVAILABLE`; its minimized report classifies only as `BLOCKED_PROVIDER_ACCEPTANCE` with failed_task_count=1, successful_canonical_chain_count=0, result_present=false, output_roles=[EXECUTION_CONTEXT], verified execution context and truthful renderer error. No fallback/raw canonical chain exists, this is not provider PASS, and no further local provider request is authorized.
+  - c4_continued_bounded_correction_validate_public: PASS — the exact unchanged full command completed with exit 0 after one environment-only sandbox denial on Python bytecode-cache creation. Current inventories include Node 176/176, backend 41/41 suites / 74/74 files / 1082/1082 cases, Python compile, Electron runtime 121/121, C1 fault matrix 31 Python + 79 Electron, frontend smoke, secret/history scan over 751 current source files, repository audit and 518-entry SBOM. The first sandbox-denied attempt is not promoted to PASS; no production assertion failed in it.
+  - c4_continued_bounded_correction_red_green: EXPECTED FAIL then PASS — Electron regressions first failed because `createElectronDownloader` and the injected downloader owner were absent; provider regressions proved empty and malformed AKShare frames escaped capture; workflow regressions proved Job F trusted stderr text and uploaded no structured failure contract. The unchanged tests now pass: Electron redirect/completed-stream/timeout-partial-cleanup/install/version cases 4/4; provider adapter 13/13 including empty and invalid-volume response; executable provider classifier counterexamples plus Jobs A-F workflow contracts 16/16; TypeScript typecheck, both driver syntax checks, both workflow YAML parses and `git diff --check` PASS. No live provider request was made locally.
+  - c4_continued_bounded_correction_admission: PASS — at `2026-08-25 17:00:37 +08:00`, the full Constitution, Architecture, Capability Levels, AGENTS instructions, both original audit attachments, all 2368 plan lines, State Ledger and Manifest were replayed. Authority 1.0.2 validates; Constitution `92ff8049...d32b`, AGENTS `cbe7d78e...385`, Architecture `ca74dcd0...c5b`, Capability Levels `79ca5210...266`, Manifest `3306f51f...25a`; P0 diff is empty. Worktree was clean before this Ledger update. Local/tracking/API remote head/tree are exact `b4d958fc19db35d5edd65f4617cc56f16d53d47f` / `fd54ac1786d6c70ba749bc1d17792589291a6f92`; main is `02c5b8748170569ffc436f3bf5d2f682c21d2811`; PR #50 is OPEN / UNMERGED / BLOCKED / MERGEABLE with zero reviews.
+  - c4_third_bounded_correction_exact_head_remote: FAIL / PARTIAL PASS — push CI 32827148612 and PR CI 32827152559: A PASS, B PASS, C FAIL. Push packaging 32827148687 and PR packaging 32827152547: D PASS, E PASS, F FAIL. Job C exits before `path.txt` after the top-level awaited `@electron/get` download Promise remains unsettled on the hosted clean runner. Push Job F records `FAIL_PROVIDER_ACCEPTANCE` with renderer `INTERNAL_ERROR`; PR Job F records truthful `BLOCKED_PROVIDER_ACCEPTANCE` with `PROVIDER_ACQUISITION_UNAVAILABLE`. Neither outcome is promoted to PASS and the combined A-F gate remains FAIL.
   - c4_third_bounded_correction_final_source_audit: PASS — exact write set is 14 tracked + 2 new files; P0 diff is empty; Authority 1.0.2 validates with Constitution `92ff8049...d32b`, AGENTS `cbe7d78e...385`, Architecture `ca74dcd0...c5b`, Capability Levels `79ca5210...266` and Manifest `3306f51f...25a`; all GitHub Actions in both workflows remain exact 40-hex audited SHAs; `git diff --check` passes; no generated artifact is tracked; the original dirty root at `fd451c83005e444f84161e0c905f853a2b36d5a3` remains outside the task worktree and untouched.
   - c4_third_bounded_correction_final_validate_public: PASS — final post-packaged-acceptance `npm.cmd run validate:public` exits 0: Authority 1.0.2, typecheck/lint, Node 166/166, backend 41/41 suites / 74/74 files / 1081/1081 cases plus compile, 35-module build and bundle/build-manifest checks, Electron runtime 121/121, C1 fault matrix 31 Python + 79 Electron, frontend, secret/history scan over 749 current source files, repository audit and 518-entry SBOM.
   - c4_third_bounded_correction_final_package: PASS_CANDIDATE at PACKAGED_SAME_MACHINE / DIRTY_BUILD_MANIFEST — final unpacked package is 1,003,881,907 bytes across 11,826 files with SHA-256 `619ba0ce6882c6f5529405603618020083be6626fc3a30c6230f7a1004f107c9`; app.asar is `465f2fc3de521539a937abb3e209f3a36791cee044a9c7aaa48812fc151bfeca`; runtime manifest is `88e718141b2002857da38f3c42e27fa91f968710721352ad210bc3afaefd1114`. It embeds CPython 3.14.5, 52 dependencies and AKShare 1.18.84 with no first-launch install. Electron ZIP retry used a D-drive cache whose exact 39.8.10 archive SHA `4478410a35a8399b7745085096695a37877f176755182a71e27eddc245cd98d5` matches SHASUMS; one earlier package attempt is recorded only as external CDN `ETIMEDOUT`, not a source failure.
@@ -208,23 +209,23 @@ Execute V3 V1.1 Usable Research Product as one bounded program, one branch, one 
 - git:
   - admitted_base_sha: 02c5b8748170569ffc436f3bf5d2f682c21d2811
   - admitted_base_tree: e3f3d3155177c17580015f4ef5b5405d0b689774
-  - local_head_sha: 801fcc3cb7942d41e11ad7a39612107b758df3bb
-  - local_head_tree: c492dddbb4ddd1d71792f2d0b774f5d98357fb98
-  - remote_head_sha: 801fcc3cb7942d41e11ad7a39612107b758df3bb
+  - local_head_sha: b4d958fc19db35d5edd65f4617cc56f16d53d47f
+  - local_head_tree: fd54ac1786d6c70ba749bc1d17792589291a6f92
+  - remote_head_sha: b4d958fc19db35d5edd65f4617cc56f16d53d47f
   - branch: codex/v1-1-usable-research-product-01
-  - status: DIRTY_LEDGER_ONLY_AFTER_REMOTE_EVIDENCE_AUDIT
+  - status: DIRTY_LEDGER_ONLY_AFTER_CONTINUED_CORRECTION_ADMISSION
 - github:
   - pr: 50
   - state: OPEN / UNMERGED
-  - checks: FAIL / PARTIAL PASS at exact head 801fcc3cb7942d41e11ad7a39612107b758df3bb
+  - checks: FAIL / PARTIAL PASS at exact head b4d958fc19db35d5edd65f4617cc56f16d53d47f; A/B/D/E PASS, C/F FAIL on push and PR events
   - independent_review: PENDING
 - blockers:
-  - JOB_B_PR_EVENT_SCHEDULING_ASSERTION_TOO_STRICT
-  - JOB_C_ELECTRON_BINARY_NOT_AWAITED_OR_VERIFIED
-  - JOB_F_TERMINAL_TASK_NOT_POLLED_AND_PROVIDER_TRUTH_UNRESOLVED
-- review_required: RESOLVED_BY_EXPLICIT_USER_AUTHORIZATION_FOR_THIRD_BOUNDED_CORRECTION — correction remains restricted to B/C/F on the same branch and PR.
-- source_audit_finding: EXACT_HEAD_801FCC3_PARTIAL_PRODUCT_GATE. Source and remote-effect inspection, not aggregate-test inference, proves A/D/E green; B production exit fencing closes but one test is over-specific; C has no usable node_modules Electron binary; F does not wait for durable Task terminal state and cannot classify provider truth. The combined A-F acceptance is FAIL, live provider truth is unresolved, and PR #50 is not eligible for merge or release.
-- compaction_recovery: PASS at 2026-08-25 14:26:34 +08:00. After compaction, the full Constitution, Canonical Architecture, Capability Levels, AGENTS, original attachments, 2368-line plan, Ledger and Manifest were replayed; all five hashes match and authority validation/P0 diff pass. Exact worktree/branch/local/tracking/API remote head/tree are `D:\V3OpenSource-worktrees\v1-1-usable-research-product-01` / `codex/v1-1-usable-research-product-01` / `801fcc3cb7942d41e11ad7a39612107b758df3bb` / `c492dddbb4ddd1d71792f2d0b774f5d98357fb98`; main remains `02c5b8748170569ffc436f3bf5d2f682c21d2811`; PR #50 remains OPEN / UNMERGED. Only this Ledger is modified. Continue only after explicit review authorization; do not repeat completed work.
+  - JOB_C_CLEAN_RUNNER_ELECTRON_DOWNLOAD_PROMISE_UNSETTLED
+  - JOB_F_PUSH_PROVIDER_RESPONSE_PATH_ESCAPES_AS_INTERNAL_ERROR
+  - JOB_F_PROVIDER_UNAVAILABLE_MUST_REMAIN_LITERAL_NOT_CAPABILITY_PASS
+- review_required: RESOLVED_BY_EXPLICIT_USER_AUTHORIZATION_TO_CONTINUE_UNTIL_MERGE_ELIGIBLE — correction remains restricted to C/F on the same branch and PR; actual merge remains unauthorized.
+- source_audit_finding: EXACT_HEAD_B4D958F_PARTIAL_PRODUCT_GATE. Remote effect plus source tracing, not aggregate-test inference, proves A/B/D/E green. C has no verified Electron binary because the clean network download never settles; F reaches the real packaged provider path, with one run escaping as INTERNAL_ERROR and one run truthfully blocked by provider acquisition. The combined A-F acceptance is FAIL; no fallback or stronger capability claim is permitted.
+- compaction_recovery: PASS at 2026-08-25 17:00:37 +08:00. Complete mandatory recovery and fresh GitHub CURRENT verification bind the exact worktree/branch/local/tracking/API remote head/tree to `D:\V3OpenSource-worktrees\v1-1-usable-research-product-01` / `codex/v1-1-usable-research-product-01` / `b4d958fc19db35d5edd65f4617cc56f16d53d47f` / `fd54ac1786d6c70ba749bc1d17792589291a6f92`; main remains `02c5b8748170569ffc436f3bf5d2f682c21d2811`; PR #50 is OPEN / UNMERGED. Continue only with the named C/F red regressions and bounded fixes; do not repeat completed work or merge.
 
 # PROJECT_AUTHORITY
 
@@ -243,15 +244,15 @@ Execute V3 V1.1 Usable Research Product as one bounded program, one branch, one 
 ## GIT_GITHUB_CURRENT
 
 - repository: dongxuelian11/v3-quant-workbench
-- refreshed_at: 2026-08-25 14:26:34 +08:00
+- refreshed_at: 2026-08-25 17:00:37 +08:00
 - remote main: 02c5b8748170569ffc436f3bf5d2f682c21d2811
 - remote main tree: e3f3d3155177c17580015f4ef5b5405d0b689774
-- open PR: #50, OPEN / UNMERGED, head `801fcc3cb7942d41e11ad7a39612107b758df3bb`
-- task remote branch: `codex/v1-1-usable-research-product-01` at `801fcc3cb7942d41e11ad7a39612107b758df3bb`
-- exact-head ci: push 32815542587 FAILURE; pull_request 32815546780 FAILURE
-- exact-head packaging-clean-machine-evidence: push 32815542591 FAILURE; pull_request 32815546788 FAILURE
-- exact-head successful jobs: A push/PR, B push only, D push/PR, E push/PR
-- exact-head failed jobs: B PR only, C push/PR, F push/PR
+- open PR: #50, OPEN / UNMERGED / BLOCKED / MERGEABLE, head `b4d958fc19db35d5edd65f4617cc56f16d53d47f`, reviews `[]`
+- task remote branch: `codex/v1-1-usable-research-product-01` at `b4d958fc19db35d5edd65f4617cc56f16d53d47f`
+- exact-head ci: push 32827148612 FAILURE; pull_request 32827152559 FAILURE
+- exact-head packaging-clean-machine-evidence: push 32827148687 FAILURE; pull_request 32827152547 FAILURE
+- exact-head successful jobs: A push/PR, B push/PR, D push/PR, E push/PR
+- exact-head failed jobs: C push/PR, F push/PR
 - exact-main ci: SUCCESS, run 32626717592
 - exact-main packaging-clean-machine-evidence: SUCCESS, run 32626717564
 - implementation worktree: D:\V3OpenSource-worktrees\v1-1-usable-research-product-01
@@ -433,6 +434,8 @@ This matrix is the fresh C4 admission audit after checkpoint 3 commit `ffb441590
 C4 sequencing boundary: the plan text says C4 acceptance must all pass before checkpoint commit, while ACC-C4-07/08/11 require a remote exact commit, PR workflow and independent reviewer. The user also requires final source/effect review before considering push. Execution therefore prepares and validates the complete local C4 candidate without changing version or claiming C4 completion, presents push eligibility, and waits for explicit push authority. It will not manufacture a fifth commit, amend checkpoint 4, or upgrade remote evidence from local results.
 
 ## COMPACTION_RECOVERY
+
+Newest recovery: PASS at 2026-08-25 17:00:37 +08:00 under the user's authorization to correct PR #50 until merge eligibility and then stop without merging. The full mandatory authority/request/attachment/2368-line plan/Ledger sequence was replayed. Authority Manifest 1.0.2 and all five SHA-256 values match; `validate:authority` and P0 diff PASS. Exact worktree/branch/local/tracking/API remote head/tree are `D:\V3OpenSource-worktrees\v1-1-usable-research-product-01` / `codex/v1-1-usable-research-product-01` / `b4d958fc19db35d5edd65f4617cc56f16d53d47f` / `fd54ac1786d6c70ba749bc1d17792589291a6f92`; main is `02c5b8748170569ffc436f3bf5d2f682c21d2811`. PR #50 is OPEN / UNMERGED / BLOCKED / MERGEABLE with no reviews. Exact-head A/B/D/E pass in push and PR runs; C/F fail in both. Resume only the C clean Electron download and F live-provider failure/classification red regressions, then bounded owner fixes; do not repeat completed C1-C4 work, add fallback, create another lineage, or merge.
 
 Current recovery: PASS at 2026-08-25 after compaction during PR #50 third bounded correction. The full Constitution, Canonical Architecture, Capability Levels, AGENTS, both original attachments, complete 2368-line V1.1 plan and this Ledger were replayed before resuming the same command session. Authority Manifest remains 1.0.2 and all five SHA-256 values match; P0 diff is empty and amendment authorization is ABSENT. Exact worktree/branch/local/tracking/API remote HEAD before the new commit remain `D:\\V3OpenSource-worktrees\\v1-1-usable-research-product-01` / `codex/v1-1-usable-research-product-01` / `801fcc3cb7942d41e11ad7a39612107b758df3bb`; base/main remains `02c5b8748170569ffc436f3bf5d2f682c21d2811`. PR #50 is OPEN / UNMERGED / BLOCKED with no reviews. Third-correction local source, final package and packaged E2E validation are PASS/PASS_CANDIDATE at their literal scopes; the bounded inventory is 14 tracked + 2 new files. Resume only the ordinary commit, non-force push and exact new-head Jobs A-F observation; do not repeat completed validation, do not merge, and do not reuse old-head checks.
 

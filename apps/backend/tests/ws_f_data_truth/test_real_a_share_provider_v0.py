@@ -221,6 +221,16 @@ class RealAShareProviderV0Tests(unittest.TestCase):
             adapter(provider).capture(REQUEST)
         self.assertEqual(len(provider.calls), 1)
 
+    def test_empty_or_malformed_provider_response_fails_at_capture_boundary(self) -> None:
+        malformed = [dict(ROWS[0])]
+        malformed[0]["成交量"] = "not-a-number"
+        for rows, reason in (([], "no rows"), (malformed, "normalization")):
+            with self.subTest(reason=reason):
+                provider = FakeAkshare(rows)
+                with self.assertRaises(ProviderAcquisitionError):
+                    adapter(provider).capture(REQUEST)
+                self.assertEqual(len(provider.calls), 1)
+
     def test_provider_version_mismatch_fails_closed(self) -> None:
         provider = FakeAkshare(ROWS)
         provider.__version__ = "1.18.64"

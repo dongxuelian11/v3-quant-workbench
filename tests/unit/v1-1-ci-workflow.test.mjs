@@ -9,6 +9,7 @@ const packaging = await readFile(resolve(root, ".github/workflows/packaging-clea
 const cleanMachineDriver = await readFile(resolve(root, "scripts/v1_1-release-clean-machine.ps1"), "utf8");
 const packagedJourneyDriver = await readFile(resolve(root, "scripts/v1_1_product_release_packaged_e2e.mjs"), "utf8");
 const liveProviderDriver = await readFile(resolve(root, "scripts/product-closure-packaged-e2e.mjs"), "utf8");
+const providerAcceptance = await readFile(resolve(root, "scripts/product-provider-acceptance.mjs"), "utf8");
 const productClosureSmoke = await readFile(resolve(root, "apps/desktop/src/main/productClosureSmoke.ts"), "utf8");
 
 function jobSource(workflow, jobId, nextJobId) {
@@ -87,7 +88,9 @@ test("V1.1 Jobs D-F are triggered by every bounded release input", () => {
     "scripts/v1_1-release-clean-machine.ps1",
     "scripts/v1_1_product_release_packaged_e2e.mjs",
     "scripts/product-closure-packaged-e2e.mjs",
+    "scripts/product-provider-acceptance.mjs",
     "tests/unit/v1-1-ci-workflow.test.mjs",
+    "tests/unit/product-provider-acceptance.test.mjs",
   ]) {
     assert.match(packaging, new RegExp(path.replaceAll(".", "\\.").replaceAll("/", "\\/")), `workflow path trigger omits ${path}`);
   }
@@ -134,11 +137,24 @@ test("Job F packaged child cannot inherit driver or deterministic-provider mode"
   }
 });
 
-test("Job F blocks only on the exact provider-unavailable code", () => {
+test("Job F accepts only structured canonical provider-unavailable evidence", () => {
   const jobF = jobSource(packaging, "live-provider-acceptance");
-  assert.match(jobF, /\$logs -match "PROVIDER_ACQUISITION_UNAVAILABLE"/);
-  assert.doesNotMatch(jobF, /\$logs\s+-match\s+"[^"]*(?:upstream|timed out|timeout)/i);
+  assert.match(jobF, /\$productFailure\s*=.*ConvertFrom-Json/);
+  assert.match(jobF, /\$productFailure\.result -eq "BLOCKED_PROVIDER_ACCEPTANCE"/);
+  assert.match(jobF, /\$failureSummary\.reason_code -ne "PROVIDER_ACQUISITION_UNAVAILABLE"/);
+  assert.match(jobF, /\$failureSummary\.result_present -ne \$false/);
+  assert.match(jobF, /\$productFailure\.successful_canonical_chain_count -ne 0/);
+  assert.doesNotMatch(jobF, /\$logs\s+-match/);
   assert.match(jobF, /result = "FAIL_PROVIDER_ACCEPTANCE_TIMEOUT"/);
+});
+
+test("live provider driver exports structured failed Task evidence before exiting", () => {
+  assert.match(liveProviderDriver, /failedProviderReport/);
+  assert.match(packaging, /Copy-Item "scripts\\product-provider-acceptance\.mjs"/);
+  assert.match(providerAcceptance, /BLOCKED_PROVIDER_ACCEPTANCE/);
+  assert.match(providerAcceptance, /failure_summary/);
+  assert.match(providerAcceptance, /execution_context_ref_valid/);
+  assert.match(providerAcceptance, /successful_canonical_chain_count/);
 });
 
 test("Job F canonical source query matches the exact live-provider request range", () => {

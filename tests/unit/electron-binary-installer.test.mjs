@@ -1,10 +1,65 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const { ensureElectronBinary } = await import("../../scripts/ensure-electron-binary.mjs");
+const { createElectronDownloader, ensureElectronBinary } = await import("../../scripts/ensure-electron-binary.mjs");
+
+async function listen(server) {
+  await new Promise((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  assert(address && typeof address === "object");
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function close(server) {
+  server.closeAllConnections?.();
+  await new Promise((resolveClose) => server.close(resolveClose));
+}
+
+test("Electron downloader follows redirects and publishes only a completed archive", async () => {
+  const root = await mkdtemp(join(tmpdir(), "v3-electron-download-"));
+  const target = join(root, "electron.zip");
+  const server = createServer((request, response) => {
+    if (request.url === "/redirect") {
+      response.writeHead(302, { location: "/archive" });
+      response.end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/zip" });
+    response.write("verified ");
+    setTimeout(() => response.end("archive"), 20);
+  });
+  try {
+    const origin = await listen(server);
+    const downloader = createElectronDownloader({ timeoutMilliseconds: 1_000 });
+    await downloader.download(`${origin}/redirect`, target);
+    assert.equal(await readFile(target, "utf8"), "verified archive");
+  } finally {
+    await close(server);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Electron downloader rejects an unsettled transfer and removes partial bytes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "v3-electron-download-timeout-"));
+  const target = join(root, "electron.zip");
+  const server = createServer((_request, _response) => {});
+  try {
+    const origin = await listen(server);
+    const downloader = createElectronDownloader({ timeoutMilliseconds: 50 });
+    await assert.rejects(downloader.download(`${origin}/archive`, target), /timed out/);
+    await assert.rejects(access(target));
+  } finally {
+    await close(server);
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("Electron installer awaits verified extraction and becomes idempotent", async () => {
   const root = await mkdtemp(join(tmpdir(), "v3-electron-installer-"));
@@ -27,6 +82,7 @@ test("Electron installer awaits verified extraction and becomes idempotent", asy
         assert.equal(request.artifactName, "electron");
         assert.equal(request.platform, "win32");
         assert.equal(request.arch, "x64");
+        assert.equal(typeof request.downloader?.download, "function");
         return zipPath;
       },
       extractImpl: async (_archive, { dir }) => {

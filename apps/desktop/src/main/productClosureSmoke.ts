@@ -509,6 +509,24 @@ async function writeEvidence(path: string, evidence: Record<string, unknown>): P
   await writeFile(path, JSON.stringify(evidence, null, 2) + "\n", "utf8");
 }
 
+async function captureFailureSummary(window: BrowserWindow): Promise<Record<string, unknown>> {
+  return await executeRenderer<Record<string, unknown>>(
+    window,
+    "const rendererEvidence = typeof window.v3ProductClosureEvidence === \"function\" ? window.v3ProductClosureEvidence() : null;" +
+    "const bridge = window.v3ProductRuntime;" +
+    "if (!bridge) return { diagnostic_state: \"BRIDGE_UNAVAILABLE\" };" +
+    "const tasks = await bridge.listTasks({ filter: { service: \"ProductEntryService\" } });" +
+    "const allTasks = Array.isArray(tasks.tasks) ? tasks.tasks : [];" +
+    "const failedTasks = allTasks.filter((task) => task.state === \"FAILED\");" +
+    "const successfulCanonicalTasks = allTasks.filter((task) => task.state === \"SUCCEEDED\" && task.resultId !== null);" +
+    "const failedTask = failedTasks.length === 1 ? failedTasks[0] : null;" +
+    "const outputRoles = failedTask && failedTask.outputs ? Object.keys(failedTask.outputs) : [];" +
+    "const rendererError = rendererEvidence?.currentRendererState?.errorMessage;" +
+    "return { diagnostic_state: \"CAPTURED\", failed_task_count: failedTasks.length, successful_canonical_chain_count: successfulCanonicalTasks.length, operation_id: failedTask?.operationId ?? null, task_state: failedTask?.state ?? null, result_present: failedTask?.resultId !== null && failedTask?.resultId !== undefined, output_roles: outputRoles, execution_context_ref_valid: outputRoles.length === 1 && outputRoles[0] === \"EXECUTION_CONTEXT\" && typeof failedTask.outputs.EXECUTION_CONTEXT === \"string\" && failedTask.outputs.EXECUTION_CONTEXT.startsWith(\"art_sha256_\"), attempt_state: failedTask?.attempt?.state ?? null, error_category: failedTask?.attempt?.errorCategory ?? null, reason_code: failedTask?.attempt?.reasonCode ?? null, renderer_surface: rendererEvidence?.currentRendererState?.surface ?? null, renderer_provider_unavailable: typeof rendererError === \"string\" && rendererError.includes(\"CAPABILITY_UNAVAILABLE\") && rendererError.includes(\"PROVIDER_ACQUISITION_UNAVAILABLE\") };",
+    RENDERER_QUERY_TIMEOUT_MS,
+  );
+}
+
 export async function runProductClosureSmoke(options: ProductClosureSmokeOptions): Promise<void> {
   if (!options.outputPath || !/^[A-Za-z]:[\\/]/.test(options.outputPath)) {
     throw new Error("V3_PRODUCT_CLOSURE_SMOKE_OUTPUT must be an absolute Windows path");
@@ -562,9 +580,20 @@ export async function runProductClosureSmoke(options: ProductClosureSmokeOptions
     });
     console.error(JSON.stringify({ level: "INFO", code: "PRODUCT_CLOSURE_PACKAGED_SMOKE_PASS", phase }));
   } catch (error) {
+    let failureSummary: Record<string, unknown> | null = null;
+    let failureSummaryError: string | null = null;
+    try {
+      failureSummary = await captureFailureSummary(options.window);
+    } catch (diagnosticError) {
+      failureSummaryError = diagnosticError instanceof Error
+        ? diagnosticError.message
+        : String(diagnosticError);
+    }
     await writeEvidence(options.outputPath, {
       ...baseEvidence,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
+      failure_summary: failureSummary,
+      failure_summary_error: failureSummaryError,
     });
     throw error;
   }

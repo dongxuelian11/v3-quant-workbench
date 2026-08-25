@@ -20,12 +20,14 @@ on:
       - "scripts/verify-package.mjs"
       - "scripts/verify-release.mjs"
       - "scripts/product-closure-packaged-e2e.mjs"
+      - "scripts/product-provider-acceptance.mjs"
       - "scripts/product-release-packaged-e2e.mjs"
       - "scripts/v1_1_product_release_packaged_e2e.mjs"
       - "scripts/v1_1-release-clean-machine.ps1"
       - "scripts/v1-release-clean-machine.ps1"
       - "scripts/v1-release-catalog-probe.py"
       - "tests/unit/v1-1-ci-workflow.test.mjs"
+      - "tests/unit/product-provider-acceptance.test.mjs"
       - "docs/packaging/**"
       - "docs/release/**"
       - "docs/oss/**"
@@ -120,6 +122,7 @@ jobs:
           Copy-Item "scripts\v1_1-release-clean-machine.ps1" $outputRoot
           Copy-Item "scripts\v1_1_product_release_packaged_e2e.mjs" $outputRoot
           Copy-Item "scripts\product-closure-packaged-e2e.mjs" $outputRoot
+          Copy-Item "scripts\product-provider-acceptance.mjs" $outputRoot
           Copy-Item "artifacts\package\V3_PACKAGE_EVIDENCE.json" $outputRoot
           Copy-Item "artifacts\package\V3_RELEASE_MANIFEST.json" $outputRoot
           Copy-Item "artifacts\package-level2\V3_PACKAGING_LEVEL2_BUILD_PIN.json" $outputRoot
@@ -268,6 +271,7 @@ jobs:
           $productReport = Join-Path $evidenceRoot "V3_V1_1_LIVE_PROVIDER_PRODUCT.json"
           $stdoutPath = Join-Path $evidenceRoot "live-provider.stdout.log"
           $stderrPath = Join-Path $evidenceRoot "live-provider.stderr.log"
+          $providerBlocked = $false
           $priorRunAsNode = [Environment]::GetEnvironmentVariable("ELECTRON_RUN_AS_NODE", "Process")
           $priorPackageRoot = [Environment]::GetEnvironmentVariable("V3_PACKAGE_ROOT", "Process")
           $priorReport = [Environment]::GetEnvironmentVariable("V3_PRODUCT_CLOSURE_REPORT", "Process")
@@ -290,23 +294,58 @@ jobs:
             }
             $process.Refresh()
             if ($process.ExitCode -ne 0) {
-              $logs = ((Get-Content -Raw -LiteralPath $stdoutPath -ErrorAction SilentlyContinue) + "`n" + (Get-Content -Raw -LiteralPath $stderrPath -ErrorAction SilentlyContinue))
-              $state = if ($logs -match "PROVIDER_ACQUISITION_UNAVAILABLE") { "BLOCKED_PROVIDER_ACCEPTANCE" } else { "FAIL_PROVIDER_ACCEPTANCE" }
-              [ordered]@{
-                schema_version = "v3.v1-1-live-provider-acceptance/1.0.0"
-                result = $state
-                source_git_sha = [string]$release.source.git_sha
-                source_git_tree_sha = [string]$release.source.git_tree_sha
-                package_sha256 = $actualHash
-                product_exit_code = [int]$process.ExitCode
-              } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $evidenceRoot "V3_V1_1_LIVE_PROVIDER_ACCEPTANCE.json") -Encoding utf8
-              throw "$state`: packaged product exited $($process.ExitCode)"
+              if (-not (Test-Path -LiteralPath $productReport)) { throw "FAIL_PROVIDER_ACCEPTANCE: structured product failure report missing" }
+              $productFailure = Get-Content -Raw -LiteralPath $productReport | ConvertFrom-Json
+              if ($productFailure.result -eq "BLOCKED_PROVIDER_ACCEPTANCE") {
+                $failureSummary = $productFailure.failure_summary
+                $outputRoles = @($failureSummary.output_roles)
+                if ($productFailure.successful_canonical_chain_count -ne 0 -or
+                    $failureSummary.failed_task_count -ne 1 -or
+                    $failureSummary.operation_id -ne "ProductEntryService.v1.submitResearch" -or
+                    $failureSummary.task_state -ne "FAILED" -or $failureSummary.result_present -ne $false -or
+                    $outputRoles.Count -ne 1 -or $outputRoles[0] -ne "EXECUTION_CONTEXT" -or
+                    $failureSummary.execution_context_ref_valid -ne $true -or
+                    $failureSummary.attempt_state -ne "FAILED" -or
+                    $failureSummary.error_category -ne "INVALID_ARGUMENT" -or
+                    $failureSummary.reason_code -ne "PROVIDER_ACQUISITION_UNAVAILABLE" -or
+                    $failureSummary.renderer_surface -ne "ERROR" -or
+                    $failureSummary.renderer_provider_unavailable -ne $true) {
+                  throw "FAIL_PROVIDER_ACCEPTANCE: structured provider block evidence is invalid"
+                }
+                [ordered]@{
+                  schema_version = "v3.v1-1-live-provider-acceptance/1.0.0"
+                  result = "BLOCKED_PROVIDER_ACCEPTANCE"
+                  source_git_sha = [string]$release.source.git_sha
+                  source_git_tree_sha = [string]$release.source.git_tree_sha
+                  package_sha256 = $actualHash
+                  product_exit_code = [int]$process.ExitCode
+                  reason_code = [string]$failureSummary.reason_code
+                  failed_task_count = 1
+                  successful_canonical_chain_count = 0
+                  capability_state = "BLOCKED"
+                  formal_truth = "NOT_FORMAL"
+                } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $evidenceRoot "V3_V1_1_LIVE_PROVIDER_ACCEPTANCE.json") -Encoding utf8
+                $providerBlocked = $true
+              } else {
+                [ordered]@{
+                  schema_version = "v3.v1-1-live-provider-acceptance/1.0.0"
+                  result = "FAIL_PROVIDER_ACCEPTANCE"
+                  source_git_sha = [string]$release.source.git_sha
+                  source_git_tree_sha = [string]$release.source.git_tree_sha
+                  package_sha256 = $actualHash
+                  product_exit_code = [int]$process.ExitCode
+                  product_failure_result = [string]$productFailure.result
+                } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $evidenceRoot "V3_V1_1_LIVE_PROVIDER_ACCEPTANCE.json") -Encoding utf8
+                throw "FAIL_PROVIDER_ACCEPTANCE: packaged product exited $($process.ExitCode)"
+              }
             }
           } finally {
             [Environment]::SetEnvironmentVariable("ELECTRON_RUN_AS_NODE", $priorRunAsNode, "Process")
             [Environment]::SetEnvironmentVariable("V3_PACKAGE_ROOT", $priorPackageRoot, "Process")
             [Environment]::SetEnvironmentVariable("V3_PRODUCT_CLOSURE_REPORT", $priorReport, "Process")
           }
+
+          if ($providerBlocked) { return }
 
           $product = Get-Content -Raw -LiteralPath $productReport | ConvertFrom-Json
           if ($product.result -ne "V3_V1_PRODUCT_CLOSURE_COMBINED_E2E_PASS_CANDIDATE") { throw "Job F product report did not pass" }

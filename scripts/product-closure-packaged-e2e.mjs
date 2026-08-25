@@ -4,6 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
+import { failedProviderReport } from "./product-provider-acceptance.mjs";
 
 // This driver is executed by the transferred Electron binary in Node mode.
 // Its package-copy and identity checks need the archive itself as a raw file.
@@ -122,6 +123,14 @@ function assertSmokeRun(run, smoke, phase) {
   }
 }
 
+async function persistFailedSmoke(run, smoke, phase) {
+  await writeFile(
+    reportPath,
+    JSON.stringify(failedProviderReport(run, smoke, phase), null, 2) + "\n",
+    "utf8",
+  );
+}
+
 function canonicalIdentity(smoke, phase) {
   const flow = smoke.flow;
   const context = flow?.projectContext;
@@ -235,6 +244,9 @@ for (const [phase, name] of [["create-submit", "first"], ["reopen-discover", "re
   const outputPath = join(evidenceRoot, name + ".json");
   const productRun = await runProduct(executable, installRoot, runtimeEnvBase, phase, outputPath);
   const smoke = await readJson(outputPath);
+  if (productRun.code !== 0 || productRun.signal !== null || smoke.success !== true) {
+    await persistFailedSmoke(productRun, smoke, phase);
+  }
   assertSmokeRun(productRun, smoke, phase);
   runs.push({ phase, product_run: productRun, smoke });
 }
