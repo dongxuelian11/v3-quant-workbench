@@ -19,7 +19,11 @@ import {
 import type { BackendRuntimeResolution } from "./main/backendRuntime/runtimeResolver";
 import { WorkspaceStore, WorkspaceStoreError } from "./main/runtimePersistence/workspaceStore";
 import { resolveAgentEvidenceRuntime } from "./main/agentEvidenceRuntime";
-import { runProductClosureSmoke as runProductClosureSmokeFlow, type ProductClosureSmokePhase } from "./main/productClosureSmoke";
+import {
+  productClosureSmokeHandshakeTimeoutMs,
+  runProductClosureSmoke as runProductClosureSmokeFlow,
+  type ProductClosureSmokePhase,
+} from "./main/productClosureSmoke";
 import {
   ProductBindingStore,
   ProductBridge,
@@ -211,6 +215,7 @@ function createBackendSupervisor(runtime: BackendRuntimeResolution): BackendSupe
       commit: (projectId, sequence) => store.commitProjectEventCursor(projectId, sequence)
     },
     backendModule: AGENT_EVIDENCE_RUNTIME.backendModule,
+    ...(PRODUCT_CLOSURE_SMOKE ? { handshakeTimeoutMs: productClosureSmokeHandshakeTimeoutMs() } : {}),
     ...(PRODUCT_CLOSURE_SMOKE && (PRODUCT_CLOSURE_PROVIDER_MODE === "DETERMINISTIC_SUCCESS" || PRODUCT_CLOSURE_PROVIDER_MODE === "DETERMINISTIC_UNAVAILABLE")
       ? { productReleaseAcceptanceProvider: PRODUCT_CLOSURE_PROVIDER_MODE }
       : {}),

@@ -7,6 +7,7 @@ import productClosureSmoke from "../../dist/apps/desktop/src/main/productClosure
 const {
   PRODUCT_VISUAL_MATRIX_CASES,
   parseProductClosureSmokePhase,
+  productClosureSmokeHandshakeTimeoutMs,
   productClosureSmokeRendererStoreInstance,
   productClosureSmokeSourceBoundary,
   productVisualMatrixEvidenceClass,
@@ -36,6 +37,11 @@ test("V1.1 packaged Golden Journey phases are closed and local-source truthful",
     () => parseProductClosureSmokePhase("v1-1-journey-a-success-with-fixture"),
     /unknown product closure smoke phase/,
   );
+});
+
+test("packaged Product acceptance owns a bounded cold-start handshake allowance", () => {
+  assert.equal(typeof productClosureSmokeHandshakeTimeoutMs, "function");
+  assert.equal(productClosureSmokeHandshakeTimeoutMs(), 30_000);
 });
 
 test("V1.1 Product visual owner closes the exact 4 by 3 matrix without claiming physical Windows scaling", () => {

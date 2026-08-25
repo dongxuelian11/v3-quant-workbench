@@ -82,6 +82,20 @@ export function createElectronDownloader({
   });
 }
 
+export async function awaitWithProcessLiveness(operation, {
+  setIntervalImpl = setInterval,
+  clearIntervalImpl = clearInterval,
+} = {}) {
+  if (typeof operation !== "function") throw new Error("Electron liveness operation must be callable");
+  const livenessHandle = setIntervalImpl(() => {}, 1_000);
+  livenessHandle?.ref?.();
+  try {
+    return await operation();
+  } finally {
+    clearIntervalImpl(livenessHandle);
+  }
+}
+
 function executablePathFor(platform) {
   switch (platform) {
     case "darwin":
@@ -137,7 +151,7 @@ export async function ensureElectronBinary({
   const downloader = createElectronDownloader();
   const extract = extractImpl ?? require("extract-zip");
   const checksums = JSON.parse(await readFile(join(packageRoot, "checksums.json"), "utf8"));
-  const zipPath = await downloadArtifact({
+  const zipPath = await awaitWithProcessLiveness(() => downloadArtifact({
     version,
     artifactName: "electron",
     force: process.env.force_no_cache === "true",
@@ -148,7 +162,7 @@ export async function ensureElectronBinary({
     platform,
     arch,
     downloader,
-  });
+  }));
 
   const stagingRoot = await mkdtemp(join(packageRoot, ".v3-electron-dist-"));
   const finalDist = join(packageRoot, "dist");

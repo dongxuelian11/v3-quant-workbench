@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 
-const { createElectronDownloader, ensureElectronBinary } = await import("../../scripts/ensure-electron-binary.mjs");
+const {
+  awaitWithProcessLiveness,
+  createElectronDownloader,
+  ensureElectronBinary,
+} = await import("../../scripts/ensure-electron-binary.mjs");
 
 async function listen(server) {
   await new Promise((resolveListen, rejectListen) => {
@@ -59,6 +65,46 @@ test("Electron downloader rejects an unsettled transfer and removes partial byte
     await close(server);
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Electron artifact resolution owns a ref'ed liveness handle until settlement", async () => {
+  const marker = { refCalls: 0, ref() { this.refCalls += 1; } };
+  const cleared = [];
+  const options = {
+    setIntervalImpl(callback, delay) {
+      assert.equal(typeof callback, "function");
+      assert.equal(delay, 1_000);
+      return marker;
+    },
+    clearIntervalImpl(handle) {
+      cleared.push(handle);
+    },
+  };
+  assert.equal(await awaitWithProcessLiveness(async () => "settled", options), "settled");
+  assert.equal(marker.refCalls, 1);
+  assert.deepEqual(cleared, [marker]);
+  await assert.rejects(
+    awaitWithProcessLiveness(async () => { throw new Error("download failed"); }, options),
+    /download failed/,
+  );
+  assert.deepEqual(cleared, [marker, marker]);
+});
+
+test("Electron liveness guard prevents Node unsettled-top-level-await exit", () => {
+  const moduleUrl = pathToFileURL(join(process.cwd(), "scripts", "ensure-electron-binary.mjs")).href;
+  const child = spawnSync(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { awaitWithProcessLiveness } from ${JSON.stringify(moduleUrl)};
+const value = await awaitWithProcessLiveness(() => new Promise((resolve) => {
+  const timer = setTimeout(() => resolve("SETTLED"), 40);
+  timer.unref();
+}));
+process.stdout.write(value);`,
+  ], { encoding: "utf8" });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, "SETTLED");
+  assert.doesNotMatch(child.stderr, /unsettled top-level await/i);
 });
 
 test("Electron installer awaits verified extraction and becomes idempotent", async () => {

@@ -51,6 +51,10 @@ export function productClosureSmokeRendererStoreInstance(phase: ProductClosureSm
   return "ISOLATED_UNAVAILABLE_PROCESS";
 }
 
+export function productClosureSmokeHandshakeTimeoutMs(): 30_000 {
+  return 30_000;
+}
+
 export interface ProductVisualMatrixCase {
   readonly width: number;
   readonly height: number;
