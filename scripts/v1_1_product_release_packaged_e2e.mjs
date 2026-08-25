@@ -4,6 +4,10 @@ import { cp, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
+// This driver is executed by the transferred Electron binary in Node mode.
+// Its package-copy and identity checks need the archive itself as a raw file.
+process.noAsar = true;
+
 const root = resolve(import.meta.dirname, "..");
 const packageRoot = resolve(process.env.V3_PACKAGE_ROOT ?? join(root, "artifacts/package/win-unpacked"));
 const reportPath = resolve(process.env.V3_PRODUCT_RELEASE_REPORT ?? join(root, "artifacts/package/V3_V1_1_PRODUCT_RELEASE_E2E.json"));

@@ -753,17 +753,17 @@ class ProductResearchWorkerManager:
             trace.append("KILL_SENT")
             slot.process.kill()
             slot.process.join(self._kill_timeout_seconds)
+        if (
+            slot.protocol_thread is not None
+            and slot.protocol_thread is not current_thread()
+        ):
+            slot.protocol_thread.join(timeout=1.0)
         if not slot.process.is_alive():
             trace.append("EXIT_CONFIRMED")
         with self._lock:
             self._termination_traces[task_id] = tuple(trace)
             while len(self._termination_traces) > self._TRACE_TOMBSTONE_LIMIT:
                 del self._termination_traces[next(iter(self._termination_traces))]
-        if (
-            slot.protocol_thread is not None
-            and slot.protocol_thread is not current_thread()
-        ):
-            slot.protocol_thread.join(timeout=1.0)
         return not slot.process.is_alive()
 
     def shutdown_all(self) -> None:

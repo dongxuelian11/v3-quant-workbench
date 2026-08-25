@@ -8,6 +8,7 @@ import unittest
 import io
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event, RLock, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -29,6 +30,7 @@ from v3_backend.runtime.product_runtime import ProductRuntime
 from v3_backend.runtime.product_workers import (
     PRODUCT_HEARTBEAT_SECONDS,
     PRODUCT_LEASE_EXPIRY_SECONDS,
+    ProductResearchWorkerManager,
     ProductResearchWorkerConfig,
 )
 from v3_backend.control_plane.worker_supervisor import WorkerSupervisor
@@ -122,6 +124,62 @@ def _request(project_id: str, revision_id: str, *, key: str = "research-1") -> d
 
 
 class ProductRuntimeResearchTests(unittest.TestCase):
+    def test_terminal_exit_trace_waits_for_protocol_reap_after_kill(self) -> None:
+        class _DelayedReapProcess:
+            def __init__(self, kill_requested: Event, reaped: Event) -> None:
+                self._kill_requested = kill_requested
+                self._reaped = reaped
+
+            def join(self, _timeout: float | None = None) -> None:
+                return
+
+            def is_alive(self) -> bool:
+                return not self._reaped.is_set()
+
+            def terminate(self) -> None:
+                return
+
+            def kill(self) -> None:
+                self._kill_requested.set()
+
+        kill_requested = Event()
+        reaped = Event()
+        process = _DelayedReapProcess(kill_requested, reaped)
+
+        def finish_protocol_reap() -> None:
+            self.assertTrue(kill_requested.wait(timeout=1.0))
+            reaped.set()
+
+        protocol_thread = Thread(target=finish_protocol_reap)
+        protocol_thread.start()
+        manager = object.__new__(ProductResearchWorkerManager)
+        manager._cancel_grace_seconds = 0.01
+        manager._terminate_timeout_seconds = 0.01
+        manager._kill_timeout_seconds = 0.01
+        manager._lock = RLock()
+        manager._termination_traces = {}
+        slot = SimpleNamespace(process=process, protocol_thread=protocol_thread)
+
+        try:
+            self.assertTrue(
+                manager._confirm_slot_exit(
+                    "tsk_delayed_protocol_reap",
+                    slot,
+                    request_cooperative_cancel=False,
+                )
+            )
+            self.assertEqual(
+                manager._termination_traces["tsk_delayed_protocol_reap"],
+                (
+                    "TERMINAL_EXIT_WAIT_STARTED",
+                    "TERMINATE_SENT",
+                    "KILL_SENT",
+                    "EXIT_CONFIRMED",
+                ),
+            )
+        finally:
+            protocol_thread.join(timeout=1.0)
+
     def test_shutdown_waits_for_terminal_task_process_exit_without_cancelling_task(self) -> None:
         class _TerminalExitRaceWorkers:
             def __init__(self) -> None:

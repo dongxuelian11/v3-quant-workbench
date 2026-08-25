@@ -51,7 +51,7 @@ test("V1.1 unified product gate exposes diagnostic Jobs A-F", () => {
 
   assert.match(jobC, /runs-on:\s*windows-latest/);
   assert.match(jobC, /Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD/);
-  assert.match(jobC, /node node_modules\/electron\/install\.js/);
+  assert.match(jobC, /delete process\.env\.ELECTRON_SKIP_BINARY_DOWNLOAD; require\('\.\/node_modules\/electron\/install\.js'\)/);
   assert.match(jobC, /fs\.accessSync\(binary\)/);
   for (const command of ["build", "test:runtime", "verify:product-bundle-truth", "smoke:frontend", "smoke:electron:runtime", "smoke:product-data", "smoke:product-factor", "smoke:product-backtest", "smoke:product-result"]) {
     assert.match(jobC, new RegExp(`npm\\.cmd run ${command.replaceAll(":", "\\:")}`));
@@ -102,6 +102,20 @@ test("V1.1 clean-machine drivers need only transferred product artifacts", () =>
   assert.match(cleanMachineDriver, /no_pip_install_in_verify_job\s*=\s*\$true/);
   assert.match(cleanMachineDriver, /user_data_outside_install_root\s*=\s*\$true/);
   assert.doesNotMatch(cleanMachineDriver, /npm(?:\.cmd)?\s+(?:ci|install)|pip\s+install/i);
+});
+
+test("transferred Electron-as-Node drivers disable ASAR before raw package-tree access", () => {
+  for (const [label, driver] of [
+    ["Job E packaged journey", packagedJourneyDriver],
+    ["Job F live provider", liveProviderDriver],
+  ]) {
+    const noAsar = driver.indexOf("process.noAsar = true");
+    const packageCopy = driver.indexOf("await cp(");
+    assert.ok(noAsar >= 0, `${label} does not disable Electron ASAR interception`);
+    assert.ok(packageCopy >= 0, `${label} does not copy the transferred package tree`);
+    assert.ok(noAsar < packageCopy, `${label} disables ASAR only after package-tree access`);
+    assert.doesNotMatch(driver, /process\.noAsar\s*=\s*false/);
+  }
 });
 
 test("Job F packaged child cannot inherit driver or deterministic-provider mode", () => {

@@ -5,6 +5,10 @@ import { promisify } from "node:util";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 
+// This driver is executed by the transferred Electron binary in Node mode.
+// Its package-copy and identity checks need the archive itself as a raw file.
+process.noAsar = true;
+
 const execFileAsync = promisify(execFile);
 const root = resolve(import.meta.dirname, "..");
 const sourcePackageRoot = resolve(process.env.V3_PACKAGE_ROOT ?? join(root, "artifacts/package/win-unpacked"));
