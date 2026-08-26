@@ -730,6 +730,65 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
             finally:
                 original.close()
 
+    def test_staged_schema_rejects_semantically_broken_session_owner_trigger(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._create_exact_v5_catalog(root)
+            source_sha256 = hashlib.sha256(catalog.read_bytes()).hexdigest()
+            source_versions = (
+                Path(__file__).parents[2]
+                / "src"
+                / "v3_backend"
+                / "migrations"
+                / "versions"
+            )
+            malformed_versions = root / "malformed-versions"
+            malformed_versions.mkdir()
+            for migration in source_versions.glob("*.sql"):
+                (malformed_versions / migration.name).write_bytes(migration.read_bytes())
+            migration_0006_path = malformed_versions / "0006_catalog_upgrade_session_integrity.sql"
+            migration_0006 = migration_0006_path.read_text(encoding="utf-8")
+            malformed_trigger = """
+DROP TRIGGER desktop_session_project_context_owner_insert_guard;
+
+CREATE TRIGGER desktop_session_project_context_owner_insert_guard
+BEFORE INSERT ON desktop_session
+WHEN NOT EXISTS (
+  SELECT 1 FROM project_context_revision
+  WHERE project_context_revision_id=NEW.project_context_revision_id
+    AND project_id=NEW.project_id
+    OR 1=1
+)
+BEGIN
+  SELECT RAISE(ABORT, 'desktop_session project/context binding mismatch');
+END;
+"""
+            migration_0006_path.write_text(
+                migration_0006.replace(
+                    "DROP TRIGGER desktop_session_project_binding_immutable_guard;",
+                    malformed_trigger
+                    + "\nDROP TRIGGER desktop_session_project_binding_immutable_guard;",
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(CatalogUpgradeIntegrityError):
+                upgrade_catalog(
+                    catalog,
+                    application_version="malformed-owner-trigger-test",
+                    versions_dir=malformed_versions,
+                    backup_dir=root / "backups",
+                )
+
+            self.assertEqual(hashlib.sha256(catalog.read_bytes()).hexdigest(), source_sha256)
+            connection = connect_catalog(catalog, read_only=True)
+            try:
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+            finally:
+                connection.close()
+
     def test_backup_write_interruption_preserves_source_and_isolates_partial_bytes(
         self,
     ) -> None:

@@ -12,6 +12,30 @@ REQUIRED_TRIGGERS = frozenset(
         "desktop_session_project_context_owner_update_guard",
     }
 )
+_EXPECTED_TRIGGER_SQL = {
+    "desktop_session_project_binding_immutable_guard": (
+        "create trigger desktop_session_project_binding_immutable_guard "
+        "before update of project_id on desktop_session "
+        "when new.project_id<>old.project_id "
+        "begin select raise(abort, 'desktop_session project binding is immutable'); end"
+    ),
+    "desktop_session_project_context_owner_insert_guard": (
+        "create trigger desktop_session_project_context_owner_insert_guard "
+        "before insert on desktop_session "
+        "when not exists ( select 1 from project_context_revision "
+        "where project_context_revision_id=new.project_context_revision_id "
+        "and project_id=new.project_id ) "
+        "begin select raise(abort, 'desktop_session project/context binding mismatch'); end"
+    ),
+    "desktop_session_project_context_owner_update_guard": (
+        "create trigger desktop_session_project_context_owner_update_guard "
+        "before update of project_id,project_context_revision_id on desktop_session "
+        "when not exists ( select 1 from project_context_revision "
+        "where project_context_revision_id=new.project_context_revision_id "
+        "and project_id=new.project_id ) "
+        "begin select raise(abort, 'desktop_session project/context binding mismatch'); end"
+    ),
+}
 EXPECTED_TABLES = frozenset(
     {
         "artifact",
@@ -120,20 +144,40 @@ def _trigger_names(connection: sqlite3.Connection) -> frozenset[str]:
     return frozenset(str(row[0]) for row in rows)
 
 
-def _validate_required_trigger_shapes(connection: sqlite3.Connection) -> None:
+def _trigger_sql(connection: sqlite3.Connection, name: str) -> str:
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
-        ("desktop_session_project_binding_immutable_guard",),
+        (name,),
     ).fetchone()
-    sql = " ".join(str(row[0]).casefold().split()) if row is not None else ""
-    if (
-        "before update of project_id on desktop_session" not in sql
-        or "when new.project_id<>old.project_id" not in sql
-        or "project_context_revision_id" in sql
-    ):
-        raise SchemaValidationError(
-            "desktop session binding trigger does not preserve same-project revision refresh"
-        )
+    return " ".join(str(row[0]).casefold().split()) if row is not None else ""
+
+
+def _require_trigger_shape(
+    connection: sqlite3.Connection,
+    name: str,
+    error_message: str,
+) -> None:
+    if _trigger_sql(connection, name) != _EXPECTED_TRIGGER_SQL[name]:
+        raise SchemaValidationError(error_message)
+
+
+def _validate_required_trigger_shapes(connection: sqlite3.Connection) -> None:
+    _require_trigger_shape(
+        connection,
+        "desktop_session_project_binding_immutable_guard",
+        "desktop session binding trigger does not preserve same-project revision refresh",
+    )
+
+    _require_trigger_shape(
+        connection,
+        "desktop_session_project_context_owner_insert_guard",
+        "desktop session insert trigger does not enforce project/context ownership",
+    )
+    _require_trigger_shape(
+        connection,
+        "desktop_session_project_context_owner_update_guard",
+        "desktop session update trigger does not enforce project/context ownership",
+    )
 
 
 def _invariant_violations(connection: sqlite3.Connection) -> list[str]:
