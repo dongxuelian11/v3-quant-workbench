@@ -275,6 +275,19 @@ def _remove_state(path: Path) -> None:
     sync_directory(state_path.parent)
 
 
+def _remove_state_checked(path: Path, *, phase: str) -> None:
+    try:
+        _remove_state(path)
+    except OSError as error:
+        raise CatalogUpgradeIntegrityError(
+            "Catalog upgrade durable state cleanup failed",
+            details={
+                "phase": phase,
+                "recovery_action": "STOP_FOR_REVIEW",
+            },
+        ) from error
+
+
 def _isolate_unadmitted_copy(path: Path) -> Path:
     incomplete = path.with_name(path.name + ".incomplete")
     durable_replace_file(path, incomplete)
@@ -1187,7 +1200,7 @@ def _reconcile_upgrade_state(
                 },
             )
         report = _validate_current(path, migrations)
-        _remove_state(path)
+        _remove_state_checked(path, phase="POST_RECEIPT_STATE_CLEANUP")
         return CatalogUpgradeResult(
             path,
             MigrationResult(path, (), (), report),
@@ -1222,7 +1235,7 @@ def _reconcile_upgrade_state(
 
     report = _validate_current(path, migrations)
     _insert_receipt(path, receipt, busy_timeout_ms)
-    _remove_state(path)
+    _remove_state_checked(path, phase="POST_RECEIPT_STATE_CLEANUP")
     applied = tuple(item[0] for item in receipt.target_schema_prefix[source_count:])
     return CatalogUpgradeResult(path, MigrationResult(path, applied, (), report), receipt)
 
@@ -1402,7 +1415,13 @@ def _upgrade_catalog_locked(
             )
             _insert_receipt(path, receipt, busy_timeout_ms)
             return CatalogUpgradeResult(path, migration_result, receipt)
-        except (MigrationError, SchemaValidationError, sqlite3.DatabaseError, OSError) as error:
+        except (
+            MigrationError,
+            SchemaValidationError,
+            UnicodeError,
+            sqlite3.DatabaseError,
+            OSError,
+        ) as error:
             raise CatalogUpgradeIntegrityError(
                 "fresh Catalog migration or exact schema validation failed"
             ) from error
@@ -1476,6 +1495,7 @@ def _upgrade_catalog_locked(
     except (
         MigrationError,
         SchemaValidationError,
+        UnicodeError,
         sqlite3.DatabaseError,
         OSError,
     ) as error:
@@ -1601,5 +1621,5 @@ def _upgrade_catalog_locked(
     _insert_receipt(path, receipt, busy_timeout_ms)
     if fault_hook is not None:
         fault_hook("AFTER_RECEIPT_BEFORE_STATE_CLEANUP")
-    _remove_state(path)
+    _remove_state_checked(path, phase="POST_RECEIPT_STATE_CLEANUP")
     return CatalogUpgradeResult(path, migration_result, receipt)

@@ -122,6 +122,28 @@ EXPECTED_TABLES = frozenset(
     }
 )
 
+_EXPECTED_COLUMN_SHAPES = {
+    "catalog_upgrade_receipt": (
+        ("operation_id", "TEXT", 0, None, 1),
+        ("source_catalog_path_fingerprint", "TEXT", 1, None, 0),
+        ("source_catalog_sha256", "TEXT", 1, None, 0),
+        ("source_schema_prefix_json", "TEXT", 1, None, 0),
+        ("target_schema_prefix_json", "TEXT", 1, None, 0),
+        ("backup_path_fingerprint", "TEXT", 0, None, 0),
+        ("backup_sha256", "TEXT", 0, None, 0),
+        ("staged_sha256_before_replace", "TEXT", 1, None, 0),
+        ("final_catalog_sha256", "TEXT", 1, None, 0),
+        ("integrity_check", "TEXT", 1, None, 0),
+        ("foreign_key_check", "TEXT", 1, None, 0),
+        ("replacement_mode", "TEXT", 1, None, 0),
+        ("started_at", "TEXT", 1, None, 0),
+        ("committed_at", "TEXT", 1, None, 0),
+        ("recovery_action", "TEXT", 1, None, 0),
+        ("result", "TEXT", 1, None, 0),
+        ("error_code", "TEXT", 0, None, 0),
+    ),
+}
+
 
 class SchemaValidationError(RuntimeError):
     """The database is not an exact, internally valid v1 Control Catalog."""
@@ -183,6 +205,27 @@ def _validate_required_trigger_shapes(connection: sqlite3.Connection) -> None:
         "desktop_session_project_context_owner_update_guard",
         "desktop session update trigger does not enforce project/context ownership",
     )
+
+
+def _validate_required_column_shapes(connection: sqlite3.Connection) -> None:
+    for table_name, expected in _EXPECTED_COLUMN_SHAPES.items():
+        quoted_table_name = '"' + table_name.replace('"', '""') + '"'
+        actual = tuple(
+            (
+                str(row[1]),
+                str(row[2]).upper(),
+                int(row[3]),
+                None if row[4] is None else str(row[4]),
+                int(row[5]),
+            )
+            for row in connection.execute(
+                f"PRAGMA table_info({quoted_table_name})"
+            )
+        )
+        if actual != expected:
+            raise SchemaValidationError(
+                f"{table_name} column shape is not the admitted catalog upgrade receipt schema"
+            )
 
 
 def _invariant_violations(connection: sqlite3.Connection) -> list[str]:
@@ -282,6 +325,7 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
         missing = sorted(EXPECTED_TABLES - tables)
         extra = sorted(tables - EXPECTED_TABLES)
         raise SchemaValidationError(f"schema table mismatch: missing={missing}, extra={extra}")
+    _validate_required_column_shapes(connection)
     session_columns = {
         str(row[1])
         for row in connection.execute("PRAGMA table_info(desktop_session)")

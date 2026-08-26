@@ -202,6 +202,35 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
                 "CATALOG_UPGRADE_INTEGRITY_FAILED",
             )
 
+    def test_fresh_non_utf8_migration_maps_to_stable_startup_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.sqlite3"
+            versions_dir = root / "non-utf8-versions"
+            versions_dir.mkdir()
+            source = (
+                Path(__file__).parents[2]
+                / "src"
+                / "v3_backend"
+                / "migrations"
+                / "versions"
+                / "0001_control_catalog.sql"
+            )
+            (versions_dir / source.name).write_bytes(source.read_bytes() + b"\xff")
+
+            with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                upgrade_catalog(
+                    catalog,
+                    application_version="fresh-non-utf8-error-mapping",
+                    versions_dir=versions_dir,
+                    backup_dir=root / "backups",
+                )
+
+            self.assertEqual(
+                raised.exception.code.value,
+                "CATALOG_UPGRADE_INTEGRITY_FAILED",
+            )
+
     def test_fresh_catalog_migration_discovery_failure_maps_to_stable_startup_error(
         self,
     ) -> None:
@@ -268,6 +297,65 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
                 raised.exception.code.value,
                 "CATALOG_UPGRADE_INTEGRITY_FAILED",
             )
+
+    def test_staged_non_utf8_migration_maps_to_stable_startup_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._create_exact_v5_catalog(root)
+            versions_dir = root / "staged-non-utf8-versions"
+            versions_dir.mkdir()
+            for migration in discover_migrations():
+                (versions_dir / migration.path.name).write_bytes(
+                    migration.path.read_bytes()
+                )
+            migration_path = versions_dir / "0006_catalog_upgrade_session_integrity.sql"
+            migration_path.write_bytes(migration_path.read_bytes() + b"\xff")
+
+            with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                upgrade_catalog(
+                    catalog,
+                    application_version="staged-non-utf8-error-mapping",
+                    versions_dir=versions_dir,
+                    backup_dir=root / "backups",
+                )
+
+            self.assertEqual(
+                raised.exception.code.value,
+                "CATALOG_UPGRADE_INTEGRITY_FAILED",
+            )
+
+    def test_missing_catalog_upgrade_receipt_column_is_rejected_before_row_reads(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.sqlite3"
+            upgrade_catalog(
+                catalog,
+                application_version="receipt-shape-test",
+                backup_dir=root / "backups",
+            )
+            connection = sqlite3.connect(catalog, isolation_level=None)
+            try:
+                connection.execute("DROP TABLE catalog_upgrade_receipt")
+                connection.execute(
+                    "CREATE TABLE catalog_upgrade_receipt(operation_id TEXT PRIMARY KEY)"
+                )
+            finally:
+                connection.close()
+
+            with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                upgrade_catalog(
+                    catalog,
+                    application_version="receipt-shape-restart",
+                    backup_dir=root / "backups",
+                )
+
+            self.assertEqual(
+                raised.exception.code.value,
+                "CATALOG_UPGRADE_INTEGRITY_FAILED",
+            )
+            self.assertIn("exact schema/integrity validation", str(raised.exception))
 
     def test_tampered_persisted_receipt_is_rejected_on_next_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -986,6 +1074,52 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
                 "recovery must return the exact durable receipt rather than a reconstructed timestamp",
             )
             self.assertFalse((root / ".catalog.sqlite3.upgrade-state.v1.json").exists())
+
+    def test_receipt_commit_state_cleanup_failure_maps_to_stable_integrity_error(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._create_exact_v5_catalog(root)
+            state_path = root / ".catalog.sqlite3.upgrade-state.v1.json"
+
+            def replace_state_with_directory(phase: str) -> None:
+                if phase != "AFTER_RECEIPT_BEFORE_STATE_CLEANUP":
+                    return
+                state_path.unlink()
+                state_path.mkdir()
+
+            with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                upgrade_catalog(
+                    catalog,
+                    application_version="receipt-cleanup-error-mapping",
+                    backup_dir=root / "backups",
+                    fault_hook=replace_state_with_directory,
+                )
+
+            self.assertEqual(
+                raised.exception.code.value,
+                "CATALOG_UPGRADE_INTEGRITY_FAILED",
+            )
+            self.assertEqual(
+                raised.exception.details["phase"],
+                "POST_RECEIPT_STATE_CLEANUP",
+            )
+            self.assertEqual(
+                raised.exception.details["recovery_action"],
+                "STOP_FOR_REVIEW",
+            )
+            connection = connect_catalog(catalog, read_only=True)
+            try:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM catalog_upgrade_receipt"
+                    ).fetchone()[0],
+                    1,
+                )
+            finally:
+                connection.close()
+            self.assertTrue(state_path.is_dir())
 
     def test_post_receipt_catalog_drift_stops_before_state_cleanup(self) -> None:
         class SimulatedProcessCrash(BaseException):

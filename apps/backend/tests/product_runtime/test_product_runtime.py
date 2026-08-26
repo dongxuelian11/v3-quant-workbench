@@ -280,6 +280,9 @@ class ProjectSessionTests(_PortsCase):
         self.assertEqual(
             restored["body"]["read_model"]["project_id"], self.setup.project_id
         )
+        self.assertEqual(
+            restored["body"]["read_model"]["canonical_session_uuid"], session_id
+        )
         # Restart: a fresh product runtime over the same storage root still restores.
         restarted = build_product_ports(self.storage_root)
         restarted_router = RequestRouter(restarted.operation_handlers)
@@ -305,6 +308,9 @@ class ProjectSessionTests(_PortsCase):
         self.assertEqual(response["status"], "OK", response)
         self.assertEqual(
             response["body"]["read_model"]["session_id"], session_id
+        )
+        self.assertEqual(
+            response["body"]["read_model"]["canonical_session_uuid"], session_id
         )
 
     def test_revise_context_appends_revision(self) -> None:
@@ -334,6 +340,40 @@ class ProjectSessionTests(_PortsCase):
         self.assertEqual(
             repeated["body"]["read_model"]["project_context_revision_id"],
             new_revision,
+        )
+
+    def test_restore_rejects_durable_canonical_session_identity_mismatch(self) -> None:
+        session_id = mint_uuid7()
+        opened = self.route(
+            "ProjectSessionService.v1.openProject",
+            project_locator=f"v3:{self.setup.project_id}",
+            session_id=session_id,
+        )
+        self.assertEqual(opened["status"], "OK", opened)
+
+        connection = self.product._connection()
+        try:
+            connection.execute(
+                """
+                UPDATE desktop_session
+                SET canonical_session_uuid=?
+                WHERE session_id=?
+                """,
+                (
+                    "bbbbbbbb-cccc-7ddd-8eee-ffffffffffff",
+                    _session_row_id_for_value(session_id),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        rejected = self.route(
+            "ProjectSessionService.v1.restoreSession", session_id=session_id
+        )
+        self.assert_error(
+            rejected,
+            ErrorCode.SESSION_PROJECT_BINDING_CONFLICT.value,
         )
 
     def test_restore_rejects_superseded_context_revision(self) -> None:

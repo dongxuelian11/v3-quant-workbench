@@ -60,7 +60,8 @@ import {
   adaptTask,
   adaptTaskEvents,
   adaptTaskList,
-  ProductAdapterError
+  ProductAdapterError,
+  type SessionRestoreWithCanonicalIdentity
 } from "./adapters";
 import {
   ProductBindingStoreError,
@@ -3050,10 +3051,14 @@ export class ProductBridge {
     }
   }
 
-  private async restoreAndVerify(refs: ProductBindingRefs): Promise<SessionRestoreView> {
+  private async restoreAndVerify(refs: ProductBindingRefs): Promise<SessionRestoreWithCanonicalIdentity> {
     const response = await this.supervisor.request("ProjectSessionService.v1.restoreSession", { session_id: refs.sessionId });
     const restored = adaptSessionRestore(response);
-    if (restored.projectId !== refs.projectId || restored.projectContextRevisionId !== refs.projectContextRevisionId) {
+    if (
+      restored.canonicalSessionUuid !== refs.sessionId
+      || restored.projectId !== refs.projectId
+      || restored.projectContextRevisionId !== refs.projectContextRevisionId
+    ) {
       throw new ProductAdapterError("BINDING_SESSION_MISMATCH", "restored session did not exactly match the candidate binding");
     }
     return restored;

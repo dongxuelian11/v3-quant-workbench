@@ -189,6 +189,11 @@ def _session_restore_read_model(
     return {
         "read_model_version": "v3.session-restore/1.0",
         "session_row_id": str(session["session_id"]),
+        "canonical_session_uuid": (
+            None
+            if session["canonical_session_uuid"] is None
+            else str(session["canonical_session_uuid"])
+        ),
         "project_id": str(session["project_id"]),
         "project_context_revision_id": current["project_context_revision_id"],
         "state": str(session["state"]),
@@ -462,6 +467,10 @@ class ProjectSessionFacade:
                 break
         if session is None:
             raise NotFoundError(f"unknown desktop session: {session_id}")
+        if str(session["canonical_session_uuid"] or "") != canonical_session_uuid:
+            raise SessionProjectBindingConflictError(
+                "session UUID does not match its durable canonical identity"
+            )
         read_model = _session_restore_read_model(self.product, session)
         read_model["session_id"] = session_id
         return _response(request, read_model)

@@ -29,7 +29,7 @@ function projectContextReadModel(projectId, pcrId) {
   };
 }
 
-function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = null, restoreErrorCode = null, runSpecRows = null, taskRows = null, projectHome = null, artifactPayload = null, artifactPayloads = null, artifactStreamFailure = null } = {}) {
+function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = null, restoreErrorCode = null, restoreCanonicalSessionUuid = null, runSpecRows = null, taskRows = null, projectHome = null, artifactPayload = null, artifactPayloads = null, artifactStreamFailure = null } = {}) {
   const calls = [];
   const payloadFor = (artifactId) => artifactPayloads?.get(artifactId) ?? artifactPayload;
   return {
@@ -91,7 +91,9 @@ function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = 
           throw new BackendRuntimeError("candidate session restore failed", "SESSION_RESTORE_FAILED");
         }
         return { read_model: {
-          read_model_version: "v3.session-restore/1.0", session_row_id: "ses_test", project_id: this.context.projectId,
+          read_model_version: "v3.session-restore/1.0", session_row_id: "ses_test",
+          canonical_session_uuid: restoreCanonicalSessionUuid ?? payload.session_id,
+          project_id: this.context.projectId,
           project_context_revision_id: this.context.projectContextRevisionId, state: "OPEN", active_lab: null,
           layout_artifact_id: null, opened_at: "2026-08-15T00:00:00Z", closed_at: null, context: {}
         } };
@@ -575,6 +577,33 @@ test("restoreSession rejects a response whose context revision is no longer the 
       (error) => error.code === "BINDING_SESSION_MISMATCH"
     );
     assert.equal(await bridge.getBoundProject(), null, "mismatched restore must not admit a binding");
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("restoreSession rejects a response whose durable canonical session identity is no longer the persisted binding", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-restore-session-identity-mismatch-"));
+  try {
+    const bindingPath = productBindingPath(dir);
+    const recoveredStore = new ProductBindingStore(bindingPath);
+    await recoveredStore.persist(REFS);
+    await recoveredStore.load();
+    const supervisor = stubSupervisor({
+      restoreCanonicalSessionUuid: "bbbbbbbb-cccc-7ddd-8eee-ffffffffffff"
+    });
+    supervisor.setProjectContext({
+      projectId: REFS.projectId,
+      projectContextRevisionId: REFS.projectContextRevisionId,
+      lastDurableProjectEventSequence: 0
+    });
+    await supervisor.start();
+    const bridge = new ProductBridge(supervisor, stubStore(), recoveredStore);
+    await assert.rejects(
+      () => bridge.restoreSession(),
+      (error) => error.code === "BINDING_SESSION_MISMATCH"
+    );
+    assert.equal(await bridge.getBoundProject(), null, "mismatched canonical session must not admit a binding");
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
