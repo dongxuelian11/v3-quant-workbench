@@ -343,13 +343,16 @@ def _validate_receipt_hashes(row: Mapping[str, object]) -> None:
             )
 
 
-def _validate_receipt_prefixes(row: Mapping[str, object]) -> None:
+def _validate_receipt_prefixes(
+    row: Mapping[str, object],
+    migrations: tuple[Migration, ...],
+) -> None:
     try:
-        _state_prefix(
+        source_prefix = _state_prefix(
             json.loads(str(row["source_schema_prefix_json"])),
             "receipt_source_schema_prefix",
         )
-        _state_prefix(
+        target_prefix = _state_prefix(
             json.loads(str(row["target_schema_prefix_json"])),
             "receipt_target_schema_prefix",
         )
@@ -357,6 +360,18 @@ def _validate_receipt_prefixes(row: Mapping[str, object]) -> None:
         raise CatalogUpgradeIntegrityError(
             "persisted Catalog upgrade receipt migration prefixes are invalid"
         ) from error
+    expected_prefix = _prefix(migrations, len(migrations))
+    if (
+        not source_prefix
+        or not target_prefix
+        or len(target_prefix) > len(expected_prefix)
+        or target_prefix != expected_prefix[: len(target_prefix)]
+        or len(source_prefix) > len(target_prefix)
+        or source_prefix != target_prefix[: len(source_prefix)]
+    ):
+        raise CatalogUpgradeIntegrityError(
+            "persisted Catalog upgrade receipt migration prefixes are not an admitted chain"
+        )
 
 
 def _validate_receipt_integrity(row: Mapping[str, object]) -> None:
@@ -413,16 +428,22 @@ def _validate_receipt_times_and_error(row: Mapping[str, object]) -> None:
         )
 
 
-def _validate_receipt_row(row: Mapping[str, object]) -> None:
+def _validate_receipt_row(
+    row: Mapping[str, object],
+    migrations: tuple[Migration, ...],
+) -> None:
     _validate_receipt_identity(row)
     _validate_receipt_hashes(row)
-    _validate_receipt_prefixes(row)
+    _validate_receipt_prefixes(row, migrations)
     _validate_receipt_integrity(row)
     _validate_receipt_outcome(row)
     _validate_receipt_times_and_error(row)
 
 
-def _validate_persisted_receipts(connection: sqlite3.Connection) -> None:
+def _validate_persisted_receipts(
+    connection: sqlite3.Connection,
+    migrations: tuple[Migration, ...],
+) -> None:
     table = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_upgrade_receipt'"
     ).fetchone()
@@ -430,7 +451,7 @@ def _validate_persisted_receipts(connection: sqlite3.Connection) -> None:
         return
     rows = connection.execute("SELECT * FROM catalog_upgrade_receipt").fetchall()
     for row in rows:
-        _validate_receipt_row(dict(row))
+        _validate_receipt_row(dict(row), migrations)
 
 
 def _quote_sqlite_identifier(value: str) -> str:
@@ -668,6 +689,21 @@ def _prefix(
     )
 
 
+def _discover_migrations_for_upgrade(
+    versions_dir: Path | None,
+) -> tuple[Migration, ...]:
+    try:
+        return discover_migrations(versions_dir)
+    except (MigrationError, OSError, UnicodeError) as error:
+        raise CatalogUpgradeIntegrityError(
+            "Catalog migration set could not be discovered",
+            details={
+                "phase": "MIGRATION_DISCOVERY",
+                "recovery_action": "STOP_FOR_REVIEW",
+            },
+        ) from error
+
+
 def _read_prefix(path: Path, migrations: tuple[Migration, ...]) -> int:
     if not path.is_file() or path.stat().st_size < 16:
         raise CatalogMigrationPrefixUnrecognizedError(
@@ -723,7 +759,10 @@ def _checkpoint_and_remove_sidecars(path: Path, busy_timeout_ms: int) -> None:
     sync_directory(path.parent)
 
 
-def _validate_current(path: Path) -> SchemaReport:
+def _validate_current(
+    path: Path,
+    migrations: tuple[Migration, ...],
+) -> SchemaReport:
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(
@@ -733,7 +772,7 @@ def _validate_current(path: Path) -> SchemaReport:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA query_only = ON")
         report = validate_schema(connection)
-        _validate_persisted_receipts(connection)
+        _validate_persisted_receipts(connection, migrations)
         return report
     except (sqlite3.DatabaseError, SchemaValidationError) as error:
         raise CatalogUpgradeIntegrityError(
@@ -854,6 +893,7 @@ def _receipt_from_state(state: Mapping[str, object]) -> CatalogUpgradeReceiptV1:
 def _read_persisted_receipt(
     path: Path,
     operation_id: str,
+    migrations: tuple[Migration, ...],
 ) -> CatalogUpgradeReceiptV1 | None:
     connection: sqlite3.Connection | None = None
     try:
@@ -872,7 +912,7 @@ def _read_persisted_receipt(
         ).fetchone()
         if row is None:
             return None
-        _validate_receipt_row(dict(row))
+        _validate_receipt_row(dict(row), migrations)
         return CatalogUpgradeReceiptV1(
             operation_id=str(row["operation_id"]),
             source_catalog_path_fingerprint=str(
@@ -1099,7 +1139,11 @@ def _reconcile_upgrade_state(
             migrations,
             busy_timeout_ms,
         )
-    persisted_receipt = _read_persisted_receipt(path, receipt.operation_id)
+    persisted_receipt = _read_persisted_receipt(
+        path,
+        receipt.operation_id,
+        migrations,
+    )
     if persisted_receipt is not None:
         expected_persisted = replace(
             receipt,
@@ -1142,7 +1186,7 @@ def _reconcile_upgrade_state(
                     "recovery_action": "STOP_FOR_REVIEW",
                 },
             )
-        report = _validate_current(path)
+        report = _validate_current(path, migrations)
         _remove_state(path)
         return CatalogUpgradeResult(
             path,
@@ -1167,7 +1211,7 @@ def _reconcile_upgrade_state(
         staged_evidence = _recovery_file_evidence(staged_path, "stage")
         if staged_evidence.sha256 != receipt.staged_sha256_before_replace:
             raise CatalogUpgradeIntegrityError("Catalog upgrade staged bytes drifted")
-        _validate_current(staged_path)
+        _validate_current(staged_path, migrations)
         atomic_replace_database(staged_path, path)
         state["phase"] = "REPLACED_PENDING_RECEIPT"
         _write_state(path, state)
@@ -1176,7 +1220,7 @@ def _reconcile_upgrade_state(
             "Catalog bytes match neither the admitted source nor verified replacement"
         )
 
-    report = _validate_current(path)
+    report = _validate_current(path, migrations)
     _insert_receipt(path, receipt, busy_timeout_ms)
     _remove_state(path)
     applied = tuple(item[0] for item in receipt.target_schema_prefix[source_count:])
@@ -1231,28 +1275,43 @@ def _write_rollback_receipt(
     failed: Path,
     started_at: str,
 ) -> None:
-    rollback_receipt = {
-        "schema_id": "urn:v3:catalog-upgrade-rollback-receipt:1.0.0",
-        "operation_id": state["operation_id"],
-        "source_catalog_path_fingerprint": state[
-            "source_catalog_path_fingerprint"
-        ],
-        "source_catalog_sha256": source.sha256,
-        "target_schema_prefix": state["target_schema_prefix"],
-        "backup_path_fingerprint": state["backup_path_fingerprint"],
-        "backup_sha256": backup.sha256,
-        "failed_catalog_path_fingerprint": _path_fingerprint(failed),
-        "recovery_action": "RESTORED_BACKUP",
-        "result": "ROLLED_BACK",
-        "error_code": "CATALOG_UPGRADE_INTEGRITY_FAILED",
-        "started_at": started_at,
-        "committed_at": _utc_now(),
-    }
-    _write_durable_json(
-        backup_root / f"catalog-upgrade-rollback-{state['operation_id']}.json",
-        rollback_receipt,
-    )
-    _remove_state(path)
+    try:
+        rollback_receipt = {
+            "schema_id": "urn:v3:catalog-upgrade-rollback-receipt:1.0.0",
+            "operation_id": state["operation_id"],
+            "source_catalog_path_fingerprint": state[
+                "source_catalog_path_fingerprint"
+            ],
+            "source_catalog_sha256": source.sha256,
+            "target_schema_prefix": state["target_schema_prefix"],
+            "backup_path_fingerprint": state["backup_path_fingerprint"],
+            "backup_sha256": backup.sha256,
+            "failed_catalog_path_fingerprint": _path_fingerprint(failed),
+            "recovery_action": "RESTORED_BACKUP",
+            "result": "ROLLED_BACK",
+            "error_code": "CATALOG_UPGRADE_INTEGRITY_FAILED",
+            "started_at": started_at,
+            "committed_at": _utc_now(),
+        }
+        _write_durable_json(
+            backup_root / f"catalog-upgrade-rollback-{state['operation_id']}.json",
+            rollback_receipt,
+        )
+        _remove_state(path)
+    except (
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+        CatalogUpgradeIntegrityError,
+    ) as error:
+        raise CatalogUpgradeIntegrityError(
+            "Catalog rollback receipt or recovery state could not be finalized",
+            details={
+                "phase": "ROLLBACK_RECEIPT",
+                "recovery_action": "STOP_FOR_REVIEW",
+            },
+        ) from error
 
 
 def upgrade_catalog(
@@ -1294,7 +1353,8 @@ def require_current_catalog(
             "worker Catalog is missing after runtime startup",
             details={"phase": "REQUIRE_CURRENT"},
         )
-    return _validate_current(path)
+    migrations = _discover_migrations_for_upgrade(None)
+    return _validate_current(path, migrations)
 
 
 def _upgrade_catalog_locked(
@@ -1308,7 +1368,7 @@ def _upgrade_catalog_locked(
 ) -> CatalogUpgradeResult:
     path = Path(database_path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    migrations = discover_migrations(versions_dir)
+    migrations = _discover_migrations_for_upgrade(versions_dir)
     backup_root = Path(backup_dir).resolve()
     reconciled = _reconcile_upgrade_state(
         path,
@@ -1350,7 +1410,7 @@ def _upgrade_catalog_locked(
     started_at = _utc_now()
     applied_count = _read_prefix(path, migrations)
     if applied_count == len(migrations):
-        report = _validate_current(path)
+        report = _validate_current(path, migrations)
         _checkpoint_and_remove_sidecars(path, busy_timeout_ms)
         current = database_file_evidence(path)
         receipt = _receipt(
@@ -1413,12 +1473,17 @@ def _upgrade_catalog_locked(
             backup_dir=backup_root / "staged-migration-backups" / token,
             busy_timeout_ms=busy_timeout_ms,
         )
-    except (MigrationError, SchemaValidationError, sqlite3.DatabaseError) as error:
+    except (
+        MigrationError,
+        SchemaValidationError,
+        sqlite3.DatabaseError,
+        OSError,
+    ) as error:
         raise CatalogUpgradeIntegrityError(
             "staged Catalog migration or exact schema validation failed"
         ) from error
     _checkpoint_and_remove_sidecars(staged, busy_timeout_ms)
-    _validate_current(staged)
+    _validate_current(staged, migrations)
     staged_content_sha256 = _catalog_content_sha256(staged)
     staged_evidence = database_file_evidence(staged)
     if fault_hook is not None:
@@ -1459,7 +1524,7 @@ def _upgrade_catalog_locked(
     if fault_hook is not None:
         fault_hook("AFTER_REPLACE_BEFORE_RECEIPT")
     try:
-        report = _validate_current(path)
+        report = _validate_current(path, migrations)
     except CatalogUpgradeIntegrityError as validation_error:
         _verify_rollback_backup(backup, source, migrations, applied_count)
         failed, restored = _rollback_paths(path, str(state["operation_id"]))
