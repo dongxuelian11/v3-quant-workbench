@@ -1511,6 +1511,57 @@ class ArtifactServiceTests(_PortsCase):
         self.assertEqual(completed["gc_batch_id"], replayed["read_model"]["gc_batch_id"])
         self.assertIsNotNone(completed["outcome_json"])
 
+    def test_gc_plan_failure_retains_stage_after_durable_promotion_intent(self) -> None:
+        from unittest.mock import patch
+        from v3_backend.domain.artifacts.reachability import GarbageCollectionPlan
+
+        facade = ArtifactFacade(self.product)
+        revision_id = self.product.current_revision(self.setup.project_id)[
+            "project_context_revision_id"
+        ]
+        request = {
+            "request_id": mint_uuid7(),
+            "project_id": self.setup.project_id,
+            "project_context_revision_id": revision_id,
+            "retention_profile_id": "default",
+        }
+
+        with patch.object(
+            self.product.artifact_publication,
+            "promote",
+            side_effect=RuntimeError("simulated GC plan promotion failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated GC plan promotion failure"):
+                facade.plan_garbage_collection(request)
+
+        connection = self.product._connection(read_only=True)
+        try:
+            scope = self.product.idempotency.scope_key(
+                "ArtifactService.v1.planGarbageCollection",
+                self.setup.project_id,
+                request["request_id"],
+            )
+            claim = connection.execute(
+                "SELECT plan_json FROM artifact_gc_request WHERE request_scope_key=?",
+                (scope,),
+            ).fetchone()
+            self.assertIsNotNone(claim)
+            plan = GarbageCollectionPlan.from_canonical_bytes(
+                str(claim["plan_json"]).encode("utf-8")
+            )
+            intent = connection.execute(
+                "SELECT staging_token,state FROM artifact_promotion_intent "
+                "WHERE artifact_id=?",
+                (plan.plan_artifact_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertIsNotNone(intent)
+        self.assertEqual(intent["state"], "STAGED_SYNCED")
+        self.assertTrue(
+            self.product.artifact_store.staging_path(str(intent["staging_token"])).is_file()
+        )
+
     def test_completed_gc_claim_rejects_tampered_durable_outcome(self) -> None:
         facade = ArtifactFacade(self.product)
         revision_id = self.product.current_revision(self.setup.project_id)[

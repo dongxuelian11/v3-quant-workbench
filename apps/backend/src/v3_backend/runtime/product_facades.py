@@ -1123,6 +1123,38 @@ class ArtifactFacade:
                 uow.rollback()
             connection.close()
 
+    def _quarantine_unadmitted_gc_stage(
+        self, staging_token: str, primary_error: Exception
+    ) -> None:
+        """Quarantine a failed GC stage only when no intent owns it.
+
+        ``_publish_staged_artifact`` records a promotion intent before it
+        mutates the final namespace.  If a later callback or Catalog step
+        fails, that stage is an admitted recovery source and must remain in
+        place for reconciliation.  Only a stage with no durable intent is an
+        orphan that this facade may move out of the staging namespace.
+        """
+
+        try:
+            intent = self.product.artifact_publication._intent_by_stage(staging_token)
+        except Exception as lookup_error:
+            # Retain the stage when ownership cannot be resolved.  Moving it
+            # on an unavailable Catalog could destroy the only recovery path.
+            primary_error.add_note(
+                "GC stage ownership lookup failed; stage retained: "
+                f"{type(lookup_error).__name__}: {lookup_error}"
+            )
+            return
+        if intent is not None:
+            return
+        try:
+            self.product.artifact_store.quarantine_orphan_stage(staging_token)
+        except Exception as quarantine_error:
+            primary_error.add_note(
+                "GC orphan stage quarantine failed: "
+                f"{type(quarantine_error).__name__}: {quarantine_error}"
+            )
+
     def _publish_gc_plan_and_batch(
         self,
         *,
@@ -1145,10 +1177,8 @@ class ArtifactFacade:
                     schema_fingerprint="urn:v3:artifact-gc-plan:1.0.0",
                     references=((project_id, "GC_PLAN"),),
                 )
-            except Exception:
-                self.product.artifact_store.quarantine_orphan_stage(
-                    staged.staging_token
-                )
+            except Exception as exc:
+                self._quarantine_unadmitted_gc_stage(staged.staging_token, exc)
                 raise
             if publication.descriptor.artifact_id != plan_artifact_id:
                 raise V3ContractError(
@@ -1174,10 +1204,8 @@ class ArtifactFacade:
                         schema_fingerprint="urn:v3:artifact-gc-plan:1.0.0",
                         references=((project_id, "GC_PLAN"),),
                     )
-                except Exception:
-                    self.product.artifact_store.quarantine_orphan_stage(
-                        staged.staging_token
-                    )
+                except Exception as exc:
+                    self._quarantine_unadmitted_gc_stage(staged.staging_token, exc)
                     raise
                 if publication.descriptor.artifact_id != plan_artifact_id:
                     raise V3ContractError(
