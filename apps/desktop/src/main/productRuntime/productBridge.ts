@@ -60,8 +60,7 @@ import {
   adaptTask,
   adaptTaskEvents,
   adaptTaskList,
-  ProductAdapterError,
-  type SessionRestoreWithCanonicalIdentity
+  ProductAdapterError
 } from "./adapters";
 import {
   ProductBindingStoreError,
@@ -118,6 +117,25 @@ const RETRYABLE_PRODUCT_TASK_CATEGORIES = new Set([
   "RETRYABLE_ADAPTER",
   "WORKER_OOM"
 ]);
+
+type SessionRestoreWithCanonicalIdentity = SessionRestoreView & {
+  readonly canonicalSessionUuid: string;
+};
+
+function readCanonicalSessionUuid(raw: unknown): string {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "session restore response is not an object");
+  }
+  const model = (raw as Record<string, unknown>).read_model;
+  if (model === null || typeof model !== "object" || Array.isArray(model)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "session restore read model is not an object");
+  }
+  const canonicalSessionUuid = (model as Record<string, unknown>).canonical_session_uuid;
+  if (typeof canonicalSessionUuid !== "string" || canonicalSessionUuid.length === 0) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "canonical_session_uuid must be a non-empty string");
+  }
+  return canonicalSessionUuid;
+}
 
 type ProductCursorPayload =
   | {
@@ -3054,14 +3072,15 @@ export class ProductBridge {
   private async restoreAndVerify(refs: ProductBindingRefs): Promise<SessionRestoreWithCanonicalIdentity> {
     const response = await this.supervisor.request("ProjectSessionService.v1.restoreSession", { session_id: refs.sessionId });
     const restored = adaptSessionRestore(response);
+    const canonicalSessionUuid = readCanonicalSessionUuid(response);
     if (
-      restored.canonicalSessionUuid !== refs.sessionId
+      canonicalSessionUuid !== refs.sessionId
       || restored.projectId !== refs.projectId
       || restored.projectContextRevisionId !== refs.projectContextRevisionId
     ) {
       throw new ProductAdapterError("BINDING_SESSION_MISMATCH", "restored session did not exactly match the candidate binding");
     }
-    return restored;
+    return Object.freeze({ ...restored, canonicalSessionUuid });
   }
 
   private async rollbackToPriorBinding(prior: ProductBindingRefs | null): Promise<void> {

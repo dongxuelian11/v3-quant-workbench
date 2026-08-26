@@ -119,18 +119,13 @@ export function adaptProjectContext(raw: unknown): ProjectContextView {
   });
 }
 
-export type SessionRestoreWithCanonicalIdentity = SessionRestoreView & {
-  readonly canonicalSessionUuid: string;
-};
-
-export function adaptSessionRestore(raw: unknown): SessionRestoreWithCanonicalIdentity {
+export function adaptSessionRestore(raw: unknown): SessionRestoreView {
   const body = record(raw, "response body");
   const model = record(body.read_model, "session restore read model");
   versionField(model, "v3.session-restore/1.0", "session restore");
   return Object.freeze({
     readModelVersion: "v3.session-restore/1.0" as const,
     sessionRowId: stringField(model, "session_row_id"),
-    canonicalSessionUuid: stringField(model, "canonical_session_uuid"),
     projectId: stringField(model, "project_id"),
     projectContextRevisionId: stringField(model, "project_context_revision_id"),
     state: stringField(model, "state"),
