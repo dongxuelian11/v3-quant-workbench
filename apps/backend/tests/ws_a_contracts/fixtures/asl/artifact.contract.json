@@ -715,6 +715,179 @@
       "frontend_capabilities": [
         "safe cleanup"
       ]
+    },
+    {
+      "operation_id": "ArtifactService.v1.confirmGarbageCollection",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "ConfirmGarbageCollectionRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "project_id", "project_context_revision_id", "expected_api_version", "gc_batch_id", "plan_artifact_id", "exact_artifact_ids_hash", "confirmation_nonce"],
+          "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "project_id": {"type": "string", "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "project_context_revision_id": {"type": "string", "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "expected_api_version": {"type": "string", "const": "1.0"},
+            "gc_batch_id": {"type": "string", "pattern": "^gcb_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "plan_artifact_id": {"type": "string", "pattern": "^art_sha256_[0-9a-f]{64}$"},
+            "exact_artifact_ids_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "confirmation_nonce": {"type": "string", "minLength": 1, "maxLength": 128}
+          }
+        }
+      },
+      "response_dto": {
+        "name": "ConfirmGarbageCollectionResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "truth_state", "read_model"],
+          "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "truth_state": {"type": "string", "enum": ["FORMAL", "DEMO", "UNAVAILABLE"]},
+            "read_model": {"type": "object", "description": "Bounded garbage-collection action receipt/read model"}
+          }
+        }
+      },
+      "errors": ["INVALID_ARGUMENT", "VERSION_MISMATCH", "NOT_FOUND", "CONFLICT", "IDEMPOTENCY_CONFLICT", "CAPABILITY_UNAVAILABLE", "TRUTH_PRECONDITION_FAILED", "PIT_UNPROVABLE", "ARTIFACT_NOT_PUBLISHED", "RESOURCE_REJECTED", "INTERNAL_ERROR"]
+    },
+    {
+      "operation_id": "ArtifactService.v1.quarantineGarbageCollection",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "QuarantineGarbageCollectionRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "project_id", "project_context_revision_id", "expected_api_version", "gc_batch_id"],
+          "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "project_id": {"type": "string", "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "project_context_revision_id": {"type": "string", "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "expected_api_version": {"type": "string", "const": "1.0"},
+            "gc_batch_id": {"type": "string", "pattern": "^gcb_[0-9A-HJKMNP-TV-Z]{26}$"}
+          }
+        }
+      },
+      "response_dto": {
+        "name": "QuarantineGarbageCollectionResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "truth_state", "read_model"],
+          "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "truth_state": {"type": "string", "enum": ["FORMAL", "DEMO", "UNAVAILABLE"]},
+            "read_model": {"type": "object", "description": "Bounded garbage-collection action receipt/read model"}
+          }
+        }
+      },
+      "errors": ["INVALID_ARGUMENT", "VERSION_MISMATCH", "NOT_FOUND", "CONFLICT", "IDEMPOTENCY_CONFLICT", "CAPABILITY_UNAVAILABLE", "TRUTH_PRECONDITION_FAILED", "PIT_UNPROVABLE", "ARTIFACT_NOT_PUBLISHED", "RESOURCE_REJECTED", "INTERNAL_ERROR"]
+    },
+    {
+      "operation_id": "ArtifactService.v1.restoreGarbageCollection",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "RestoreGarbageCollectionRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "project_id", "project_context_revision_id", "expected_api_version", "gc_batch_id"],
+          "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "project_id": {"type": "string", "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "project_context_revision_id": {"type": "string", "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "expected_api_version": {"type": "string", "const": "1.0"},
+            "gc_batch_id": {"type": "string", "pattern": "^gcb_[0-9A-HJKMNP-TV-Z]{26}$"}
+          }
+        }
+      },
+      "response_dto": {
+        "name": "RestoreGarbageCollectionResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "truth_state", "read_model"],
+          "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "truth_state": {"type": "string", "enum": ["FORMAL", "DEMO", "UNAVAILABLE"]},
+            "read_model": {"type": "object", "description": "Bounded garbage-collection action receipt/read model"}
+          }
+        }
+      },
+      "errors": ["INVALID_ARGUMENT", "VERSION_MISMATCH", "NOT_FOUND", "CONFLICT", "IDEMPOTENCY_CONFLICT", "CAPABILITY_UNAVAILABLE", "TRUTH_PRECONDITION_FAILED", "PIT_UNPROVABLE", "ARTIFACT_NOT_PUBLISHED", "RESOURCE_REJECTED", "INTERNAL_ERROR"]
+    },
+    {
+      "operation_id": "ArtifactService.v1.planGarbagePurge",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "PlanGarbagePurgeRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "project_id", "project_context_revision_id", "expected_api_version", "quarantine_gc_batch_id"],
+          "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "project_id": {"type": "string", "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "project_context_revision_id": {"type": "string", "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "expected_api_version": {"type": "string", "const": "1.0"},
+            "quarantine_gc_batch_id": {"type": "string", "pattern": "^gcb_[0-9A-HJKMNP-TV-Z]{26}$"}
+          }
+        }
+      },
+      "response_dto": {
+        "name": "PlanGarbagePurgeResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "truth_state", "read_model"],
+          "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "truth_state": {"type": "string", "enum": ["FORMAL", "DEMO", "UNAVAILABLE"]},
+            "read_model": {"type": "object", "description": "Bounded garbage-collection action receipt/read model"}
+          }
+        }
+      },
+      "errors": ["INVALID_ARGUMENT", "VERSION_MISMATCH", "NOT_FOUND", "CONFLICT", "IDEMPOTENCY_CONFLICT", "CAPABILITY_UNAVAILABLE", "TRUTH_PRECONDITION_FAILED", "PIT_UNPROVABLE", "ARTIFACT_NOT_PUBLISHED", "RESOURCE_REJECTED", "INTERNAL_ERROR"]
+    },
+    {
+      "operation_id": "ArtifactService.v1.purgeGarbageCollection",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "PurgeGarbageCollectionRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "project_id", "project_context_revision_id", "expected_api_version", "gc_batch_id"],
+          "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "project_id": {"type": "string", "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "project_context_revision_id": {"type": "string", "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"},
+            "expected_api_version": {"type": "string", "const": "1.0"},
+            "gc_batch_id": {"type": "string", "pattern": "^gcb_[0-9A-HJKMNP-TV-Z]{26}$"}
+          }
+        }
+      },
+      "response_dto": {
+        "name": "PurgeGarbageCollectionResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "truth_state", "read_model"],
+          "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "truth_state": {"type": "string", "enum": ["FORMAL", "DEMO", "UNAVAILABLE"]},
+            "read_model": {"type": "object", "description": "Bounded garbage-collection action receipt/read model"}
+          }
+        }
+      },
+      "errors": ["INVALID_ARGUMENT", "VERSION_MISMATCH", "NOT_FOUND", "CONFLICT", "IDEMPOTENCY_CONFLICT", "CAPABILITY_UNAVAILABLE", "TRUTH_PRECONDITION_FAILED", "PIT_UNPROVABLE", "ARTIFACT_NOT_PUBLISHED", "RESOURCE_REJECTED", "INTERNAL_ERROR"]
     }
   ],
   "forbidden_responsibilities": [

@@ -4,12 +4,20 @@ import sqlite3
 from dataclasses import dataclass
 
 
-EXPECTED_USER_VERSION = 6
+EXPECTED_USER_VERSION = 7
 REQUIRED_TRIGGERS = frozenset(
     {
         "desktop_session_project_binding_immutable_guard",
         "desktop_session_project_context_owner_insert_guard",
         "desktop_session_project_context_owner_update_guard",
+        "artifact_reference_gc_execution_barrier_i",
+        "artifact_reference_gc_execution_barrier_u",
+        "artifact_promotion_intent_gc_execution_barrier_i",
+        "artifact_promotion_intent_gc_execution_barrier_u",
+        "artifact_gc_execution_binding_guard_u",
+        "artifact_gc_execution_metadata_guard_u",
+        "artifact_gc_execution_quarantine_metadata_guard_u",
+        "artifact_gc_active_reference_guard_u",
     }
 )
 _EXPECTED_TRIGGER_SQL = {
@@ -35,6 +43,93 @@ _EXPECTED_TRIGGER_SQL = {
         "and project_id=new.project_id ) "
         "begin select raise(abort, 'desktop_session project/context binding mismatch'); end"
     ),
+    "artifact_reference_gc_execution_barrier_i": (
+        "create trigger artifact_reference_gc_execution_barrier_i "
+        "before insert on artifact_reference "
+        "when new.state='active' and exists ( select 1 from artifact_gc_batch as batch "
+        "join artifact_quarantine as quarantine on quarantine.artifact_id=new.artifact_id "
+        "where batch.state='executing' and ( (batch.phase='quarantine' "
+        "and quarantine.gc_batch_id=batch.gc_batch_id and quarantine.state='moving') "
+        "or (batch.phase='purge' and quarantine.state='quarantined' and exists ( "
+        "select 1 from json_each(batch.exact_artifact_ids_json) "
+        "where json_each.value=new.artifact_id )) ) ) "
+        "begin select raise(abort,'artifact is under gc execution'); end"
+    ),
+    "artifact_reference_gc_execution_barrier_u": (
+        "create trigger artifact_reference_gc_execution_barrier_u "
+        "before update of artifact_id,state on artifact_reference "
+        "when new.state='active' and exists ( select 1 from artifact_gc_batch as batch "
+        "join artifact_quarantine as quarantine on quarantine.artifact_id=new.artifact_id "
+        "where batch.state='executing' and ( (batch.phase='quarantine' "
+        "and quarantine.gc_batch_id=batch.gc_batch_id and quarantine.state='moving') "
+        "or (batch.phase='purge' and quarantine.state='quarantined' and exists ( "
+        "select 1 from json_each(batch.exact_artifact_ids_json) "
+        "where json_each.value=new.artifact_id )) ) ) "
+        "begin select raise(abort,'artifact is under gc execution'); end"
+    ),
+    "artifact_promotion_intent_gc_execution_barrier_i": (
+        "create trigger artifact_promotion_intent_gc_execution_barrier_i "
+        "before insert on artifact_promotion_intent "
+        "when new.state in ('staged_synced','final_present','catalog_committed','cleanup_pending') "
+        "and exists ( select 1 from artifact_gc_batch as batch join artifact_quarantine as quarantine "
+        "on quarantine.artifact_id=new.artifact_id where batch.state='executing' and ( "
+        "(batch.phase='quarantine' and quarantine.gc_batch_id=batch.gc_batch_id and quarantine.state='moving') "
+        "or (batch.phase='purge' and quarantine.state='quarantined' and exists ( "
+        "select 1 from json_each(batch.exact_artifact_ids_json) where json_each.value=new.artifact_id )) ) ) "
+        "begin select raise(abort,'artifact is under gc execution'); end"
+    ),
+    "artifact_promotion_intent_gc_execution_barrier_u": (
+        "create trigger artifact_promotion_intent_gc_execution_barrier_u "
+        "before update of artifact_id,state on artifact_promotion_intent "
+        "when new.state in ('staged_synced','final_present','catalog_committed','cleanup_pending') "
+        "and exists ( select 1 from artifact_gc_batch as batch join artifact_quarantine as quarantine "
+        "on quarantine.artifact_id=new.artifact_id where batch.state='executing' and ( "
+        "(batch.phase='quarantine' and quarantine.gc_batch_id=batch.gc_batch_id and quarantine.state='moving') "
+        "or (batch.phase='purge' and quarantine.state='quarantined' and exists ( "
+        "select 1 from json_each(batch.exact_artifact_ids_json) where json_each.value=new.artifact_id )) ) ) "
+        "begin select raise(abort,'artifact is under gc execution'); end"
+    ),
+    "artifact_gc_execution_binding_guard_u": (
+        "create trigger artifact_gc_execution_binding_guard_u "
+        "before update of phase,scope_owner_id,plan_artifact_id, "
+        "reachability_fingerprint,exact_artifact_ids_hash,exact_artifact_ids_json, "
+        "open_intent_ids_json,confirmation_nonce,confirmation_hash,created_at,expires_at "
+        "on artifact_gc_batch when old.state='executing' "
+        "begin select raise(abort,'gc batch binding is immutable during execution'); end"
+    ),
+    "artifact_gc_execution_metadata_guard_u": (
+        "create trigger artifact_gc_execution_metadata_guard_u "
+        "before update on artifact when exists ( select 1 from artifact_gc_batch as batch "
+        "where batch.state='executing' and exists ( select 1 from json_each(batch.exact_artifact_ids_json) "
+        "where json_each.value=old.artifact_id ) ) and ( new.artifact_id is not old.artifact_id "
+        "or new.sha256 is not old.sha256 or new.byte_size is not old.byte_size "
+        "or new.media_type is not old.media_type or new.semantic_role is not old.semantic_role "
+        "or new.storage_key is not old.storage_key or new.safe_format_id is not old.safe_format_id "
+        "or new.schema_fingerprint is not old.schema_fingerprint or new.created_at is not old.created_at "
+        "or new.published_at is not old.published_at ) "
+        "begin select raise(abort,'artifact metadata is immutable during gc execution'); end"
+    ),
+    "artifact_gc_execution_quarantine_metadata_guard_u": (
+        "create trigger artifact_gc_execution_quarantine_metadata_guard_u "
+        "before update on artifact_quarantine when exists ( select 1 from artifact_gc_batch as batch "
+        "where batch.state='executing' and ( batch.gc_batch_id=old.gc_batch_id or ( batch.phase='purge' "
+        "and exists ( select 1 from json_each(batch.exact_artifact_ids_json) "
+        "where json_each.value=old.artifact_id ) ) ) ) and ( new.artifact_id is not old.artifact_id "
+        "or new.gc_batch_id is not old.gc_batch_id "
+        "or new.quarantine_storage_key is not old.quarantine_storage_key "
+        "or new.original_storage_key is not old.original_storage_key "
+        "or new.quarantined_at is not old.quarantined_at "
+        "or new.purge_not_before is not old.purge_not_before ) "
+        "begin select raise(abort,'gc quarantine metadata is immutable during execution'); end"
+    ),
+    "artifact_gc_active_reference_guard_u": (
+        "create trigger artifact_gc_active_reference_guard_u "
+        "before update of state on artifact "
+        "when new.state in ('quarantined','deleted') and exists ( "
+        "select 1 from artifact_reference where artifact_id=new.artifact_id "
+        "and state='active' ) "
+        "begin select raise(abort,'reachable artifact cannot leave published state'); end"
+    ),
 }
 _EXPECTED_CANONICAL_SESSION_INDEX_SQL = (
     "create unique index desktop_session_canonical_uuid_unique "
@@ -45,6 +140,12 @@ EXPECTED_TABLES = frozenset(
     {
         "artifact",
         "artifact_reference",
+        "artifact_gc_batch",
+        "artifact_gc_request",
+        "artifact_gc_receipt",
+        "artifact_promotion_intent",
+        "artifact_quarantine",
+        "artifact_storage_error",
         "backtest_run_spec",
         "checkpoint",
         "catalog_upgrade_receipt",
@@ -123,6 +224,85 @@ EXPECTED_TABLES = frozenset(
 )
 
 _EXPECTED_COLUMN_SHAPES = {
+    "artifact_promotion_intent": (
+        ("promotion_intent_id", "TEXT", 0, None, 1),
+        ("artifact_id", "TEXT", 1, None, 0),
+        ("expected_sha256", "TEXT", 1, None, 0),
+        ("expected_byte_size", "INTEGER", 1, None, 0),
+        ("staging_token", "TEXT", 1, None, 0),
+        ("staging_key", "TEXT", 1, None, 0),
+        ("final_storage_key", "TEXT", 1, None, 0),
+        ("state", "TEXT", 1, None, 0),
+        ("state_version", "INTEGER", 1, None, 0),
+        ("descriptor_json", "TEXT", 1, None, 0),
+        ("references_json", "TEXT", 1, None, 0),
+        ("created_at", "TEXT", 1, None, 0),
+        ("updated_at", "TEXT", 1, None, 0),
+        ("finalized_at", "TEXT", 0, None, 0),
+        ("last_error_code", "TEXT", 0, None, 0),
+        ("last_error_detail_artifact_id", "TEXT", 0, None, 0),
+    ),
+    "artifact_storage_error": (
+        ("storage_error_id", "TEXT", 0, None, 1),
+        ("promotion_intent_id", "TEXT", 0, None, 0),
+        ("artifact_id", "TEXT", 0, None, 0),
+        ("phase", "TEXT", 1, None, 0),
+        ("error_code", "TEXT", 1, None, 0),
+        ("observed_state_json", "TEXT", 1, None, 0),
+        ("created_at", "TEXT", 1, None, 0),
+        ("resolved_at", "TEXT", 0, None, 0),
+    ),
+    "artifact_gc_batch": (
+        ("gc_batch_id", "TEXT", 0, None, 1),
+        ("phase", "TEXT", 1, None, 0),
+        ("scope_owner_id", "TEXT", 1, None, 0),
+        ("plan_artifact_id", "TEXT", 1, None, 0),
+        ("reachability_fingerprint", "TEXT", 1, None, 0),
+        ("exact_artifact_ids_hash", "TEXT", 1, None, 0),
+        ("exact_artifact_ids_json", "TEXT", 1, None, 0),
+        ("open_intent_ids_json", "TEXT", 1, None, 0),
+        ("confirmation_nonce", "TEXT", 0, None, 0),
+        ("confirmation_hash", "TEXT", 0, None, 0),
+        ("state", "TEXT", 1, None, 0),
+        ("created_at", "TEXT", 1, None, 0),
+        ("expires_at", "TEXT", 1, None, 0),
+        ("confirmed_at", "TEXT", 0, None, 0),
+        ("completed_at", "TEXT", 0, None, 0),
+    ),
+    "artifact_gc_request": (
+        ("request_scope_key", "TEXT", 0, None, 1),
+        ("operation_id", "TEXT", 1, None, 0),
+        ("scope_owner_id", "TEXT", 1, None, 0),
+        ("canonical_request_hash", "TEXT", 1, None, 0),
+        ("phase", "TEXT", 1, None, 0),
+        ("plan_json", "TEXT", 1, None, 0),
+        ("reachable_artifact_count", "INTEGER", 1, None, 0),
+        ("plan_artifact_id", "TEXT", 0, None, 0),
+        ("gc_batch_id", "TEXT", 0, None, 0),
+        ("state", "TEXT", 1, None, 0),
+        ("outcome_json", "TEXT", 0, None, 0),
+        ("created_at", "TEXT", 1, None, 0),
+        ("updated_at", "TEXT", 1, None, 0),
+    ),
+    "artifact_quarantine": (
+        ("artifact_id", "TEXT", 1, None, 1),
+        ("gc_batch_id", "TEXT", 1, None, 2),
+        ("quarantine_storage_key", "TEXT", 1, None, 0),
+        ("original_storage_key", "TEXT", 1, None, 0),
+        ("quarantined_at", "TEXT", 1, None, 0),
+        ("purge_not_before", "TEXT", 1, None, 0),
+        ("state", "TEXT", 1, None, 0),
+    ),
+    "artifact_gc_receipt": (
+        ("receipt_id", "TEXT", 0, None, 1),
+        ("gc_batch_id", "TEXT", 1, None, 0),
+        ("result", "TEXT", 1, None, 0),
+        ("exact_artifact_ids_hash", "TEXT", 1, None, 0),
+        ("exact_bytes", "INTEGER", 1, None, 0),
+        ("reclaimed_bytes", "INTEGER", 1, None, 0),
+        ("created_at", "TEXT", 1, None, 0),
+        ("details_json", "TEXT", 1, None, 0),
+    ),
     "catalog_upgrade_receipt": (
         ("operation_id", "TEXT", 0, None, 1),
         ("source_catalog_path_fingerprint", "TEXT", 1, None, 0),
@@ -205,6 +385,21 @@ def _validate_required_trigger_shapes(connection: sqlite3.Connection) -> None:
         "desktop_session_project_context_owner_update_guard",
         "desktop session update trigger does not enforce project/context ownership",
     )
+    for name in (
+        "artifact_reference_gc_execution_barrier_i",
+        "artifact_reference_gc_execution_barrier_u",
+        "artifact_promotion_intent_gc_execution_barrier_i",
+        "artifact_promotion_intent_gc_execution_barrier_u",
+        "artifact_gc_execution_binding_guard_u",
+        "artifact_gc_execution_metadata_guard_u",
+        "artifact_gc_execution_quarantine_metadata_guard_u",
+        "artifact_gc_active_reference_guard_u",
+    ):
+        _require_trigger_shape(
+            connection,
+            name,
+            "Artifact GC execution guard shape is not canonical",
+        )
 
 
 def _validate_required_column_shapes(connection: sqlite3.Connection) -> None:
@@ -292,11 +487,19 @@ def _invariant_violations(connection: sqlite3.Connection) -> list[str]:
     if incompatible_pin is not None:
         violations.append("ProjectContext Snapshot and Universe pins are incompatible")
 
+    lifecycle_tables = {
+        "artifact_promotion_intent",
+        "artifact_storage_error",
+        "artifact_gc_batch",
+        "artifact_gc_request",
+        "artifact_quarantine",
+        "artifact_gc_receipt",
+    }
     for table_row in connection.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
     ):
         table = str(table_row[0])
-        if table == "artifact":
+        if table == "artifact" or table in lifecycle_tables:
             continue
         columns = [str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')]
         for column in columns:
@@ -425,6 +628,7 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
         "0004_risk_application_publication",
         "0005_task_execution_deadline",
         "0006_catalog_upgrade_session_integrity",
+        "0007_artifact_promotion_gc",
     ):
         raise SchemaValidationError(f"unexpected applied migration sequence: {applied!r}")
 

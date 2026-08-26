@@ -29,6 +29,10 @@ class FormatRejected(ArtifactError):
     pass
 
 
+class ArtifactScanLimitExceeded(ArtifactError):
+    """A bounded storage scan hit its hard safety ceiling."""
+
+
 class CapabilityUnavailable(ArtifactError):
     def __init__(self, capability: str, reason: str) -> None:
         self.capability = capability

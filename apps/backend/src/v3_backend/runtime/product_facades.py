@@ -12,13 +12,27 @@ import json
 import base64
 import hashlib
 import re
+from functools import wraps
 from datetime import date, datetime, timedelta, timezone
 from collections.abc import Iterator
+from threading import RLock
 from typing import Any, Mapping
 
 from v3_backend.adapters.sqlite.connection import connect_catalog
 from v3_backend.adapters.sqlite.repositories import SQLiteRepositoryRegistry
 from v3_backend.adapters.sqlite.unit_of_work import SQLiteUnitOfWork
+from v3_backend.domain.artifacts.exceptions import (
+    ArtifactCollision,
+    GarbageCollectionSafetyError,
+    IntegrityMismatch,
+    StagingNotFound,
+)
+from v3_backend.domain.artifacts.model import ArtifactReference
+from v3_backend.domain.artifacts.reachability import (
+    GarbageCollectionItem,
+    GarbageCollectionPlan,
+    ReachabilityGraph,
+)
 from v3_backend.domain.tasks.events import PendingTaskEvent
 from v3_backend.errors.exceptions import (
     CapabilityUnavailableError,
@@ -29,8 +43,13 @@ from v3_backend.errors.exceptions import (
     ResourceRejectedError,
     SessionProjectBindingConflictError,
     TruthPreconditionFailedError,
+    V3ContractError,
 )
-from v3_backend.provenance.canonical_hash import canonical_sha256
+from v3_backend.provenance.canonical_hash import canonical_json_bytes, canonical_sha256
+from v3_backend.domain.artifacts.identity import (
+    sha256_from_artifact_id,
+    storage_key_for_sha256,
+)
 from v3_backend.repositories.unit_of_work import TransactionMode
 
 from .product_runtime import (
@@ -40,6 +59,7 @@ from .product_runtime import (
     FORMAL_BACKTEST_UNAVAILABLE_REASON,
     MAX_EXPERIMENT_CELLS,
     ProductResearchSubmission,
+    ProductStagedArtifact,
     RUN_RESULT_REFERENCE_ROLE,
     ProductRuntime,
     _canonical_request_hash,
@@ -139,6 +159,25 @@ CONTEXT_ALLOW_LIST = ("notes", "benchmark_universe_version_id")
 STREAM_TICKET_TTL_SECONDS = 300
 MAX_STREAM_TICKETS = 4096
 STREAM_CHUNK_MAX_BYTES = 256 * 1024
+GC_GRACE_PERIOD = timedelta(days=7)
+GC_PURGE_RETENTION_PERIOD = timedelta(days=30)
+MAX_IDEMPOTENCY_OUTCOME_BYTES = 65_536
+
+
+def _gc_serialized(method):
+    """Serialize GC facade actions within one runtime process.
+
+    Durable batch state and Catalog barriers remain the cross-process guard;
+    this lock also prevents duplicate same-request plans from racing through
+    the read-before-side-effect idempotency lookup in one process.
+    """
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._gc_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 PRODUCT_FACTOR_HOME_PROJECTION_LIMIT = 256
 PRODUCT_FACTOR_HOME_PROJECTION = "TAIL_ASCENDING_MAX_256"
 
@@ -860,6 +899,7 @@ class ArtifactFacade:
             raise ValueError("runtime_generation must be a positive integer or null")
         self._runtime_generation = runtime_generation
         self._tickets: dict[str, dict[str, Any]] = {}
+        self._gc_lock = RLock()
 
     @property
     def retained_ticket_count(self) -> int:
@@ -872,6 +912,791 @@ class ArtifactFacade:
             if ticket["expires_at"] <= now:
                 del self._tickets[ticket_id]
 
+    def _lookup_gc_request(
+        self,
+        *,
+        operation_id: str,
+        project_id: str,
+        request: Mapping[str, Any],
+        semantic: Mapping[str, Any],
+    ) -> tuple[str, str, dict[str, Any] | None]:
+        """Resolve the durable REQUEST_ID idempotency record for one GC call."""
+
+        request_id = str(request["request_id"])
+        scope = self.product.idempotency.scope_key(
+            operation_id, project_id, request_id
+        )
+        request_hash = _canonical_request_hash(operation_id, semantic)
+        existing = self.product.idempotency.lookup(self.product, scope, request_hash)
+        return scope, request_hash, existing
+
+    def _record_gc_request(
+        self,
+        *,
+        operation_id: str,
+        project_id: str,
+        scope: str,
+        request_hash: str,
+        read_model: Mapping[str, Any],
+        created_at: datetime,
+    ) -> None:
+        """Persist the exact GC response after its durable side effect."""
+
+        if created_at.tzinfo is None or created_at.utcoffset() is None:
+            raise ValueError("GC idempotency timestamp must be timezone-aware")
+        outcome_json = json.dumps(
+            {"read_model": dict(read_model)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        self._assert_gc_read_model_bounded(read_model)
+        connection = self.product._connection()
+        uow = SQLiteUnitOfWork(connection, TransactionMode.WRITE_CONTROL)
+        try:
+            uow.begin()
+            SQLiteRepositoryRegistry(uow).task.record_idempotency(
+                {
+                    "scope_key": scope,
+                    "operation_id": operation_id,
+                    "project_id": project_id,
+                    "canonical_request_hash": request_hash,
+                    "outcome_kind": "RESPONSE",
+                    "outcome_json": outcome_json,
+                    "created_at": wire_time(created_at),
+                    "expires_at": None,
+                }
+            )
+            uow.commit()
+        finally:
+            if uow.active:
+                uow.rollback()
+            connection.close()
+
+    @staticmethod
+    def _assert_gc_read_model_bounded(read_model: Mapping[str, Any]) -> None:
+        encoded = json.dumps(
+            {"read_model": dict(read_model)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        if len(encoded) > MAX_IDEMPOTENCY_OUTCOME_BYTES:
+            raise ResourceRejectedError(
+                "GC response exceeds the bounded durable idempotency record",
+                details={
+                    "reason_code": "GC_RESPONSE_TOO_LARGE",
+                    "max_bytes": MAX_IDEMPOTENCY_OUTCOME_BYTES,
+                    "actual_bytes": len(encoded),
+                },
+            )
+
+    @staticmethod
+    def _existing_gc_response(
+        request: Mapping[str, Any], existing: Mapping[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if existing is None:
+            return None
+        read_model = existing.get("read_model")
+        if not isinstance(read_model, Mapping):
+            raise V3ContractError("durable GC idempotency outcome is malformed")
+        return _response(request, read_model)
+
+    def _lookup_gc_plan_claim(
+        self,
+        *,
+        scope: str,
+        operation_id: str,
+        project_id: str,
+        request_hash: str,
+    ) -> dict[str, Any] | None:
+        connection = self.product._connection(read_only=True)
+        try:
+            row = connection.execute(
+                "SELECT * FROM artifact_gc_request WHERE request_scope_key=?",
+                (scope,),
+            ).fetchone()
+            if row is None:
+                return None
+            claim = dict(row)
+        finally:
+            connection.close()
+        if (
+            str(claim["operation_id"]) != operation_id
+            or str(claim["scope_owner_id"]) != project_id
+            or str(claim["canonical_request_hash"]) != request_hash
+        ):
+            raise IdempotencyConflictError(
+                "GC request scope is already bound to a different request"
+            )
+        return claim
+
+    def _claim_gc_plan(
+        self,
+        *,
+        scope: str,
+        operation_id: str,
+        project_id: str,
+        request_hash: str,
+        plan: GarbageCollectionPlan,
+        reachable_artifact_count: int,
+        created_at: datetime,
+    ) -> dict[str, Any]:
+        plan_json = plan.canonical_bytes().decode("utf-8")
+        connection = self.product._connection()
+        uow = SQLiteUnitOfWork(connection, TransactionMode.WRITE_CONTROL)
+        try:
+            uow.begin()
+            claim = SQLiteRepositoryRegistry(uow).artifact.claim_gc_request(
+                {
+                    "request_scope_key": scope,
+                    "operation_id": operation_id,
+                    "scope_owner_id": project_id,
+                    "canonical_request_hash": request_hash,
+                    "phase": plan.phase,
+                    "plan_json": plan_json,
+                    "reachable_artifact_count": reachable_artifact_count,
+                    "plan_artifact_id": None,
+                    "gc_batch_id": None,
+                    "state": "IN_PROGRESS",
+                    "outcome_json": None,
+                    "created_at": wire_time(created_at),
+                    "updated_at": wire_time(created_at),
+                }
+            )
+            uow.commit()
+            return claim
+        finally:
+            if uow.active:
+                uow.rollback()
+            connection.close()
+
+    def _complete_gc_plan_request(
+        self,
+        *,
+        operation_id: str,
+        project_id: str,
+        scope: str,
+        request_hash: str,
+        plan_artifact_id: str,
+        gc_batch_id: str,
+        read_model: Mapping[str, Any],
+        created_at: datetime,
+    ) -> None:
+        self._assert_gc_read_model_bounded(read_model)
+        outcome_json = json.dumps(
+            {"read_model": dict(read_model)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        connection = self.product._connection()
+        uow = SQLiteUnitOfWork(connection, TransactionMode.WRITE_CONTROL)
+        try:
+            uow.begin()
+            registry = SQLiteRepositoryRegistry(uow)
+            # Keep the legacy response cache and the GC claim in one Catalog
+            # transaction.  If the process dies before commit, the claim stays
+            # IN_PROGRESS and the exact canonical plan is replayable.
+            registry.task.record_idempotency(
+                {
+                    "scope_key": scope,
+                    "operation_id": operation_id,
+                    "project_id": project_id,
+                    "canonical_request_hash": request_hash,
+                    "outcome_kind": "RESPONSE",
+                    "outcome_json": outcome_json,
+                    "created_at": wire_time(created_at),
+                    "expires_at": None,
+                }
+            )
+            registry.artifact.complete_gc_request(
+                scope,
+                plan_artifact_id=plan_artifact_id,
+                gc_batch_id=gc_batch_id,
+                outcome_json=outcome_json,
+                updated_at=wire_time(created_at),
+            )
+            uow.commit()
+        finally:
+            if uow.active:
+                uow.rollback()
+            connection.close()
+
+    def _quarantine_unadmitted_gc_stage(
+        self, staging_token: str, primary_error: Exception
+    ) -> None:
+        """Quarantine a failed GC stage only when no intent owns it.
+
+        ``_publish_staged_artifact`` records a promotion intent before it
+        mutates the final namespace.  If a later callback or Catalog step
+        fails, that stage is an admitted recovery source and must remain in
+        place for reconciliation.  Only a stage with no durable intent is an
+        orphan that this facade may move out of the staging namespace.
+        """
+
+        try:
+            intent = self.product.artifact_publication._intent_by_stage(staging_token)
+        except Exception as lookup_error:
+            # Retain the stage when ownership cannot be resolved.  Moving it
+            # on an unavailable Catalog could destroy the only recovery path.
+            primary_error.add_note(
+                "GC stage ownership lookup failed; stage retained: "
+                f"{type(lookup_error).__name__}: {lookup_error}"
+            )
+            return
+        if intent is not None:
+            return
+        try:
+            self.product.artifact_store.quarantine_orphan_stage(staging_token)
+        except Exception as quarantine_error:
+            primary_error.add_note(
+                "GC orphan stage quarantine failed: "
+                f"{type(quarantine_error).__name__}: {quarantine_error}"
+            )
+
+    def _publish_gc_plan_and_batch(
+        self,
+        *,
+        project_id: str,
+        plan: GarbageCollectionPlan,
+        provenance_entity_id: str,
+    ) -> dict[str, Any]:
+        """Publish/re-enter one exact plan and return its durable batch."""
+
+        plan_artifact_id = plan.plan_artifact_id
+        catalog = self.product.artifact_publication._read_catalog_artifact(plan_artifact_id)
+        if catalog is None or str(catalog.get("state")) != "PUBLISHED":
+            staged = self.product.artifact_store.stage_bytes(plan.canonical_bytes())
+            try:
+                publication = self.product.execution._publish_staged_artifact(
+                    staging=staged,
+                    provenance_entity_id=provenance_entity_id,
+                    role="GC_PLAN",
+                    media_type="application/json",
+                    schema_fingerprint="urn:v3:artifact-gc-plan:1.0.0",
+                    references=((project_id, "GC_PLAN"),),
+                )
+            except Exception as exc:
+                self._quarantine_unadmitted_gc_stage(staged.staging_token, exc)
+                raise
+            if publication.descriptor.artifact_id != plan_artifact_id:
+                raise V3ContractError(
+                    "GC plan Artifact identity does not match canonical plan bytes"
+                )
+        else:
+            try:
+                self.product.artifact_store.verify_final_bytes(
+                    plan_artifact_id,
+                    expected_byte_size=len(plan.canonical_bytes()),
+                )
+            except Exception:
+                # A Catalog row without verified bytes is not an authority;
+                # republish the exact retained plan from a fresh stage so the
+                # normal coordinator can repair it or fail closed.
+                staged = self.product.artifact_store.stage_bytes(plan.canonical_bytes())
+                try:
+                    publication = self.product.execution._publish_staged_artifact(
+                        staging=staged,
+                        provenance_entity_id=provenance_entity_id,
+                        role="GC_PLAN",
+                        media_type="application/json",
+                        schema_fingerprint="urn:v3:artifact-gc-plan:1.0.0",
+                        references=((project_id, "GC_PLAN"),),
+                    )
+                except Exception as exc:
+                    self._quarantine_unadmitted_gc_stage(staged.staging_token, exc)
+                    raise
+                if publication.descriptor.artifact_id != plan_artifact_id:
+                    raise V3ContractError(
+                        "GC plan Artifact identity does not match canonical plan bytes"
+                    )
+        return self.product.artifact_publication.record_gc_batch(
+            phase=plan.phase,
+            scope_owner_id=project_id,
+            plan_artifact_id=plan_artifact_id,
+            plan=plan,
+        )
+
+    def _build_quarantine_gc_plan(
+        self,
+        *,
+        project_id: str,
+        now: datetime,
+    ) -> tuple[GarbageCollectionPlan, int]:
+        connection = self.product._connection(read_only=True)
+        try:
+            reference_rows = tuple(
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM artifact_reference WHERE state='ACTIVE' ORDER BY artifact_reference_id"
+                )
+            )
+            references = tuple(
+                ArtifactReference(
+                    reference_id=str(row["artifact_reference_id"]),
+                    owner_id=str(row["owner_id"]),
+                    artifact_id=str(row["artifact_id"]),
+                    role=str(row["role"]),
+                    created_at=datetime.fromisoformat(
+                        str(row["created_at"]).replace("Z", "+00:00")
+                    ),
+                    state="ACTIVE",
+                )
+                for row in reference_rows
+            )
+            roots = tuple(sorted({project_id} | {reference.owner_id for reference in references}))
+            graph = ReachabilityGraph(roots, references)
+            reachable = graph.reachable_artifacts()
+            open_intent_rows = tuple(
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT promotion_intent_id, artifact_id FROM artifact_promotion_intent
+                    WHERE state IN ('STAGED_SYNCED','FINAL_PRESENT','CATALOG_COMMITTED','CLEANUP_PENDING')
+                    ORDER BY promotion_intent_id
+                    """
+                )
+            )
+            artifact_rows = tuple(
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT * FROM artifact AS a
+                    WHERE a.state='PUBLISHED'
+                      AND EXISTS (
+                        SELECT 1
+                        FROM artifact_reference AS owned
+                        WHERE owned.artifact_id=a.artifact_id
+                          AND owned.state IN ('ACTIVE','RELEASED')
+                          AND (
+                            (owned.owner_type='Project' AND owned.owner_id=? )
+                            OR (owned.owner_type='Task' AND owned.owner_id IN (
+                              SELECT task_id FROM task WHERE project_id=?
+                            ))
+                            OR (owned.owner_type='Run' AND owned.owner_id IN (
+                              SELECT r.run_id FROM run AS r
+                              JOIN task AS t ON t.task_id=r.task_id
+                              WHERE t.project_id=?
+                            ))
+                            OR (owned.owner_type='TaskAttempt' AND owned.owner_id IN (
+                              SELECT attempt_id
+                              FROM task_attempt AS attempt
+                              JOIN run AS r ON r.run_id=attempt.run_id
+                              JOIN task AS t ON t.task_id=r.task_id
+                              WHERE t.project_id=?
+                            ))
+                            OR (owned.owner_type='Result' AND owned.owner_id IN (
+                              SELECT result_id FROM result WHERE project_id=?
+                            ))
+                          )
+                      )
+                    ORDER BY a.artifact_id
+                    """,
+                    (project_id, project_id, project_id, project_id, project_id),
+                )
+            )
+        finally:
+            connection.close()
+        _, _, staged_artifact_ids = self.product.artifact_publication.current_gc_guard()
+        open_artifact_ids = {
+            str(row["artifact_id"]) for row in open_intent_rows
+        } | set(staged_artifact_ids)
+        cutoff = now - GC_GRACE_PERIOD
+        items = tuple(
+            GarbageCollectionItem(
+                artifact_id=str(row["artifact_id"]),
+                byte_size=int(row["byte_size"]),
+                published_at=datetime.fromisoformat(
+                    str(row["published_at"]).replace("Z", "+00:00")
+                ),
+                storage_key=str(row["storage_key"]),
+            )
+            for row in artifact_rows
+            if str(row["artifact_id"]) not in reachable
+            and str(row["artifact_id"]) not in open_artifact_ids
+            and row["published_at"] is not None
+            and datetime.fromisoformat(
+                str(row["published_at"]).replace("Z", "+00:00")
+            )
+            <= cutoff
+        )
+        return (
+            GarbageCollectionPlan(
+                created_at=now,
+                grace_period_seconds=int(GC_GRACE_PERIOD.total_seconds()),
+                reachability_fingerprint=graph.fingerprint(),
+                items=items,
+                open_promotion_intent_ids=tuple(
+                    str(row["promotion_intent_id"]) for row in open_intent_rows
+                ),
+                phase="QUARANTINE",
+            ),
+            len(reachable),
+        )
+
+    def _build_purge_gc_plan(
+        self,
+        *,
+        project_id: str,
+        source_batch_id: str,
+        now: datetime,
+    ) -> tuple[GarbageCollectionPlan, int]:
+        source = self.product.artifact_publication.get_gc_batch(source_batch_id)
+        if source is None or str(source["scope_owner_id"]) != project_id:
+            raise NotFoundError("QUARANTINE batch is not owned by this project")
+        if source["phase"] != "QUARANTINE" or source["state"] != "COMPLETED":
+            raise TruthPreconditionFailedError(
+                "PURGE requires a completed QUARANTINE batch",
+                details={"reason_code": "GC_QUARANTINE_NOT_COMPLETE"},
+            )
+        try:
+            source_exact_ids = self.product.artifact_publication._gc_ids(source)
+        except GarbageCollectionSafetyError as exc:
+            raise TruthPreconditionFailedError(
+                "QUARANTINE exact Artifact set is not canonical",
+                details={"reason_code": "GC_EXACT_SET_CORRUPTED"},
+            ) from exc
+        if not source_exact_ids:
+            raise TruthPreconditionFailedError(
+                "an empty QUARANTINE set cannot produce a PURGE plan",
+                details={"reason_code": "GC_EMPTY_PURGE_SET"},
+            )
+
+        placeholders = ",".join("?" for _ in source_exact_ids)
+        connection = self.product._connection(read_only=True)
+        try:
+            rows = tuple(
+                dict(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT aq.artifact_id, aq.gc_batch_id, aq.quarantine_storage_key,
+                           aq.purge_not_before, aq.state AS quarantine_state,
+                           a.byte_size, a.published_at, a.storage_key,
+                           a.state AS artifact_state
+                    FROM artifact_quarantine AS aq
+                    JOIN artifact AS a ON a.artifact_id=aq.artifact_id
+                    WHERE aq.artifact_id IN ({placeholders})
+                      AND aq.state IN ('QUARANTINED','PURGED','RESTORED')
+                    ORDER BY aq.artifact_id, aq.quarantined_at DESC, aq.gc_batch_id DESC
+                    """,
+                    source_exact_ids,
+                )
+            )
+        finally:
+            connection.close()
+        by_artifact: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            artifact_id = str(row["artifact_id"])
+            if str(row["quarantine_state"]) != "QUARANTINED" or str(
+                row["artifact_state"]
+            ) != "QUARANTINED":
+                continue
+            if artifact_id in by_artifact:
+                raise TruthPreconditionFailedError(
+                    f"multiple current quarantine records exist for {artifact_id}",
+                    details={"reason_code": "GC_QUARANTINE_RECORD_AMBIGUOUS"},
+                )
+            by_artifact[artifact_id] = row
+        exact_ids = tuple(sorted(by_artifact))
+        if not exact_ids:
+            raise TruthPreconditionFailedError(
+                "QUARANTINE batch has no remaining quarantined bytes for PURGE",
+                details={"reason_code": "GC_QUARANTINE_NO_REMAINING"},
+            )
+        items: list[GarbageCollectionItem] = []
+        for artifact_id in exact_ids:
+            row = by_artifact[artifact_id]
+            purge_not_before = datetime.fromisoformat(
+                str(row["purge_not_before"]).replace("Z", "+00:00")
+            )
+            if purge_not_before > now:
+                raise TruthPreconditionFailedError(
+                    "quarantine retention period has not elapsed",
+                    details={
+                        "reason_code": "GC_QUARANTINE_RETENTION_PENDING",
+                        "artifact_id": artifact_id,
+                        "purge_not_before": str(row["purge_not_before"]),
+                    },
+                )
+            try:
+                self.product.artifact_store.verify_quarantine_bytes(
+                    str(row["quarantine_storage_key"]),
+                    artifact_id,
+                    expected_byte_size=int(row["byte_size"]),
+                )
+            except (ArtifactCollision, IntegrityMismatch, StagingNotFound) as exc:
+                raise TruthPreconditionFailedError(
+                    f"quarantined bytes are not verifiably available: {artifact_id}",
+                    details={"reason_code": "PUBLISHED_BYTES_UNAVAILABLE"},
+                ) from exc
+            published_at = row["published_at"]
+            if published_at is None:
+                raise TruthPreconditionFailedError(
+                    f"quarantined Artifact has no publication timestamp: {artifact_id}",
+                    details={"reason_code": "GC_ARTIFACT_METADATA_INVALID"},
+                )
+            items.append(
+                GarbageCollectionItem(
+                    artifact_id=artifact_id,
+                    byte_size=int(row["byte_size"]),
+                    published_at=datetime.fromisoformat(
+                        str(published_at).replace("Z", "+00:00")
+                    ),
+                    storage_key=str(row["storage_key"]),
+                )
+            )
+
+        try:
+            reachability_fingerprint, open_intent_ids, reachable, open_intents, staged = (
+                self.product.artifact_publication._current_gc_snapshot(project_id)
+            )
+        except GarbageCollectionSafetyError as exc:
+            raise TruthPreconditionFailedError(
+                str(exc), details={"reason_code": "GC_SAFETY_PRECONDITION_FAILED"}
+            ) from exc
+        blocked = set(exact_ids) & (
+            set(reachable) | set(open_intents) | set(staged)
+        )
+        if blocked:
+            raise TruthPreconditionFailedError(
+                "PURGE exact set is no longer safe: " + ", ".join(sorted(blocked)),
+                details={"reason_code": "GC_EXACT_SET_REACHABILITY_CHANGED"},
+            )
+        return (
+            GarbageCollectionPlan(
+                created_at=now,
+                grace_period_seconds=int(GC_PURGE_RETENTION_PERIOD.total_seconds()),
+                reachability_fingerprint=reachability_fingerprint,
+                items=tuple(sorted(items, key=lambda item: item.artifact_id)),
+                open_promotion_intent_ids=tuple(open_intent_ids),
+                phase="PURGE",
+            ),
+            len(reachable),
+        )
+
+    def _gc_plan_read_model(
+        self,
+        *,
+        plan: GarbageCollectionPlan,
+        gc_batch_id: str,
+        reachable_artifact_count: int,
+        retention_profile_id: str,
+        candidate_reason: str,
+        source_quarantine_gc_batch_id: str | None = None,
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(reachable_artifact_count, int)
+            or isinstance(reachable_artifact_count, bool)
+            or reachable_artifact_count < 0
+        ):
+            raise V3ContractError("GC reachable artifact count is invalid")
+        read_model: dict[str, Any] = {
+            "read_model_version": "v3.garbage-collection-plan/1.0",
+            "plan_id": plan.plan_artifact_id,
+            "gc_batch_id": gc_batch_id,
+            "phase": plan.phase,
+            "retention_profile_id": retention_profile_id,
+            "generated_at": wire_time(plan.created_at),
+            "expires_at": wire_time(plan.expires_at),
+            "reachable_artifact_count": reachable_artifact_count,
+            "exact_artifact_ids_hash": plan.exact_artifact_ids_hash,
+            "exact_byte_size": plan.exact_byte_size,
+            "open_promotion_intent_ids": list(plan.open_promotion_intent_ids),
+            "candidates": [
+                {
+                    "artifact_id": item.artifact_id,
+                    "sha256": item.artifact_id.removeprefix("art_sha256_"),
+                    "byte_size": item.byte_size,
+                    "reason": candidate_reason,
+                }
+                for item in plan.items
+            ],
+            "requires_confirmation": True,
+        }
+        if source_quarantine_gc_batch_id is not None:
+            read_model["source_quarantine_gc_batch_id"] = source_quarantine_gc_batch_id
+        self._assert_gc_read_model_bounded(read_model)
+        return read_model
+
+    @staticmethod
+    def _claimed_gc_plan(
+        claim: Mapping[str, Any], *, expected_phase: str
+    ) -> tuple[GarbageCollectionPlan, int]:
+        if str(claim.get("phase")) != expected_phase:
+            raise V3ContractError("durable GC request phase is inconsistent")
+        if str(claim.get("state")) != "IN_PROGRESS":
+            raise V3ContractError("durable GC request is not executable")
+        raw_plan = claim.get("plan_json")
+        if not isinstance(raw_plan, str):
+            raise V3ContractError("durable GC request plan is malformed")
+        try:
+            plan = GarbageCollectionPlan.from_canonical_bytes(raw_plan.encode("utf-8"))
+        except GarbageCollectionSafetyError as exc:
+            raise V3ContractError("durable GC request plan is not canonical") from exc
+        count = claim.get("reachable_artifact_count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise V3ContractError("durable GC request reachability count is malformed")
+        return plan, count
+
+    def _completed_gc_claim_response(
+        self,
+        request: Mapping[str, Any],
+        claim: Mapping[str, Any] | None,
+        *,
+        expected_phase: str,
+    ) -> dict[str, Any] | None:
+        if claim is None or str(claim.get("state")) != "COMPLETED":
+            return None
+        expected_operation = (
+            "ArtifactService.v1.planGarbageCollection"
+            if expected_phase == "QUARANTINE"
+            else "ArtifactService.v1.planGarbagePurge"
+        )
+        project_id = str(request["project_id"])
+        if (
+            str(claim.get("operation_id")) != expected_operation
+            or str(claim.get("scope_owner_id")) != project_id
+            or str(claim.get("phase")) != expected_phase
+        ):
+            raise V3ContractError("durable GC request identity is inconsistent")
+        raw_plan = claim.get("plan_json")
+        if not isinstance(raw_plan, str):
+            raise V3ContractError("durable GC request plan is malformed")
+        raw_plan_bytes = raw_plan.encode("utf-8")
+        try:
+            plan = GarbageCollectionPlan.from_canonical_bytes(raw_plan_bytes)
+        except GarbageCollectionSafetyError as exc:
+            raise V3ContractError("durable GC request plan is not canonical") from exc
+        plan_artifact_id = claim.get("plan_artifact_id")
+        if plan_artifact_id != plan.plan_artifact_id:
+            raise V3ContractError("durable GC request plan identity is inconsistent")
+
+        count = claim.get("reachable_artifact_count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise V3ContractError("durable GC request reachability count is malformed")
+
+        # A completed mutable claim is only a pointer to the immutable plan;
+        # it is not itself evidence that the plan Artifact and Catalog batch
+        # still contain the same bytes and bindings.  Re-resolve both owners
+        # before returning a replayed response.
+        try:
+            catalog = self.product.require_published_artifact(str(plan_artifact_id))
+            plan_bytes = self.product.artifact_store.read_bytes(
+                str(plan_artifact_id), max_bytes=MAX_IDEMPOTENCY_OUTCOME_BYTES
+            )
+            expected_sha256 = sha256_from_artifact_id(str(plan_artifact_id))
+            expected_catalog = {
+                "artifact_id": str(plan_artifact_id),
+                "sha256": expected_sha256,
+                "byte_size": len(raw_plan_bytes),
+                "media_type": "application/json",
+                "semantic_role": "GC_PLAN",
+                "storage_key": storage_key_for_sha256(expected_sha256),
+                "safe_format_id": "canonical-json-v1",
+                "schema_fingerprint": "urn:v3:artifact-gc-plan:1.0.0",
+                "state": "PUBLISHED",
+            }
+        except Exception as exc:
+            raise V3ContractError(
+                "durable GC request plan Artifact is not verifiably published"
+            ) from exc
+        if any(catalog.get(key) != value for key, value in expected_catalog.items()):
+            raise V3ContractError("durable GC request plan Artifact metadata is inconsistent")
+        if plan_bytes != raw_plan_bytes:
+            raise V3ContractError("durable GC request plan Artifact bytes are inconsistent")
+
+        batch_id = claim.get("gc_batch_id")
+        if not isinstance(batch_id, str) or not batch_id:
+            raise V3ContractError("durable GC request batch identity is malformed")
+        batch = self.product.artifact_publication.get_gc_batch(batch_id)
+        if batch is None:
+            raise V3ContractError("durable GC request GC batch is missing")
+        expected_batch = {
+            "gc_batch_id": batch_id,
+            "phase": expected_phase,
+            "scope_owner_id": project_id,
+            "plan_artifact_id": plan.plan_artifact_id,
+            "reachability_fingerprint": plan.reachability_fingerprint,
+            "exact_artifact_ids_hash": plan.exact_artifact_ids_hash,
+            "exact_artifact_ids_json": canonical_json_bytes(
+                list(plan.exact_artifact_ids)
+            ).decode("utf-8"),
+            "open_intent_ids_json": canonical_json_bytes(
+                list(plan.open_promotion_intent_ids)
+            ).decode("utf-8"),
+            "created_at": wire_time(plan.created_at),
+            "expires_at": wire_time(plan.expires_at),
+        }
+        if any(batch.get(key) != value for key, value in expected_batch.items()):
+            raise V3ContractError("durable GC request batch bindings are inconsistent")
+        if str(batch.get("state")) not in {
+            "PLANNED",
+            "CONFIRMED",
+            "EXECUTING",
+            "COMPLETED",
+            "STALE",
+            "FAILED",
+        }:
+            raise V3ContractError("durable GC request batch state is invalid")
+        try:
+            if self.product.artifact_publication._gc_ids(batch) != plan.exact_artifact_ids:
+                raise V3ContractError("durable GC request batch Artifact set is inconsistent")
+            if (
+                self.product.artifact_publication._gc_open_intent_ids(batch)
+                != plan.open_promotion_intent_ids
+            ):
+                raise V3ContractError(
+                    "durable GC request batch open intents are inconsistent"
+                )
+        except GarbageCollectionSafetyError as exc:
+            raise V3ContractError("durable GC request batch JSON is not canonical") from exc
+
+        retention_profile_id = (
+            str(request["retention_profile_id"])
+            if expected_phase == "QUARANTINE"
+            else DEFAULT_RETENTION_PROFILE
+        )
+        source_quarantine_gc_batch_id = (
+            str(request["quarantine_gc_batch_id"])
+            if expected_phase == "PURGE"
+            else None
+        )
+        expected_read_model = self._gc_plan_read_model(
+            plan=plan,
+            gc_batch_id=batch_id,
+            reachable_artifact_count=count,
+            retention_profile_id=retention_profile_id,
+            candidate_reason=(
+                "UNREACHABLE_AFTER_GRACE"
+                if expected_phase == "QUARANTINE"
+                else "QUARANTINE_RETENTION_ELAPSED"
+            ),
+            source_quarantine_gc_batch_id=source_quarantine_gc_batch_id,
+        )
+        outcome_json = claim.get("outcome_json")
+        try:
+            if not isinstance(outcome_json, str):
+                raise TypeError("outcome_json must be text")
+            outcome = json.loads(outcome_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise V3ContractError("durable GC request outcome is malformed") from exc
+        try:
+            canonical_outcome = canonical_json_bytes(outcome)
+        except (TypeError, ValueError) as exc:
+            raise V3ContractError("durable GC request outcome is not canonical JSON") from exc
+        if canonical_outcome != outcome_json.encode("utf-8"):
+            raise V3ContractError("durable GC request outcome is not canonical JSON")
+        if not isinstance(outcome, Mapping) or set(outcome) != {"read_model"}:
+            raise V3ContractError("durable GC request outcome is malformed")
+        read_model = outcome.get("read_model")
+        if not isinstance(read_model, Mapping):
+            raise V3ContractError("durable GC request read model is malformed")
+        if dict(read_model) != expected_read_model:
+            raise V3ContractError("durable GC request outcome is inconsistent")
+        self._assert_gc_read_model_bounded(read_model)
+        return _response(request, read_model)
+
     def handlers(self) -> dict[str, Any]:
         return {
             "ArtifactService.v1.publishArtifact": self.publish_artifact,
@@ -879,6 +1704,11 @@ class ArtifactFacade:
             "ArtifactService.v1.openArtifactStream": self.open_artifact_stream,
             "ArtifactService.v1.exportArtifact": self.export_artifact,
             "ArtifactService.v1.planGarbageCollection": self.plan_garbage_collection,
+            "ArtifactService.v1.confirmGarbageCollection": self.confirm_garbage_collection,
+            "ArtifactService.v1.quarantineGarbageCollection": self.quarantine_garbage_collection,
+            "ArtifactService.v1.restoreGarbageCollection": self.restore_garbage_collection,
+            "ArtifactService.v1.planGarbagePurge": self.plan_garbage_purge,
+            "ArtifactService.v1.purgeGarbageCollection": self.purge_garbage_collection,
         }
 
     def publish_artifact(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -905,53 +1735,44 @@ class ArtifactFacade:
         if existing is not None:
             row = self.product.require_published_artifact(str(existing["artifact_id"]))
             return _response(request, _artifact_descriptor_read_model(row))
-        receipt = None
-        for candidate in self.product.artifact_store.recover_staging():
-            if candidate.staging_token == staging_token:
-                receipt = candidate
-                break
-        if receipt is None:
-            raise NotFoundError("staging token is unknown to the product artifact store")
+        try:
+            receipt = self.product.artifact_store.staging_receipt(staging_token)
+        except StagingNotFound as exc:
+            raise NotFoundError("staging token is unknown to the product artifact store") from exc
         if receipt.sha256 != expected_sha256:
             raise IdempotencyConflictError("declared SHA-256 does not match the staged bytes")
         self.product.artifact_store.policy.require_publishable(declared_role, declared_media_type)
-        from v3_backend.adapters.sqlite.artifact_publication import SQLiteArtifactPublicationPort
-        from v3_backend.domain.artifacts.model import ArtifactReference
-        from v3_backend.domain.artifacts.publication import ArtifactPublication
-
         published_at = datetime.now(timezone.utc)
-        publication_result = self.product.artifact_store.publish(
-            staging_token,
-            expected_sha256=expected_sha256,
-            expected_byte_size=receipt.byte_size,
-            media_type=declared_media_type,
-            role=declared_role,
+        callbacks = ProductStagedArtifact(
+            store=self.product.artifact_store,
+            staging=receipt,
             provenance_entity_id="prv_product_caller_publication",
+            role=declared_role,
+            media_type=declared_media_type,
+            schema_fingerprint="v3.artifact-caller-publication/1.0.0",
             published_at=published_at,
+            coordinator=self.product.artifact_publication,
         )
+        callbacks.prepare_intent(((project_id, declared_role),))
         connection = connect_catalog(self.product.database_path)
         uow = SQLiteUnitOfWork(
             connection,
             TransactionMode.PUBLISH,
-            publish_callbacks=_NoopPublishCallbacksFacade(),
+            publish_callbacks=callbacks,
         )
         try:
             uow.begin()
-            port = SQLiteArtifactPublicationPort(uow)
-            port.publish(
+            if callbacks.result is None or callbacks.prepared is None:
+                raise V3ContractError("Artifact publication did not produce a promotion result")
+            from v3_backend.adapters.sqlite.artifact_publication import SQLiteArtifactPublicationPort
+            from v3_backend.domain.artifacts.publication import ArtifactPublication
+
+            SQLiteArtifactPublicationPort(uow).publish(
                 ArtifactPublication(
-                    descriptor=publication_result.descriptor,
-                    active_references=(
-                        ArtifactReference(
-                            reference_id=mint_v3_id("arf_"),
-                            owner_id=project_id,
-                            artifact_id=publication_result.descriptor.artifact_id,
-                            role=declared_role,
-                            created_at=published_at,
-                            state="ACTIVE",
-                        ),
-                    ),
-                )
+                    descriptor=callbacks.result.descriptor,
+                    active_references=callbacks.active_references,
+                ),
+                promotion_intent_id=callbacks.prepared.promotion_intent_id,
             )
             SQLiteRepositoryRegistry(uow).task.record_idempotency(
                 {
@@ -961,7 +1782,7 @@ class ArtifactFacade:
                     "canonical_request_hash": request_hash,
                     "outcome_kind": "RESPONSE",
                     "outcome_json": json.dumps(
-                        {"artifact_id": publication_result.descriptor.artifact_id},
+                        {"artifact_id": callbacks.result.descriptor.artifact_id},
                         separators=(",", ":"),
                         sort_keys=True,
                     ),
@@ -974,7 +1795,9 @@ class ArtifactFacade:
             if uow.active:
                 uow.rollback()
             connection.close()
-        row = self.product.require_published_artifact(publication_result.descriptor.artifact_id)
+        if callbacks.result is None:
+            raise V3ContractError("Artifact publication produced no result")
+        row = self.product.require_published_artifact(callbacks.result.descriptor.artifact_id)
         return _response(request, _artifact_descriptor_read_model(row))
 
     def get_artifact_descriptor(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -1189,46 +2012,446 @@ class ArtifactFacade:
             )
         raise InvalidArgumentError("unknown artifact-export control kind")
 
+    @_gc_serialized
     def plan_garbage_collection(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        project_id = str(request["project_id"])
+        self.product.require_project_context_ownership(
+            project_id, str(request["project_context_revision_id"])
+        )
         retention_profile_id = str(request["retention_profile_id"])
         if retention_profile_id != DEFAULT_RETENTION_PROFILE:
             raise InvalidArgumentError(
                 f"unknown retention profile: {retention_profile_id}"
             )
-        connection = self.product._connection(read_only=True)
-        try:
-            reachable = {
-                str(row["artifact_id"])
-                for row in connection.execute(
-                    "SELECT DISTINCT artifact_id FROM artifact_reference WHERE state='ACTIVE'"
-                ).fetchall()
-            }
-            candidates = [
-                {
-                    "artifact_id": str(row["artifact_id"]),
-                    "sha256": str(row["sha256"]),
-                    "byte_size": int(row["byte_size"]),
-                    "reason": "UNREACHABLE",
-                }
-                for row in connection.execute(
-                    "SELECT artifact_id, sha256, byte_size FROM artifact WHERE state='PUBLISHED'"
-                ).fetchall()
-                if str(row["artifact_id"]) not in reachable
-            ]
-        finally:
-            connection.close()
-        return _response(
-            request,
-            {
-                "read_model_version": "v3.garbage-collection-plan/1.0",
-                "plan_id": mint_v3_id("gcp_"),
-                "retention_profile_id": retention_profile_id,
-                "generated_at": wire_time(datetime.now(timezone.utc)),
-                "reachable_artifact_count": len(reachable),
-                "candidates": candidates,
-                "requires_confirmation": True,
-            },
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("GC plan clock must be timezone-aware")
+        operation_id = "ArtifactService.v1.planGarbageCollection"
+        semantic = {
+            "project_id": project_id,
+            "project_context_revision_id": str(request["project_context_revision_id"]),
+            "retention_profile_id": retention_profile_id,
+        }
+        scope, request_hash, existing_idempotency = self._lookup_gc_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            request=request,
+            semantic=semantic,
         )
+        claim = self._lookup_gc_plan_claim(
+            scope=scope,
+            operation_id=operation_id,
+            project_id=project_id,
+            request_hash=request_hash,
+        )
+        if claim is None and existing_idempotency is not None:
+            raise IdempotencyConflictError(
+                "GC plan idempotency record lacks a durable canonical claim"
+            )
+        if claim is None:
+            plan, reachable_artifact_count = self._build_quarantine_gc_plan(
+                project_id=project_id, now=now
+            )
+            if len(plan.canonical_bytes()) > MAX_IDEMPOTENCY_OUTCOME_BYTES:
+                raise ResourceRejectedError(
+                    "GC plan exceeds the bounded durable Catalog artifact limit",
+                    details={
+                        "reason_code": "GC_PLAN_TOO_LARGE",
+                        "max_bytes": MAX_IDEMPOTENCY_OUTCOME_BYTES,
+                    },
+                )
+            self._gc_plan_read_model(
+                plan=plan,
+                gc_batch_id="gcb_" + "0" * 26,
+                reachable_artifact_count=reachable_artifact_count,
+                retention_profile_id=retention_profile_id,
+                candidate_reason="UNREACHABLE_AFTER_GRACE",
+            )
+            claim = self._claim_gc_plan(
+                scope=scope,
+                operation_id=operation_id,
+                project_id=project_id,
+                request_hash=request_hash,
+                plan=plan,
+                reachable_artifact_count=reachable_artifact_count,
+                created_at=now,
+            )
+        completed = self._completed_gc_claim_response(
+            request, claim, expected_phase="QUARANTINE"
+        )
+        if completed is not None:
+            return completed
+        plan, reachable_artifact_count = self._claimed_gc_plan(
+            claim, expected_phase="QUARANTINE"
+        )
+        if len(plan.canonical_bytes()) > MAX_IDEMPOTENCY_OUTCOME_BYTES:
+            raise V3ContractError("durable GC request plan exceeds its bound")
+        self._gc_plan_read_model(
+            plan=plan,
+            gc_batch_id="gcb_" + "0" * 26,
+            reachable_artifact_count=reachable_artifact_count,
+            retention_profile_id=retention_profile_id,
+            candidate_reason="UNREACHABLE_AFTER_GRACE",
+        )
+        batch = self._publish_gc_plan_and_batch(
+            project_id=project_id,
+            plan=plan,
+            provenance_entity_id="prv_product_gc_plan",
+        )
+        read_model = self._gc_plan_read_model(
+            plan=plan,
+            gc_batch_id=str(batch["gc_batch_id"]),
+            reachable_artifact_count=reachable_artifact_count,
+            retention_profile_id=retention_profile_id,
+            candidate_reason="UNREACHABLE_AFTER_GRACE",
+        )
+        self._complete_gc_plan_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            scope=scope,
+            request_hash=request_hash,
+            plan_artifact_id=plan.plan_artifact_id,
+            gc_batch_id=str(batch["gc_batch_id"]),
+            read_model=read_model,
+            created_at=now,
+        )
+        return _response(request, read_model)
+
+    @_gc_serialized
+    def confirm_garbage_collection(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        project_id = str(request["project_id"])
+        self.product.require_project_context_ownership(
+            project_id, str(request["project_context_revision_id"])
+        )
+        batch_id = str(request["gc_batch_id"])
+        existing = self.product.artifact_publication.get_gc_batch(batch_id)
+        if existing is None or str(existing["scope_owner_id"]) != project_id:
+            raise NotFoundError("GC batch is not owned by this project")
+        operation_id = "ArtifactService.v1.confirmGarbageCollection"
+        semantic = {
+            "project_id": project_id,
+            "project_context_revision_id": str(request["project_context_revision_id"]),
+            "gc_batch_id": batch_id,
+            "plan_artifact_id": str(request["plan_artifact_id"]),
+            "exact_artifact_ids_hash": str(request["exact_artifact_ids_hash"]),
+            "confirmation_nonce": str(request["confirmation_nonce"]),
+        }
+        scope, request_hash, existing_idempotency = self._lookup_gc_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            request=request,
+            semantic=semantic,
+        )
+        cached = self._existing_gc_response(request, existing_idempotency)
+        if cached is not None:
+            return cached
+        try:
+            batch = self.product.artifact_publication.confirm_gc_batch(
+                gc_batch_id=batch_id,
+                plan_artifact_id=str(request["plan_artifact_id"]),
+                exact_ids_hash=str(request["exact_artifact_ids_hash"]),
+                confirmation_nonce=str(request["confirmation_nonce"]),
+                now=self._clock(),
+            )
+        except GarbageCollectionSafetyError as exc:
+            raise TruthPreconditionFailedError(
+                str(exc), details={"reason_code": "GC_SAFETY_PRECONDITION_FAILED"}
+            ) from exc
+        read_model = self._gc_batch_read_model(batch)
+        self._record_gc_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            scope=scope,
+            request_hash=request_hash,
+            read_model=read_model,
+            created_at=self._clock(),
+        )
+        return _response(request, read_model)
+
+    @_gc_serialized
+    def quarantine_garbage_collection(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        project_id = str(request["project_id"])
+        self.product.require_project_context_ownership(
+            project_id, str(request["project_context_revision_id"])
+        )
+        batch = self.product.artifact_publication.get_gc_batch(str(request["gc_batch_id"]))
+        if batch is None or str(batch["scope_owner_id"]) != project_id:
+            raise NotFoundError("GC batch is not owned by this project")
+        batch_id = str(request["gc_batch_id"])
+        operation_id = "ArtifactService.v1.quarantineGarbageCollection"
+        semantic = {
+            "project_id": project_id,
+            "project_context_revision_id": str(request["project_context_revision_id"]),
+            "gc_batch_id": batch_id,
+        }
+        scope, request_hash, existing_idempotency = self._lookup_gc_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            request=request,
+            semantic=semantic,
+        )
+        cached = self._existing_gc_response(request, existing_idempotency)
+        if cached is not None:
+            return cached
+        try:
+            receipt = self.product.artifact_publication.execute_quarantine(
+                gc_batch_id=batch_id, now=self._clock()
+            )
+        except GarbageCollectionSafetyError as exc:
+            raise TruthPreconditionFailedError(
+                str(exc), details={"reason_code": "GC_SAFETY_PRECONDITION_FAILED"}
+            ) from exc
+        read_model = {
+            "read_model_version": "v3.garbage-collection-action/1.0",
+            "gc_batch_id": batch_id,
+            "receipt": receipt,
+        }
+        self._record_gc_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            scope=scope,
+            request_hash=request_hash,
+            read_model=read_model,
+            created_at=self._clock(),
+        )
+        return _response(request, read_model)
+
+    @_gc_serialized
+    def restore_garbage_collection(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        project_id = str(request["project_id"])
+        self.product.require_project_context_ownership(
+            project_id, str(request["project_context_revision_id"])
+        )
+        batch = self.product.artifact_publication.get_gc_batch(str(request["gc_batch_id"]))
+        if batch is None or str(batch["scope_owner_id"]) != project_id:
+            raise NotFoundError("GC batch is not owned by this project")
+        batch_id = str(request["gc_batch_id"])
+        operation_id = "ArtifactService.v1.restoreGarbageCollection"
+        semantic = {
+            "project_id": project_id,
+            "project_context_revision_id": str(request["project_context_revision_id"]),
+            "gc_batch_id": batch_id,
+        }
+        scope, request_hash, existing_idempotency = self._lookup_gc_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            request=request,
+            semantic=semantic,
+        )
+        cached = self._existing_gc_response(request, existing_idempotency)
+        if cached is not None:
+            return cached
+        try:
+            receipt = self.product.artifact_publication.restore_quarantined_batch(
+                gc_batch_id=batch_id, now=self._clock()
+            )
+        except GarbageCollectionSafetyError as exc:
+            raise TruthPreconditionFailedError(
+                str(exc), details={"reason_code": "GC_SAFETY_PRECONDITION_FAILED"}
+            ) from exc
+        read_model = {
+            "read_model_version": "v3.garbage-collection-action/1.0",
+            "gc_batch_id": batch_id,
+            "receipt": receipt,
+        }
+        self._record_gc_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            scope=scope,
+            request_hash=request_hash,
+            read_model=read_model,
+            created_at=self._clock(),
+        )
+        return _response(request, read_model)
+
+    @_gc_serialized
+    def plan_garbage_purge(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Create a fresh PURGE plan from one completed QUARANTINE batch."""
+
+        project_id = str(request["project_id"])
+        self.product.require_project_context_ownership(
+            project_id, str(request["project_context_revision_id"])
+        )
+        operation_id = "ArtifactService.v1.planGarbagePurge"
+        semantic = {
+            "project_id": project_id,
+            "project_context_revision_id": str(request["project_context_revision_id"]),
+            "quarantine_gc_batch_id": str(request["quarantine_gc_batch_id"]),
+        }
+        scope, request_hash, existing_idempotency = self._lookup_gc_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            request=request,
+            semantic=semantic,
+        )
+        claim = self._lookup_gc_plan_claim(
+            scope=scope,
+            operation_id=operation_id,
+            project_id=project_id,
+            request_hash=request_hash,
+        )
+        if claim is None and existing_idempotency is not None:
+            raise IdempotencyConflictError(
+                "GC plan idempotency record lacks a durable canonical claim"
+            )
+        source_batch_id = str(request["quarantine_gc_batch_id"])
+        source = self.product.artifact_publication.get_gc_batch(source_batch_id)
+        if source is None or str(source["scope_owner_id"]) != project_id:
+            raise NotFoundError("QUARANTINE batch is not owned by this project")
+        if source["phase"] != "QUARANTINE" or source["state"] != "COMPLETED":
+            raise TruthPreconditionFailedError(
+                "PURGE requires a completed QUARANTINE batch",
+                details={"reason_code": "GC_QUARANTINE_NOT_COMPLETE"},
+            )
+        try:
+            source_exact_ids = self.product.artifact_publication._gc_ids(source)
+        except GarbageCollectionSafetyError as exc:
+            raise TruthPreconditionFailedError(
+                "QUARANTINE exact Artifact set is not canonical",
+                details={"reason_code": "GC_EXACT_SET_CORRUPTED"},
+            ) from exc
+        if not source_exact_ids:
+            raise TruthPreconditionFailedError(
+                "an empty QUARANTINE set cannot produce a PURGE plan",
+                details={"reason_code": "GC_EMPTY_PURGE_SET"},
+            )
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("GC PURGE plan clock must be timezone-aware")
+        if claim is None:
+            plan, reachable_artifact_count = self._build_purge_gc_plan(
+                project_id=project_id,
+                source_batch_id=source_batch_id,
+                now=now,
+            )
+            if len(plan.canonical_bytes()) > MAX_IDEMPOTENCY_OUTCOME_BYTES:
+                raise ResourceRejectedError(
+                    "GC plan exceeds the bounded durable Catalog artifact limit",
+                    details={
+                        "reason_code": "GC_PLAN_TOO_LARGE",
+                        "max_bytes": MAX_IDEMPOTENCY_OUTCOME_BYTES,
+                    },
+                )
+            self._gc_plan_read_model(
+                plan=plan,
+                gc_batch_id="gcb_" + "0" * 26,
+                reachable_artifact_count=reachable_artifact_count,
+                retention_profile_id=DEFAULT_RETENTION_PROFILE,
+                candidate_reason="QUARANTINE_RETENTION_ELAPSED",
+                source_quarantine_gc_batch_id=source_batch_id,
+            )
+            claim = self._claim_gc_plan(
+                scope=scope,
+                operation_id=operation_id,
+                project_id=project_id,
+                request_hash=request_hash,
+                plan=plan,
+                reachable_artifact_count=reachable_artifact_count,
+                created_at=now,
+            )
+        completed = self._completed_gc_claim_response(
+            request, claim, expected_phase="PURGE"
+        )
+        if completed is not None:
+            return completed
+        plan, reachable_artifact_count = self._claimed_gc_plan(
+            claim, expected_phase="PURGE"
+        )
+        if len(plan.canonical_bytes()) > MAX_IDEMPOTENCY_OUTCOME_BYTES:
+            raise V3ContractError("durable GC request plan exceeds its bound")
+        self._gc_plan_read_model(
+            plan=plan,
+            gc_batch_id="gcb_" + "0" * 26,
+            reachable_artifact_count=reachable_artifact_count,
+            retention_profile_id=DEFAULT_RETENTION_PROFILE,
+            candidate_reason="QUARANTINE_RETENTION_ELAPSED",
+            source_quarantine_gc_batch_id=source_batch_id,
+        )
+        batch = self._publish_gc_plan_and_batch(
+            project_id=project_id,
+            plan=plan,
+            provenance_entity_id="prv_product_gc_purge_plan",
+        )
+        read_model = self._gc_plan_read_model(
+            plan=plan,
+            gc_batch_id=str(batch["gc_batch_id"]),
+            reachable_artifact_count=reachable_artifact_count,
+            retention_profile_id=DEFAULT_RETENTION_PROFILE,
+            candidate_reason="QUARANTINE_RETENTION_ELAPSED",
+            source_quarantine_gc_batch_id=source_batch_id,
+        )
+        self._complete_gc_plan_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            scope=scope,
+            request_hash=request_hash,
+            plan_artifact_id=plan.plan_artifact_id,
+            gc_batch_id=str(batch["gc_batch_id"]),
+            read_model=read_model,
+            created_at=now,
+        )
+        return _response(request, read_model)
+
+    @_gc_serialized
+    def purge_garbage_collection(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        project_id = str(request["project_id"])
+        self.product.require_project_context_ownership(
+            project_id, str(request["project_context_revision_id"])
+        )
+        batch_id = str(request["gc_batch_id"])
+        batch = self.product.artifact_publication.get_gc_batch(batch_id)
+        if batch is None or str(batch["scope_owner_id"]) != project_id:
+            raise NotFoundError("PURGE batch is not owned by this project")
+        operation_id = "ArtifactService.v1.purgeGarbageCollection"
+        semantic = {
+            "project_id": project_id,
+            "project_context_revision_id": str(request["project_context_revision_id"]),
+            "gc_batch_id": batch_id,
+        }
+        scope, request_hash, existing_idempotency = self._lookup_gc_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            request=request,
+            semantic=semantic,
+        )
+        cached = self._existing_gc_response(request, existing_idempotency)
+        if cached is not None:
+            return cached
+        try:
+            receipt = self.product.artifact_publication.execute_purge(
+                gc_batch_id=batch_id, now=self._clock()
+            )
+        except GarbageCollectionSafetyError as exc:
+            raise TruthPreconditionFailedError(
+                str(exc), details={"reason_code": "GC_SAFETY_PRECONDITION_FAILED"}
+            ) from exc
+        read_model = {
+            "read_model_version": "v3.garbage-collection-action/1.0",
+            "gc_batch_id": batch_id,
+            "receipt": receipt,
+        }
+        self._record_gc_request(
+            operation_id=operation_id,
+            project_id=project_id,
+            scope=scope,
+            request_hash=request_hash,
+            read_model=read_model,
+            created_at=self._clock(),
+        )
+        return _response(request, read_model)
+
+    @staticmethod
+    def _gc_batch_read_model(batch: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "gc_batch_id": str(batch["gc_batch_id"]),
+            "phase": str(batch["phase"]),
+            "plan_artifact_id": str(batch["plan_artifact_id"]),
+            "exact_artifact_ids_hash": str(batch["exact_artifact_ids_hash"]),
+            "state": str(batch["state"]),
+            "confirmation_hash": batch.get("confirmation_hash"),
+            "confirmed_at": batch.get("confirmed_at"),
+            "completed_at": batch.get("completed_at"),
+        }
 
 
 class _NoopPublishCallbacksFacade:

@@ -621,6 +621,203 @@ METHOD_SPECS = {'ArtifactService.v1.publishArtifact': {'operation_id': 'Artifact
                                               'read_models': ['GarbageCollectionPlanV1'],
                                               'frontend_capabilities': ['safe cleanup']}}
 
+
+def _gc_common_request_properties() -> dict[str, dict[str, str]]:
+    return {
+        'request_id': {'type': 'string', 'format': 'uuid'},
+        'project_id': {
+            'type': 'string',
+            'pattern': '^prj_[0-9A-HJKMNP-TV-Z]{26}$',
+        },
+        'project_context_revision_id': {
+            'type': 'string',
+            'pattern': '^pcr_[0-9A-HJKMNP-TV-Z]{26}$',
+        },
+        'expected_api_version': {'type': 'string', 'const': '1.0'},
+    }
+
+
+def _gc_request_schema(
+    name: str,
+    extra_properties: dict[str, dict[str, str]],
+) -> dict[str, object]:
+    properties = _gc_common_request_properties()
+    properties.update(extra_properties)
+    return {
+        'name': name,
+        'schema': {
+            'type': 'object',
+            'additionalProperties': False,
+            'required': list(properties),
+            'properties': properties,
+        },
+    }
+
+
+def _gc_response_dto(name: str) -> dict[str, object]:
+    return {
+        'name': name,
+        'schema': {
+            'type': 'object',
+            'additionalProperties': False,
+            'required': ['request_id', 'truth_state', 'read_model'],
+            'properties': {
+                'request_id': {'type': 'string', 'format': 'uuid'},
+                'truth_state': {
+                    'type': 'string',
+                    'enum': ['FORMAL', 'DEMO', 'UNAVAILABLE'],
+                },
+                'read_model': {
+                    'type': 'object',
+                    'description': 'Bounded garbage-collection action receipt/read model',
+                },
+            },
+        },
+    }
+
+
+def _gc_method_spec(
+    operation_id: str,
+    request_dto: dict[str, object],
+    response_dto: dict[str, object],
+) -> dict[str, object]:
+    return {
+        'operation_id': operation_id,
+        'version': '1.0.0',
+        'kind': 'COMMAND',
+        'request_dto': request_dto,
+        'response_dto': response_dto,
+        'idempotency': {
+            'mode': 'REQUEST_ID',
+            'scope': 'operation_id + project_id + request_id',
+            'same_key_same_canonical_request': 'return_original_outcome',
+            'same_key_different_canonical_request': 'IDEMPOTENCY_CONFLICT',
+        },
+        'async_behavior': {
+            'creates_task_run': False,
+            'run_identity_inputs': [],
+            'artifact_outputs': [],
+            'cancel': 'NOT_APPLICABLE',
+            'retry': 'NOT_APPLICABLE',
+            'resume': 'NOT_APPLICABLE',
+            'input_change': 'NOT_APPLICABLE',
+            'attempt_rule': 'NOT_APPLICABLE',
+        },
+        'truth_pit_preconditions': [
+            'project context revision exists and is owned by the request project',
+            'exact plan, confirmation proof, and current reachability guard match',
+        ],
+        'errors': [
+            'INVALID_ARGUMENT',
+            'VERSION_MISMATCH',
+            'NOT_FOUND',
+            'CONFLICT',
+            'IDEMPOTENCY_CONFLICT',
+            'CAPABILITY_UNAVAILABLE',
+            'TRUTH_PRECONDITION_FAILED',
+            'PIT_UNPROVABLE',
+            'ARTIFACT_NOT_PUBLISHED',
+            'RESOURCE_REJECTED',
+            'INTERNAL_ERROR',
+        ],
+        'provenance_required': [
+            'request_actor',
+            'project_context_revision_id',
+            'operation_id',
+            'contract_version',
+            'input_object_ids',
+            'input_content_hashes',
+            'environment_profile_id',
+            'code_version',
+        ],
+        'read_models': ['GarbageCollectionBatchV1', 'GarbageCollectionReceiptV1'],
+        'frontend_capabilities': [],
+    }
+
+
+METHOD_SPECS.update(
+    {
+        'ArtifactService.v1.confirmGarbageCollection': _gc_method_spec(
+            'ArtifactService.v1.confirmGarbageCollection',
+            _gc_request_schema(
+                'ConfirmGarbageCollectionRequestV1',
+                {
+                    'gc_batch_id': {
+                        'type': 'string',
+                        'pattern': '^gcb_[0-9A-HJKMNP-TV-Z]{26}$',
+                    },
+                    'plan_artifact_id': {
+                        'type': 'string',
+                        'pattern': '^art_sha256_[0-9a-f]{64}$',
+                    },
+                    'exact_artifact_ids_hash': {
+                        'type': 'string',
+                        'pattern': '^[0-9a-f]{64}$',
+                    },
+                    'confirmation_nonce': {
+                        'type': 'string',
+                        'minLength': 1,
+                        'maxLength': 128,
+                    },
+                },
+            ),
+            _gc_response_dto('ConfirmGarbageCollectionResponseV1'),
+        ),
+        'ArtifactService.v1.quarantineGarbageCollection': _gc_method_spec(
+            'ArtifactService.v1.quarantineGarbageCollection',
+            _gc_request_schema(
+                'QuarantineGarbageCollectionRequestV1',
+                {
+                    'gc_batch_id': {
+                        'type': 'string',
+                        'pattern': '^gcb_[0-9A-HJKMNP-TV-Z]{26}$',
+                    },
+                },
+            ),
+            _gc_response_dto('QuarantineGarbageCollectionResponseV1'),
+        ),
+        'ArtifactService.v1.restoreGarbageCollection': _gc_method_spec(
+            'ArtifactService.v1.restoreGarbageCollection',
+            _gc_request_schema(
+                'RestoreGarbageCollectionRequestV1',
+                {
+                    'gc_batch_id': {
+                        'type': 'string',
+                        'pattern': '^gcb_[0-9A-HJKMNP-TV-Z]{26}$',
+                    },
+                },
+            ),
+            _gc_response_dto('RestoreGarbageCollectionResponseV1'),
+        ),
+        'ArtifactService.v1.planGarbagePurge': _gc_method_spec(
+            'ArtifactService.v1.planGarbagePurge',
+            _gc_request_schema(
+                'PlanGarbagePurgeRequestV1',
+                {
+                    'quarantine_gc_batch_id': {
+                        'type': 'string',
+                        'pattern': '^gcb_[0-9A-HJKMNP-TV-Z]{26}$',
+                    },
+                },
+            ),
+            _gc_response_dto('PlanGarbagePurgeResponseV1'),
+        ),
+        'ArtifactService.v1.purgeGarbageCollection': _gc_method_spec(
+            'ArtifactService.v1.purgeGarbageCollection',
+            _gc_request_schema(
+                'PurgeGarbageCollectionRequestV1',
+                {
+                    'gc_batch_id': {
+                        'type': 'string',
+                        'pattern': '^gcb_[0-9A-HJKMNP-TV-Z]{26}$',
+                    },
+                },
+            ),
+            _gc_response_dto('PurgeGarbageCollectionResponseV1'),
+        ),
+    }
+)
+
 class PublishArtifactRequestV1(ClosedDto):
     DTO_NAME = 'PublishArtifactRequestV1'
     OPERATION_ID = 'ArtifactService.v1.publishArtifact'
@@ -671,11 +868,66 @@ class PlanGarbageCollectionResponseV1(ClosedDto):
     OPERATION_ID = 'ArtifactService.v1.planGarbageCollection'
     SCHEMA = METHOD_SPECS['ArtifactService.v1.planGarbageCollection']['response_dto']['schema']
 
+class ConfirmGarbageCollectionRequestV1(ClosedDto):
+    DTO_NAME = 'ConfirmGarbageCollectionRequestV1'
+    OPERATION_ID = 'ArtifactService.v1.confirmGarbageCollection'
+    SCHEMA = METHOD_SPECS['ArtifactService.v1.confirmGarbageCollection']['request_dto']['schema']
+
+class ConfirmGarbageCollectionResponseV1(ClosedDto):
+    DTO_NAME = 'ConfirmGarbageCollectionResponseV1'
+    OPERATION_ID = 'ArtifactService.v1.confirmGarbageCollection'
+    SCHEMA = METHOD_SPECS['ArtifactService.v1.confirmGarbageCollection']['response_dto']['schema']
+
+class QuarantineGarbageCollectionRequestV1(ClosedDto):
+    DTO_NAME = 'QuarantineGarbageCollectionRequestV1'
+    OPERATION_ID = 'ArtifactService.v1.quarantineGarbageCollection'
+    SCHEMA = METHOD_SPECS['ArtifactService.v1.quarantineGarbageCollection']['request_dto']['schema']
+
+class QuarantineGarbageCollectionResponseV1(ClosedDto):
+    DTO_NAME = 'QuarantineGarbageCollectionResponseV1'
+    OPERATION_ID = 'ArtifactService.v1.quarantineGarbageCollection'
+    SCHEMA = METHOD_SPECS['ArtifactService.v1.quarantineGarbageCollection']['response_dto']['schema']
+
+class RestoreGarbageCollectionRequestV1(ClosedDto):
+    DTO_NAME = 'RestoreGarbageCollectionRequestV1'
+    OPERATION_ID = 'ArtifactService.v1.restoreGarbageCollection'
+    SCHEMA = METHOD_SPECS['ArtifactService.v1.restoreGarbageCollection']['request_dto']['schema']
+
+class RestoreGarbageCollectionResponseV1(ClosedDto):
+    DTO_NAME = 'RestoreGarbageCollectionResponseV1'
+    OPERATION_ID = 'ArtifactService.v1.restoreGarbageCollection'
+    SCHEMA = METHOD_SPECS['ArtifactService.v1.restoreGarbageCollection']['response_dto']['schema']
+
+class PlanGarbagePurgeRequestV1(ClosedDto):
+    DTO_NAME = 'PlanGarbagePurgeRequestV1'
+    OPERATION_ID = 'ArtifactService.v1.planGarbagePurge'
+    SCHEMA = METHOD_SPECS['ArtifactService.v1.planGarbagePurge']['request_dto']['schema']
+
+class PlanGarbagePurgeResponseV1(ClosedDto):
+    DTO_NAME = 'PlanGarbagePurgeResponseV1'
+    OPERATION_ID = 'ArtifactService.v1.planGarbagePurge'
+    SCHEMA = METHOD_SPECS['ArtifactService.v1.planGarbagePurge']['response_dto']['schema']
+
+class PurgeGarbageCollectionRequestV1(ClosedDto):
+    DTO_NAME = 'PurgeGarbageCollectionRequestV1'
+    OPERATION_ID = 'ArtifactService.v1.purgeGarbageCollection'
+    SCHEMA = METHOD_SPECS['ArtifactService.v1.purgeGarbageCollection']['request_dto']['schema']
+
+class PurgeGarbageCollectionResponseV1(ClosedDto):
+    DTO_NAME = 'PurgeGarbageCollectionResponseV1'
+    OPERATION_ID = 'ArtifactService.v1.purgeGarbageCollection'
+    SCHEMA = METHOD_SPECS['ArtifactService.v1.purgeGarbageCollection']['response_dto']['schema']
+
 OPERATION_IDS = ('ArtifactService.v1.publishArtifact',
  'ArtifactService.v1.getArtifactDescriptor',
  'ArtifactService.v1.openArtifactStream',
  'ArtifactService.v1.exportArtifact',
- 'ArtifactService.v1.planGarbageCollection')
+ 'ArtifactService.v1.planGarbageCollection',
+ 'ArtifactService.v1.confirmGarbageCollection',
+ 'ArtifactService.v1.quarantineGarbageCollection',
+ 'ArtifactService.v1.restoreGarbageCollection',
+ 'ArtifactService.v1.planGarbagePurge',
+ 'ArtifactService.v1.purgeGarbageCollection')
 OPERATIONS = (
     OperationContract(
         operation_id='ArtifactService.v1.publishArtifact',
@@ -722,6 +974,51 @@ OPERATIONS = (
         response_type=PlanGarbageCollectionResponseV1,
         metadata=METHOD_SPECS['ArtifactService.v1.planGarbageCollection'],
     ),
+    OperationContract(
+        operation_id='ArtifactService.v1.confirmGarbageCollection',
+        service=SERVICE,
+        version='1.0.0',
+        kind=OperationKind.COMMAND,
+        request_type=ConfirmGarbageCollectionRequestV1,
+        response_type=ConfirmGarbageCollectionResponseV1,
+        metadata=METHOD_SPECS['ArtifactService.v1.confirmGarbageCollection'],
+    ),
+    OperationContract(
+        operation_id='ArtifactService.v1.quarantineGarbageCollection',
+        service=SERVICE,
+        version='1.0.0',
+        kind=OperationKind.COMMAND,
+        request_type=QuarantineGarbageCollectionRequestV1,
+        response_type=QuarantineGarbageCollectionResponseV1,
+        metadata=METHOD_SPECS['ArtifactService.v1.quarantineGarbageCollection'],
+    ),
+    OperationContract(
+        operation_id='ArtifactService.v1.restoreGarbageCollection',
+        service=SERVICE,
+        version='1.0.0',
+        kind=OperationKind.COMMAND,
+        request_type=RestoreGarbageCollectionRequestV1,
+        response_type=RestoreGarbageCollectionResponseV1,
+        metadata=METHOD_SPECS['ArtifactService.v1.restoreGarbageCollection'],
+    ),
+    OperationContract(
+        operation_id='ArtifactService.v1.planGarbagePurge',
+        service=SERVICE,
+        version='1.0.0',
+        kind=OperationKind.COMMAND,
+        request_type=PlanGarbagePurgeRequestV1,
+        response_type=PlanGarbagePurgeResponseV1,
+        metadata=METHOD_SPECS['ArtifactService.v1.planGarbagePurge'],
+    ),
+    OperationContract(
+        operation_id='ArtifactService.v1.purgeGarbageCollection',
+        service=SERVICE,
+        version='1.0.0',
+        kind=OperationKind.COMMAND,
+        request_type=PurgeGarbageCollectionRequestV1,
+        response_type=PurgeGarbageCollectionResponseV1,
+        metadata=METHOD_SPECS['ArtifactService.v1.purgeGarbageCollection'],
+    ),
 )
 CONTRACT = ServiceContract(
     contract_id=CONTRACT_ID,
@@ -745,4 +1042,14 @@ __all__ = ('CONTRACT_ID',
  'ExportArtifactRequestV1',
  'ExportArtifactAcceptedV1',
  'PlanGarbageCollectionRequestV1',
- 'PlanGarbageCollectionResponseV1')
+ 'PlanGarbageCollectionResponseV1',
+ 'ConfirmGarbageCollectionRequestV1',
+ 'ConfirmGarbageCollectionResponseV1',
+ 'QuarantineGarbageCollectionRequestV1',
+ 'QuarantineGarbageCollectionResponseV1',
+ 'RestoreGarbageCollectionRequestV1',
+ 'RestoreGarbageCollectionResponseV1',
+ 'PlanGarbagePurgeRequestV1',
+ 'PlanGarbagePurgeResponseV1',
+ 'PurgeGarbageCollectionRequestV1',
+ 'PurgeGarbageCollectionResponseV1')

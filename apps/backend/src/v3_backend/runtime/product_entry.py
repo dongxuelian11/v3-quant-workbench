@@ -688,6 +688,13 @@ def import_research_package(
         store=product.artifact_store,
         payloads=(spec_plan, new_context_plan),
         published_at=imported_at,
+        coordinator=product.artifact_publication,
+    )
+    batch.prepare_intents(
+        (
+            (project_id, PROJECT_SPEC_REFERENCE_ROLE, 0),
+            (project_id, PROJECT_SPEC_CONTEXT_REFERENCE_ROLE, 1),
+        )
     )
 
     connection = connect_catalog(product.database_path)
@@ -711,32 +718,16 @@ def import_research_package(
         port.publish(
             ArtifactPublication(
                 descriptor=batch.results[0].descriptor,
-                active_references=(
-                    ArtifactReference(
-                        reference_id=mint_v3_id("arf_"),
-                        owner_id=project_id,
-                        artifact_id=batch.results[0].descriptor.artifact_id,
-                        role=PROJECT_SPEC_REFERENCE_ROLE,
-                        created_at=imported_at,
-                        state="ACTIVE",
-                    ),
-                ),
-            )
+                active_references=batch.active_references[0],
+            ),
+            promotion_intent_id=batch.prepared[0].promotion_intent_id,
         )
         port.publish(
             ArtifactPublication(
                 descriptor=batch.results[1].descriptor,
-                active_references=(
-                    ArtifactReference(
-                        reference_id=mint_v3_id("arf_"),
-                        owner_id=project_id,
-                        artifact_id=batch.results[1].descriptor.artifact_id,
-                        role=PROJECT_SPEC_CONTEXT_REFERENCE_ROLE,
-                        created_at=imported_at,
-                        state="ACTIVE",
-                    ),
-                ),
-            )
+                active_references=batch.active_references[1],
+            ),
+            promotion_intent_id=batch.prepared[1].promotion_intent_id,
         )
         outcome = {
             "run_spec_id": manifest["run_spec_id"],

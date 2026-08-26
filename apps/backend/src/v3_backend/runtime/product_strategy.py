@@ -71,6 +71,7 @@ from v3_backend.domain.strategies import (
 )
 from v3_backend.domain.weights import RuntimeIdentity
 from v3_backend.errors.exceptions import (
+    ArtifactNotPublishedError,
     CapabilityUnavailableError,
     ConflictError,
     InvalidArgumentError,
@@ -866,7 +867,13 @@ class ProductStrategyService:
                 raise TruthPreconditionFailedError("Strategy read model exceeds its bound")
             try:
                 value = json.loads(self.product.read_verified_bytes(str(artifact_id)).decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError) as error:
+            except (
+                ArtifactNotPublishedError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                OSError,
+                ValueError,
+            ) as error:
                 raise TruthPreconditionFailedError("Strategy read-model bytes are invalid") from error
             if (
                 isinstance(value, dict)
@@ -938,7 +945,13 @@ class ProductStrategyService:
             candidate = json.loads(
                 self.product.read_verified_bytes(str(row[0])).decode("utf-8")
             )
-        except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError) as error:
+        except (
+            ArtifactNotPublishedError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            OSError,
+            ValueError,
+        ) as error:
             raise TruthPreconditionFailedError(
                 "Strategy read-model bytes are invalid"
             ) from error
@@ -1033,7 +1046,7 @@ class ProductStrategyService:
             raw_manifest = self.product.read_verified_bytes(
                 str(output["materialization_artifact_id"])
             )
-        except (ArtifactError, OSError, ValueError) as error:
+        except (ArtifactError, ArtifactNotPublishedError, OSError, ValueError) as error:
             raise TruthPreconditionFailedError(
                 "Factor materialization manifest bytes are unavailable"
             ) from error
@@ -1068,7 +1081,7 @@ class ProductStrategyService:
                 raise TruthPreconditionFailedError("Factor partition identity drifted")
             try:
                 raw = self.product.read_verified_bytes(str(part["artifact_id"]))
-            except (ArtifactError, OSError, ValueError) as error:
+            except (ArtifactError, ArtifactNotPublishedError, OSError, ValueError) as error:
                 raise TruthPreconditionFailedError(
                     "Factor partition bytes are unavailable"
                 ) from error
@@ -1461,7 +1474,13 @@ class ProductStrategyService:
             payload = json.loads(
                 self.product.read_verified_bytes(artifact_id).decode("utf-8")
             )
-        except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError) as error:
+        except (
+            ArtifactNotPublishedError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            OSError,
+            ValueError,
+        ) as error:
             raise TruthPreconditionFailedError(
                 "Strategy decision input bytes are invalid"
             ) from error
@@ -1610,7 +1629,7 @@ class ProductStrategyService:
             )
         try:
             raw = self.product.read_verified_bytes(artifact_id)
-        except (ArtifactError, OSError, ValueError) as error:
+        except (ArtifactError, ArtifactNotPublishedError, OSError, ValueError) as error:
             raise TruthPreconditionFailedError(
                 f"Strategy artifact {role} bytes are unavailable"
             ) from error
@@ -1691,7 +1710,7 @@ class ProductStrategyService:
             )
         try:
             raw = self.product.read_verified_bytes(artifact_id)
-        except (ArtifactError, OSError, ValueError) as error:
+        except (ArtifactError, ArtifactNotPublishedError, OSError, ValueError) as error:
             raise TruthPreconditionFailedError(
                 f"Strategy canonical owner artifact {role} bytes are unavailable"
             ) from error

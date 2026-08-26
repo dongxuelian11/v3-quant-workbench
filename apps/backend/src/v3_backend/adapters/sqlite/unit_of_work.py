@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from typing import Protocol
 
 from v3_backend.repositories.unit_of_work import TransactionMode, UnitOfWork
@@ -43,30 +44,49 @@ class SQLiteUnitOfWork(UnitOfWork):
         if self.mode is TransactionMode.PUBLISH:
             assert self.publish_callbacks is not None
             self.publish_callbacks.verify_staged()
-            self.publish_callbacks.publish_staged()
             self._published_staged = True
+            try:
+                self.publish_callbacks.publish_staged()
+            except Exception as error:
+                self._compensate(error)
+                raise
         sql = "BEGIN" if self.mode is TransactionMode.READ_ONLY else "BEGIN IMMEDIATE"
         try:
             self.connection.execute(sql)
-        except Exception:
-            self._compensate()
+        except Exception as error:
+            self._compensate(error)
             raise
         self._active = True
         return self
 
-    def _compensate(self) -> None:
+    def _compensate(self, primary_error: BaseException | None = None) -> None:
         if self._published_staged and self.publish_callbacks is not None:
-            self.publish_callbacks.compensate_unreferenced_staging()
-            self._published_staged = False
+            try:
+                self.publish_callbacks.compensate_unreferenced_staging()
+            except Exception as compensation_error:
+                if primary_error is None:
+                    raise
+                primary_error.add_note(
+                    "Artifact publication compensation failed: "
+                    f"{type(compensation_error).__name__}: {compensation_error}"
+                )
+            finally:
+                self._published_staged = False
 
     def commit(self) -> None:
         if not self._active:
             raise RuntimeError("unit of work is not active")
         try:
             self.connection.commit()
-        except Exception:
-            self.connection.rollback()
-            self._compensate()
+        except Exception as error:
+            try:
+                self.connection.rollback()
+            except Exception as rollback_error:
+                error.add_note(
+                    "Catalog rollback after commit failure also failed: "
+                    f"{type(rollback_error).__name__}: {rollback_error}"
+                )
+            self._compensate(error)
             self._active = False
             raise
         self._active = False
@@ -75,14 +95,50 @@ class SQLiteUnitOfWork(UnitOfWork):
             self._published_staged = False
             self.publish_callbacks.notify_committed()
 
-    def rollback(self) -> None:
+    def rollback(self, primary_error: BaseException | None = None) -> None:
         if not self._active:
             return
+        if primary_error is None:
+            # Most callers use a ``finally`` block rather than passing the
+            # active exception explicitly.  Preserve that exception too, so
+            # a diagnostic-compensation failure cannot replace the operation
+            # failure merely because cleanup was entered from ``finally``.
+            current_error = sys.exc_info()[1]
+            if current_error is not None:
+                primary_error = current_error
+        rollback_error: Exception | None = None
         try:
             self.connection.rollback()
+        except Exception as error:
+            rollback_error = error
         finally:
             self._active = False
+        compensation_error: Exception | None = None
+        try:
             self._compensate()
+        except Exception as error:
+            compensation_error = error
+        if primary_error is not None:
+            if rollback_error is not None:
+                primary_error.add_note(
+                    "Catalog rollback failed: "
+                    f"{type(rollback_error).__name__}: {rollback_error}"
+                )
+            if compensation_error is not None:
+                primary_error.add_note(
+                    "Artifact publication compensation failed: "
+                    f"{type(compensation_error).__name__}: {compensation_error}"
+                )
+            return
+        if rollback_error is not None:
+            if compensation_error is not None:
+                rollback_error.add_note(
+                    "Artifact publication compensation also failed: "
+                    f"{type(compensation_error).__name__}: {compensation_error}"
+                )
+            raise rollback_error
+        if compensation_error is not None:
+            raise compensation_error
 
     def __enter__(self) -> "SQLiteUnitOfWork":
         return self.begin()
@@ -91,5 +147,5 @@ class SQLiteUnitOfWork(UnitOfWork):
         if exc_type is None:
             self.commit()
         else:
-            self.rollback()
+            self.rollback(exc)
         return False

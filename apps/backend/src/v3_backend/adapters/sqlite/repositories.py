@@ -14,6 +14,12 @@ from v3_backend.domain.data_truth.model import (
     UniverseResolution,
 )
 from v3_backend.domain.data_truth.pit import PitCapabilityUnavailable
+from v3_backend.domain.artifacts.lifecycle import (
+    GC_BATCH_STATES,
+    GC_BATCH_TRANSITIONS,
+    PROMOTION_STATES,
+    PROMOTION_TRANSITIONS,
+)
 from v3_backend.errors.exceptions import (
     ArtifactNotPublishedError,
     ConflictError,
@@ -75,7 +81,18 @@ _REPOSITORY_TABLES: dict[str, frozenset[str]] = {
     "backtest": frozenset({"experiment", "backtest_run_spec"}),
     "result": frozenset({"result", "result_component"}),
     "task": frozenset({"task", "run", "task_attempt", "task_dependency", "task_event", "idempotency_record"}),
-    "artifact": frozenset({"artifact", "artifact_reference"}),
+    "artifact": frozenset(
+        {
+            "artifact",
+            "artifact_reference",
+            "artifact_promotion_intent",
+            "artifact_storage_error",
+            "artifact_gc_batch",
+            "artifact_gc_request",
+            "artifact_quarantine",
+            "artifact_gc_receipt",
+        }
+    ),
     "provenance": frozenset({"provenance_entity", "provenance_edge"}),
     "data_truth": frozenset(
         {
@@ -1218,6 +1235,23 @@ class SQLiteArtifactRepository(SQLiteDomainRepository):
             raise ArtifactNotPublishedError("Artifact reference target is not PUBLISHED")
         if reference.get("state") != "ACTIVE":
             raise InvalidArgumentError("new Artifact references must be ACTIVE")
+        existing = self.uow.connection.execute(
+            """
+            SELECT * FROM artifact_reference
+            WHERE owner_type=? AND owner_id=? AND role=? AND artifact_id=?
+            """,
+            (
+                reference["owner_type"],
+                reference["owner_id"],
+                reference["role"],
+                reference["artifact_id"],
+            ),
+        ).fetchone()
+        if existing is not None:
+            row = _row_dict(existing)
+            if row["state"] == reference["state"]:
+                return row
+            raise ConflictError("Artifact reference already exists with a different state")
         return self.table("artifact_reference").add_new(reference, idempotent=True)
 
     def bind_artifact(
@@ -1266,32 +1300,325 @@ class SQLiteArtifactRepository(SQLiteDomainRepository):
             )
         )
 
+    def create_promotion_intent(self, intent: Mapping[str, Any]) -> dict[str, Any]:
+        if intent.get("state") != "STAGED_SYNCED":
+            raise InvalidArgumentError("new promotion intents must start at STAGED_SYNCED")
+        if int(intent.get("state_version", 1)) != 1:
+            raise InvalidArgumentError("new promotion intents must start at state_version=1")
+        return self.table("artifact_promotion_intent").add_new(intent, idempotent=True)
+
+    def get_promotion_intent(self, promotion_intent_id: str) -> dict[str, Any] | None:
+        return self.table("artifact_promotion_intent").get(promotion_intent_id)
+
+    def list_promotion_intents(
+        self, *, states: Sequence[str] | None = None, limit: int = 256
+    ) -> tuple[dict[str, Any], ...]:
+        repository = self.table("artifact_promotion_intent")
+        repository._assert_active()
+        if not 1 <= limit <= 1_000:
+            raise InvalidArgumentError("promotion intent limit must be between 1 and 1000")
+        normalized_states = tuple(states or ())
+        if normalized_states:
+            placeholders = ",".join("?" for _ in normalized_states)
+            rows = self.uow.connection.execute(
+                f"""
+                SELECT * FROM artifact_promotion_intent
+                WHERE state IN ({placeholders})
+                ORDER BY updated_at, promotion_intent_id LIMIT ?
+                """,
+                normalized_states + (limit,),
+            ).fetchall()
+        else:
+            rows = self.uow.connection.execute(
+                """
+                SELECT * FROM artifact_promotion_intent
+                ORDER BY updated_at, promotion_intent_id LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return tuple(_row_dict(row) for row in rows)
+
+    def transition_promotion_intent(
+        self,
+        promotion_intent_id: str,
+        *,
+        expected_state: str,
+        expected_state_version: int,
+        target_state: str,
+        updated_at: str,
+        finalized_at: str | None = None,
+        last_error_code: str | None = None,
+        last_error_detail_artifact_id: str | None = None,
+        descriptor_json: str | None = None,
+        references_json: str | None = None,
+    ) -> dict[str, Any]:
+        if expected_state not in PROMOTION_STATES or target_state not in PROMOTION_STATES:
+            raise InvalidArgumentError("unknown Artifact promotion state")
+        if target_state != expected_state and target_state not in PROMOTION_TRANSITIONS[expected_state]:
+            raise InvalidArgumentError(
+                f"invalid Artifact promotion transition: {expected_state}->{target_state}"
+            )
+        if not isinstance(expected_state_version, int) or isinstance(expected_state_version, bool):
+            raise InvalidArgumentError("promotion intent state_version must be an integer")
+        if expected_state_version < 1:
+            raise InvalidArgumentError("promotion intent state_version must be positive")
+        repository = self.table("artifact_promotion_intent")
+        repository._assert_active(write=True)
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE artifact_promotion_intent
+            SET state=?, state_version=state_version+1, updated_at=?, finalized_at=COALESCE(?, finalized_at),
+                last_error_code=COALESCE(?, last_error_code),
+                last_error_detail_artifact_id=COALESCE(?, last_error_detail_artifact_id),
+                descriptor_json=COALESCE(?, descriptor_json),
+                references_json=COALESCE(?, references_json)
+            WHERE promotion_intent_id=? AND state=? AND state_version=?
+            """,
+            (
+                target_state,
+                updated_at,
+                finalized_at,
+                last_error_code,
+                last_error_detail_artifact_id,
+                descriptor_json,
+                references_json,
+                promotion_intent_id,
+                expected_state,
+                expected_state_version,
+            ),
+        )
+        if cursor.rowcount == 1:
+            return repository.require(promotion_intent_id)
+        existing = repository.get(promotion_intent_id)
+        if (
+            existing is not None
+            and existing["state"] == target_state
+            and (
+                finalized_at is None
+                or existing.get("finalized_at") == finalized_at
+            )
+            and (
+                last_error_code is None
+                or existing.get("last_error_code") == last_error_code
+            )
+            and (
+                last_error_detail_artifact_id is None
+                or existing.get("last_error_detail_artifact_id")
+                == last_error_detail_artifact_id
+            )
+            and (
+                descriptor_json is None
+                or existing.get("descriptor_json") == descriptor_json
+            )
+            and (
+                references_json is None
+                or existing.get("references_json") == references_json
+            )
+        ):
+            return existing
+        raise ConflictError(
+            "promotion intent state/version precondition failed",
+            details={
+                "promotion_intent_id": promotion_intent_id,
+                "expected_state": expected_state,
+                "expected_state_version": expected_state_version,
+            },
+        )
+
+    def record_storage_error(self, error: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("artifact_storage_error").add_new(error, idempotent=True)
+
+    def resolve_storage_errors(
+        self,
+        *,
+        artifact_id: str | None = None,
+        promotion_intent_id: str | None = None,
+        resolved_at: str,
+    ) -> int:
+        repository = self.table("artifact_storage_error")
+        repository._assert_active(write=True)
+        if artifact_id is None and promotion_intent_id is None:
+            raise InvalidArgumentError("storage error resolution requires an Artifact or promotion intent")
+        clauses: list[str] = []
+        parameters: list[Any] = [resolved_at]
+        if artifact_id is not None:
+            clauses.append("artifact_id=?")
+            parameters.append(artifact_id)
+        if promotion_intent_id is not None:
+            clauses.append("promotion_intent_id=?")
+            parameters.append(promotion_intent_id)
+        cursor = self.uow.connection.execute(
+            "UPDATE artifact_storage_error SET resolved_at=? "
+            "WHERE resolved_at IS NULL AND (" + " OR ".join(clauses) + ")",
+            tuple(parameters),
+        )
+        return int(cursor.rowcount)
+
+    def create_gc_batch(self, batch: Mapping[str, Any]) -> dict[str, Any]:
+        if batch.get("state") != "PLANNED":
+            raise InvalidArgumentError("new GC batches must start at PLANNED")
+        if batch.get("phase") not in {"QUARANTINE", "PURGE"}:
+            raise InvalidArgumentError("GC batch phase must be QUARANTINE or PURGE")
+        return self.table("artifact_gc_batch").add_new(batch, idempotent=True)
+
+    def get_gc_batch(self, gc_batch_id: str) -> dict[str, Any] | None:
+        return self.table("artifact_gc_batch").get(gc_batch_id)
+
+    def claim_gc_request(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Claim one GC plan request without rewriting a different request."""
+
+        repository = self.table("artifact_gc_request")
+        repository._assert_active(write=True)
+        request_scope_key = str(request["request_scope_key"])
+        existing = repository.get(request_scope_key)
+        if existing is not None:
+            expected = {
+                "operation_id": request["operation_id"],
+                "scope_owner_id": request["scope_owner_id"],
+                "canonical_request_hash": request["canonical_request_hash"],
+                "phase": request["phase"],
+            }
+            if any(existing.get(key) != value for key, value in expected.items()):
+                raise ConflictError("GC request claim conflicts with an existing request")
+            return existing
+        try:
+            return repository.add_new(request)
+        except ConflictError:
+            # A second process may have inserted the same request between the
+            # read above and INSERT.  The first committed claim owns the
+            # canonical plan; never compare or replace it with this process's
+            # newly computed snapshot.
+            existing = repository.get(request_scope_key)
+            if existing is None:
+                raise
+            expected = {
+                "operation_id": request["operation_id"],
+                "scope_owner_id": request["scope_owner_id"],
+                "canonical_request_hash": request["canonical_request_hash"],
+                "phase": request["phase"],
+            }
+            if any(existing.get(key) != value for key, value in expected.items()):
+                raise ConflictError("GC request claim conflicts with an existing request")
+            return existing
+
+    def get_gc_request(self, request_scope_key: str) -> dict[str, Any] | None:
+        return self.table("artifact_gc_request").get(request_scope_key)
+
+    def complete_gc_request(
+        self,
+        request_scope_key: str,
+        *,
+        plan_artifact_id: str,
+        gc_batch_id: str,
+        outcome_json: str,
+        updated_at: str,
+    ) -> dict[str, Any]:
+        repository = self.table("artifact_gc_request")
+        repository._assert_active(write=True)
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE artifact_gc_request
+            SET plan_artifact_id=?, gc_batch_id=?, state='COMPLETED',
+                outcome_json=?, updated_at=?
+            WHERE request_scope_key=? AND state='IN_PROGRESS'
+            """,
+            (
+                plan_artifact_id,
+                gc_batch_id,
+                outcome_json,
+                updated_at,
+                request_scope_key,
+            ),
+        )
+        if cursor.rowcount == 1:
+            return repository.require(request_scope_key)
+        existing = repository.get(request_scope_key)
+        if (
+            existing is not None
+            and existing.get("state") == "COMPLETED"
+            and existing.get("plan_artifact_id") == plan_artifact_id
+            and existing.get("gc_batch_id") == gc_batch_id
+            and existing.get("outcome_json") == outcome_json
+        ):
+            return existing
+        raise ConflictError("GC request completion raced with another writer")
+
+    def transition_gc_batch(
+        self,
+        gc_batch_id: str,
+        *,
+        expected_state: str,
+        target_state: str,
+        confirmed_at: str | None = None,
+        completed_at: str | None = None,
+    ) -> dict[str, Any]:
+        if expected_state not in GC_BATCH_STATES or target_state not in GC_BATCH_STATES:
+            raise InvalidArgumentError("unknown GC batch state")
+        if target_state != expected_state and target_state not in GC_BATCH_TRANSITIONS[expected_state]:
+            raise InvalidArgumentError(
+                f"invalid GC batch transition: {expected_state}->{target_state}"
+            )
+        repository = self.table("artifact_gc_batch")
+        repository._assert_active(write=True)
+        cursor = self.uow.connection.execute(
+            """
+            UPDATE artifact_gc_batch
+            SET state=?, confirmed_at=COALESCE(?, confirmed_at),
+                completed_at=COALESCE(?, completed_at)
+            WHERE gc_batch_id=? AND state=?
+            """,
+            (target_state, confirmed_at, completed_at, gc_batch_id, expected_state),
+        )
+        if cursor.rowcount == 1:
+            return repository.require(gc_batch_id)
+        existing = repository.get(gc_batch_id)
+        if existing is not None and existing["state"] == target_state:
+            return existing
+        raise ConflictError("GC batch state precondition failed")
+
+    def create_quarantine_record(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("artifact_quarantine").add_new(record, idempotent=True)
+
+    def create_gc_receipt(self, receipt: Mapping[str, Any]) -> dict[str, Any]:
+        return self.table("artifact_gc_receipt").add_new(receipt, idempotent=True)
+
+    def set_artifact_lifecycle_state(
+        self,
+        artifact_id: str,
+        *,
+        expected_state: str,
+        target_state: str,
+        timestamp_column: str,
+        timestamp: str,
+    ) -> dict[str, Any]:
+        if timestamp_column not in {"published_at", "deleted_at"}:
+            raise InvalidArgumentError("unsupported Artifact lifecycle timestamp")
+        repository = self.table("artifact")
+        repository._assert_active(write=True)
+        cursor = self.uow.connection.execute(
+            f"UPDATE artifact SET state=?, {timestamp_column}=? WHERE artifact_id=? AND state=?",
+            (target_state, timestamp, artifact_id, expected_state),
+        )
+        if cursor.rowcount != 1:
+            existing = repository.get(artifact_id)
+            if existing is not None and existing["state"] == target_state:
+                return existing
+            raise ConflictError("Artifact lifecycle state precondition failed")
+        return repository.require(artifact_id)
+
     def mark_deleted(
         self, artifact_id: str, *, deleted_at: str, confirmed_gc_plan_artifact_id: str
     ) -> dict[str, Any]:
-        repository = self.table("artifact")
-        repository._assert_active(write=True)
-        if not confirmed_gc_plan_artifact_id.startswith("art_sha256_"):
-            raise InvalidArgumentError("a confirmed GC plan Artifact ID is required")
-        gc_plan = repository.get(confirmed_gc_plan_artifact_id)
-        if gc_plan is None or gc_plan["state"] != "PUBLISHED":
-            raise ArtifactNotPublishedError("confirmed GC plan Artifact is not PUBLISHED")
-        active = self.uow.connection.execute(
-            "SELECT 1 FROM artifact_reference WHERE artifact_id=? AND state='ACTIVE' LIMIT 1",
-            (artifact_id,),
-        ).fetchone()
-        if active is not None:
-            raise ConflictError("reachable Artifact cannot be marked DELETED")
-        cursor = self.uow.connection.execute(
-            """
-            UPDATE artifact SET state='DELETED', deleted_at=?
-            WHERE artifact_id=? AND state IN ('PUBLISHED','QUARANTINED')
-            """,
-            (deleted_at, artifact_id),
+        self.table("artifact")._assert_active(write=True)
+        # This legacy repository method cannot prove the two-phase GC
+        # contract: a published plan Artifact is not a confirmation, and it
+        # does not bind a confirmed PURGE batch, current reachability, the
+        # quarantine record, or the absence of every exact byte.  Keep the
+        # symbol for old callers, but fail closed until they use the GC
+        # coordinator's plan -> confirm -> quarantine -> purge path.
+        raise ConflictError(
+            "direct Artifact deletion is disabled; use two-phase GC execution"
         )
-        if cursor.rowcount != 1:
-            raise ConflictError("Artifact is not deletable")
-        return repository.require(artifact_id)
 
 
 class SQLiteProvenanceRepository(SQLiteDomainRepository):

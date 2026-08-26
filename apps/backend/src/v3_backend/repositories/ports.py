@@ -69,6 +69,57 @@ class ArtifactRepository(Protocol):
         created_at: str,
     ) -> dict[str, Any]: ...
     def reachable_set(self) -> frozenset[str]: ...
+    def create_promotion_intent(self, intent: Row) -> dict[str, Any]: ...
+    def get_promotion_intent(self, promotion_intent_id: str) -> dict[str, Any] | None: ...
+    def list_promotion_intents(
+        self, *, states: Sequence[str] | None = None, limit: int = 256
+    ) -> tuple[dict[str, Any], ...]: ...
+    def transition_promotion_intent(
+        self,
+        promotion_intent_id: str,
+        *,
+        expected_state: str,
+        expected_state_version: int,
+        target_state: str,
+        updated_at: str,
+        finalized_at: str | None = None,
+        last_error_code: str | None = None,
+        last_error_detail_artifact_id: str | None = None,
+        descriptor_json: str | None = None,
+        references_json: str | None = None,
+    ) -> dict[str, Any]: ...
+    def record_storage_error(self, error: Row) -> dict[str, Any]: ...
+    def resolve_storage_errors(
+        self,
+        *,
+        artifact_id: str | None = None,
+        promotion_intent_id: str | None = None,
+        resolved_at: str,
+    ) -> int: ...
+    def create_gc_batch(self, batch: Row) -> dict[str, Any]: ...
+    def get_gc_batch(self, gc_batch_id: str) -> dict[str, Any] | None: ...
+    def claim_gc_request(self, request: Row) -> dict[str, Any]: ...
+    def get_gc_request(self, request_scope_key: str) -> dict[str, Any] | None: ...
+    def complete_gc_request(
+        self,
+        request_scope_key: str,
+        *,
+        plan_artifact_id: str,
+        gc_batch_id: str,
+        outcome_json: str,
+        updated_at: str,
+    ) -> dict[str, Any]: ...
+    def transition_gc_batch(
+        self,
+        gc_batch_id: str,
+        *,
+        expected_state: str,
+        target_state: str,
+        confirmed_at: str | None = None,
+        completed_at: str | None = None,
+    ) -> dict[str, Any]: ...
+    def create_quarantine_record(self, record: Row) -> dict[str, Any]: ...
+    def create_gc_receipt(self, receipt: Row) -> dict[str, Any]: ...
 
 
 class ProvenanceRepository(Protocol):
