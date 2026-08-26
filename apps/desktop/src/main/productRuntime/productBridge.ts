@@ -118,6 +118,25 @@ const RETRYABLE_PRODUCT_TASK_CATEGORIES = new Set([
   "WORKER_OOM"
 ]);
 
+type SessionRestoreWithCanonicalIdentity = SessionRestoreView & {
+  readonly canonicalSessionUuid: string;
+};
+
+function readCanonicalSessionUuid(raw: unknown): string {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "session restore response is not an object");
+  }
+  const model = (raw as Record<string, unknown>).read_model;
+  if (model === null || typeof model !== "object" || Array.isArray(model)) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "session restore read model is not an object");
+  }
+  const canonicalSessionUuid = (model as Record<string, unknown>).canonical_session_uuid;
+  if (typeof canonicalSessionUuid !== "string" || canonicalSessionUuid.length === 0) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "canonical_session_uuid must be a non-empty string");
+  }
+  return canonicalSessionUuid;
+}
+
 type ProductCursorPayload =
   | {
       readonly v: typeof PRODUCT_CURSOR_VERSION;
@@ -2175,8 +2194,40 @@ export class ProductBridge {
 
   async restoreSession(): Promise<SessionRestoreView> {
     const refs = this.requireBindingOrPendingRevalidation();
-    const response = await this.supervisor.request("ProjectSessionService.v1.restoreSession", { session_id: refs.sessionId });
-    return adaptSessionRestore(response);
+    try {
+      return await this.restoreAndVerify(refs);
+    } catch (error) {
+      const code = error !== null && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : null;
+      if (code !== "SESSION_PROJECT_BINDING_CONFLICT") throw error;
+      try {
+        await this.bindings.isolateActive(code);
+      } catch (isolationError) {
+        this.clearContext();
+        this.bindingOutcome = {
+          state: "BINDING_STALE",
+          code: "BINDING_ACTIVE_ISOLATION_FAILED",
+          message: isolationError instanceof Error ? isolationError.message : String(isolationError)
+        };
+        throw new ProductAdapterError(
+          "BINDING_ACTIVE_ISOLATION_FAILED",
+          "conflicting persisted session was rejected but its active binding could not be safely isolated",
+          isolationError
+        );
+      }
+      this.clearContext();
+      this.bindingOutcome = {
+        state: "BINDING_STALE",
+        code,
+        message: "persisted session belongs to a different canonical project; reopen the intended project"
+      };
+      throw new ProductAdapterError(
+        code,
+        "persisted session belongs to a different canonical project; reopen the intended project",
+        error
+      );
+    }
   }
 
   /**
@@ -3018,13 +3069,18 @@ export class ProductBridge {
     }
   }
 
-  private async restoreAndVerify(refs: ProductBindingRefs): Promise<SessionRestoreView> {
+  private async restoreAndVerify(refs: ProductBindingRefs): Promise<SessionRestoreWithCanonicalIdentity> {
     const response = await this.supervisor.request("ProjectSessionService.v1.restoreSession", { session_id: refs.sessionId });
     const restored = adaptSessionRestore(response);
-    if (restored.projectId !== refs.projectId || restored.projectContextRevisionId !== refs.projectContextRevisionId) {
+    const canonicalSessionUuid = readCanonicalSessionUuid(response);
+    if (
+      canonicalSessionUuid !== refs.sessionId
+      || restored.projectId !== refs.projectId
+      || restored.projectContextRevisionId !== refs.projectContextRevisionId
+    ) {
       throw new ProductAdapterError("BINDING_SESSION_MISMATCH", "restored session did not exactly match the candidate binding");
     }
-    return restored;
+    return Object.freeze({ ...restored, canonicalSessionUuid });
   }
 
   private async rollbackToPriorBinding(prior: ProductBindingRefs | null): Promise<void> {

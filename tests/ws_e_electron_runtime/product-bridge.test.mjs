@@ -29,7 +29,7 @@ function projectContextReadModel(projectId, pcrId) {
   };
 }
 
-function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = null, runSpecRows = null, taskRows = null, projectHome = null, artifactPayload = null, artifactPayloads = null, artifactStreamFailure = null } = {}) {
+function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = null, restoreErrorCode = null, restoreCanonicalSessionUuid = null, runSpecRows = null, taskRows = null, projectHome = null, artifactPayload = null, artifactPayloads = null, artifactStreamFailure = null } = {}) {
   const calls = [];
   const payloadFor = (artifactId) => artifactPayloads?.get(artifactId) ?? artifactPayload;
   return {
@@ -84,11 +84,16 @@ function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = 
       }
       if (operationId === "ProjectSessionService.v1.restoreSession") {
         this.restores += 1;
+        if (restoreErrorCode !== null) {
+          throw new BackendRuntimeError("session binding conflicts with the current project", restoreErrorCode);
+        }
         if (this.restores === failRestoreAt) {
           throw new BackendRuntimeError("candidate session restore failed", "SESSION_RESTORE_FAILED");
         }
         return { read_model: {
-          read_model_version: "v3.session-restore/1.0", session_row_id: "ses_test", project_id: this.context.projectId,
+          read_model_version: "v3.session-restore/1.0", session_row_id: "ses_test",
+          canonical_session_uuid: restoreCanonicalSessionUuid ?? payload.session_id,
+          project_id: this.context.projectId,
           project_context_revision_id: this.context.projectContextRevisionId, state: "OPEN", active_lab: null,
           layout_artifact_id: null, opened_at: "2026-08-15T00:00:00Z", closed_at: null, context: {}
         } };
@@ -547,6 +552,95 @@ test("ACC-C1-01 crash after rename recovers candidate because active is the comm
     assert.equal(supervisor.calls.at(-1).payload.session_id, candidate.sessionId);
     assert.equal(supervisor.starts, 1);
     assert.equal((await bridge.getBoundProject()).projectId, candidate.projectId);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("restoreSession rejects a response whose context revision is no longer the persisted binding", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-restore-revision-mismatch-"));
+  try {
+    const bindingPath = productBindingPath(dir);
+    const recoveredStore = new ProductBindingStore(bindingPath);
+    await recoveredStore.persist(REFS);
+    await recoveredStore.load();
+    const supervisor = stubSupervisor();
+    supervisor.setProjectContext({
+      projectId: REFS.projectId,
+      projectContextRevisionId: "pcr_superseding_revision",
+      lastDurableProjectEventSequence: 0
+    });
+    await supervisor.start();
+    const bridge = new ProductBridge(supervisor, stubStore(), recoveredStore);
+    await assert.rejects(
+      () => bridge.restoreSession(),
+      (error) => error.code === "BINDING_SESSION_MISMATCH"
+    );
+    assert.equal(await bridge.getBoundProject(), null, "mismatched restore must not admit a binding");
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("restoreSession rejects a response whose durable canonical session identity is no longer the persisted binding", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-restore-session-identity-mismatch-"));
+  try {
+    const bindingPath = productBindingPath(dir);
+    const recoveredStore = new ProductBindingStore(bindingPath);
+    await recoveredStore.persist(REFS);
+    await recoveredStore.load();
+    const supervisor = stubSupervisor({
+      restoreCanonicalSessionUuid: "bbbbbbbb-cccc-7ddd-8eee-ffffffffffff"
+    });
+    supervisor.setProjectContext({
+      projectId: REFS.projectId,
+      projectContextRevisionId: REFS.projectContextRevisionId,
+      lastDurableProjectEventSequence: 0
+    });
+    await supervisor.start();
+    const bridge = new ProductBridge(supervisor, stubStore(), recoveredStore);
+    await assert.rejects(
+      () => bridge.restoreSession(),
+      (error) => error.code === "BINDING_SESSION_MISMATCH"
+    );
+    assert.equal(await bridge.getBoundProject(), null, "mismatched canonical session must not admit a binding");
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("SESSION_PROJECT_BINDING_CONFLICT isolates the active binding before another restart", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-project-conflict-"));
+  try {
+    const bindingPath = productBindingPath(dir);
+    const recoveredStore = new ProductBindingStore(bindingPath);
+    await recoveredStore.persist(REFS);
+    await recoveredStore.load();
+    const supervisor = stubSupervisor({
+      restoreErrorCode: "SESSION_PROJECT_BINDING_CONFLICT"
+    });
+    supervisor.setProjectContext({
+      projectId: REFS.projectId,
+      projectContextRevisionId: REFS.projectContextRevisionId,
+      lastDurableProjectEventSequence: 0
+    });
+    await supervisor.start();
+    const bridge = new ProductBridge(supervisor, stubStore(), recoveredStore);
+
+    await assert.rejects(
+      () => bridge.restoreSession(),
+      (error) => error.code === "SESSION_PROJECT_BINDING_CONFLICT"
+    );
+    assert.equal(recoveredStore.current, null);
+    assert.equal(await bridge.getBoundProject(), null);
+    const status = await bridge.getProductStatus();
+    assert.equal(status.bindingState, "BINDING_STALE");
+    await assert.rejects(() => readFile(bindingPath, "utf8"), (error) => error.code === "ENOENT");
+    const isolated = (await readdir(dir)).filter((name) =>
+      name.startsWith("v3-product-binding.json.isolated.SESSION_PROJECT_BINDING_CONFLICT.")
+    );
+    assert.equal(isolated.length, 1);
+    assert.equal(supervisor.context, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }

@@ -7,6 +7,8 @@ import json
 import sys
 from typing import Any
 
+from v3_backend.errors.exceptions import CatalogStartupError
+
 from .composition_root import RuntimePorts, build_runtime, default_capabilities
 from .build_manifest import BUILD_MANIFEST
 from .framed_stdio import ProtocolViolation
@@ -78,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     except ProtocolViolation as exc:
         _diagnostic("ERROR", "RUNTIME_PROTOCOL_VIOLATION", str(exc))
         return 2
+    except CatalogStartupError as exc:
+        _diagnostic("ERROR", exc.code.value, exc.public_message)
+        return 3
     except Exception:
         _diagnostic("ERROR", "RUNTIME_INTERNAL_ERROR", "runtime terminated unexpectedly")
         return 1

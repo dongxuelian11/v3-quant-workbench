@@ -72,6 +72,7 @@
             "session_id": {
               "type": "string",
               "description": "Desktop session UUID",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
               "format": "uuid"
             }
           }
@@ -132,6 +133,7 @@
         "INVALID_ARGUMENT",
         "VERSION_MISMATCH",
         "NOT_FOUND",
+        "SESSION_PROJECT_BINDING_CONFLICT",
         "CONFLICT",
         "IDEMPOTENCY_CONFLICT",
         "CAPABILITY_UNAVAILABLE",
@@ -457,6 +459,7 @@
             "session_id": {
               "type": "string",
               "description": "Desktop session UUID",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
               "format": "uuid"
             }
           }
@@ -517,6 +520,7 @@
         "INVALID_ARGUMENT",
         "VERSION_MISMATCH",
         "NOT_FOUND",
+        "SESSION_PROJECT_BINDING_CONFLICT",
         "CONFLICT",
         "IDEMPOTENCY_CONFLICT",
         "CAPABILITY_UNAVAILABLE",

@@ -15,6 +15,13 @@ import type { ProductBindingRefs } from "../../../../../packages/contracts/src/i
 const BINDING_SCHEMA_VERSION = 1;
 const MAX_ID_LENGTH = 200;
 const ID_PATTERN = /^[A-Za-z0-9_\-]{1,200}$/;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+let bindingIsolationSequence = 0;
+
+function nextIsolationSuffix(): string {
+  bindingIsolationSequence += 1;
+  return `${Date.now()}.${process.pid}.${bindingIsolationSequence}`;
+}
 
 export interface PersistedProductBinding extends ProductBindingRefs {
   readonly schemaVersion: number;
@@ -79,11 +86,15 @@ function validId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= MAX_ID_LENGTH && ID_PATTERN.test(value);
 }
 
+function validSessionId(value: unknown): value is string {
+  return typeof value === "string" && SESSION_ID_PATTERN.test(value);
+}
+
 export function parsePersistedBinding(raw: unknown): PersistedProductBinding | null {
   if (raw === null || Array.isArray(raw) || typeof raw !== "object") return null;
   const record = raw as Record<string, unknown>;
   if (record.schemaVersion !== BINDING_SCHEMA_VERSION) return null;
-  if (!validId(record.projectId) || !validId(record.projectContextRevisionId) || !validId(record.sessionId)) return null;
+  if (!validId(record.projectId) || !validId(record.projectContextRevisionId) || !validSessionId(record.sessionId)) return null;
   if (typeof record.savedAt !== "string") return null;
   return Object.freeze({
     schemaVersion: BINDING_SCHEMA_VERSION,
@@ -115,7 +126,10 @@ export class ProductBindingStore {
       const parsed: unknown = JSON.parse(await this.fileOps.readFile(this.bindingPath));
       const binding = parsePersistedBinding(parsed);
       if (binding === null) {
-        throw new ProductBindingStoreError("BINDING_STORE_CORRUPT", "active product binding has an invalid closed shape");
+        await this.isolateInvalidActive();
+        this.cached = null;
+        await this.isolatePendingAfterCrash();
+        return null;
       }
       this.cached = binding;
     } catch (error) {
@@ -124,7 +138,10 @@ export class ProductBindingStore {
       } else if (error instanceof ProductBindingStoreError) {
         throw error;
       } else if (error instanceof SyntaxError) {
-        throw new ProductBindingStoreError("BINDING_STORE_CORRUPT", "active product binding is not valid JSON", error);
+        await this.isolateInvalidActive();
+        this.cached = null;
+        await this.isolatePendingAfterCrash();
+        return null;
       } else {
         throw new ProductBindingStoreError("BINDING_STORE_IO_FAILED", "active product binding could not be read", error);
       }
@@ -133,9 +150,32 @@ export class ProductBindingStore {
     return this.cached;
   }
 
+  private async isolateInvalidActive(): Promise<string> {
+    const isolated = `${this.bindingPath}.isolated.BINDING_STORE_CORRUPT.${nextIsolationSuffix()}`;
+    try {
+      await this.fileOps.rename(this.bindingPath, isolated);
+    } catch (error) {
+      throw new ProductBindingStoreError(
+        "BINDING_ACTIVE_ISOLATION_FAILED",
+        "invalid active binding could not be isolated",
+        error
+      );
+    }
+    try {
+      await this.fileOps.syncCommitDirectory(dirname(this.bindingPath), isolated);
+    } catch (error) {
+      throw new ProductBindingStoreError(
+        "BINDING_ACTIVE_ISOLATION_DURABILITY_UNCERTAIN",
+        "invalid active binding was isolated but directory durability could not be confirmed",
+        error
+      );
+    }
+    return isolated;
+  }
+
   /** Write and fsync candidate bytes without changing the active commit marker. */
   async stage(refs: ProductBindingRefs): Promise<PersistedProductBinding> {
-    if (!validId(refs.projectId) || !validId(refs.projectContextRevisionId) || !validId(refs.sessionId)) {
+    if (!validId(refs.projectId) || !validId(refs.projectContextRevisionId) || !validSessionId(refs.sessionId)) {
       throw new TypeError("product binding refs must be bounded canonical identifiers");
     }
     const record: PersistedProductBinding = Object.freeze({
@@ -190,6 +230,38 @@ export class ProductBindingStore {
     return this.commit(staged);
   }
 
+  /**
+   * Remove a canonically rejected active binding from the restart path while
+   * retaining its exact bytes for bounded diagnosis.
+   */
+  async isolateActive(reasonCode: string): Promise<string | null> {
+    if (this.cached === null) return null;
+    if (!validId(reasonCode)) {
+      throw new TypeError("binding isolation reason must be a bounded stable code");
+    }
+    const isolated = `${this.bindingPath}.isolated.${reasonCode}.${nextIsolationSuffix()}`;
+    try {
+      await this.fileOps.rename(this.bindingPath, isolated);
+    } catch (error) {
+      throw new ProductBindingStoreError(
+        "BINDING_ACTIVE_ISOLATION_FAILED",
+        "canonically rejected active binding could not be isolated",
+        error
+      );
+    }
+    this.cached = null;
+    try {
+      await this.fileOps.syncCommitDirectory(dirname(this.bindingPath), isolated);
+    } catch (error) {
+      throw new ProductBindingStoreError(
+        "BINDING_ACTIVE_ISOLATION_DURABILITY_UNCERTAIN",
+        "active binding was isolated but directory durability could not be confirmed",
+        error
+      );
+    }
+    return isolated;
+  }
+
   private async isolatePendingAfterCrash(): Promise<void> {
     try {
       await this.fileOps.readFile(this.pendingPath);
@@ -197,7 +269,7 @@ export class ProductBindingStore {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw new ProductBindingStoreError("BINDING_PENDING_IO_FAILED", "pending product binding could not be inspected", error);
     }
-    const isolated = `${this.pendingPath}.orphaned.${Date.now()}.${process.pid}`;
+    const isolated = `${this.pendingPath}.orphaned.${nextIsolationSuffix()}`;
     try {
       await this.fileOps.rename(this.pendingPath, isolated);
       await this.fileOps.syncCommitDirectory(dirname(this.bindingPath), isolated);

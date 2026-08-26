@@ -4,13 +4,50 @@ import sqlite3
 from dataclasses import dataclass
 
 
-EXPECTED_USER_VERSION = 5
+EXPECTED_USER_VERSION = 6
+REQUIRED_TRIGGERS = frozenset(
+    {
+        "desktop_session_project_binding_immutable_guard",
+        "desktop_session_project_context_owner_insert_guard",
+        "desktop_session_project_context_owner_update_guard",
+    }
+)
+_EXPECTED_TRIGGER_SQL = {
+    "desktop_session_project_binding_immutable_guard": (
+        "create trigger desktop_session_project_binding_immutable_guard "
+        "before update of project_id on desktop_session "
+        "when new.project_id<>old.project_id "
+        "begin select raise(abort, 'desktop_session project binding is immutable'); end"
+    ),
+    "desktop_session_project_context_owner_insert_guard": (
+        "create trigger desktop_session_project_context_owner_insert_guard "
+        "before insert on desktop_session "
+        "when not exists ( select 1 from project_context_revision "
+        "where project_context_revision_id=new.project_context_revision_id "
+        "and project_id=new.project_id ) "
+        "begin select raise(abort, 'desktop_session project/context binding mismatch'); end"
+    ),
+    "desktop_session_project_context_owner_update_guard": (
+        "create trigger desktop_session_project_context_owner_update_guard "
+        "before update of project_id,project_context_revision_id on desktop_session "
+        "when not exists ( select 1 from project_context_revision "
+        "where project_context_revision_id=new.project_context_revision_id "
+        "and project_id=new.project_id ) "
+        "begin select raise(abort, 'desktop_session project/context binding mismatch'); end"
+    ),
+}
+_EXPECTED_CANONICAL_SESSION_INDEX_SQL = (
+    "create unique index desktop_session_canonical_uuid_unique "
+    "on desktop_session(canonical_session_uuid) "
+    "where canonical_session_uuid is not null"
+)
 EXPECTED_TABLES = frozenset(
     {
         "artifact",
         "artifact_reference",
         "backtest_run_spec",
         "checkpoint",
+        "catalog_upgrade_receipt",
         "connector",
         "connector_admission",
         "connector_capability",
@@ -85,6 +122,28 @@ EXPECTED_TABLES = frozenset(
     }
 )
 
+_EXPECTED_COLUMN_SHAPES = {
+    "catalog_upgrade_receipt": (
+        ("operation_id", "TEXT", 0, None, 1),
+        ("source_catalog_path_fingerprint", "TEXT", 1, None, 0),
+        ("source_catalog_sha256", "TEXT", 1, None, 0),
+        ("source_schema_prefix_json", "TEXT", 1, None, 0),
+        ("target_schema_prefix_json", "TEXT", 1, None, 0),
+        ("backup_path_fingerprint", "TEXT", 0, None, 0),
+        ("backup_sha256", "TEXT", 0, None, 0),
+        ("staged_sha256_before_replace", "TEXT", 1, None, 0),
+        ("final_catalog_sha256", "TEXT", 1, None, 0),
+        ("integrity_check", "TEXT", 1, None, 0),
+        ("foreign_key_check", "TEXT", 1, None, 0),
+        ("replacement_mode", "TEXT", 1, None, 0),
+        ("started_at", "TEXT", 1, None, 0),
+        ("committed_at", "TEXT", 1, None, 0),
+        ("recovery_action", "TEXT", 1, None, 0),
+        ("result", "TEXT", 1, None, 0),
+        ("error_code", "TEXT", 0, None, 0),
+    ),
+}
+
 
 class SchemaValidationError(RuntimeError):
     """The database is not an exact, internally valid v1 Control Catalog."""
@@ -105,6 +164,68 @@ def _table_names(connection: sqlite3.Connection) -> frozenset[str]:
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
     )
     return frozenset(str(row[0]) for row in rows)
+
+
+def _trigger_names(connection: sqlite3.Connection) -> frozenset[str]:
+    rows = connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
+    return frozenset(str(row[0]) for row in rows)
+
+
+def _trigger_sql(connection: sqlite3.Connection, name: str) -> str:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+        (name,),
+    ).fetchone()
+    return " ".join(str(row[0]).casefold().split()) if row is not None else ""
+
+
+def _require_trigger_shape(
+    connection: sqlite3.Connection,
+    name: str,
+    error_message: str,
+) -> None:
+    if _trigger_sql(connection, name) != _EXPECTED_TRIGGER_SQL[name]:
+        raise SchemaValidationError(error_message)
+
+
+def _validate_required_trigger_shapes(connection: sqlite3.Connection) -> None:
+    _require_trigger_shape(
+        connection,
+        "desktop_session_project_binding_immutable_guard",
+        "desktop session binding trigger does not preserve same-project revision refresh",
+    )
+
+    _require_trigger_shape(
+        connection,
+        "desktop_session_project_context_owner_insert_guard",
+        "desktop session insert trigger does not enforce project/context ownership",
+    )
+    _require_trigger_shape(
+        connection,
+        "desktop_session_project_context_owner_update_guard",
+        "desktop session update trigger does not enforce project/context ownership",
+    )
+
+
+def _validate_required_column_shapes(connection: sqlite3.Connection) -> None:
+    for table_name, expected in _EXPECTED_COLUMN_SHAPES.items():
+        quoted_table_name = '"' + table_name.replace('"', '""') + '"'
+        actual = tuple(
+            (
+                str(row[1]),
+                str(row[2]).upper(),
+                int(row[3]),
+                None if row[4] is None else str(row[4]),
+                int(row[5]),
+            )
+            for row in connection.execute(
+                f"PRAGMA table_info({quoted_table_name})"
+            )
+        )
+        if actual != expected:
+            raise SchemaValidationError(
+                f"{table_name} column shape is not the admitted catalog upgrade receipt schema"
+            )
 
 
 def _invariant_violations(connection: sqlite3.Connection) -> list[str]:
@@ -204,6 +325,86 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
         missing = sorted(EXPECTED_TABLES - tables)
         extra = sorted(tables - EXPECTED_TABLES)
         raise SchemaValidationError(f"schema table mismatch: missing={missing}, extra={extra}")
+    _validate_required_column_shapes(connection)
+    session_columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(desktop_session)")
+    }
+    if "canonical_session_uuid" not in session_columns:
+        raise SchemaValidationError(
+            "desktop_session is missing canonical_session_uuid identity"
+        )
+    canonical_index = next(
+        (
+            row
+            for row in connection.execute("PRAGMA index_list(desktop_session)")
+            if str(row[1]) == "desktop_session_canonical_uuid_unique"
+        ),
+        None,
+    )
+    if (
+        canonical_index is None
+        or int(canonical_index[2]) != 1
+        or int(canonical_index[4]) != 1
+    ):
+        raise SchemaValidationError(
+            "desktop_session canonical UUID index is not unique and partial"
+        )
+    canonical_index_columns = tuple(
+        str(row[2])
+        for row in connection.execute(
+            'PRAGMA index_info("desktop_session_canonical_uuid_unique")'
+        )
+    )
+    if canonical_index_columns != ("canonical_session_uuid",):
+        raise SchemaValidationError(
+            "desktop_session canonical UUID index has the wrong columns"
+        )
+    index_sql_row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type='index' AND name='desktop_session_canonical_uuid_unique'
+        """
+    ).fetchone()
+    index_sql = (
+        ""
+        if index_sql_row is None or index_sql_row[0] is None
+        else " ".join(str(index_sql_row[0]).casefold().split())
+    )
+    if index_sql != _EXPECTED_CANONICAL_SESSION_INDEX_SQL:
+        raise SchemaValidationError(
+            "desktop_session canonical UUID index predicate drifted"
+        )
+    invalid_session_uuid = connection.execute(
+        """
+        SELECT 1
+        FROM desktop_session
+        WHERE canonical_session_uuid IS NOT NULL
+          AND (
+            length(canonical_session_uuid)<>36
+            OR length(replace(canonical_session_uuid,'-',''))<>32
+            OR canonical_session_uuid<>lower(canonical_session_uuid)
+            OR canonical_session_uuid GLOB '*[^0-9a-f-]*'
+            OR substr(canonical_session_uuid,9,1)<>'-'
+            OR substr(canonical_session_uuid,14,1)<>'-'
+            OR substr(canonical_session_uuid,19,1)<>'-'
+            OR substr(canonical_session_uuid,24,1)<>'-'
+          )
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid_session_uuid is not None:
+        raise SchemaValidationError(
+            "desktop_session contains an invalid canonical UUID identity"
+        )
+
+    missing_triggers = sorted(REQUIRED_TRIGGERS - _trigger_names(connection))
+    if missing_triggers:
+        raise SchemaValidationError(
+            f"required schema triggers are missing: {missing_triggers}"
+        )
+    _validate_required_trigger_shapes(connection)
 
     user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if user_version != EXPECTED_USER_VERSION:
@@ -223,12 +424,16 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
         "0003_portfolio_riskpolicy_owner",
         "0004_risk_application_publication",
         "0005_task_execution_deadline",
+        "0006_catalog_upgrade_session_integrity",
     ):
         raise SchemaValidationError(f"unexpected applied migration sequence: {applied!r}")
 
-    fk_violations = tuple(tuple(row) for row in connection.execute("PRAGMA foreign_key_check"))
-    if fk_violations:
-        raise SchemaValidationError(f"foreign key violations: {fk_violations!r}")
+    first_fk_violation = connection.execute("PRAGMA foreign_key_check").fetchone()
+    if first_fk_violation is not None:
+        raise SchemaValidationError(
+            f"foreign key violation: {tuple(first_fk_violation)!r}"
+        )
+    fk_violations: tuple[tuple[object, ...], ...] = ()
 
     integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
     if integrity != "ok":

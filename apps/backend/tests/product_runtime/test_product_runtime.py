@@ -14,6 +14,7 @@ import json
 import inspect
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -43,7 +44,12 @@ from v3_backend.runtime.product_runtime import (
 from v3_backend.runtime import product_runtime as product_runtime_module
 from v3_backend.runtime import product_research as product_research_module
 from v3_backend.domain.tasks.entities import TaskState
-from v3_backend.runtime.product_facades import ArtifactFacade, BacktestFacade
+from v3_backend.runtime.product_facades import (
+    ArtifactFacade,
+    BacktestFacade,
+    ProjectSessionFacade,
+    _session_row_id_for_value,
+)
 from v3_backend.runtime.product_entry import create_project
 
 from .helpers import build_product_golden_project
@@ -274,6 +280,9 @@ class ProjectSessionTests(_PortsCase):
         self.assertEqual(
             restored["body"]["read_model"]["project_id"], self.setup.project_id
         )
+        self.assertEqual(
+            restored["body"]["read_model"]["canonical_session_uuid"], session_id
+        )
         # Restart: a fresh product runtime over the same storage root still restores.
         restarted = build_product_ports(self.storage_root)
         restarted_router = RequestRouter(restarted.operation_handlers)
@@ -299,6 +308,9 @@ class ProjectSessionTests(_PortsCase):
         self.assertEqual(response["status"], "OK", response)
         self.assertEqual(
             response["body"]["read_model"]["session_id"], session_id
+        )
+        self.assertEqual(
+            response["body"]["read_model"]["canonical_session_uuid"], session_id
         )
 
     def test_revise_context_appends_revision(self) -> None:
@@ -330,6 +342,63 @@ class ProjectSessionTests(_PortsCase):
             new_revision,
         )
 
+    def test_restore_rejects_durable_canonical_session_identity_mismatch(self) -> None:
+        session_id = mint_uuid7()
+        opened = self.route(
+            "ProjectSessionService.v1.openProject",
+            project_locator=f"v3:{self.setup.project_id}",
+            session_id=session_id,
+        )
+        self.assertEqual(opened["status"], "OK", opened)
+
+        connection = self.product._connection()
+        try:
+            connection.execute(
+                """
+                UPDATE desktop_session
+                SET canonical_session_uuid=?
+                WHERE session_id=?
+                """,
+                (
+                    "bbbbbbbb-cccc-7ddd-8eee-ffffffffffff",
+                    _session_row_id_for_value(session_id),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        rejected = self.route(
+            "ProjectSessionService.v1.restoreSession", session_id=session_id
+        )
+        self.assert_error(
+            rejected,
+            ErrorCode.SESSION_PROJECT_BINDING_CONFLICT.value,
+        )
+
+    def test_restore_rejects_superseded_context_revision(self) -> None:
+        session_id = mint_uuid7()
+        opened = self.route(
+            "ProjectSessionService.v1.openProject",
+            project_locator=f"v3:{self.setup.project_id}",
+            session_id=session_id,
+        )
+        self.assertEqual(opened["status"], "OK", opened)
+        revised = self.route(
+            "ProjectSessionService.v1.reviseProjectContext",
+            base_revision_id=self.setup.project_context_revision_id,
+            patch={"context_fields": {"notes": "restore must use current revision"}},
+            idempotency_key="restore-stale-revision",
+        )
+        self.assertEqual(revised["status"], "OK", revised)
+        stale_restore = self._route_with(
+            self.router,
+            "ProjectSessionService.v1.restoreSession",
+            _pcr_id=self.setup.project_context_revision_id,
+            session_id=session_id,
+        )
+        self.assert_error(stale_restore, ErrorCode.TRUTH_PRECONDITION_FAILED.value)
+
     def test_stale_base_revision_fails_closed(self) -> None:
         self.route(
             "ProjectSessionService.v1.reviseProjectContext",
@@ -344,6 +413,344 @@ class ProjectSessionTests(_PortsCase):
             idempotency_key="revise-key-0003",
         )
         self.assert_error(stale, ErrorCode.CONFLICT.value)
+
+    def test_concurrent_cross_project_open_has_one_winner_and_one_stable_conflict(
+        self,
+    ) -> None:
+        other = create_project(
+            self.product,
+            display_name="Concurrent other project",
+            idempotency_key="concurrent-session-other-project",
+        )
+        session_id = mint_uuid7()
+        first_router = RequestRouter(self.ports.operation_handlers)
+        second_router = RequestRouter(self.ports.operation_handlers)
+
+        def open_project(
+            router: RequestRouter, project_id: str, revision_id: str
+        ) -> dict:
+            return self._route_with(
+                router,
+                "ProjectSessionService.v1.openProject",
+                _project_id=project_id,
+                _pcr_id=revision_id,
+                project_locator=f"v3:{project_id}",
+                session_id=session_id,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = (
+                executor.submit(
+                    open_project,
+                    first_router,
+                    self.setup.project_id,
+                    self.setup.project_context_revision_id,
+                ),
+                executor.submit(
+                    open_project,
+                    second_router,
+                    other["project_id"],
+                    other["project_context_revision_id"],
+                ),
+            )
+            responses = tuple(future.result() for future in futures)
+
+        self.assertEqual(sorted(response["status"] for response in responses), ["ERROR", "OK"])
+        conflict = next(response for response in responses if response["status"] == "ERROR")
+        self.assertEqual(
+            conflict["error"]["code"],
+            ErrorCode.SESSION_PROJECT_BINDING_CONFLICT.value,
+        )
+        winner = self.setup.project_id if responses[0]["status"] == "OK" else other["project_id"]
+        connection = self.product._connection(read_only=True)
+        try:
+            rows = connection.execute(
+                "SELECT project_id FROM desktop_session"
+            ).fetchall()
+        finally:
+            connection.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(str(rows[0]["project_id"]), winner)
+
+    def test_noncanonical_session_case_is_rejected_before_binding(self) -> None:
+        other = create_project(
+            self.product,
+            display_name="Uppercase alias project",
+            idempotency_key="uppercase-session-alias-project",
+        )
+        session_id = "018f0a00-0000-7000-8000-00000000000a"
+        opened = self.route(
+            "ProjectSessionService.v1.openProject",
+            project_locator=f"v3:{self.setup.project_id}",
+            session_id=session_id,
+        )
+        self.assertEqual(opened["status"], "OK", opened)
+
+        conflict = self._route_with(
+            self.router,
+            "ProjectSessionService.v1.openProject",
+            _project_id=other["project_id"],
+            _pcr_id=other["project_context_revision_id"],
+            project_locator=f"v3:{other['project_id']}",
+            session_id=session_id.upper(),
+        )
+        self.assert_error(conflict, ErrorCode.INVALID_ARGUMENT.value)
+
+        connection = self.product._connection(read_only=True)
+        try:
+            rows = connection.execute(
+                "SELECT project_id FROM desktop_session"
+            ).fetchall()
+        finally:
+            connection.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(str(rows[0]["project_id"]), self.setup.project_id)
+
+        with self.assertRaises(InvalidArgumentError):
+            ProjectSessionFacade(self.product).open_project(
+                {
+                    "request_id": mint_uuid7(),
+                    "project_id": other["project_id"],
+                    "project_context_revision_id": other[
+                        "project_context_revision_id"
+                    ],
+                    "session_id": "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz",
+                }
+            )
+
+    def test_legacy_lowercase_session_row_is_reused_and_still_bound(self) -> None:
+        other = create_project(
+            self.product,
+            display_name="Legacy uppercase alias project",
+            idempotency_key="legacy-uppercase-session-alias-project",
+        )
+        session_id = "018f0a00-0000-7000-8000-00000000000b"
+        legacy_row_id = _session_row_id_for_value(session_id)
+        connection = self.product._connection()
+        try:
+            connection.execute(
+                """
+                INSERT INTO desktop_session(
+                    session_id, project_id, project_context_revision_id,
+                    state, opened_at, row_version
+                ) VALUES(?,?,?,?,?,0)
+                """,
+                (
+                    legacy_row_id,
+                    self.setup.project_id,
+                    self.setup.project_context_revision_id,
+                    "OPEN",
+                    "2026-08-26T00:00:00.000000Z",
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        reopened = self.route(
+            "ProjectSessionService.v1.openProject",
+            project_locator=f"v3:{self.setup.project_id}",
+            session_id=session_id,
+        )
+        self.assertEqual(reopened["status"], "OK", reopened)
+        conflict = self._route_with(
+            self.router,
+            "ProjectSessionService.v1.openProject",
+            _project_id=other["project_id"],
+            _pcr_id=other["project_context_revision_id"],
+            project_locator=f"v3:{other['project_id']}",
+            session_id=session_id.lower(),
+        )
+        self.assert_error(
+            conflict,
+            ErrorCode.SESSION_PROJECT_BINDING_CONFLICT.value,
+        )
+
+    def test_unresolved_legacy_session_identity_blocks_unknown_binding(
+        self,
+    ) -> None:
+        other = create_project(
+            self.product,
+            display_name="Legacy mixed-case alias project",
+            idempotency_key="legacy-mixed-case-session-alias-project",
+        )
+        legacy_session_id = "018f0a00-0000-7000-8000-00000000000C"
+        request_session_id = legacy_session_id.lower()
+        legacy_row_id = _session_row_id_for_value(legacy_session_id)
+        connection = self.product._connection()
+        try:
+            connection.execute(
+                """
+                INSERT INTO desktop_session(
+                    session_id, project_id, project_context_revision_id,
+                    state, opened_at, row_version
+                ) VALUES(?,?,?,?,?,0)
+                """,
+                (
+                    legacy_row_id,
+                    self.setup.project_id,
+                    self.setup.project_context_revision_id,
+                    "OPEN",
+                    "2026-08-26T00:00:00.000000Z",
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        rejected = self._route_with(
+            self.router,
+            "ProjectSessionService.v1.openProject",
+            _project_id=other["project_id"],
+            _pcr_id=other["project_context_revision_id"],
+            project_locator=f"v3:{other['project_id']}",
+            session_id=request_session_id,
+        )
+        self.assert_error(
+            rejected,
+            ErrorCode.SESSION_PROJECT_BINDING_CONFLICT.value,
+        )
+        restore_rejected = self._route_with(
+            self.router,
+            "ProjectSessionService.v1.restoreSession",
+            _project_id=other["project_id"],
+            _pcr_id=other["project_context_revision_id"],
+            session_id=request_session_id,
+        )
+        self.assert_error(
+            restore_rejected,
+            ErrorCode.SESSION_PROJECT_BINDING_CONFLICT.value,
+        )
+        same_project_open = self.route(
+            "ProjectSessionService.v1.openProject",
+            project_locator=f"v3:{self.setup.project_id}",
+            session_id="018f0a00-0000-7000-8000-00000000000e",
+        )
+        self.assertEqual(same_project_open["status"], "OK", same_project_open)
+        connection = self.product._connection(read_only=True)
+        try:
+            rows = connection.execute(
+                "SELECT project_id FROM desktop_session"
+            ).fetchall()
+        finally:
+            connection.close()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {str(row["project_id"]) for row in rows},
+            {self.setup.project_id},
+        )
+
+    def test_legacy_alias_cannot_hide_behind_existing_other_project_row(self) -> None:
+        other = create_project(
+            self.product,
+            display_name="Legacy alias existing-row project",
+            idempotency_key="legacy-alias-existing-row-project",
+        )
+        uppercase_session_id = "018f0a00-0000-7000-8000-00000000000F"
+        lowercase_session_id = uppercase_session_id.lower()
+        connection = self.product._connection()
+        try:
+            connection.executemany(
+                """
+                INSERT INTO desktop_session(
+                    session_id, project_id, project_context_revision_id,
+                    state, opened_at, row_version
+                ) VALUES(?,?,?,?,?,0)
+                """,
+                (
+                    (
+                        _session_row_id_for_value(uppercase_session_id),
+                        self.setup.project_id,
+                        self.setup.project_context_revision_id,
+                        "OPEN",
+                        "2026-08-26T00:00:00.000000Z",
+                    ),
+                    (
+                        _session_row_id_for_value(lowercase_session_id),
+                        other["project_id"],
+                        other["project_context_revision_id"],
+                        "OPEN",
+                        "2026-08-26T00:00:00.000000Z",
+                    ),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        for operation_id in (
+            "ProjectSessionService.v1.openProject",
+            "ProjectSessionService.v1.restoreSession",
+        ):
+            with self.subTest(operation_id=operation_id):
+                request_fields = {
+                    "_project_id": other["project_id"],
+                    "_pcr_id": other["project_context_revision_id"],
+                    "session_id": lowercase_session_id,
+                }
+                if operation_id.endswith("openProject"):
+                    request_fields["project_locator"] = f"v3:{other['project_id']}"
+                rejected = self._route_with(
+                    self.router,
+                    operation_id,
+                    **request_fields,
+                )
+                self.assert_error(
+                    rejected,
+                    ErrorCode.SESSION_PROJECT_BINDING_CONFLICT.value,
+                )
+
+        connection = self.product._connection(read_only=True)
+        try:
+            rows = connection.execute(
+                "SELECT project_id,canonical_session_uuid FROM desktop_session"
+            ).fetchall()
+        finally:
+            connection.close()
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row["canonical_session_uuid"] is None for row in rows))
+
+    def test_open_rechecks_current_revision_after_acquiring_the_write_lock(self) -> None:
+        session_router = RequestRouter(ProjectSessionFacade(self.product).handlers())
+        second_ports = build_product_ports(self.storage_root)
+        second_router = RequestRouter(second_ports.operation_handlers)
+        original_connection = self.product._connection
+        advanced = False
+
+        def connection_with_interleaved_revision(*, read_only: bool = False):
+            nonlocal advanced
+            if not read_only and not advanced:
+                advanced = True
+                revised = self._route_with(
+                    second_router,
+                    "ProjectSessionService.v1.reviseProjectContext",
+                    base_revision_id=self.setup.project_context_revision_id,
+                    patch={"context_fields": {"notes": "interleaved revision"}},
+                    idempotency_key="open-project-interleaved-revision",
+                )
+                self.assertEqual(revised["status"], "OK", revised)
+            return original_connection(read_only=read_only)
+
+        self.product._connection = connection_with_interleaved_revision
+        try:
+            stale_open = self._route_with(
+                session_router,
+                "ProjectSessionService.v1.openProject",
+                project_locator=f"v3:{self.setup.project_id}",
+                session_id=mint_uuid7(),
+            )
+        finally:
+            self.product._connection = original_connection
+
+        self.assert_error(stale_open, ErrorCode.TRUTH_PRECONDITION_FAILED.value)
+        connection = original_connection(read_only=True)
+        try:
+            self.assertEqual(
+                int(connection.execute("SELECT COUNT(*) FROM desktop_session").fetchone()[0]),
+                0,
+            )
+        finally:
+            connection.close()
 
 
 class GoldenExecutionTests(_PortsCase):

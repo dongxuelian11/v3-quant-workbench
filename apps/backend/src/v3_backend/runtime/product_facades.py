@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import base64
 import hashlib
+import re
 from datetime import date, datetime, timedelta, timezone
 from collections.abc import Iterator
 from typing import Any, Mapping
@@ -26,6 +27,7 @@ from v3_backend.errors.exceptions import (
     InvalidArgumentError,
     NotFoundError,
     ResourceRejectedError,
+    SessionProjectBindingConflictError,
     TruthPreconditionFailedError,
 )
 from v3_backend.provenance.canonical_hash import canonical_sha256
@@ -46,21 +48,92 @@ from .product_runtime import (
 )
 
 _TRUTH_FORMAL = "FORMAL"
+_CANONICAL_SESSION_UUID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+
+
+def _session_row_id_for_value(session_id: str) -> str:
+    digest = canonical_sha256({"session_id": session_id})
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    value = int(digest, 16)
+    chars = "".join(
+        alphabet[(value >> (5 * shift)) & 0x1F] for shift in range(25, -1, -1)
+    )
+    return "ses_" + chars
 
 
 def _session_row_id(session_id: str) -> str:
-    """Deterministic catalog row identity for a contract-format session UUID.
+    """Deterministic canonical row identity for a contract-format session UUID.
 
     The frozen DTO carries `format: uuid` session identities while the durable
     catalog primary key requires the `ses_` identity pattern; the mapping is a
     pure, deterministic derivation so the same UUID always resolves the same
     durable session row across backend restarts.
     """
-    digest = canonical_sha256({"session_id": session_id})
-    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-    value = int(digest, 16)
-    chars = "".join(alphabet[(value >> (5 * shift)) & 0x1F] for shift in range(25, -1, -1))
-    return "ses_" + chars
+    # The wire contract admits only lowercase canonical UUIDs.  Keep the
+    # durable mapping explicit so a legacy row can be claimed without minting
+    # a second project-visible session identity.
+    return _session_row_id_for_value(session_id.lower())
+
+
+def _session_row_candidates(session_id: str) -> tuple[str, ...]:
+    """Return the one durable identity admitted by the lowercase UUID contract."""
+
+    return (_session_row_id(session_id),)
+
+
+def _require_canonical_session_uuid(session_id: str) -> str:
+    if _CANONICAL_SESSION_UUID.fullmatch(session_id) is None:
+        raise InvalidArgumentError(
+            "session UUID must use lowercase canonical hyphenated form"
+        )
+    return session_id
+
+
+def _session_rows(
+    connection: Any,
+    row_ids: tuple[str, ...],
+    canonical_session_uuid: str,
+) -> tuple[Any, ...]:
+    placeholders = ",".join("?" for _ in row_ids)
+    return tuple(
+        connection.execute(
+            f"""
+            SELECT * FROM desktop_session
+            WHERE session_id IN ({placeholders})
+               OR canonical_session_uuid=?
+            """,
+            (*row_ids, canonical_session_uuid),
+        ).fetchall()
+    )
+
+
+def _unresolved_legacy_session_projects(connection: Any) -> frozenset[str]:
+    return frozenset(
+        str(row["project_id"])
+        for row in connection.execute(
+            """
+            SELECT DISTINCT project_id
+            FROM desktop_session
+            WHERE canonical_session_uuid IS NULL
+            """
+        ).fetchall()
+    )
+
+
+def _first_session_row_id(
+    row_ids: tuple[str, ...], rows: tuple[Any, ...], canonical_session_uuid: str
+) -> str:
+    for row in rows:
+        if str(row["canonical_session_uuid"] or "") == canonical_session_uuid:
+            return str(row["session_id"])
+    for row_id in row_ids:
+        if any(str(row["session_id"]) == row_id for row in rows):
+            return row_id
+    return row_ids[0]
+
+
 _ACCEPTED_STATE = "QUEUED"
 CONTEXT_ALLOW_LIST = ("notes", "benchmark_universe_version_id")
 STREAM_TICKET_TTL_SECONDS = 300
@@ -116,6 +189,11 @@ def _session_restore_read_model(
     return {
         "read_model_version": "v3.session-restore/1.0",
         "session_row_id": str(session["session_id"]),
+        "canonical_session_uuid": (
+            None
+            if session["canonical_session_uuid"] is None
+            else str(session["canonical_session_uuid"])
+        ),
         "project_id": str(session["project_id"]),
         "project_context_revision_id": current["project_context_revision_id"],
         "state": str(session["state"]),
@@ -147,27 +225,112 @@ class ProjectSessionFacade:
         project_id = str(request["project_id"])
         project_context_revision_id = str(request["project_context_revision_id"])
         session_id = str(request["session_id"])
-        project = self.product.require_project(project_id)
+        _require_canonical_session_uuid(session_id)
+        self.product.require_project(project_id)
         current = self.product.current_revision(project_id)
         if current["project_context_revision_id"] != project_context_revision_id:
             raise TruthPreconditionFailedError(
                 "openProject requires the current (non-superseded) project context revision"
             )
         now = wire_time(datetime.now(timezone.utc))
-        row_id = _session_row_id(session_id)
+        row_ids = _session_row_candidates(session_id)
+        canonical_session_uuid = session_id.lower()
+
+        # Fast domain preflight before taking a write lock. The guarded read is
+        # repeated inside BEGIN IMMEDIATE below to close the concurrency race.
+        existing_connection = self.product._connection(read_only=True)
+        try:
+            existing_rows = _session_rows(
+                existing_connection, row_ids, canonical_session_uuid
+            )
+            unresolved_legacy_projects = _unresolved_legacy_session_projects(
+                existing_connection
+            )
+        finally:
+            existing_connection.close()
+        if any(str(row["project_id"]) != project_id for row in existing_rows):
+            raise SessionProjectBindingConflictError(
+                "session UUID is already bound to a different project"
+            )
+        if any(
+            legacy_project != project_id
+            for legacy_project in unresolved_legacy_projects
+        ):
+            raise SessionProjectBindingConflictError(
+                "legacy session identity in another project requires explicit revalidation"
+            )
         connection = self.product._connection()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            locked_project = connection.execute(
+                "SELECT state FROM project WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            if locked_project is None:
+                raise NotFoundError(f"unknown project: {project_id}")
+            if str(locked_project["state"]) != "ACTIVE":
+                raise ConflictError(f"project is not ACTIVE: {project_id}")
+            locked_current = connection.execute(
+                """
+                SELECT project_context_revision_id
+                FROM project_context_revision
+                WHERE project_id=?
+                ORDER BY revision_no DESC
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            if locked_current is None:
+                raise NotFoundError(f"project has no context revision: {project_id}")
+            if (
+                str(locked_current["project_context_revision_id"])
+                != project_context_revision_id
+            ):
+                raise TruthPreconditionFailedError(
+                    "openProject requires the current (non-superseded) project context revision"
+                )
+            locked_existing_rows = _session_rows(
+                connection, row_ids, canonical_session_uuid
+            )
+            if any(
+                str(row["project_id"]) != project_id
+                for row in locked_existing_rows
+            ):
+                raise SessionProjectBindingConflictError(
+                    "session UUID is already bound to a different project"
+                )
+            unresolved_legacy_projects = _unresolved_legacy_session_projects(
+                connection
+            )
+            if any(
+                legacy_project != project_id
+                for legacy_project in unresolved_legacy_projects
+            ):
+                raise SessionProjectBindingConflictError(
+                    "legacy session identity in another project requires explicit revalidation"
+                )
+            row_id = _first_session_row_id(
+                row_ids, locked_existing_rows, canonical_session_uuid
+            )
             connection.execute(
                 """
                 INSERT INTO desktop_session(
-                    session_id, project_id, project_context_revision_id, state, opened_at, row_version
-                ) VALUES(?,?,?,'OPEN',?,0)
+                    session_id, project_id, project_context_revision_id, state,
+                    opened_at, row_version, canonical_session_uuid
+                ) VALUES(?,?,?,'OPEN',?,0,?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     project_context_revision_id=excluded.project_context_revision_id,
-                    state='OPEN', closed_at=NULL, opened_at=excluded.opened_at
+                    state='OPEN', closed_at=NULL, opened_at=excluded.opened_at,
+                    row_version=desktop_session.row_version+1,
+                    canonical_session_uuid=excluded.canonical_session_uuid
                 """,
-                (row_id, project_id, project_context_revision_id, now),
+                (
+                    row_id,
+                    project_id,
+                    project_context_revision_id,
+                    now,
+                    canonical_session_uuid,
+                ),
             )
             connection.commit()
         except Exception:
@@ -266,12 +429,48 @@ class ProjectSessionFacade:
         project_id = str(request["project_id"])
         project_context_revision_id = str(request["project_context_revision_id"])
         session_id = str(request["session_id"])
+        _require_canonical_session_uuid(session_id)
         self.product.require_project_context_ownership(project_id, project_context_revision_id)
-        session = self.product.session_row(_session_row_id(session_id))
+        current = self.product.current_revision(project_id)
+        if str(current["project_context_revision_id"]) != project_context_revision_id:
+            raise TruthPreconditionFailedError(
+                "restoreSession requires the current (non-superseded) project context revision"
+            )
+        row_ids = _session_row_candidates(session_id)
+        canonical_session_uuid = session_id.lower()
+        connection = self.product._connection(read_only=True)
+        try:
+            session_rows = _session_rows(connection, row_ids, canonical_session_uuid)
+            unresolved_legacy_projects = _unresolved_legacy_session_projects(
+                connection
+            )
+        finally:
+            connection.close()
+        if any(str(row["project_id"]) != project_id for row in session_rows):
+            raise SessionProjectBindingConflictError(
+                "session UUID is already bound to a different project"
+            )
+        if any(
+            legacy_project != project_id
+            for legacy_project in unresolved_legacy_projects
+        ):
+            raise SessionProjectBindingConflictError(
+                "legacy session identity in another project requires explicit revalidation"
+            )
+        session = None
+        selected_row_id = _first_session_row_id(
+            row_ids, session_rows, canonical_session_uuid
+        )
+        for row in session_rows:
+            if str(row["session_id"]) == selected_row_id:
+                session = row
+                break
         if session is None:
             raise NotFoundError(f"unknown desktop session: {session_id}")
-        if str(session["project_id"]) != project_id:
-            raise TruthPreconditionFailedError("session belongs to a different project")
+        if str(session["canonical_session_uuid"] or "") != canonical_session_uuid:
+            raise SessionProjectBindingConflictError(
+                "session UUID does not match its durable canonical identity"
+            )
         read_model = _session_restore_read_model(self.product, session)
         read_model["session_id"] = session_id
         return _response(request, read_model)

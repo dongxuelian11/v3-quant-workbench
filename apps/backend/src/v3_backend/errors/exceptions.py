@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .codes import ErrorCode
+from .codes import CatalogStartupErrorCode, ErrorCode
 
 
 class V3ContractError(Exception):
@@ -34,6 +34,36 @@ class ArtifactNotPublishedError(V3ContractError):
 class CapabilityUnavailableError(V3ContractError):
     code = ErrorCode.CAPABILITY_UNAVAILABLE
     retryable = False
+
+
+class CatalogStartupError(Exception):
+    """Fail-closed ProductRuntime startup error outside the ASL error envelope."""
+
+    retryable = False
+    public_message = "Catalog startup failed"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        if not isinstance(message, str) or not message:
+            raise ValueError("error message must not be empty")
+        self.message = message
+        self.details = dict(details or {})
+        super().__init__(message)
+
+
+class CatalogMigrationPrefixUnrecognizedError(CatalogStartupError):
+    code = CatalogStartupErrorCode.CATALOG_MIGRATION_PREFIX_UNRECOGNIZED
+    public_message = "Catalog migration prefix is not admitted"
+
+
+class CatalogUpgradeIntegrityError(CatalogStartupError):
+    code = CatalogStartupErrorCode.CATALOG_UPGRADE_INTEGRITY_FAILED
+    public_message = "Catalog upgrade integrity verification failed"
+
 
 class ConflictError(V3ContractError):
     code = ErrorCode.CONFLICT
@@ -74,6 +104,12 @@ class ResidualValidationFailedError(V3ContractError):
 class ResourceRejectedError(V3ContractError):
     code = ErrorCode.RESOURCE_REJECTED
     retryable = True
+
+
+class SessionProjectBindingConflictError(V3ContractError):
+    code = ErrorCode.SESSION_PROJECT_BINDING_CONFLICT
+    retryable = False
+
 
 class SolverFailedError(V3ContractError):
     code = ErrorCode.SOLVER_FAILED
