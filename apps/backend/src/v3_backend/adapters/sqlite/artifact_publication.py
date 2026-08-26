@@ -749,18 +749,20 @@ class ArtifactPublicationCoordinator:
 
     @_namespace_locked
     def note_callback_failure(self, prepared: PreparedArtifactPublication, exc: BaseException) -> None:
-        """Persist the rollback evidence without deleting final bytes."""
+        """Persist rollback evidence without deleting final bytes.
 
-        try:
-            self._record_error(
-                intent_id=prepared.promotion_intent_id,
-                artifact_id="art_sha256_" + prepared.staging.sha256,
-                phase="CATALOG",
-                error_code="ARTIFACT_PROMOTION_RECONCILIATION_REQUIRED",
-                observed_state={"error": str(exc)},
-            )
-        except Exception:
-            pass
+        Failure to persist that evidence is itself an operational failure.  It
+        must reach the caller so a PUBLISH transaction cannot report a clean
+        lifecycle while its recovery record is missing.
+        """
+
+        self._record_error(
+            intent_id=prepared.promotion_intent_id,
+            artifact_id="art_sha256_" + prepared.staging.sha256,
+            phase="CATALOG",
+            error_code="ARTIFACT_PROMOTION_RECONCILIATION_REQUIRED",
+            observed_state={"error": str(exc)},
+        )
 
     @_namespace_locked
     def finalize(self, prepared: PreparedArtifactPublication) -> dict[str, Any]:
@@ -795,6 +797,7 @@ class ArtifactPublicationCoordinator:
                 if isinstance(exc, (ArtifactCollision, IntegrityMismatch))
                 else "PUBLISHED_BYTES_UNAVAILABLE"
             )
+            record_error: Exception | None = None
             try:
                 self._record_error(
                     intent_id=prepared.promotion_intent_id,
@@ -803,9 +806,10 @@ class ArtifactPublicationCoordinator:
                     error_code=error_code,
                     observed_state={"state": current["state"], "error": str(exc)},
                 )
-            except Exception:
-                pass
-            if current["state"] == "CATALOG_COMMITTED":
+            except Exception as error:
+                record_error = error
+            transition_error: Exception | None = None
+            if record_error is None and current["state"] == "CATALOG_COMMITTED":
                 try:
                     self._transition(
                         prepared.promotion_intent_id,
@@ -815,16 +819,28 @@ class ArtifactPublicationCoordinator:
                         last_error_code=error_code,
                         last_error_detail_artifact_id=str(current["artifact_id"]),
                     )
-                except Exception:
-                    pass
-            raise _PublishedBytesUnavailable(
+                except Exception as error:
+                    transition_error = error
+            unavailable = _PublishedBytesUnavailable(
                 f"published Artifact bytes are unavailable: {current['artifact_id']}"
-            ) from exc
+            )
+            if record_error is not None:
+                unavailable.add_note(
+                    "Artifact storage error recording failed: "
+                    f"{type(record_error).__name__}: {record_error}"
+                )
+            if transition_error is not None:
+                unavailable.add_note(
+                    "Artifact promotion state transition failed: "
+                    f"{type(transition_error).__name__}: {transition_error}"
+                )
+            raise unavailable from exc
         try:
             cleaned = self.store.cleanup_staging(prepared.staging.staging_token)
             if not cleaned:
                 raise OSError("stage cleanup did not confirm absence")
         except Exception as exc:
+            record_error: Exception | None = None
             try:
                 self._record_error(
                     intent_id=prepared.promotion_intent_id,
@@ -833,17 +849,30 @@ class ArtifactPublicationCoordinator:
                     error_code="ARTIFACT_STAGE_CLEANUP_PENDING",
                     observed_state={"state": current["state"], "error": str(exc)},
                 )
-            except Exception:
-                pass
-            if current["state"] == "CATALOG_COMMITTED":
-                return self._transition(
-                    prepared.promotion_intent_id,
-                    expected_state="CATALOG_COMMITTED",
-                    expected_version=int(current["state_version"]),
-                    target_state="CLEANUP_PENDING",
-                    last_error_code="ARTIFACT_STAGE_CLEANUP_PENDING",
-                    last_error_detail_artifact_id=str(current["artifact_id"]),
+            except Exception as error:
+                record_error = error
+            if record_error is not None:
+                exc.add_note(
+                    "Artifact storage error recording failed: "
+                    f"{type(record_error).__name__}: {record_error}"
                 )
+                raise
+            if current["state"] == "CATALOG_COMMITTED":
+                try:
+                    return self._transition(
+                        prepared.promotion_intent_id,
+                        expected_state="CATALOG_COMMITTED",
+                        expected_version=int(current["state_version"]),
+                        target_state="CLEANUP_PENDING",
+                        last_error_code="ARTIFACT_STAGE_CLEANUP_PENDING",
+                        last_error_detail_artifact_id=str(current["artifact_id"]),
+                    )
+                except Exception as error:
+                    exc.add_note(
+                        "Artifact promotion state transition failed: "
+                        f"{type(error).__name__}: {error}"
+                    )
+                    raise
             return current
         return self._transition(
             prepared.promotion_intent_id,

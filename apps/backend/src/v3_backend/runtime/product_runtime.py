@@ -459,17 +459,33 @@ class ProductArtifactBatch:
             )
 
     def compensate_unreferenced_staging(self) -> None:
+        failures: list[Exception] = []
         for prepared in self.prepared:
-            self.coordinator.note_callback_failure(
-                prepared, RuntimeError("Catalog publication did not commit")
-            )
+            try:
+                self.coordinator.note_callback_failure(
+                    prepared, RuntimeError("Catalog publication did not commit")
+                )
+            except Exception as exc:
+                failures.append(exc)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise ExceptionGroup("Artifact publication compensation failed", failures)
 
     def notify_committed(self) -> None:
+        failures: list[Exception] = []
         for prepared in self.prepared:
             try:
                 self.coordinator.finalize(prepared)
             except Exception as exc:
-                self.coordinator.note_callback_failure(prepared, exc)
+                try:
+                    self.coordinator.note_callback_failure(prepared, exc)
+                except Exception as record_error:
+                    failures.append(record_error)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise ExceptionGroup("Artifact publication commit notification failed", failures)
 
 
 class ProductStagedArtifact:

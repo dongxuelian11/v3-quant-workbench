@@ -51,6 +51,14 @@ class _NoopPublishCallbacks:
         return None
 
 
+class _FailingCompensationCallbacks(_NoopPublishCallbacks):
+    def publish_staged(self) -> None:
+        raise RuntimeError("publication failed")
+
+    def compensate_unreferenced_staging(self) -> None:
+        raise OSError("compensation evidence failed")
+
+
 class ArtifactLifecycleIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -152,6 +160,100 @@ class ArtifactLifecycleIntegrationTests(unittest.TestCase):
             return connection.execute(sql, params).fetchone()
         finally:
             connection.close()
+
+    def test_publish_compensation_failure_is_visible_without_replacing_primary_error(self) -> None:
+        connection = connect_catalog(self.database)
+        uow = SQLiteUnitOfWork(
+            connection,
+            TransactionMode.PUBLISH,
+            publish_callbacks=_FailingCompensationCallbacks(),
+        )
+        try:
+            with self.assertRaisesRegex(RuntimeError, "publication failed") as raised:
+                uow.begin()
+            self.assertTrue(
+                any(
+                    "compensation evidence failed" in note
+                    for note in (raised.exception.__notes__ or [])
+                )
+            )
+            self.assertFalse(uow.active)
+        finally:
+            if uow.active:
+                uow.rollback()
+            connection.close()
+
+    def test_callback_failure_does_not_swallow_error_record_write_failure(self) -> None:
+        stage, prepared, _ = self._prepare(b"callback evidence")
+        with patch.object(
+            self.coordinator,
+            "_record_error",
+            side_effect=OSError("storage-error row unavailable"),
+        ):
+            with self.assertRaisesRegex(OSError, "storage-error row unavailable"):
+                self.coordinator.note_callback_failure(
+                    prepared, RuntimeError("catalog callback failed")
+                )
+        self.assertTrue(self.store.staging_path(stage.staging_token).exists())
+
+    def test_finalize_does_not_advance_without_recovery_error_record(self) -> None:
+        stage, prepared, references = self._prepare(b"missing recovery evidence")
+        result = self._promote_and_catalog_commit(
+            stage, prepared, references, finalize=False
+        )
+        self.store.final_path(result.descriptor.artifact_id).unlink()
+        self.store.staging_path(stage.staging_token).unlink()
+        with patch.object(
+            self.coordinator,
+            "_record_error",
+            side_effect=OSError("recovery error row unavailable"),
+        ):
+            with self.assertRaisesRegex(ArtifactError, "published Artifact bytes") as raised:
+                self.coordinator.finalize(prepared)
+        self.assertTrue(
+            any(
+                "recovery error row unavailable" in note
+                for note in (raised.exception.__notes__ or [])
+            )
+        )
+        self.assertEqual(
+            self._read_one(
+                "SELECT state FROM artifact_promotion_intent WHERE promotion_intent_id=?",
+                (prepared.promotion_intent_id,),
+            )[0],
+            "CATALOG_COMMITTED",
+        )
+
+    def test_cleanup_does_not_claim_pending_without_cleanup_error_record(self) -> None:
+        stage, prepared, references = self._prepare(b"missing cleanup evidence")
+        result = self._promote_and_catalog_commit(
+            stage, prepared, references, finalize=False
+        )
+        with patch.object(
+            self.store,
+            "cleanup_staging",
+            side_effect=OSError("cleanup I/O failure"),
+        ), patch.object(
+            self.coordinator,
+            "_record_error",
+            side_effect=OSError("cleanup error row unavailable"),
+        ):
+            with self.assertRaisesRegex(OSError, "cleanup I/O failure") as raised:
+                self.coordinator.finalize(prepared)
+        self.assertTrue(
+            any(
+                "cleanup error row unavailable" in note
+                for note in (raised.exception.__notes__ or [])
+            )
+        )
+        self.assertTrue(self.store.staging_path(stage.staging_token).exists())
+        self.assertEqual(
+            self._read_one(
+                "SELECT state FROM artifact_promotion_intent WHERE promotion_intent_id=?",
+                (prepared.promotion_intent_id,),
+            )[0],
+            "CATALOG_COMMITTED",
+        )
 
     def _release_reference(self, reference_id: str) -> None:
         connection = connect_catalog(self.database)
