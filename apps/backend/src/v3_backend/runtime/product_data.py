@@ -908,6 +908,7 @@ class ProductDataService:
         project_id: str,
         source: Mapping[str, Any],
         limits: LocalDataImportLimits,
+        verify_storage: bool = True,
     ) -> dict[str, Any]:
         required = {
             "artifact_id",
@@ -945,7 +946,15 @@ class ProductDataService:
             adjustment=str(source["adjustment"]),
         )
         name = self._bounded_display_name(source["display_name"])
-        descriptor = self.product.require_published_artifact(artifact_id)
+        # Submission is an asynchronous admission boundary: the durable
+        # Catalog descriptor and project reachability are checked here, while
+        # the worker remains the owner of opening/parsing the current bytes.
+        # Direct execution keeps the strict storage check by default.
+        descriptor = (
+            self.product.require_published_artifact(artifact_id)
+            if verify_storage
+            else self.product.require_published_artifact_metadata(artifact_id)
+        )
         expected_descriptor = {
             "sha256": sha256,
             "byte_size": byte_size,
@@ -1204,6 +1213,7 @@ class ProductDataService:
             project_id=submission.project_id,
             source=submission.source,
             limits=LocalDataImportLimits(),
+            verify_storage=False,
         )
         semantic = {
             "project_id": submission.project_id,

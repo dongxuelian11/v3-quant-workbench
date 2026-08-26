@@ -110,7 +110,7 @@
       "service": "StudyService",
       "contract_id": "urn:v3:asl:study:1.0.0",
       "path": "study.contract.json",
-      "method_count": 5,
+      "method_count": 10,
       "method_operation_ids": [
         "StudyService.v1.createStudy",
         "StudyService.v1.enqueueTrialBatch",
@@ -194,13 +194,18 @@
       "service": "ArtifactService",
       "contract_id": "urn:v3:asl:artifact:1.0.0",
       "path": "artifact.contract.json",
-      "method_count": 5,
+      "method_count": 10,
       "method_operation_ids": [
         "ArtifactService.v1.publishArtifact",
         "ArtifactService.v1.getArtifactDescriptor",
         "ArtifactService.v1.openArtifactStream",
         "ArtifactService.v1.exportArtifact",
-        "ArtifactService.v1.planGarbageCollection"
+        "ArtifactService.v1.planGarbageCollection",
+        "ArtifactService.v1.confirmGarbageCollection",
+        "ArtifactService.v1.quarantineGarbageCollection",
+        "ArtifactService.v1.restoreGarbageCollection",
+        "ArtifactService.v1.planGarbagePurge",
+        "ArtifactService.v1.purgeGarbageCollection"
       ]
     },
     {

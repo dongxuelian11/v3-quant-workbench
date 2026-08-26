@@ -176,7 +176,7 @@ class MigrationOwnerFoundationTests(OwnerFoundationFixture):
     def test_0003_and_0004_owner_boundaries_remain_scoped_after_0005(self) -> None:
         connection = connect_catalog(self.database)
         try:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
             migrations = tuple(
                 row[0]
                 for row in connection.execute(
@@ -192,6 +192,7 @@ class MigrationOwnerFoundationTests(OwnerFoundationFixture):
                     "0004_risk_application_publication",
                     "0005_task_execution_deadline",
                     "0006_catalog_upgrade_session_integrity",
+                    "0007_artifact_promotion_gc",
                 ),
             )
             tables = {

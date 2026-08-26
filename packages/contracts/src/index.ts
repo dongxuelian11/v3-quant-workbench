@@ -340,6 +340,60 @@ export interface ArtifactDescriptorView {
   readonly createdAt: string;
 }
 
+export type ArtifactGarbageCollectionPhase = "QUARANTINE" | "PURGE";
+export type ArtifactGarbageCollectionBatchState =
+  | "PLANNED"
+  | "CONFIRMED"
+  | "EXECUTING"
+  | "COMPLETED"
+  | "STALE"
+  | "FAILED";
+
+export interface ArtifactGarbageCollectionCandidateView {
+  readonly artifactId: string;
+  readonly sha256: string;
+  readonly byteSize: number;
+  readonly reason: string;
+}
+
+export interface ArtifactGarbageCollectionPlanView {
+  readonly readModelVersion: "v3.garbage-collection-plan/1.0";
+  readonly planId: string;
+  readonly gcBatchId: string;
+  readonly sourceQuarantineGcBatchId?: string;
+  readonly phase: ArtifactGarbageCollectionPhase;
+  readonly retentionProfileId: string;
+  readonly generatedAt: string;
+  readonly expiresAt: string;
+  readonly reachableArtifactCount: number;
+  readonly exactArtifactIdsHash: string;
+  readonly exactByteSize: number;
+  readonly openPromotionIntentIds: readonly string[];
+  readonly candidates: readonly ArtifactGarbageCollectionCandidateView[];
+  readonly requiresConfirmation: true;
+}
+
+export interface ArtifactGarbageCollectionBatchView {
+  readonly gcBatchId: string;
+  readonly phase: ArtifactGarbageCollectionPhase;
+  readonly planArtifactId: string;
+  readonly exactArtifactIdsHash: string;
+  readonly state: ArtifactGarbageCollectionBatchState;
+  readonly confirmationHash: string | null;
+  readonly confirmedAt: string | null;
+  readonly completedAt: string | null;
+}
+
+export interface ArtifactGarbageCollectionReceiptView {
+  readonly receiptId: string;
+  readonly gcBatchId: string;
+  readonly result: "QUARANTINED" | "RESTORED" | "PURGED" | "PARTIAL" | "FAILED";
+  readonly exactArtifactIdsHash: string;
+  readonly exactBytes: number;
+  readonly reclaimedBytes: number;
+  readonly createdAt: string;
+}
+
 export interface ArtifactStreamTicketView {
   readonly mode: "STREAM_TICKET";
   readonly ticketId: string;

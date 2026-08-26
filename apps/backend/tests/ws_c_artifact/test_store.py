@@ -82,6 +82,18 @@ class FileSystemArtifactStoreTests(unittest.TestCase):
                 provenance_entity_id="prv_01H00000000000000000000000",
             )
 
+    def test_content_namespace_rejects_non_directory_shard(self) -> None:
+        digest = "aa" + "bb" + "0" * 60
+        (self.store.content_root / "aa").write_bytes(b"not a directory")
+        with self.assertRaises(IntegrityMismatch):
+            self.store.final_path("art_sha256_" + digest)
+
+    def test_quarantine_namespace_rejects_non_directory_shard(self) -> None:
+        digest = "aa" + "bb" + "0" * 60
+        (self.store.quarantine_root / "aa").write_bytes(b"not a directory")
+        with self.assertRaises(IntegrityMismatch):
+            self.store.quarantine_path("art_sha256_" + digest, "gcb_" + "0" * 26)
+
     def test_staged_tampering_and_size_mismatch_are_rejected(self) -> None:
         receipt = self.store.stage_bytes(b"abc")
         self.store._staging_path(receipt.staging_token).write_bytes(b"tampered")

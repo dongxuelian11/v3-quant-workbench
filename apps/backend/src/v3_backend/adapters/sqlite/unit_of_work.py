@@ -43,8 +43,12 @@ class SQLiteUnitOfWork(UnitOfWork):
         if self.mode is TransactionMode.PUBLISH:
             assert self.publish_callbacks is not None
             self.publish_callbacks.verify_staged()
-            self.publish_callbacks.publish_staged()
             self._published_staged = True
+            try:
+                self.publish_callbacks.publish_staged()
+            except Exception:
+                self._compensate()
+                raise
         sql = "BEGIN" if self.mode is TransactionMode.READ_ONLY else "BEGIN IMMEDIATE"
         try:
             self.connection.execute(sql)

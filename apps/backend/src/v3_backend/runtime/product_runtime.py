@@ -35,7 +35,11 @@ from threading import RLock
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
 from v3_backend.adapters.artifact_store import FileSystemArtifactStore, StagingReceipt
-from v3_backend.adapters.sqlite.artifact_publication import SQLiteArtifactPublicationPort
+from v3_backend.adapters.sqlite.artifact_publication import (
+    ArtifactPublicationCoordinator,
+    PreparedArtifactPublication,
+    SQLiteArtifactPublicationPort,
+)
 from v3_backend.adapters.sqlite.connection import connect_catalog
 from v3_backend.adapters.sqlite.repositories import (
     SQLiteRepositoryRegistry,
@@ -48,6 +52,11 @@ from v3_backend.adapters.sqlite.task_persistence import (
 from v3_backend.adapters.sqlite.unit_of_work import SQLiteUnitOfWork
 from v3_backend.contracts.common.truth_admission import PRE_ALPHA_CEILING
 from v3_backend.domain.artifacts.identity import sha256_from_artifact_id
+from v3_backend.domain.artifacts.exceptions import (
+    ArtifactCollision,
+    IntegrityMismatch,
+    StagingNotFound,
+)
 from v3_backend.domain.artifacts.model import ArtifactDescriptor, ArtifactReference
 from v3_backend.domain.artifacts.policy import (
     ADMITTED,
@@ -312,6 +321,7 @@ def product_artifact_policy() -> SafeFormatPolicy:
         "PRODUCT_RESULT_LINEAGE",
         "PRODUCT_RESULT_EXPORT_SUMMARY_JSON",
         "PRODUCT_RESEARCH_BACKTEST_READ_MODEL",
+        "GC_PLAN",
     )
     return SafeFormatPolicy(
         rules
@@ -350,9 +360,13 @@ class ProductArtifactBatch:
         store: FileSystemArtifactStore,
         payloads: tuple[tuple[Any, ...], ...],
         published_at: datetime,
+        coordinator: ArtifactPublicationCoordinator | None = None,
     ) -> None:
         """payloads: provenance, bytes, role, schema fingerprint, optional MIME."""
         self.store = store
+        self.coordinator = coordinator or ArtifactPublicationCoordinator(
+            store.root.parent / CATALOG_FILENAME, store
+        )
         normalized_payloads: list[tuple[Any, ...]] = []
         for item in payloads:
             if len(item) not in {4, 5}:
@@ -377,6 +391,45 @@ class ProductArtifactBatch:
         stages = tuple(store.stage_bytes(item[1]) for item in self.payloads)
         self.stages: tuple[Any, ...] = stages
         self.results: list[Any] = []
+        self.prepared: tuple[PreparedArtifactPublication, ...] = ()
+        self.active_references: tuple[tuple[ArtifactReference, ...], ...] = ()
+
+    def prepare_intents(
+        self, references: tuple[tuple[str, str, int], ...]
+    ) -> None:
+        prepared: list[PreparedArtifactPublication] = []
+        active_by_index: list[tuple[ArtifactReference, ...]] = []
+        for index, (item, stage) in enumerate(zip(self.payloads, self.stages, strict=True)):
+            provenance_entity_id, _, role, schema_fingerprint = item[:4]
+            media_type = item[4] if len(item) == 5 else "application/json"
+            active_references = tuple(
+                ArtifactReference(
+                    reference_id=mint_v3_id("arf_"),
+                    owner_id=owner_id,
+                    artifact_id="art_sha256_" + stage.sha256,
+                    role=reference_role,
+                    created_at=self.published_at,
+                    state="ACTIVE",
+                )
+                for owner_id, reference_role, artifact_index in references
+                if artifact_index == index
+            )
+            prepared_item = self.coordinator.prepare(
+                stage,
+                media_type=media_type,
+                role=role,
+                provenance_entity_id=provenance_entity_id,
+                schema_fingerprint=schema_fingerprint,
+                semantic_fingerprint=stage.sha256,
+                published_at=self.published_at,
+                active_references=active_references,
+            )
+            prepared.append(prepared_item)
+            active_by_index.append(
+                prepared_item.active_references or active_references
+            )
+        self.prepared = tuple(prepared)
+        self.active_references = tuple(active_by_index)
 
     def verify_staged(self) -> None:
         for item, stage in zip(self.payloads, self.stages, strict=True):
@@ -387,35 +440,36 @@ class ProductArtifactBatch:
                 raise V3ContractError("staged product artifact size mismatch")
 
     def publish_staged(self) -> None:
+        if len(self.prepared) != len(self.payloads):
+            raise V3ContractError("artifact promotion intents were not prepared")
         self.results = []
-        for item, stage in zip(self.payloads, self.stages, strict=True):
+        for item, prepared in zip(self.payloads, self.prepared, strict=True):
             provenance_entity_id, _, role, schema_fingerprint = item[:4]
             media_type = item[4] if len(item) == 5 else "application/json"
             self.results.append(
-                self.store.publish(
-                    stage.staging_token,
-                    expected_sha256=stage.sha256,
-                    expected_byte_size=stage.byte_size,
+                self.coordinator.promote(
+                    prepared,
                     media_type=media_type,
                     role=role,
                     provenance_entity_id=provenance_entity_id,
                     schema_fingerprint=schema_fingerprint,
-                    semantic_fingerprint=stage.sha256,
+                    semantic_fingerprint=prepared.staging.sha256,
                     published_at=self.published_at,
                 )
             )
 
     def compensate_unreferenced_staging(self) -> None:
-        for result in self.results:
-            if result.deduplicated:
-                continue
-            try:
-                self.store.delete_published_bytes(result.descriptor.artifact_id)
-            except Exception:
-                pass
+        for prepared in self.prepared:
+            self.coordinator.note_callback_failure(
+                prepared, RuntimeError("Catalog publication did not commit")
+            )
 
     def notify_committed(self) -> None:
-        return None
+        for prepared in self.prepared:
+            try:
+                self.coordinator.finalize(prepared)
+            except Exception as exc:
+                self.coordinator.note_callback_failure(prepared, exc)
 
 
 class ProductStagedArtifact:
@@ -431,8 +485,12 @@ class ProductStagedArtifact:
         media_type: str,
         schema_fingerprint: str,
         published_at: datetime,
+        coordinator: ArtifactPublicationCoordinator | None = None,
     ) -> None:
         self.store = store
+        self.coordinator = coordinator or ArtifactPublicationCoordinator(
+            store.root.parent / CATALOG_FILENAME, store
+        )
         self.staging = staging
         self.provenance_entity_id = provenance_entity_id
         self.role = role
@@ -440,6 +498,32 @@ class ProductStagedArtifact:
         self.schema_fingerprint = schema_fingerprint
         self.published_at = published_at
         self.result: Any | None = None
+        self.prepared: PreparedArtifactPublication | None = None
+        self.active_references: tuple[ArtifactReference, ...] = ()
+
+    def prepare_intent(self, references: tuple[tuple[str, str], ...]) -> None:
+        active_references = tuple(
+            ArtifactReference(
+                reference_id=mint_v3_id("arf_"),
+                owner_id=owner_id,
+                artifact_id="art_sha256_" + self.staging.sha256,
+                role=reference_role,
+                created_at=self.published_at,
+                state="ACTIVE",
+            )
+            for owner_id, reference_role in references
+        )
+        self.prepared = self.coordinator.prepare(
+            self.staging,
+            media_type=self.media_type,
+            role=self.role,
+            provenance_entity_id=self.provenance_entity_id,
+            schema_fingerprint=self.schema_fingerprint,
+            semantic_fingerprint=self.staging.sha256,
+            published_at=self.published_at,
+            active_references=active_references,
+        )
+        self.active_references = self.prepared.active_references or active_references
 
     def verify_staged(self) -> None:
         digest = hashlib.sha256()
@@ -452,10 +536,10 @@ class ProductStagedArtifact:
             raise V3ContractError("pre-staged product artifact identity changed")
 
     def publish_staged(self) -> None:
-        self.result = self.store.publish(
-            self.staging.staging_token,
-            expected_sha256=self.staging.sha256,
-            expected_byte_size=self.staging.byte_size,
+        if self.prepared is None:
+            raise V3ContractError("artifact promotion intent was not prepared")
+        self.result = self.coordinator.promote(
+            self.prepared,
             media_type=self.media_type,
             role=self.role,
             provenance_entity_id=self.provenance_entity_id,
@@ -465,15 +549,18 @@ class ProductStagedArtifact:
         )
 
     def compensate_unreferenced_staging(self) -> None:
-        if self.result is None or self.result.deduplicated:
-            return
-        try:
-            self.store.delete_published_bytes(self.result.descriptor.artifact_id)
-        except Exception:
-            pass
+        if self.prepared is not None:
+            self.coordinator.note_callback_failure(
+                self.prepared, RuntimeError("Catalog publication did not commit")
+            )
 
     def notify_committed(self) -> None:
-        return None
+        if self.prepared is None:
+            return
+        try:
+            self.coordinator.finalize(self.prepared)
+        except Exception as exc:
+            self.coordinator.note_callback_failure(self.prepared, exc)
 
 
 def catalog_rows(connection: sqlite3.Connection, sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
@@ -737,6 +824,13 @@ class ResearchRunSpecCodec:
                 ),
             ),
             published_at=published_at,
+            coordinator=self.product.artifact_publication,
+        )
+        batch.prepare_intents(
+            (
+                (project_id, PROJECT_SPEC_REFERENCE_ROLE, 0),
+                (project_id, PROJECT_SPEC_CONTEXT_REFERENCE_ROLE, 1),
+            )
         )
         connection = connect_catalog(self.product.database_path)
         uow = SQLiteUnitOfWork(
@@ -750,35 +844,18 @@ class ResearchRunSpecCodec:
             port.publish(
                 ArtifactPublication(
                     descriptor=spec_result.descriptor,
-                    active_references=(
-                        ArtifactReference(
-                            reference_id=mint_v3_id("arf_"),
-                            owner_id=project_id,
-                            artifact_id=spec_result.descriptor.artifact_id,
-                            role=PROJECT_SPEC_REFERENCE_ROLE,
-                            created_at=published_at,
-                            state="ACTIVE",
-                        ),
-                    ),
-                )
+                    active_references=batch.active_references[0],
+                ),
+                promotion_intent_id=batch.prepared[0].promotion_intent_id,
             )
             port.publish(
                 ArtifactPublication(
                     descriptor=context_result.descriptor,
-                    active_references=(
-                        ArtifactReference(
-                            reference_id=mint_v3_id("arf_"),
-                            owner_id=project_id,
-                            artifact_id=context_result.descriptor.artifact_id,
-                            role=PROJECT_SPEC_CONTEXT_REFERENCE_ROLE,
-                            created_at=published_at,
-                            state="ACTIVE",
-                        ),
-                    ),
-                )
+                    active_references=batch.active_references[1],
+                ),
+                promotion_intent_id=batch.prepared[1].promotion_intent_id,
             )
             uow.commit()
-            batch.notify_committed()
         finally:
             if uow.active:
                 uow.rollback()
@@ -1461,7 +1538,9 @@ class ProductExecution:
             store=self.product.artifact_store,
             payloads=payloads,
             published_at=published_at,
+            coordinator=self.product.artifact_publication,
         )
+        batch.prepare_intents(references)
         connection = connect_catalog(self.product.database_path)
         uow = SQLiteUnitOfWork(connection, TransactionMode.PUBLISH, publish_callbacks=batch)
         results: list[Any] = []
@@ -1469,40 +1548,16 @@ class ProductExecution:
             uow.begin()
             port = SQLiteArtifactPublicationPort(uow)
             for index, item in enumerate(payloads):
-                provenance = item[0]
                 descriptor = batch.results[index].descriptor
-                active_references = tuple(
-                    ArtifactReference(
-                        reference_id=mint_v3_id("arf_"),
-                        owner_id=owner_id,
-                        artifact_id=descriptor.artifact_id,
-                        role=role,
-                        created_at=published_at,
-                        state="ACTIVE",
-                    )
-                    for owner_id, role, artifact_index in references
-                    if artifact_index == index
-                    and uow.connection.execute(
-                        """
-                        SELECT 1 FROM artifact_reference
-                        WHERE owner_id=? AND role=? AND artifact_id=? AND state='ACTIVE'
-                        """,
-                        (owner_id, role, descriptor.artifact_id),
-                    ).fetchone()
-                    is None
+                port.publish(
+                    ArtifactPublication(
+                        descriptor=descriptor,
+                        active_references=batch.active_references[index],
+                    ),
+                    promotion_intent_id=batch.prepared[index].promotion_intent_id,
                 )
-                if active_references:
-                    port.publish(
-                        ArtifactPublication(
-                            descriptor=descriptor,
-                            active_references=active_references,
-                        )
-                    )
-                else:
-                    _require_existing_artifact_descriptor(uow.connection, descriptor)
                 results.append(batch.results[index])
             uow.commit()
-            batch.notify_committed()
             return results
         finally:
             if uow.active:
@@ -1530,7 +1585,9 @@ class ProductExecution:
             media_type=media_type,
             schema_fingerprint=schema_fingerprint,
             published_at=published_at,
+            coordinator=self.product.artifact_publication,
         )
+        callbacks.prepare_intent(references)
         connection = connect_catalog(self.product.database_path)
         uow = SQLiteUnitOfWork(connection, TransactionMode.PUBLISH, publish_callbacks=callbacks)
         try:
@@ -1538,34 +1595,13 @@ class ProductExecution:
             if callbacks.result is None:
                 raise V3ContractError("pre-staged product artifact publication produced no result")
             descriptor = callbacks.result.descriptor
-            active_references = tuple(
-                ArtifactReference(
-                    reference_id=mint_v3_id("arf_"),
-                    owner_id=owner_id,
-                    artifact_id=descriptor.artifact_id,
-                    role=reference_role,
-                    created_at=published_at,
-                    state="ACTIVE",
-                )
-                for owner_id, reference_role in references
-                if uow.connection.execute(
-                    """
-                    SELECT 1 FROM artifact_reference
-                    WHERE owner_id=? AND role=? AND artifact_id=? AND state='ACTIVE'
-                    """,
-                    (owner_id, reference_role, descriptor.artifact_id),
-                ).fetchone()
-                is None
+            SQLiteArtifactPublicationPort(uow).publish(
+                ArtifactPublication(
+                    descriptor=descriptor,
+                    active_references=callbacks.active_references,
+                ),
+                promotion_intent_id=callbacks.prepared.promotion_intent_id,
             )
-            if active_references:
-                SQLiteArtifactPublicationPort(uow).publish(
-                    ArtifactPublication(
-                        descriptor=descriptor,
-                        active_references=active_references,
-                    )
-                )
-            else:
-                _require_existing_artifact_descriptor(uow.connection, descriptor)
             uow.commit()
             return callbacks.result
         finally:
@@ -2325,6 +2361,9 @@ class ProductRuntime:
         self.artifact_store = FileSystemArtifactStore(
             self.artifact_root, policy=product_artifact_policy()
         )
+        self.artifact_publication = ArtifactPublicationCoordinator(
+            self.database_path, self.artifact_store
+        )
         self.task_persistence = SQLiteTaskPersistence(self.database_path)
         self.event_replay = ProductEventReplay(self.database_path)
         self.spec_codec = ResearchRunSpecCodec(self)
@@ -2379,6 +2418,12 @@ class ProductRuntime:
         self.local_data_transfers = ProductLocalDataTransferService(self)
 
     def _reconcile_startup_state(self) -> None:
+        gc_summary = self.artifact_publication.reconcile_gc()
+        # GC restore has a durable RESTORED intent while its final bytes may
+        # already exist under a still-QUARANTINED Catalog row.  Resolve that
+        # boundary before the generic orphan scan can classify the final as
+        # unadmitted bytes.
+        artifact_summary = self.artifact_publication.reconcile()
         # Publication recovery owns a cataloged Result before generic
         # worker-loss reconciliation is allowed to fail its Task.
         from .product_publication import ProductBacktestPublication
@@ -2386,6 +2431,8 @@ class ProductRuntime:
         publication_summary = ProductBacktestPublication(self).recover_pending()
         worker_summary = self._reconcile_execution_state()
         self.reconciliation_summary = {
+            **artifact_summary,
+            **gc_summary,
             **worker_summary,
             **publication_summary,
         }
@@ -2400,6 +2447,37 @@ class ProductRuntime:
             "publication_intents_seen": 0,
             "publication_finalized": 0,
             "publication_failed": 0,
+            "promotion_intents_seen": 0,
+            "promotion_finalized": 0,
+            "promotion_failed": 0,
+            "promotion_bytes_unavailable": 0,
+            "promotion_next_cursor": None,
+            "published_artifacts_seen": 0,
+            "published_artifacts_repaired": 0,
+            "published_artifacts_unavailable": 0,
+            "published_artifact_next_cursor": None,
+            "published_artifact_scan_blocked": False,
+            "orphan_stages_seen": 0,
+            "orphan_stages_quarantined": 0,
+            "orphan_stages_failed": 0,
+            "orphan_stage_next_cursor": None,
+            "orphan_stage_scan_blocked": False,
+            "orphan_promoting_bytes_seen": 0,
+            "orphan_promoting_bytes_isolated": 0,
+            "orphan_promoting_bytes_failed": 0,
+            "orphan_promoting_next_cursor": None,
+            "orphan_promoting_scan_blocked": False,
+            "orphan_final_bytes_seen": 0,
+            "orphan_final_bytes_isolated": 0,
+            "orphan_final_bytes_failed": 0,
+            "orphan_final_next_cursor": None,
+            "orphan_final_scan_blocked": False,
+            "gc_batches_seen": 0,
+            "gc_batches_completed": 0,
+            "gc_batches_failed": 0,
+            "gc_restores_seen": 0,
+            "gc_restores_completed": 0,
+            "gc_restores_failed": 0,
         }
 
     # -- catalog access ------------------------------------------------------
@@ -2461,10 +2539,48 @@ class ProductRuntime:
         return row
 
     def read_verified_bytes(self, artifact_id: str) -> bytes:
-        """Read canonical artifact bytes through the store's hash-verified read."""
-        return self.artifact_store.read_bytes(artifact_id)
+        """Read content-addressed bytes, applying Catalog authority when registered.
 
-    def require_published_artifact(self, artifact_id: str) -> dict[str, Any]:
+        CoreResearchPipelineService publishes its result bytes through the
+        provider-neutral store and Product Runtime registers the exact result
+        immediately after re-reading it.  That deliberately narrow
+        pre-registration window must still be hash-verified, but it cannot use
+        a Catalog row that does not exist yet.  All product-visible reads go
+        through ``require_published_artifact`` or a reachability check first.
+        """
+        connection = self._connection(read_only=True)
+        try:
+            row = catalog_row(
+                connection,
+                "SELECT * FROM artifact WHERE artifact_id=?",
+                (artifact_id,),
+            )
+        finally:
+            connection.close()
+        if row is None:
+            try:
+                with self.artifact_store.open_verified(artifact_id) as handle:
+                    return handle.read()
+            except StagingNotFound as exc:
+                raise NotFoundError(f"unknown artifact: {artifact_id}") from exc
+        row = self.require_published_artifact(artifact_id)
+        with self.artifact_store.open_verified(
+            artifact_id,
+            expected_sha256=str(row["sha256"]),
+            expected_byte_size=int(row["byte_size"]),
+        ) as handle:
+            return handle.read()
+
+    def require_published_artifact_metadata(self, artifact_id: str) -> dict[str, Any]:
+        """Return durable publication metadata without reading filesystem bytes.
+
+        This is an admission-only operation for asynchronous work.  It proves
+        that the Catalog has a PUBLISHED descriptor, but it deliberately does
+        not prove that the current filesystem bytes are still available or
+        content-addressed.  A worker must call ``require_published_artifact``
+        (or an equivalent verified read) before parsing or computing from the
+        payload.
+        """
         connection = self._connection(read_only=True)
         try:
             row = catalog_row(connection, "SELECT * FROM artifact WHERE artifact_id=?", (artifact_id,))
@@ -2474,6 +2590,56 @@ class ProductRuntime:
             raise NotFoundError(f"unknown artifact: {artifact_id}")
         if str(row["state"]) != "PUBLISHED":
             raise ArtifactNotPublishedError(f"artifact is not published: {artifact_id}")
+        return row
+
+    def require_published_artifact(self, artifact_id: str) -> dict[str, Any]:
+        """Require a published Catalog row and currently verified final bytes."""
+        row = self.require_published_artifact_metadata(artifact_id)
+        connection = self._connection(read_only=True)
+        try:
+            storage_error = connection.execute(
+                """
+                SELECT error_code FROM artifact_storage_error
+                WHERE artifact_id=? AND resolved_at IS NULL
+                  AND error_code IN(
+                    'PUBLISHED_BYTES_UNAVAILABLE',
+                    'ARTIFACT_CONTENT_ADDRESS_COLLISION_OR_CORRUPTION'
+                  )
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (artifact_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if storage_error is not None:
+            raise ArtifactNotPublishedError(
+                f"artifact requires storage reconciliation: {artifact_id}",
+                details={"reason_code": str(storage_error[0])},
+            )
+        try:
+            self.artifact_store.verify_final_bytes(
+                artifact_id, expected_byte_size=int(row["byte_size"])
+            )
+        except StagingNotFound as exc:
+            raise ArtifactNotPublishedError(
+                f"published Artifact bytes are not available: {artifact_id}",
+                details={"reason_code": "PUBLISHED_BYTES_UNAVAILABLE"},
+            ) from exc
+        except (ArtifactCollision, IntegrityMismatch) as exc:
+            raise ArtifactNotPublishedError(
+                f"published Artifact bytes failed content-address verification: {artifact_id}",
+                details={
+                    "reason_code": "ARTIFACT_CONTENT_ADDRESS_COLLISION_OR_CORRUPTION",
+                },
+            ) from exc
+        except Exception as exc:
+            raise ArtifactNotPublishedError(
+                f"published Artifact bytes are not verifiably available: {artifact_id}",
+                details={
+                    "reason_code": "ARTIFACT_PROMOTION_RECONCILIATION_REQUIRED",
+                    "error": str(exc),
+                },
+            ) from exc
         return row
 
     def require_project_reachable_artifact(

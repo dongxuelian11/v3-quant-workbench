@@ -455,14 +455,14 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
             product = ProductRuntime(root)
             connection = connect_catalog(catalog, read_only=True)
             try:
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
                 applied = tuple(
                     str(row[0])
                     for row in connection.execute(
                         "SELECT migration_id FROM schema_migration ORDER BY migration_id"
                     )
                 )
-                self.assertEqual(applied[-1], "0006_catalog_upgrade_session_integrity")
+                self.assertEqual(applied[-1], "0007_artifact_promotion_gc")
                 receipt = connection.execute(
                     "SELECT * FROM catalog_upgrade_receipt"
                 ).fetchone()
@@ -584,7 +584,7 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
 
             replaced = connect_catalog(catalog, read_only=True)
             try:
-                self.assertEqual(replaced.execute("PRAGMA user_version").fetchone()[0], 6)
+                self.assertEqual(replaced.execute("PRAGMA user_version").fetchone()[0], 7)
                 self.assertEqual(
                     replaced.execute("SELECT COUNT(*) FROM catalog_upgrade_receipt").fetchone()[0],
                     0,
@@ -643,7 +643,7 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
             ProductRuntime(root)
             recovered = connect_catalog(catalog, read_only=True)
             try:
-                self.assertEqual(recovered.execute("PRAGMA user_version").fetchone()[0], 6)
+                self.assertEqual(recovered.execute("PRAGMA user_version").fetchone()[0], 7)
                 receipt = recovered.execute(
                     "SELECT source_catalog_sha256,result FROM catalog_upgrade_receipt"
                 ).fetchone()

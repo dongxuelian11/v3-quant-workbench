@@ -33,10 +33,11 @@ class MigrationTests(unittest.TestCase):
                     "0004_risk_application_publication",
                     "0005_task_execution_deadline",
                     "0006_catalog_upgrade_session_integrity",
+                    "0007_artifact_promotion_gc",
                 ),
             )
-            self.assertEqual(result.schema_report.table_count, 76)
-            self.assertEqual(result.schema_report.user_version, 6)
+            self.assertEqual(result.schema_report.table_count, 82)
+            self.assertEqual(result.schema_report.user_version, 7)
             connection = connect_catalog(path)
             try:
                 tables = {
@@ -378,10 +379,11 @@ class MigrationTests(unittest.TestCase):
                     "0004_risk_application_publication",
                     "0005_task_execution_deadline",
                     "0006_catalog_upgrade_session_integrity",
+                    "0007_artifact_promotion_gc",
                 ),
             )
-            self.assertEqual(len(upgraded.backups), 5)
-            self.assertEqual(upgraded.schema_report.user_version, 6)
+            self.assertEqual(len(upgraded.backups), 6)
+            self.assertEqual(upgraded.schema_report.user_version, 7)
             connection = connect_catalog(path)
             try:
                 self.assertIsNone(
@@ -437,7 +439,8 @@ class MigrationTests(unittest.TestCase):
                     "0004_risk_application_publication",
                     "0005_task_execution_deadline",
                     "0006_catalog_upgrade_session_integrity",
+                    "0007_artifact_promotion_gc",
                 ),
             )
-            self.assertEqual(upgraded.schema_report.user_version, 6)
-            self.assertEqual(len(upgraded.backups), 3)
+            self.assertEqual(upgraded.schema_report.user_version, 7)
+            self.assertEqual(len(upgraded.backups), 4)

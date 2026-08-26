@@ -22,6 +22,7 @@ from v3_backend.contracts.registry import OPERATIONS, SERVICE_CONTRACTS
 from v3_backend.errors.codes import ErrorCode
 from v3_backend.errors import ResourceRejectedError
 from v3_backend.errors.exceptions import (
+    IdempotencyConflictError,
     InvalidArgumentError,
     TruthPreconditionFailedError,
     V3ContractError,
@@ -1188,6 +1189,71 @@ class ArtifactServiceTests(_PortsCase):
         )
         return str(published["read_model"]["artifact_id"])
 
+    def test_pr02_red_crash_after_final_promotion_reconciles_catalog_once(self) -> None:
+        """The required PR02 RED: final bytes may outlive the Catalog commit."""
+
+        from unittest.mock import patch
+
+        from v3_backend.adapters.sqlite.artifact_publication import (
+            SQLiteArtifactPublicationPort,
+        )
+
+        payload = b'{"crash":"after-final-promotion"}'
+        staged = self.product.artifact_store.stage_bytes(payload)
+        artifact_id = f"art_sha256_{staged.sha256}"
+        request = {
+            "request_id": mint_uuid7(),
+            "project_id": self.setup.project_id,
+            "project_context_revision_id": self.product.current_revision(
+                self.setup.project_id
+            )["project_context_revision_id"],
+            "staging_token": staged.staging_token,
+            "declared_media_type": "application/json",
+            "declared_role": "PRODUCT_RESEARCH_BACKTEST_READ_MODEL",
+            "expected_sha256": staged.sha256,
+            "idempotency_key": "pr02-red-crash-after-promotion",
+        }
+
+        with patch.object(
+            SQLiteArtifactPublicationPort,
+            "publish",
+            side_effect=RuntimeError("simulated crash before Catalog commit"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated crash"):
+                ArtifactFacade(self.product).publish_artifact(request)
+
+        # Restart is the authority boundary: a correct implementation must
+        # reconcile the durable promotion into exactly one Catalog row/ref.
+        restarted = ProductRuntime(self.storage_root)
+        connection = restarted._connection(read_only=True)
+        try:
+            artifact = connection.execute(
+                "SELECT artifact_id, sha256, state FROM artifact WHERE artifact_id=?",
+                (artifact_id,),
+            ).fetchone()
+            references = connection.execute(
+                """
+                SELECT COUNT(*) FROM artifact_reference
+                WHERE artifact_id=? AND owner_type='Project' AND owner_id=? AND state='ACTIVE'
+                """,
+                (artifact_id, self.setup.project_id),
+            ).fetchone()[0]
+            intents = connection.execute(
+                """
+                SELECT COUNT(*) FROM artifact_promotion_intent
+                WHERE artifact_id=? AND state='FINALIZED'
+                """,
+                (artifact_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertIsNotNone(artifact)
+        self.assertEqual((artifact["artifact_id"], artifact["sha256"], artifact["state"]),
+                         (artifact_id, staged.sha256, "PUBLISHED"))
+        self.assertEqual(references, 1)
+        self.assertEqual(intents, 1)
+        self.assertFalse(self.product.artifact_store._staging_path(staged.staging_token).exists())
+
     def test_acc_c3_09_stream_open_rejects_cross_project_artifact(self) -> None:
         submitted = self.route(
             "BacktestService.v1.submitBacktest",
@@ -1387,6 +1453,138 @@ class ArtifactServiceTests(_PortsCase):
         self.assertTrue(plan_model["requires_confirmation"])
         for candidate in plan_model["candidates"]:
             self.assertNotEqual(candidate["artifact_id"], artifact_id)
+
+    def test_gc_plan_retries_the_durable_canonical_claim_after_response_loss(self) -> None:
+        from unittest.mock import patch
+
+        from v3_backend.domain.artifacts.reachability import GarbageCollectionPlan
+
+        facade = ArtifactFacade(self.product)
+        revision_id = self.product.current_revision(self.setup.project_id)[
+            "project_context_revision_id"
+        ]
+        request = {
+            "request_id": mint_uuid7(),
+            "project_id": self.setup.project_id,
+            "project_context_revision_id": revision_id,
+            "retention_profile_id": "default",
+        }
+        with patch.object(
+            facade,
+            "_complete_gc_plan_request",
+            side_effect=RuntimeError("simulated response loss"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated response loss"):
+                facade.plan_garbage_collection(request)
+
+        connection = self.product._connection(read_only=True)
+        try:
+            claim = connection.execute(
+                "SELECT state,plan_json,plan_artifact_id,gc_batch_id "
+                "FROM artifact_gc_request"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim["state"], "IN_PROGRESS")
+        self.assertIsNone(claim["plan_artifact_id"])
+        self.assertIsNone(claim["gc_batch_id"])
+        self.assertTrue(str(claim["plan_json"]).startswith("{"))
+        claimed_plan = GarbageCollectionPlan.from_canonical_bytes(
+            str(claim["plan_json"]).encode("utf-8")
+        )
+
+        replayed = facade.plan_garbage_collection(request)
+        self.assertEqual(replayed["read_model"]["plan_id"], claimed_plan.plan_artifact_id)
+        self.assertEqual(replayed["read_model"]["phase"], "QUARANTINE")
+
+        connection = self.product._connection(read_only=True)
+        try:
+            completed = connection.execute(
+                "SELECT state,plan_artifact_id,gc_batch_id,outcome_json "
+                "FROM artifact_gc_request"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(completed["state"], "COMPLETED")
+        self.assertEqual(completed["plan_artifact_id"], replayed["read_model"]["plan_id"])
+        self.assertEqual(completed["gc_batch_id"], replayed["read_model"]["gc_batch_id"])
+        self.assertIsNotNone(completed["outcome_json"])
+
+    def test_completed_gc_claim_rejects_tampered_durable_outcome(self) -> None:
+        facade = ArtifactFacade(self.product)
+        revision_id = self.product.current_revision(self.setup.project_id)[
+            "project_context_revision_id"
+        ]
+        request = {
+            "request_id": mint_uuid7(),
+            "project_id": self.setup.project_id,
+            "project_context_revision_id": revision_id,
+            "retention_profile_id": "default",
+        }
+        first = facade.plan_garbage_collection(request)
+        read_model = dict(first["read_model"])
+        read_model["reachable_artifact_count"] += 1
+        tampered_outcome = json.dumps(
+            {"read_model": read_model},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        connection = self.product._connection()
+        try:
+            connection.execute(
+                "UPDATE artifact_gc_request SET outcome_json=? WHERE request_scope_key=?",
+                (
+                    tampered_outcome,
+                    self.product.idempotency.scope_key(
+                        "ArtifactService.v1.planGarbageCollection",
+                        self.setup.project_id,
+                        request["request_id"],
+                    ),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(V3ContractError):
+            facade.plan_garbage_collection(request)
+
+    def test_gc_plan_does_not_accept_legacy_idempotency_without_durable_claim(self) -> None:
+        facade = ArtifactFacade(self.product)
+        revision_id = self.product.current_revision(self.setup.project_id)[
+            "project_context_revision_id"
+        ]
+        request = {
+            "request_id": mint_uuid7(),
+            "project_id": self.setup.project_id,
+            "project_context_revision_id": revision_id,
+            "retention_profile_id": "default",
+        }
+        operation_id = "ArtifactService.v1.planGarbageCollection"
+        semantic = {
+            "project_id": request["project_id"],
+            "project_context_revision_id": request["project_context_revision_id"],
+            "retention_profile_id": request["retention_profile_id"],
+        }
+        scope, request_hash, _ = facade._lookup_gc_request(
+            operation_id=operation_id,
+            project_id=self.setup.project_id,
+            request=request,
+            semantic=semantic,
+        )
+        facade._record_gc_request(
+            operation_id=operation_id,
+            project_id=self.setup.project_id,
+            scope=scope,
+            request_hash=request_hash,
+            read_model={"legacy": True},
+            created_at=datetime.now(timezone.utc),
+        )
+
+        with self.assertRaises(IdempotencyConflictError):
+            facade.plan_garbage_collection(request)
 
     def test_acc_c3_10_export_task_finishes_only_after_native_completion_receipt(self) -> None:
         submitted = self.route(
