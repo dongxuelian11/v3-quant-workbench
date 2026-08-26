@@ -22,6 +22,7 @@ from v3_backend.errors.exceptions import (
     CatalogUpgradeIntegrityError,
 )
 from v3_backend.migrations import discover_migrations
+from v3_backend.migrations import upgrade as upgrade_module
 from v3_backend.migrations.runner import _apply_one
 from v3_backend.migrations.upgrade import (
     _catalog_upgrade_lock,
@@ -916,6 +917,71 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
             self.assertTrue((root / ".catalog.sqlite3.upgrade-state.v1.json").is_file())
             self.assertTrue(tuple(root.glob(".catalog.sqlite3.failed-upgrade-*")))
             self.assertTrue(tuple(root.glob(".catalog.sqlite3.restore-*.staged")))
+
+    def test_rollback_state_write_failure_is_stable_and_restart_recovers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._create_exact_v5_catalog(root)
+            source_sha256 = hashlib.sha256(catalog.read_bytes()).hexdigest()
+
+            def corrupt_replacement(phase: str) -> None:
+                if phase != "AFTER_REPLACE_BEFORE_RECEIPT":
+                    return
+                connection = sqlite3.connect(catalog)
+                try:
+                    connection.execute("DROP TABLE desktop_session")
+                    connection.commit()
+                finally:
+                    connection.close()
+
+            real_write_state = upgrade_module._write_state
+
+            def fail_only_rollback_state(path: Path, state: dict[str, object]) -> None:
+                if state.get("phase") == "ROLLBACK_PENDING_RESTORE":
+                    raise OSError("simulated rollback state write failure")
+                real_write_state(path, state)
+
+            with patch(
+                "v3_backend.migrations.upgrade._write_state",
+                side_effect=fail_only_rollback_state,
+            ):
+                with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                    upgrade_catalog(
+                        catalog,
+                        application_version="rollback-state-error-mapping",
+                        backup_dir=root / "backups",
+                        fault_hook=corrupt_replacement,
+                    )
+
+            self.assertEqual(raised.exception.code.value, "CATALOG_UPGRADE_INTEGRITY_FAILED")
+            self.assertEqual(raised.exception.details["phase"], "ROLLBACK_STATE")
+            self.assertEqual(
+                raised.exception.details["recovery_action"],
+                "STOP_FOR_REVIEW",
+            )
+            self.assertEqual(
+                json.loads(
+                    (root / ".catalog.sqlite3.upgrade-state.v1.json").read_text(
+                        encoding="utf-8"
+                    )
+                )["phase"],
+                "REPLACED_PENDING_RECEIPT",
+            )
+
+            with self.assertRaises(CatalogUpgradeIntegrityError) as recovered:
+                upgrade_catalog(
+                    catalog,
+                    application_version="rollback-state-error-recovery",
+                    backup_dir=root / "backups",
+                )
+            self.assertEqual(
+                recovered.exception.details,
+                {"recovery_action": "RESTORED_BACKUP"},
+            )
+            self.assertEqual(hashlib.sha256(catalog.read_bytes()).hexdigest(), source_sha256)
+            self.assertFalse((root / ".catalog.sqlite3.upgrade-state.v1.json").exists())
+            self.assertTrue(tuple(root.glob(".catalog.sqlite3.failed-upgrade-*")))
+            self.assertTrue(tuple((root / "backups").glob("catalog-upgrade-rollback-*.json")))
 
     def test_restart_completes_interrupted_rollback_without_missing_catalog(self) -> None:
         class SimulatedProcessCrash(BaseException):

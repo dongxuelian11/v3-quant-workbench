@@ -288,6 +288,19 @@ def _remove_state_checked(path: Path, *, phase: str) -> None:
         ) from error
 
 
+def _write_rollback_pending_state(path: Path, state: Mapping[str, object]) -> None:
+    try:
+        _write_state(path, state)
+    except OSError as error:
+        raise CatalogUpgradeIntegrityError(
+            "Catalog rollback recovery state could not be persisted",
+            details={
+                "phase": "ROLLBACK_STATE",
+                "recovery_action": "STOP_FOR_REVIEW",
+            },
+        ) from error
+
+
 def _isolate_unadmitted_copy(path: Path) -> Path:
     incomplete = path.with_name(path.name + ".incomplete")
     durable_replace_file(path, incomplete)
@@ -1229,11 +1242,32 @@ def _reconcile_upgrade_state(
         state["phase"] = "REPLACED_PENDING_RECEIPT"
         _write_state(path, state)
     elif current_evidence.sha256 != receipt.staged_sha256_before_replace:
+        if state["phase"] == "REPLACED_PENDING_RECEIPT":
+            _recover_pending_rollback(
+                path,
+                backup_root,
+                state,
+                receipt,
+                migrations,
+                busy_timeout_ms,
+            )
         raise CatalogUpgradeIntegrityError(
             "Catalog bytes match neither the admitted source nor verified replacement"
         )
 
-    report = _validate_current(path, migrations)
+    try:
+        report = _validate_current(path, migrations)
+    except CatalogUpgradeIntegrityError:
+        if state["phase"] == "REPLACED_PENDING_RECEIPT":
+            _recover_pending_rollback(
+                path,
+                backup_root,
+                state,
+                receipt,
+                migrations,
+                busy_timeout_ms,
+            )
+        raise
     _insert_receipt(path, receipt, busy_timeout_ms)
     _remove_state_checked(path, phase="POST_RECEIPT_STATE_CLEANUP")
     applied = tuple(item[0] for item in receipt.target_schema_prefix[source_count:])
@@ -1549,7 +1583,7 @@ def _upgrade_catalog_locked(
         _verify_rollback_backup(backup, source, migrations, applied_count)
         failed, restored = _rollback_paths(path, str(state["operation_id"]))
         state["phase"] = "ROLLBACK_PENDING_RESTORE"
-        _write_state(path, state)
+        _write_rollback_pending_state(path, state)
         try:
             copy_database_file_exact(backup.path, restored)
             _verify_rollback_file(
