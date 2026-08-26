@@ -36,6 +36,11 @@ _EXPECTED_TRIGGER_SQL = {
         "begin select raise(abort, 'desktop_session project/context binding mismatch'); end"
     ),
 }
+_EXPECTED_CANONICAL_SESSION_INDEX_SQL = (
+    "create unique index desktop_session_canonical_uuid_unique "
+    "on desktop_session(canonical_session_uuid) "
+    "where canonical_session_uuid is not null"
+)
 EXPECTED_TABLES = frozenset(
     {
         "artifact",
@@ -277,6 +282,78 @@ def validate_schema(connection: sqlite3.Connection, *, exact: bool = True) -> Sc
         missing = sorted(EXPECTED_TABLES - tables)
         extra = sorted(tables - EXPECTED_TABLES)
         raise SchemaValidationError(f"schema table mismatch: missing={missing}, extra={extra}")
+    session_columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(desktop_session)")
+    }
+    if "canonical_session_uuid" not in session_columns:
+        raise SchemaValidationError(
+            "desktop_session is missing canonical_session_uuid identity"
+        )
+    canonical_index = next(
+        (
+            row
+            for row in connection.execute("PRAGMA index_list(desktop_session)")
+            if str(row[1]) == "desktop_session_canonical_uuid_unique"
+        ),
+        None,
+    )
+    if (
+        canonical_index is None
+        or int(canonical_index[2]) != 1
+        or int(canonical_index[4]) != 1
+    ):
+        raise SchemaValidationError(
+            "desktop_session canonical UUID index is not unique and partial"
+        )
+    canonical_index_columns = tuple(
+        str(row[2])
+        for row in connection.execute(
+            'PRAGMA index_info("desktop_session_canonical_uuid_unique")'
+        )
+    )
+    if canonical_index_columns != ("canonical_session_uuid",):
+        raise SchemaValidationError(
+            "desktop_session canonical UUID index has the wrong columns"
+        )
+    index_sql_row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type='index' AND name='desktop_session_canonical_uuid_unique'
+        """
+    ).fetchone()
+    index_sql = (
+        ""
+        if index_sql_row is None or index_sql_row[0] is None
+        else " ".join(str(index_sql_row[0]).casefold().split())
+    )
+    if index_sql != _EXPECTED_CANONICAL_SESSION_INDEX_SQL:
+        raise SchemaValidationError(
+            "desktop_session canonical UUID index predicate drifted"
+        )
+    invalid_session_uuid = connection.execute(
+        """
+        SELECT 1
+        FROM desktop_session
+        WHERE canonical_session_uuid IS NOT NULL
+          AND (
+            length(canonical_session_uuid)<>36
+            OR length(replace(canonical_session_uuid,'-',''))<>32
+            OR canonical_session_uuid<>lower(canonical_session_uuid)
+            OR canonical_session_uuid GLOB '*[^0-9a-f-]*'
+            OR substr(canonical_session_uuid,9,1)<>'-'
+            OR substr(canonical_session_uuid,14,1)<>'-'
+            OR substr(canonical_session_uuid,19,1)<>'-'
+            OR substr(canonical_session_uuid,24,1)<>'-'
+          )
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid_session_uuid is not None:
+        raise SchemaValidationError(
+            "desktop_session contains an invalid canonical UUID identity"
+        )
 
     missing_triggers = sorted(REQUIRED_TRIGGERS - _trigger_names(connection))
     if missing_triggers:

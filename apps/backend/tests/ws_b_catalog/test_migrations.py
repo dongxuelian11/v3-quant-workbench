@@ -16,6 +16,7 @@ from v3_backend.migrations import (
     discover_migrations,
 )
 from v3_backend.migrations.runner import _apply_one
+from v3_backend.migrations.validator import SchemaValidationError
 
 
 class MigrationTests(unittest.TestCase):
@@ -79,6 +80,19 @@ class MigrationTests(unittest.TestCase):
                 }
                 self.assertIn("execution_deadline_at", task_columns)
                 self.assertIn("execution_deadline_at", attempt_columns)
+                session_columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(desktop_session)")
+                }
+                self.assertIn("canonical_session_uuid", session_columns)
+                unique_indexes = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA index_list(desktop_session)")
+                }
+                self.assertIn(
+                    "desktop_session_canonical_uuid_unique",
+                    unique_indexes,
+                )
                 indexes = {
                     str(row[0])
                     for row in connection.execute(
@@ -142,6 +156,38 @@ class MigrationTests(unittest.TestCase):
                     connection.execute(
                         """
                         INSERT INTO desktop_session(
+                          session_id,project_id,project_context_revision_id,state,
+                          opened_at,canonical_session_uuid
+                        ) VALUES(?,?,?,'OPEN',?,?)
+                        """,
+                        (
+                            "ses_invalid_canonical",
+                            "prj_" + "A" * 26,
+                            "pcr_" + "A" * 26,
+                            now,
+                            "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz",
+                        ),
+                    )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO desktop_session(
+                          session_id,project_id,project_context_revision_id,state,
+                          opened_at,canonical_session_uuid
+                        ) VALUES(?,?,?,'OPEN',?,?)
+                        """,
+                        (
+                            "ses_invalid_shape",
+                            "prj_" + "A" * 26,
+                            "pcr_" + "A" * 26,
+                            now,
+                            "00000000-0000-0000-0000-00000000-000",
+                        ),
+                    )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO desktop_session(
                           session_id,project_id,project_context_revision_id,state,opened_at
                         ) VALUES(?,?,?,'OPEN',?)
                         """,
@@ -149,6 +195,27 @@ class MigrationTests(unittest.TestCase):
                     )
             finally:
                 connection.close()
+
+    def test_validator_rejects_drifted_canonical_session_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.sqlite3"
+            apply_migrations(path, application_version="test")
+            connection = sqlite3.connect(path, isolation_level=None)
+            try:
+                connection.execute(
+                    "DROP INDEX desktop_session_canonical_uuid_unique"
+                )
+                connection.execute(
+                    """
+                    CREATE UNIQUE INDEX desktop_session_canonical_uuid_unique
+                    ON desktop_session(canonical_session_uuid)
+                    WHERE project_id IS NOT NULL
+                    """
+                )
+            finally:
+                connection.close()
+            with self.assertRaises(SchemaValidationError):
+                apply_migrations(path, application_version="index-drift")
 
     def test_migration_is_idempotent_and_checksum_locked(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

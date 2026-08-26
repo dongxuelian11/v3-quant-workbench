@@ -71,8 +71,8 @@
     },
     {
       "path": "asl/project_session.contract.json",
-      "bytes": 17642,
-      "sha256": "a13b2899aadc38776c61a22136391c70f9d8d1f14921247dfefd1e9b77c86d70"
+      "bytes": 17824,
+      "sha256": "a6dfd7a3662ebaf7bc70ea5eef9b375abc29b925dc3b57aaa441f46eee4c3d8a"
     },
     {
       "path": "asl/research.contract.json",

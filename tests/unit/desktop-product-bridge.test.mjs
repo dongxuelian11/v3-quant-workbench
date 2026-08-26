@@ -21,12 +21,35 @@ test("binding store rejects invalid persisted shapes and accepts canonical refs"
     assert.equal(parsePersistedBinding(null), null);
     assert.equal(parsePersistedBinding({ schemaVersion: 99, projectId: "p", projectContextRevisionId: "c", sessionId: "s", savedAt: "x" }), null);
     assert.equal(parsePersistedBinding({ schemaVersion: 1, projectId: "../escape", projectContextRevisionId: "c", sessionId: "s", savedAt: "x" }), null);
+    assert.equal(parsePersistedBinding({ schemaVersion: 1, projectId: "p", projectContextRevisionId: "c", sessionId: "11111111-2222-7333-8444-55555555555A", savedAt: "x" }), null);
+    assert.equal(parsePersistedBinding({ schemaVersion: 1, projectId: "p", projectContextRevisionId: "c", sessionId: "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz", savedAt: "x" }), null);
     assert.equal(parsePersistedBinding({ schemaVersion: 1, projectId: "p", projectContextRevisionId: "c", sessionId: "s" }), null);
     assert.equal(await store.load(), null);
     await writeFile(productBindingPath(dir), "{not-json", "utf8");
-    await assert.rejects(
-      () => new ProductBindingStore(productBindingPath(dir)).load(),
-      (error) => error.code === "BINDING_STORE_CORRUPT"
+    assert.equal(await new ProductBindingStore(productBindingPath(dir)).load(), null);
+    assert.equal(
+      (await readdir(dir)).filter((name) =>
+        name.startsWith("v3-product-binding.json.isolated.BINDING_STORE_CORRUPT.")
+      ).length,
+      1
+    );
+    await writeFile(
+      productBindingPath(dir),
+      JSON.stringify({
+        schemaVersion: 1,
+        projectId: "p",
+        projectContextRevisionId: "c",
+        sessionId: "11111111-2222-7333-8444-55555555555A",
+        savedAt: "x"
+      }),
+      "utf8"
+    );
+    assert.equal(await new ProductBindingStore(productBindingPath(dir)).load(), null);
+    assert.equal(
+      (await readdir(dir)).filter((name) =>
+        name.startsWith("v3-product-binding.json.isolated.BINDING_STORE_CORRUPT.")
+      ).length,
+      2
     );
     await assert.rejects(
       () => new ProductBindingStore(dir).load(),
@@ -40,6 +63,7 @@ test("binding store rejects invalid persisted shapes and accepts canonical refs"
     assert.equal(loaded.projectId, REFS.projectId);
     assert.equal(loaded.sessionId, REFS.sessionId);
     await assert.rejects(() => store.persist({ projectId: "a".repeat(4000), projectContextRevisionId: "c", sessionId: "s" }), TypeError);
+    await assert.rejects(() => store.persist({ projectId: "p", projectContextRevisionId: "c", sessionId: "11111111-2222-7333-8444-55555555555A" }), TypeError);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }

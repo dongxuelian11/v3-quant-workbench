@@ -57,7 +57,8 @@ METHOD_SPECS = {'ProjectSessionService.v1.openProject': {'operation_id': 'Projec
                                                                                     'session_id': {'type': 'string',
                                                                                                    'description': 'Desktop '
                                                                                                                   'session '
-                                                                                                                  'UUID',
+                                                                                                                   'UUID',
+                                                                                                   'pattern': '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
                                                                                                    'format': 'uuid'}}}},
                                           'response_dto': {'name': 'OpenProjectResponseV1',
                                                            'schema': {'type': 'object',
@@ -404,6 +405,7 @@ METHOD_SPECS = {'ProjectSessionService.v1.openProject': {'operation_id': 'Projec
                                                                                                       'description': 'Desktop '
                                                                                                                      'session '
                                                                                                                      'UUID',
+                                                                                                      'pattern': '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
                                                                                                       'format': 'uuid'}}}},
                                              'response_dto': {'name': 'RestoreSessionResponseV1',
                                                               'schema': {'type': 'object',

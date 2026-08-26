@@ -112,7 +112,30 @@ def copy_database_file_exact(
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + ".staging")
     if temporary.exists():
-        raise FileExistsError(temporary)
+        # A process can die after the exact copy is fsynced but before the
+        # same-directory rename.  The destination is deterministic during
+        # Catalog recovery, so adopt a complete staging file instead of
+        # turning that crash window into a permanent FileExistsError.  A
+        # partial staging file is quarantined and the copy is retried from
+        # the still-admitted source.
+        source_evidence = database_file_evidence(source)
+        temporary_evidence = database_file_evidence(temporary)
+        if (
+            temporary_evidence.sha256 == source_evidence.sha256
+            and temporary_evidence.byte_size == source_evidence.byte_size
+        ):
+            durable_replace_file(temporary, destination)
+            sync_file(destination)
+            return database_file_evidence(destination)
+        incomplete = destination.with_name(destination.name + ".incomplete")
+        counter = 1
+        while incomplete.exists():
+            incomplete = destination.with_name(
+                f"{destination.name}.incomplete-{counter}"
+            )
+            counter += 1
+        durable_replace_file(temporary, incomplete)
+        sync_file(incomplete)
     try:
         with source.open("rb") as source_stream, temporary.open("xb") as target_stream:
             shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)

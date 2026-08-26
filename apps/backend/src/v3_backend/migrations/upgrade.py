@@ -39,7 +39,8 @@ from .runner import (
 from .validator import SchemaReport, SchemaValidationError, validate_schema
 
 
-UPGRADE_STATE_SCHEMA_ID = "urn:v3:catalog-upgrade-state:1.0.0"
+UPGRADE_STATE_SCHEMA_ID = "urn:v3:catalog-upgrade-state:1.1.0"
+LEGACY_UPGRADE_STATE_SCHEMA_ID = "urn:v3:catalog-upgrade-state:1.0.0"
 
 
 @dataclass(frozen=True)
@@ -206,83 +207,229 @@ def _state_prefix(value: object, field: str) -> tuple[tuple[str, str], ...]:
     return tuple(prefix)
 
 
+def _quote_sqlite_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _canonical_sqlite_value(value: object) -> object:
+    if value is None or isinstance(value, (int, float, str)):
+        return value
+    if isinstance(value, bytes):
+        return {"bytes_hex": value.hex()}
+    raise CatalogUpgradeIntegrityError(
+        f"Catalog content contains an unsupported SQLite value type: {type(value).__name__}"
+    )
+
+
+def _catalog_content_sha256(
+    path: Path,
+    *,
+    excluded_receipt_operation_id: str | None = None,
+) -> str:
+    """Hash logical Catalog content while excluding only the pending receipt row."""
+
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(
+            f"{path.as_uri()}?mode=ro", uri=True, isolation_level=None
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("BEGIN")
+        objects = connection.execute(
+            """
+            SELECT type,name,sql
+            FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%'
+            ORDER BY type,name
+            """
+        ).fetchall()
+        canonical_objects: list[dict[str, object]] = []
+        for item in objects:
+            object_type = str(item["type"])
+            name = str(item["name"])
+            canonical: dict[str, object] = {
+                "type": object_type,
+                "name": name,
+                "sql": None if item["sql"] is None else str(item["sql"]),
+            }
+            if object_type == "table":
+                quoted_name = _quote_sqlite_identifier(name)
+                columns = tuple(
+                    str(row["name"])
+                    for row in connection.execute(
+                        f"PRAGMA table_info({quoted_name})"
+                    ).fetchall()
+                )
+                try:
+                    rows = connection.execute(
+                        f"SELECT * FROM {quoted_name} ORDER BY rowid"
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    order_by = ",".join(
+                        _quote_sqlite_identifier(column) for column in columns
+                    )
+                    rows = connection.execute(
+                        f"SELECT * FROM {quoted_name} ORDER BY {order_by}"
+                    ).fetchall()
+                if (
+                    name == "catalog_upgrade_receipt"
+                    and excluded_receipt_operation_id is not None
+                ):
+                    try:
+                        operation_index = columns.index("operation_id")
+                    except ValueError as error:
+                        raise CatalogUpgradeIntegrityError(
+                            "Catalog receipt table has no operation_id column"
+                        ) from error
+                    rows = tuple(
+                        row
+                        for row in rows
+                        if str(row[operation_index])
+                        != excluded_receipt_operation_id
+                    )
+                canonical["columns"] = columns
+                canonical["rows"] = [
+                    [_canonical_sqlite_value(value) for value in row]
+                    for row in rows
+                ]
+            canonical_objects.append(canonical)
+        payload = json.dumps(
+            canonical_objects,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+    except (OSError, sqlite3.DatabaseError) as error:
+        raise CatalogUpgradeIntegrityError(
+            "Catalog logical content could not be hashed"
+        ) from error
+    finally:
+        if connection is not None:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.close()
+
+
 def _load_state(path: Path, backup_root: Path) -> dict[str, object] | None:
     state_path = _state_path(path)
-    if not state_path.exists():
-        pending = state_path.with_name(state_path.name + ".pending")
-        if pending.exists():
+    pending = state_path.with_name(state_path.name + ".pending")
+
+    def read_raw(candidate: Path) -> dict[str, object]:
+        try:
+            raw_value = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise CatalogUpgradeIntegrityError(
-                "an incomplete Catalog upgrade-state write requires review"
+                "Catalog upgrade state is unreadable"
+            ) from error
+        if not isinstance(raw_value, dict):
+            raise CatalogUpgradeIntegrityError(
+                "Catalog upgrade state has an invalid closed shape"
             )
+        return raw_value
+
+    def validate(raw: dict[str, object]) -> dict[str, object]:
+        base_required = {
+            "schema_id",
+            "operation_id",
+            "phase",
+            "source_catalog_path_fingerprint",
+            "source_catalog_sha256",
+            "source_schema_prefix",
+            "target_schema_prefix",
+            "backup_path",
+            "backup_path_fingerprint",
+            "backup_sha256",
+            "staged_path",
+            "staged_sha256",
+            "started_at",
+        }
+        state_schema_id = raw.get("schema_id")
+        if state_schema_id == UPGRADE_STATE_SCHEMA_ID:
+            required = base_required | {"staged_content_sha256"}
+        elif state_schema_id == LEGACY_UPGRADE_STATE_SCHEMA_ID:
+            required = base_required
+        else:
+            raise CatalogUpgradeIntegrityError("Catalog upgrade state schema is unsupported")
+        if set(raw) != required:
+            raise CatalogUpgradeIntegrityError(
+                "Catalog upgrade state has an invalid closed shape"
+            )
+        if raw["phase"] not in {
+            "STAGED_VERIFIED",
+            "REPLACED_PENDING_RECEIPT",
+            "ROLLBACK_PENDING_RESTORE",
+        }:
+            raise CatalogUpgradeIntegrityError("Catalog upgrade state phase is invalid")
+        operation_id = raw["operation_id"]
+        if (
+            not isinstance(operation_id, str)
+            or not operation_id.startswith("cup_")
+            or len(operation_id) != 36
+            or any(character not in "0123456789abcdef" for character in operation_id[4:])
+        ):
+            raise CatalogUpgradeIntegrityError("Catalog upgrade state operation ID is invalid")
+        hash_fields = [
+            "source_catalog_path_fingerprint",
+            "source_catalog_sha256",
+            "backup_path_fingerprint",
+            "backup_sha256",
+            "staged_sha256",
+        ]
+        if state_schema_id == UPGRADE_STATE_SCHEMA_ID:
+            hash_fields.append("staged_content_sha256")
+        for field in hash_fields:
+            if not _is_sha256(raw[field]):
+                raise CatalogUpgradeIntegrityError(
+                    f"Catalog upgrade state {field} is not a lowercase SHA-256"
+                )
+        source_prefix = _state_prefix(raw["source_schema_prefix"], "source_schema_prefix")
+        target_prefix = _state_prefix(raw["target_schema_prefix"], "target_schema_prefix")
+        if not source_prefix or len(source_prefix) >= len(target_prefix):
+            raise CatalogUpgradeIntegrityError(
+                "Catalog upgrade state prefixes are not an upgrade"
+            )
+        if target_prefix[: len(source_prefix)] != source_prefix:
+            raise CatalogUpgradeIntegrityError("Catalog upgrade state prefixes diverged")
+        if not isinstance(raw["started_at"], str) or not raw["started_at"]:
+            raise CatalogUpgradeIntegrityError("Catalog upgrade state start time is invalid")
+        if not isinstance(raw["backup_path"], str) or not isinstance(
+            raw["staged_path"], str
+        ):
+            raise CatalogUpgradeIntegrityError("Catalog upgrade state paths are invalid")
+        if raw["source_catalog_path_fingerprint"] != _path_fingerprint(path):
+            raise CatalogUpgradeIntegrityError("Catalog upgrade state belongs to another Catalog")
+        backup_path = Path(str(raw["backup_path"])).resolve()
+        staged_path = Path(str(raw["staged_path"])).resolve()
+        if not backup_path.is_relative_to(backup_root.resolve()):
+            raise CatalogUpgradeIntegrityError(
+                "Catalog upgrade backup path escaped its owner root"
+            )
+        if staged_path.parent != path.parent:
+            raise CatalogUpgradeIntegrityError(
+                "Catalog upgrade stage escaped the Catalog volume"
+            )
+        if _path_fingerprint(backup_path) != raw["backup_path_fingerprint"]:
+            raise CatalogUpgradeIntegrityError("Catalog upgrade backup fingerprint drifted")
+        return raw
+
+    if not state_path.exists() and not pending.exists():
         return None
-    try:
-        raw = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise CatalogUpgradeIntegrityError(
-            "Catalog upgrade state is unreadable"
-        ) from error
-    required = {
-        "schema_id",
-        "operation_id",
-        "phase",
-        "source_catalog_path_fingerprint",
-        "source_catalog_sha256",
-        "source_schema_prefix",
-        "target_schema_prefix",
-        "backup_path",
-        "backup_path_fingerprint",
-        "backup_sha256",
-        "staged_path",
-        "staged_sha256",
-        "started_at",
-    }
-    if not isinstance(raw, dict) or set(raw) != required:
-        raise CatalogUpgradeIntegrityError("Catalog upgrade state has an invalid closed shape")
-    if raw["schema_id"] != UPGRADE_STATE_SCHEMA_ID:
-        raise CatalogUpgradeIntegrityError("Catalog upgrade state schema is unsupported")
-    if raw["phase"] not in {"STAGED_VERIFIED", "REPLACED_PENDING_RECEIPT"}:
-        raise CatalogUpgradeIntegrityError("Catalog upgrade state phase is invalid")
-    operation_id = raw["operation_id"]
-    if (
-        not isinstance(operation_id, str)
-        or not operation_id.startswith("cup_")
-        or len(operation_id) != 36
-        or any(character not in "0123456789abcdef" for character in operation_id[4:])
-    ):
-        raise CatalogUpgradeIntegrityError("Catalog upgrade state operation ID is invalid")
-    for field in (
-        "source_catalog_path_fingerprint",
-        "source_catalog_sha256",
-        "backup_path_fingerprint",
-        "backup_sha256",
-        "staged_sha256",
-    ):
-        if not _is_sha256(raw[field]):
+    candidate = pending if pending.exists() else state_path
+    raw = validate(read_raw(candidate))
+    if pending.exists():
+        try:
+            durable_replace_file(pending, state_path)
+            sync_file(state_path)
+        except OSError as error:
             raise CatalogUpgradeIntegrityError(
-                f"Catalog upgrade state {field} is not a lowercase SHA-256"
-            )
-    source_prefix = _state_prefix(raw["source_schema_prefix"], "source_schema_prefix")
-    target_prefix = _state_prefix(raw["target_schema_prefix"], "target_schema_prefix")
-    if not source_prefix or len(source_prefix) >= len(target_prefix):
-        raise CatalogUpgradeIntegrityError("Catalog upgrade state prefixes are not an upgrade")
-    if target_prefix[: len(source_prefix)] != source_prefix:
-        raise CatalogUpgradeIntegrityError("Catalog upgrade state prefixes diverged")
-    if not isinstance(raw["started_at"], str) or not raw["started_at"]:
-        raise CatalogUpgradeIntegrityError("Catalog upgrade state start time is invalid")
-    if not isinstance(raw["backup_path"], str) or not isinstance(
-        raw["staged_path"], str
-    ):
-        raise CatalogUpgradeIntegrityError("Catalog upgrade state paths are invalid")
-    if raw["source_catalog_path_fingerprint"] != _path_fingerprint(path):
-        raise CatalogUpgradeIntegrityError("Catalog upgrade state belongs to another Catalog")
-    backup_path = Path(str(raw["backup_path"])).resolve()
-    staged_path = Path(str(raw["staged_path"])).resolve()
-    if not backup_path.is_relative_to(backup_root.resolve()):
-        raise CatalogUpgradeIntegrityError("Catalog upgrade backup path escaped its owner root")
-    if staged_path.parent != path.parent:
-        raise CatalogUpgradeIntegrityError("Catalog upgrade stage escaped the Catalog volume")
-    if _path_fingerprint(backup_path) != raw["backup_path_fingerprint"]:
-        raise CatalogUpgradeIntegrityError("Catalog upgrade backup fingerprint drifted")
+                "verified pending Catalog upgrade state could not be activated",
+                details={
+                    "phase": "UPGRADE_STATE_RECOVERY",
+                    "recovery_action": "STOP_FOR_REVIEW",
+                },
+            ) from error
     return raw
 
 
@@ -369,7 +516,15 @@ def _validate_current(path: Path) -> SchemaReport:
             connection.close()
 
 
-def _isolate_failed_database(
+def _rollback_paths(path: Path, operation_id: str) -> tuple[Path, Path]:
+    token = operation_id.removeprefix("cup_")
+    return (
+        path.with_name(f".{path.name}.failed-upgrade-{token}"),
+        path.with_name(f".{path.name}.restore-{token}.staged"),
+    )
+
+
+def _preserve_failed_database(
     path: Path,
     failed_path: Path,
     busy_timeout_ms: int,
@@ -385,7 +540,7 @@ def _isolate_failed_database(
             if sidecar.exists():
                 isolated_sidecar = failed_path.with_name(failed_path.name + suffix)
                 durable_replace_file(sidecar, isolated_sidecar)
-    atomic_replace_database(path, failed_path)
+    copy_database_file_exact(path, failed_path)
 
 
 def _insert_receipt(
@@ -541,6 +696,155 @@ def _recovery_file_evidence(path: Path, role: str) -> BackupEvidence:
         ) from error
 
 
+def _verify_rollback_file(
+    path: Path,
+    *,
+    role: str,
+    expected_sha256: str,
+    expected_byte_size: int,
+    migrations: tuple[Migration, ...],
+    applied_count: int,
+) -> None:
+    try:
+        evidence = _recovery_file_evidence(path, role)
+        if (
+            evidence.sha256 != expected_sha256
+            or evidence.byte_size != expected_byte_size
+        ):
+            raise CatalogUpgradeIntegrityError(f"Catalog upgrade {role} bytes drifted")
+        if _read_prefix(path, migrations) != applied_count:
+            raise CatalogUpgradeIntegrityError(f"Catalog upgrade {role} prefix drifted")
+    except (CatalogMigrationPrefixUnrecognizedError, CatalogUpgradeIntegrityError) as error:
+        raise CatalogUpgradeIntegrityError(
+            f"verified Catalog {role} is unavailable for rollback",
+            details={
+                "phase": "ROLLBACK_BACKUP_EVIDENCE",
+                "recovery_action": "STOP_FOR_REVIEW",
+                "role": role,
+            },
+        ) from error
+
+
+def _verify_rollback_backup(
+    backup: BackupEvidence,
+    source: BackupEvidence,
+    migrations: tuple[Migration, ...],
+    applied_count: int,
+) -> None:
+    if (
+        backup.sha256 != source.sha256
+        or backup.byte_size != source.byte_size
+    ):
+        raise CatalogUpgradeIntegrityError(
+            "verified Catalog backup differs from the admitted source",
+            details={
+                "phase": "ROLLBACK_BACKUP_EVIDENCE",
+                "recovery_action": "STOP_FOR_REVIEW",
+                "role": "backup",
+            },
+        )
+    _verify_rollback_file(
+        backup.path,
+        role="backup",
+        expected_sha256=source.sha256,
+        expected_byte_size=source.byte_size,
+        migrations=migrations,
+        applied_count=applied_count,
+    )
+
+
+def _recover_pending_rollback(
+    path: Path,
+    backup_root: Path,
+    state: Mapping[str, object],
+    receipt: CatalogUpgradeReceiptV1,
+    migrations: tuple[Migration, ...],
+    busy_timeout_ms: int,
+) -> None:
+    backup_path = Path(str(state["backup_path"])).resolve()
+    backup = _recovery_file_evidence(backup_path, "backup")
+    if (
+        backup.sha256 != state["backup_sha256"]
+        or backup.sha256 != receipt.source_catalog_sha256
+    ):
+        raise CatalogUpgradeIntegrityError("Catalog upgrade backup bytes drifted")
+    if _read_prefix(backup_path, migrations) != len(receipt.source_schema_prefix):
+        raise CatalogUpgradeIntegrityError("Catalog upgrade backup prefix drifted")
+
+    failed, restored = _rollback_paths(path, receipt.operation_id)
+    try:
+        if not restored.is_file():
+            copy_database_file_exact(backup.path, restored)
+        _verify_rollback_file(
+            restored,
+            role="restore",
+            expected_sha256=backup.sha256,
+            expected_byte_size=backup.byte_size,
+            migrations=migrations,
+            applied_count=len(receipt.source_schema_prefix),
+        )
+    except (
+        OSError,
+        CatalogMigrationPrefixUnrecognizedError,
+        CatalogUpgradeIntegrityError,
+    ) as restore_error:
+        raise CatalogUpgradeIntegrityError(
+            "verified Catalog backup could not be staged for rollback",
+            details={
+                "phase": "ROLLBACK_BACKUP_EVIDENCE",
+                "recovery_action": "STOP_FOR_REVIEW",
+                "role": "restore",
+            },
+        ) from restore_error
+
+    current_is_source = False
+    if path.is_file():
+        try:
+            current = database_file_evidence(path)
+        except OSError:
+            current = None
+        current_is_source = (
+            current is not None
+            and current.sha256 == backup.sha256
+            and current.byte_size == backup.byte_size
+        )
+    try:
+        if not current_is_source:
+            if path.is_file() and not failed.is_file():
+                _preserve_failed_database(path, failed, busy_timeout_ms)
+            atomic_replace_database(restored, path)
+    except (OSError, sqlite3.DatabaseError, CatalogUpgradeIntegrityError) as restore_error:
+        raise CatalogUpgradeIntegrityError(
+            "verified Catalog backup could not be activated for rollback",
+            details={
+                "phase": "ROLLBACK_RESTORE",
+                "recovery_action": "STOP_FOR_REVIEW",
+            },
+        ) from restore_error
+
+    _verify_rollback_file(
+        path,
+        role="restored",
+        expected_sha256=backup.sha256,
+        expected_byte_size=backup.byte_size,
+        migrations=migrations,
+        applied_count=len(receipt.source_schema_prefix),
+    )
+    _write_rollback_receipt(
+        path,
+        backup_root,
+        state,
+        backup,
+        backup,
+        failed,
+        str(state["started_at"]),
+    )
+    raise CatalogUpgradeIntegrityError(
+        "post-replacement validation failed; verified backup was restored",
+        details={"recovery_action": "RESTORED_BACKUP"},
+    )
+
+
 def _reconcile_upgrade_state(
     path: Path,
     backup_root: Path,
@@ -557,6 +861,15 @@ def _reconcile_upgrade_state(
         raise CatalogUpgradeIntegrityError("Catalog upgrade target prefix drifted from code")
     if receipt.source_schema_prefix != expected_target[:source_count]:
         raise CatalogUpgradeIntegrityError("Catalog upgrade source prefix drifted from code")
+    if state["phase"] == "ROLLBACK_PENDING_RESTORE":
+        _recover_pending_rollback(
+            path,
+            backup_root,
+            state,
+            receipt,
+            migrations,
+            busy_timeout_ms,
+        )
     persisted_receipt = _read_persisted_receipt(path, receipt.operation_id)
     if persisted_receipt is not None:
         expected_persisted = replace(
@@ -566,6 +879,39 @@ def _reconcile_upgrade_state(
         if persisted_receipt != expected_persisted:
             raise CatalogUpgradeIntegrityError(
                 "persisted Catalog upgrade receipt conflicts with durable upgrade state"
+            )
+        if state["schema_id"] == LEGACY_UPGRADE_STATE_SCHEMA_ID:
+            # State 1.0 predates the logical-content digest.  Once its receipt
+            # is durable, the old raw staged hash cannot prove that all
+            # non-receipt content remained unchanged.  Refuse this ambiguity
+            # explicitly instead of deleting the recovery state on trust.
+            raise CatalogUpgradeIntegrityError(
+                "legacy Catalog upgrade state cannot reconcile a committed receipt safely",
+                details={
+                    "phase": "POST_RECEIPT_RECONCILIATION",
+                    "recovery_action": "STOP_FOR_REVIEW",
+                },
+            )
+        _read_prefix(path, migrations)
+        expected_content_sha256 = state.get("staged_content_sha256")
+        if not _is_sha256(expected_content_sha256):
+            raise CatalogUpgradeIntegrityError(
+                "legacy Catalog upgrade state lacks post-receipt content evidence",
+                details={
+                    "phase": "POST_RECEIPT_RECONCILIATION",
+                    "recovery_action": "STOP_FOR_REVIEW",
+                },
+            )
+        if _catalog_content_sha256(
+            path,
+            excluded_receipt_operation_id=receipt.operation_id,
+        ) != expected_content_sha256:
+            raise CatalogUpgradeIntegrityError(
+                "Catalog logical content drifted after the durable receipt commit",
+                details={
+                    "phase": "POST_RECEIPT_RECONCILIATION",
+                    "recovery_action": "STOP_FOR_REVIEW",
+                },
             )
         report = _validate_current(path)
         _remove_state(path)
@@ -645,6 +991,39 @@ def _receipt(
         result=result,
         error_code=error_code,
     )
+
+
+def _write_rollback_receipt(
+    path: Path,
+    backup_root: Path,
+    state: Mapping[str, object],
+    source: BackupEvidence,
+    backup: BackupEvidence,
+    failed: Path,
+    started_at: str,
+) -> None:
+    rollback_receipt = {
+        "schema_id": "urn:v3:catalog-upgrade-rollback-receipt:1.0.0",
+        "operation_id": state["operation_id"],
+        "source_catalog_path_fingerprint": state[
+            "source_catalog_path_fingerprint"
+        ],
+        "source_catalog_sha256": source.sha256,
+        "target_schema_prefix": state["target_schema_prefix"],
+        "backup_path_fingerprint": state["backup_path_fingerprint"],
+        "backup_sha256": backup.sha256,
+        "failed_catalog_path_fingerprint": _path_fingerprint(failed),
+        "recovery_action": "RESTORED_BACKUP",
+        "result": "ROLLED_BACK",
+        "error_code": "CATALOG_UPGRADE_INTEGRITY_FAILED",
+        "started_at": started_at,
+        "committed_at": _utc_now(),
+    }
+    _write_durable_json(
+        backup_root / f"catalog-upgrade-rollback-{state['operation_id']}.json",
+        rollback_receipt,
+    )
+    _remove_state(path)
 
 
 def upgrade_catalog(
@@ -805,6 +1184,7 @@ def _upgrade_catalog_locked(
         ) from error
     _checkpoint_and_remove_sidecars(staged, busy_timeout_ms)
     _validate_current(staged)
+    staged_content_sha256 = _catalog_content_sha256(staged)
     staged_evidence = database_file_evidence(staged)
     if fault_hook is not None:
         fault_hook("AFTER_STAGED_VALIDATION_BEFORE_SOURCE_RECHECK")
@@ -831,6 +1211,7 @@ def _upgrade_catalog_locked(
         "backup_sha256": backup.sha256,
         "staged_path": str(staged),
         "staged_sha256": staged_evidence.sha256,
+        "staged_content_sha256": staged_content_sha256,
         "started_at": started_at,
     }
     _write_state(path, state)
@@ -845,11 +1226,54 @@ def _upgrade_catalog_locked(
     try:
         report = _validate_current(path)
     except CatalogUpgradeIntegrityError as validation_error:
-        failed = path.with_name(f".{path.name}.failed-upgrade-{token}")
-        _isolate_failed_database(path, failed, busy_timeout_ms)
-        restored = path.with_name(f".{path.name}.restore-{token}.staged")
-        copy_database_file_exact(backup.path, restored)
-        atomic_replace_database(restored, path)
+        _verify_rollback_backup(backup, source, migrations, applied_count)
+        failed, restored = _rollback_paths(path, str(state["operation_id"]))
+        state["phase"] = "ROLLBACK_PENDING_RESTORE"
+        _write_state(path, state)
+        try:
+            copy_database_file_exact(backup.path, restored)
+            _verify_rollback_file(
+                restored,
+                role="restore",
+                expected_sha256=source.sha256,
+                expected_byte_size=source.byte_size,
+                migrations=migrations,
+                applied_count=applied_count,
+            )
+        except (
+            OSError,
+            sqlite3.DatabaseError,
+            CatalogMigrationPrefixUnrecognizedError,
+            CatalogUpgradeIntegrityError,
+        ) as restore_error:
+            raise CatalogUpgradeIntegrityError(
+                "verified Catalog backup could not be staged for rollback",
+                details={
+                    "phase": "ROLLBACK_BACKUP_EVIDENCE",
+                    "recovery_action": "STOP_FOR_REVIEW",
+                    "role": "restore",
+                },
+            ) from restore_error
+        try:
+            _preserve_failed_database(path, failed, busy_timeout_ms)
+        except (OSError, sqlite3.DatabaseError, CatalogUpgradeIntegrityError) as preserve_error:
+            raise CatalogUpgradeIntegrityError(
+                "failed Catalog could not be preserved before rollback",
+                details={
+                    "phase": "ROLLBACK_FAILED_DATABASE",
+                    "recovery_action": "STOP_FOR_REVIEW",
+                },
+            ) from preserve_error
+        try:
+            atomic_replace_database(restored, path)
+        except OSError as restore_error:
+            raise CatalogUpgradeIntegrityError(
+                "verified Catalog backup could not be activated for rollback",
+                details={
+                    "phase": "ROLLBACK_RESTORE",
+                    "recovery_action": "STOP_FOR_REVIEW",
+                },
+            ) from restore_error
         if _read_prefix(path, migrations) != applied_count:
             raise CatalogUpgradeIntegrityError(
                 "restored Catalog migration prefix differs from the admitted source"
@@ -859,29 +1283,15 @@ def _upgrade_catalog_locked(
             raise CatalogUpgradeIntegrityError(
                 "restored Catalog bytes differ from the admitted source"
             ) from validation_error
-        rollback_receipt = {
-            "schema_id": "urn:v3:catalog-upgrade-rollback-receipt:1.0.0",
-            "operation_id": state["operation_id"],
-            "source_catalog_path_fingerprint": state[
-                "source_catalog_path_fingerprint"
-            ],
-            "source_catalog_sha256": source.sha256,
-            "target_schema_prefix": state["target_schema_prefix"],
-            "backup_path_fingerprint": state["backup_path_fingerprint"],
-            "backup_sha256": backup.sha256,
-            "failed_catalog_path_fingerprint": _path_fingerprint(failed),
-            "recovery_action": "RESTORED_BACKUP",
-            "result": "ROLLED_BACK",
-            "error_code": "CATALOG_UPGRADE_INTEGRITY_FAILED",
-            "started_at": started_at,
-            "committed_at": _utc_now(),
-        }
-        _write_durable_json(
-            backup_root
-            / f"catalog-upgrade-rollback-{state['operation_id']}.json",
-            rollback_receipt,
+        _write_rollback_receipt(
+            path,
+            backup_root,
+            state,
+            source,
+            backup,
+            failed,
+            started_at,
         )
-        _remove_state(path)
         raise CatalogUpgradeIntegrityError(
             "post-replacement validation failed; verified backup was restored",
             details={"recovery_action": "RESTORED_BACKUP"},

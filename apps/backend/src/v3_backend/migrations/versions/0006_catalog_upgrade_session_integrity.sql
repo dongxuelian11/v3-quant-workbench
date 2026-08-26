@@ -22,6 +22,26 @@ CREATE TABLE catalog_upgrade_receipt (
 
 DROP TRIGGER desktop_session_project_binding_immutable_guard;
 
+ALTER TABLE desktop_session
+  ADD COLUMN canonical_session_uuid TEXT
+  CHECK(
+    canonical_session_uuid IS NULL
+    OR (
+      length(canonical_session_uuid)=36
+      AND length(replace(canonical_session_uuid,'-',''))=32
+      AND canonical_session_uuid=lower(canonical_session_uuid)
+      AND canonical_session_uuid NOT GLOB '*[^0-9a-f-]*'
+      AND substr(canonical_session_uuid,9,1)='-'
+      AND substr(canonical_session_uuid,14,1)='-'
+      AND substr(canonical_session_uuid,19,1)='-'
+      AND substr(canonical_session_uuid,24,1)='-'
+    )
+  );
+
+CREATE UNIQUE INDEX desktop_session_canonical_uuid_unique
+ON desktop_session(canonical_session_uuid)
+WHERE canonical_session_uuid IS NOT NULL;
+
 CREATE TRIGGER desktop_session_project_binding_immutable_guard
 BEFORE UPDATE OF project_id ON desktop_session
 WHEN NEW.project_id<>OLD.project_id

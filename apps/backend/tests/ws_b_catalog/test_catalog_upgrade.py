@@ -10,7 +10,10 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-from v3_backend.adapters.sqlite.backup import copy_database_file_exact
+from v3_backend.adapters.sqlite.backup import (
+    atomic_replace_database,
+    copy_database_file_exact,
+)
 from v3_backend.adapters.sqlite.connection import connect_catalog
 from v3_backend.errors.exceptions import (
     CatalogMigrationPrefixUnrecognizedError,
@@ -297,6 +300,14 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
             finally:
                 replaced.close()
 
+            state_path = root / ".catalog.sqlite3.upgrade-state.v1.json"
+            legacy_state = json.loads(state_path.read_text(encoding="utf-8"))
+            legacy_state["schema_id"] = "urn:v3:catalog-upgrade-state:1.0.0"
+            legacy_state.pop("staged_content_sha256")
+            state_path.write_text(
+                json.dumps(legacy_state, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
             ProductRuntime(root)
             recovered = connect_catalog(catalog, read_only=True)
             try:
@@ -350,6 +361,44 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
             self.assertEqual(str(receipt["result"]), "UPGRADED")
             self.assertFalse((root / ".catalog.sqlite3.upgrade-state.v1.json").exists())
 
+    def test_restart_promotes_fsynced_pending_state_before_recovery(self) -> None:
+        class SimulatedProcessCrash(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._create_exact_v5_catalog(root)
+            state_path = root / ".catalog.sqlite3.upgrade-state.v1.json"
+
+            def crash_before_state_activation(source: Path, destination: Path) -> None:
+                if destination == state_path:
+                    raise SimulatedProcessCrash()
+                from v3_backend.adapters.sqlite.backup import durable_replace_file
+
+                durable_replace_file(source, destination)
+
+            with patch(
+                "v3_backend.migrations.upgrade.durable_replace_file",
+                side_effect=crash_before_state_activation,
+            ):
+                with self.assertRaises(SimulatedProcessCrash):
+                    upgrade_catalog(
+                        catalog,
+                        application_version="pending-state-crash-test",
+                        backup_dir=root / "backups",
+                    )
+
+            self.assertFalse(state_path.exists())
+            self.assertTrue(state_path.with_name(state_path.name + ".pending").is_file())
+            recovered = upgrade_catalog(
+                catalog,
+                application_version="pending-state-recovery-test",
+                backup_dir=root / "backups",
+            )
+            self.assertEqual(recovered.receipt.result, "UPGRADED")
+            self.assertFalse(state_path.exists())
+            self.assertFalse(state_path.with_name(state_path.name + ".pending").exists())
+
     def test_post_replace_validation_failure_restores_exact_source_and_archives_rollback(
         self,
     ) -> None:
@@ -396,6 +445,24 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
             self.assertEqual(len(rollback_receipts), 1)
             self.assertTrue(any(root.glob(".catalog.sqlite3.failed-upgrade-*")))
 
+    def test_exact_copy_adopts_a_complete_staging_file_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.sqlite3"
+            destination = root / "destination.sqlite3"
+            source.write_bytes(b"admitted-catalog-bytes")
+            destination.with_name(destination.name + ".staging").write_bytes(
+                source.read_bytes()
+            )
+
+            evidence = copy_database_file_exact(source, destination)
+
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+            self.assertEqual(evidence.byte_size, len(b"admitted-catalog-bytes"))
+            self.assertFalse(
+                destination.with_name(destination.name + ".staging").exists()
+            )
+
     def test_post_replace_unreadable_bytes_still_restore_the_exact_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -427,6 +494,146 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
             failed = tuple(root.glob(".catalog.sqlite3.failed-upgrade-*"))
             self.assertEqual(len(failed), 1)
             self.assertEqual(failed[0].read_bytes(), b"not-a-sqlite-database")
+
+    def test_post_replace_failure_with_unverified_backup_stops_before_isolation(self) -> None:
+        for tamper_mode in ("MISSING", "MODIFIED"):
+            with self.subTest(tamper_mode=tamper_mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                catalog = self._create_exact_v5_catalog(root)
+
+                def tamper_backup_and_corrupt_replacement(phase: str) -> None:
+                    if phase != "AFTER_REPLACE_BEFORE_RECEIPT":
+                        return
+                    backup = next((root / "backups").glob("catalog-before-upgrade-*.sqlite3"))
+                    if tamper_mode == "MISSING":
+                        backup.unlink()
+                    else:
+                        backup.write_bytes(b"tampered backup bytes")
+                    connection = sqlite3.connect(catalog)
+                    try:
+                        connection.execute("DROP TABLE desktop_session")
+                        connection.commit()
+                    finally:
+                        connection.close()
+
+                with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                    upgrade_catalog(
+                        catalog,
+                        application_version="unverified-rollback-backup-test",
+                        backup_dir=root / "backups",
+                        fault_hook=tamper_backup_and_corrupt_replacement,
+                    )
+                self.assertEqual(
+                    raised.exception.details["phase"],
+                    "ROLLBACK_BACKUP_EVIDENCE",
+                )
+                self.assertEqual(
+                    raised.exception.details["recovery_action"],
+                    "STOP_FOR_REVIEW",
+                )
+                self.assertTrue(catalog.is_file())
+                self.assertTrue((root / ".catalog.sqlite3.upgrade-state.v1.json").is_file())
+                self.assertFalse(tuple(root.glob(".catalog.sqlite3.failed-upgrade-*")))
+                self.assertFalse(tuple((root / "backups").glob("catalog-upgrade-rollback-*.json")))
+
+    def test_rollback_activation_failure_preserves_failed_and_restore_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._create_exact_v5_catalog(root)
+            replace_calls = 0
+
+            def fail_rollback_activation(source: Path, destination: Path) -> None:
+                nonlocal replace_calls
+                replace_calls += 1
+                if replace_calls == 2:
+                    raise OSError("simulated rollback activation failure")
+                atomic_replace_database(source, destination)
+
+            def corrupt_replacement(phase: str) -> None:
+                if phase != "AFTER_REPLACE_BEFORE_RECEIPT":
+                    return
+                connection = sqlite3.connect(catalog)
+                try:
+                    connection.execute("DROP TABLE desktop_session")
+                    connection.commit()
+                finally:
+                    connection.close()
+
+            with patch(
+                "v3_backend.migrations.upgrade.atomic_replace_database",
+                side_effect=fail_rollback_activation,
+            ):
+                with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                    upgrade_catalog(
+                        catalog,
+                        application_version="rollback-activation-failure-test",
+                        backup_dir=root / "backups",
+                        fault_hook=corrupt_replacement,
+                    )
+            self.assertEqual(raised.exception.details["phase"], "ROLLBACK_RESTORE")
+            self.assertEqual(
+                raised.exception.details["recovery_action"],
+                "STOP_FOR_REVIEW",
+            )
+            self.assertTrue((root / ".catalog.sqlite3.upgrade-state.v1.json").is_file())
+            self.assertTrue(tuple(root.glob(".catalog.sqlite3.failed-upgrade-*")))
+            self.assertTrue(tuple(root.glob(".catalog.sqlite3.restore-*.staged")))
+
+    def test_restart_completes_interrupted_rollback_without_missing_catalog(self) -> None:
+        class SimulatedProcessCrash(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._create_exact_v5_catalog(root)
+            source_sha256 = hashlib.sha256(catalog.read_bytes()).hexdigest()
+            replace_calls = 0
+
+            def crash_during_rollback_activation(
+                source: Path, destination: Path
+            ) -> None:
+                nonlocal replace_calls
+                replace_calls += 1
+                if replace_calls == 2:
+                    raise SimulatedProcessCrash()
+                atomic_replace_database(source, destination)
+
+            def corrupt_replacement(phase: str) -> None:
+                if phase != "AFTER_REPLACE_BEFORE_RECEIPT":
+                    return
+                connection = sqlite3.connect(catalog)
+                try:
+                    connection.execute("DROP TABLE desktop_session")
+                    connection.commit()
+                finally:
+                    connection.close()
+
+            with patch(
+                "v3_backend.migrations.upgrade.atomic_replace_database",
+                side_effect=crash_during_rollback_activation,
+            ):
+                with self.assertRaises(SimulatedProcessCrash):
+                    upgrade_catalog(
+                        catalog,
+                        application_version="rollback-crash-test",
+                        backup_dir=root / "backups",
+                        fault_hook=corrupt_replacement,
+                    )
+
+            with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                upgrade_catalog(
+                    catalog,
+                    application_version="rollback-crash-recovery-test",
+                    backup_dir=root / "backups",
+                )
+            self.assertEqual(
+                raised.exception.details["recovery_action"],
+                "RESTORED_BACKUP",
+            )
+            self.assertEqual(hashlib.sha256(catalog.read_bytes()).hexdigest(), source_sha256)
+            self.assertFalse((root / ".catalog.sqlite3.upgrade-state.v1.json").exists())
+            self.assertTrue(tuple(root.glob(".catalog.sqlite3.failed-upgrade-*")))
+            self.assertTrue(tuple((root / "backups").glob("catalog-upgrade-rollback-*.json")))
 
     def test_restart_deduplicates_committed_receipt_before_state_cleanup(self) -> None:
         class SimulatedProcessCrash(BaseException):
@@ -478,6 +685,31 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
                     backup_dir=root / "backups",
                 )
             self.assertTrue(state_path.is_file())
+            legacy_state = json.loads(exact_state)
+            legacy_state["schema_id"] = "urn:v3:catalog-upgrade-state:1.0.0"
+            legacy_state.pop("staged_content_sha256")
+            state_path.write_text(
+                json.dumps(legacy_state, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                CatalogUpgradeIntegrityError,
+                "legacy Catalog upgrade state cannot reconcile",
+            ) as legacy_raised:
+                upgrade_catalog(
+                    catalog,
+                    application_version="legacy-receipt-state-test",
+                    backup_dir=root / "backups",
+                )
+            self.assertEqual(
+                legacy_raised.exception.details["phase"],
+                "POST_RECEIPT_RECONCILIATION",
+            )
+            self.assertEqual(
+                legacy_raised.exception.details["recovery_action"],
+                "STOP_FOR_REVIEW",
+            )
+            self.assertTrue(state_path.is_file())
             state_path.write_text(exact_state, encoding="utf-8")
 
             recovered = upgrade_catalog(
@@ -504,6 +736,58 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
                 "recovery must return the exact durable receipt rather than a reconstructed timestamp",
             )
             self.assertFalse((root / ".catalog.sqlite3.upgrade-state.v1.json").exists())
+
+    def test_post_receipt_catalog_drift_stops_before_state_cleanup(self) -> None:
+        class SimulatedProcessCrash(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._create_exact_v5_catalog(root)
+
+            def drift_after_receipt(phase: str) -> None:
+                if phase == "AFTER_RECEIPT_BEFORE_STATE_CLEANUP":
+                    connection = sqlite3.connect(catalog)
+                    try:
+                        connection.execute(
+                            """
+                            UPDATE schema_migration
+                            SET application_version=?
+                            WHERE migration_id=?
+                            """,
+                            (
+                                "post-receipt-external-drift",
+                                "0006_catalog_upgrade_session_integrity",
+                            ),
+                        )
+                        connection.commit()
+                    finally:
+                        connection.close()
+                    raise SimulatedProcessCrash()
+
+            with self.assertRaises(SimulatedProcessCrash):
+                upgrade_catalog(
+                    catalog,
+                    application_version="post-receipt-drift-test",
+                    backup_dir=root / "backups",
+                    fault_hook=drift_after_receipt,
+                )
+
+            with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                upgrade_catalog(
+                    catalog,
+                    application_version="post-receipt-drift-recovery-test",
+                    backup_dir=root / "backups",
+                )
+            self.assertEqual(
+                raised.exception.details["phase"],
+                "POST_RECEIPT_RECONCILIATION",
+            )
+            self.assertEqual(
+                raised.exception.details["recovery_action"],
+                "STOP_FOR_REVIEW",
+            )
+            self.assertTrue((root / ".catalog.sqlite3.upgrade-state.v1.json").is_file())
 
     def test_fresh_install_and_reopen_each_emit_a_non_conflicting_no_change_receipt(
         self,
@@ -865,7 +1149,7 @@ END;
                     """,
                     ("9999_unknown_future", "9" * 64, "2026-01-01T00:00:00Z", "future", "APPLIED"),
                 )
-                connection.execute("PRAGMA user_version = 6")
+                connection.execute("PRAGMA user_version = 5")
                 connection.commit()
             finally:
                 connection.close()
