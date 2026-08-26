@@ -336,6 +336,29 @@ class ProjectSessionTests(_PortsCase):
             new_revision,
         )
 
+    def test_restore_rejects_superseded_context_revision(self) -> None:
+        session_id = mint_uuid7()
+        opened = self.route(
+            "ProjectSessionService.v1.openProject",
+            project_locator=f"v3:{self.setup.project_id}",
+            session_id=session_id,
+        )
+        self.assertEqual(opened["status"], "OK", opened)
+        revised = self.route(
+            "ProjectSessionService.v1.reviseProjectContext",
+            base_revision_id=self.setup.project_context_revision_id,
+            patch={"context_fields": {"notes": "restore must use current revision"}},
+            idempotency_key="restore-stale-revision",
+        )
+        self.assertEqual(revised["status"], "OK", revised)
+        stale_restore = self._route_with(
+            self.router,
+            "ProjectSessionService.v1.restoreSession",
+            _pcr_id=self.setup.project_context_revision_id,
+            session_id=session_id,
+        )
+        self.assert_error(stale_restore, ErrorCode.TRUTH_PRECONDITION_FAILED.value)
+
     def test_stale_base_revision_fails_closed(self) -> None:
         self.route(
             "ProjectSessionService.v1.reviseProjectContext",

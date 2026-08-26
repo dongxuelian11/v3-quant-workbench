@@ -2176,8 +2176,7 @@ export class ProductBridge {
   async restoreSession(): Promise<SessionRestoreView> {
     const refs = this.requireBindingOrPendingRevalidation();
     try {
-      const response = await this.supervisor.request("ProjectSessionService.v1.restoreSession", { session_id: refs.sessionId });
-      return adaptSessionRestore(response);
+      return await this.restoreAndVerify(refs);
     } catch (error) {
       const code = error !== null && typeof error === "object" && "code" in error
         ? String(error.code)

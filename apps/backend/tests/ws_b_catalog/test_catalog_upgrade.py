@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import multiprocessing
 import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from v3_backend.adapters.sqlite.backup import (
@@ -21,7 +23,11 @@ from v3_backend.errors.exceptions import (
 )
 from v3_backend.migrations import discover_migrations
 from v3_backend.migrations.runner import _apply_one
-from v3_backend.migrations.upgrade import _catalog_upgrade_lock, upgrade_catalog
+from v3_backend.migrations.upgrade import (
+    _catalog_upgrade_lock,
+    catalog_runtime_lease,
+    upgrade_catalog,
+)
 from v3_backend.runtime.product_entry import create_project
 from v3_backend.runtime.product_runtime import (
     ProductRuntime,
@@ -30,6 +36,16 @@ from v3_backend.runtime.product_runtime import (
 )
 from v3_backend.runtime.request_router import RequestRouter
 from v3_backend.runtime import bootstrap as runtime_bootstrap
+
+
+def _hold_catalog_runtime_lease(
+    catalog_path: str,
+    ready: Any,
+    release: Any,
+) -> None:
+    with catalog_runtime_lease(Path(catalog_path), busy_timeout_ms=1_000):
+        ready.set()
+        release.wait(10)
 
 
 class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
@@ -119,6 +135,97 @@ class CatalogUpgradeAndSessionIsolationTests(unittest.TestCase):
                     with _catalog_upgrade_lock(catalog, busy_timeout_ms=0):
                         self.fail("a second upgrade owner entered the critical section")
             self.assertEqual(raised.exception.details["phase"], "UPGRADE_LOCK")
+
+    def test_catalog_upgrade_waits_for_live_worker_runtime_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "catalog.sqlite3"
+            context = multiprocessing.get_context("spawn")
+            ready = context.Event()
+            release = context.Event()
+            worker = context.Process(
+                target=_hold_catalog_runtime_lease,
+                args=(str(catalog), ready, release),
+            )
+            worker.start()
+            try:
+                self.assertTrue(ready.wait(10), "worker did not publish its Catalog lease")
+                with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                    upgrade_catalog(
+                        catalog,
+                        application_version="runtime-lease-test",
+                        backup_dir=Path(directory) / "backups",
+                        busy_timeout_ms=100,
+                    )
+                self.assertEqual(raised.exception.details["phase"], "RUNTIME_LEASE")
+            finally:
+                release.set()
+                worker.join(10)
+                if worker.is_alive():
+                    worker.terminate()
+                    worker.join(5)
+            self.assertEqual(worker.exitcode, 0)
+            upgraded = upgrade_catalog(
+                catalog,
+                application_version="runtime-lease-test-after-release",
+                backup_dir=Path(directory) / "backups",
+                busy_timeout_ms=1_000,
+            )
+            self.assertEqual(upgraded.receipt.result, "NO_CHANGE")
+
+    def test_fresh_catalog_migration_failure_maps_to_stable_startup_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "catalog.sqlite3"
+            versions_dir = Path(directory) / "broken-versions"
+            versions_dir.mkdir()
+            source = (
+                Path(__file__).parents[2]
+                / "src"
+                / "v3_backend"
+                / "migrations"
+                / "versions"
+                / "0001_control_catalog.sql"
+            )
+            (versions_dir / source.name).write_bytes(
+                source.read_bytes()
+                + b"\nCREATE TABLE migration_failure_probe(id INTEGER);\n"
+                + b"CREATE TABLE migration_failure_probe(id INTEGER);\n"
+            )
+            with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                upgrade_catalog(
+                    catalog,
+                    application_version="fresh-error-mapping",
+                    versions_dir=versions_dir,
+                    backup_dir=Path(directory) / "backups",
+                )
+            self.assertEqual(
+                raised.exception.code.value,
+                "CATALOG_UPGRADE_INTEGRITY_FAILED",
+            )
+
+    def test_tampered_persisted_receipt_is_rejected_on_next_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "catalog.sqlite3"
+            upgrade_catalog(
+                catalog,
+                application_version="receipt-integrity-test",
+                backup_dir=Path(directory) / "backups",
+            )
+            connection = sqlite3.connect(catalog, isolation_level=None)
+            try:
+                connection.execute("PRAGMA ignore_check_constraints = ON")
+                connection.execute(
+                    "UPDATE catalog_upgrade_receipt SET final_catalog_sha256=?",
+                    ("Z" * 64,),
+                )
+            finally:
+                connection.close()
+            with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                upgrade_catalog(
+                    catalog,
+                    application_version="receipt-integrity-test-restart",
+                    backup_dir=Path(directory) / "backups",
+                )
+            self.assertIn("receipt final_catalog_sha256", str(raised.exception))
 
     def test_catalog_startup_errors_cross_bootstrap_as_stable_redacted_diagnostics(
         self,

@@ -426,6 +426,11 @@ class ProjectSessionFacade:
         session_id = str(request["session_id"])
         _require_canonical_session_uuid(session_id)
         self.product.require_project_context_ownership(project_id, project_context_revision_id)
+        current = self.product.current_revision(project_id)
+        if str(current["project_context_revision_id"]) != project_context_revision_id:
+            raise TruthPreconditionFailedError(
+                "restoreSession requires the current (non-superseded) project context revision"
+            )
         row_ids = _session_row_candidates(session_id)
         canonical_session_uuid = session_id.lower()
         connection = self.product._connection(read_only=True)

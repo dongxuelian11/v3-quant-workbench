@@ -130,6 +130,8 @@ def _product_worker_main(
     send_lock = RLock()
     heartbeat_stop = Event()
     heartbeat: Thread | None = None
+    catalog_lease = None
+    catalog_lease_entered = False
 
     def stop_heartbeat() -> None:
         heartbeat_stop.set()
@@ -174,6 +176,15 @@ def _product_worker_main(
                 raise ValueError("worker acknowledgement does not match dispatch")
             break
 
+        from v3_backend.migrations.upgrade import catalog_runtime_lease
+        from .product_runtime import CATALOG_FILENAME
+
+        catalog_lease = catalog_runtime_lease(
+            Path(launch.storage_root) / CATALOG_FILENAME,
+            busy_timeout_ms=5_000,
+        )
+        catalog_lease.__enter__()
+        catalog_lease_entered = True
         heartbeat = Thread(target=heartbeat_loop, name="v3-product-heartbeat", daemon=True)
         heartbeat.start()
         _safe_send(
@@ -299,6 +310,8 @@ def _product_worker_main(
         )
     finally:
         stop_heartbeat()
+        if catalog_lease is not None and catalog_lease_entered:
+            catalog_lease.__exit__(None, None, None)
         try:
             command_pipe.close()
         except (EOFError, OSError):

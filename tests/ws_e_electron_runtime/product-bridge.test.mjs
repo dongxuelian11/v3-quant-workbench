@@ -555,6 +555,31 @@ test("ACC-C1-01 crash after rename recovers candidate because active is the comm
   }
 });
 
+test("restoreSession rejects a response whose context revision is no longer the persisted binding", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-binding-restore-revision-mismatch-"));
+  try {
+    const bindingPath = productBindingPath(dir);
+    const recoveredStore = new ProductBindingStore(bindingPath);
+    await recoveredStore.persist(REFS);
+    await recoveredStore.load();
+    const supervisor = stubSupervisor();
+    supervisor.setProjectContext({
+      projectId: REFS.projectId,
+      projectContextRevisionId: "pcr_superseding_revision",
+      lastDurableProjectEventSequence: 0
+    });
+    await supervisor.start();
+    const bridge = new ProductBridge(supervisor, stubStore(), recoveredStore);
+    await assert.rejects(
+      () => bridge.restoreSession(),
+      (error) => error.code === "BINDING_SESSION_MISMATCH"
+    );
+    assert.equal(await bridge.getBoundProject(), null, "mismatched restore must not admit a binding");
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
 test("SESSION_PROJECT_BINDING_CONFLICT isolates the active binding before another restart", async () => {
   const dir = await mkdtemp(join(tmpdir(), "v3-binding-project-conflict-"));
   try {

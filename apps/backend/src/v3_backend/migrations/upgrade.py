@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
 
 from v3_backend.adapters.sqlite.backup import (
     BackupEvidence,
@@ -106,43 +107,145 @@ def _catalog_upgrade_lock(
     locked = False
     try:
         while True:
-            try:
-                stream.seek(0)
-                if os.name == "nt":
-                    import msvcrt
-
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if _try_lock_stream(stream):
                 locked = True
                 break
-            except OSError as error:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise CatalogUpgradeIntegrityError(
-                        "another process owns the Catalog upgrade lock",
-                        details={"phase": "UPGRADE_LOCK"},
-                    ) from error
-                time.sleep(min(0.05, remaining))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CatalogUpgradeIntegrityError(
+                    "another process owns the Catalog upgrade lock",
+                    details={"phase": "UPGRADE_LOCK"},
+                )
+            time.sleep(min(0.05, remaining))
         yield
     finally:
         if locked:
             try:
-                stream.seek(0)
-                if os.name == "nt":
-                    import msvcrt
-
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                _unlock_stream(stream)
             finally:
                 stream.close()
         else:
             stream.close()
+
+
+def _try_lock_stream(stream: BinaryIO) -> bool:
+    """Try an exclusive one-byte OS lock without waiting."""
+
+    try:
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock_stream(stream: BinaryIO) -> None:
+    stream.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _runtime_lease_pattern(path: Path) -> str:
+    return f".{path.name}.runtime-lease-*"
+
+
+def _wait_for_runtime_leases(path: Path, busy_timeout_ms: int) -> None:
+    """Block Catalog replacement while any worker holds a runtime lease.
+
+    The upgrade lock is held by the caller, so no new worker can create a lease
+    while this scan is in progress. A stale lease file is safe to remove once
+    its OS lock can be acquired; a live worker keeps that lock until process
+    exit or normal worker cleanup.
+    """
+
+    deadline = time.monotonic() + max(0, int(busy_timeout_ms)) / 1_000
+    while True:
+        blocked = False
+        for lease_path in tuple(path.parent.glob(_runtime_lease_pattern(path))):
+            try:
+                stream = lease_path.open("a+b")
+            except FileNotFoundError:
+                continue
+            close_stream = True
+            try:
+                if not _try_lock_stream(stream):
+                    blocked = True
+                    continue
+                _unlock_stream(stream)
+                stream.close()
+                close_stream = False
+                lease_path.unlink(missing_ok=True)
+            finally:
+                if close_stream:
+                    stream.close()
+        if not blocked:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CatalogUpgradeIntegrityError(
+                "a live worker owns the Catalog runtime lease",
+                details={"phase": "RUNTIME_LEASE"},
+            )
+        time.sleep(min(0.05, remaining))
+
+
+@contextmanager
+def catalog_runtime_lease(
+    database_path: str | Path,
+    *,
+    busy_timeout_ms: int = 5_000,
+) -> Iterator[None]:
+    """Hold a worker lease that excludes Catalog replacement for its lifetime."""
+
+    path = Path(database_path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lease_path = path.with_name(
+        f".{path.name}.runtime-lease-{os.getpid()}-{uuid.uuid4().hex}"
+    )
+    stream: BinaryIO | None = None
+    locked = False
+    try:
+        # Admission is serialized with upgrade so an upgrade cannot pass its
+        # lease scan while a worker is between admission and lease creation.
+        with _catalog_upgrade_lock(path, busy_timeout_ms=busy_timeout_ms):
+            stream = lease_path.open("xb")
+            stream.write(f"pid={os.getpid()}\n".encode("ascii"))
+            stream.flush()
+            os.fsync(stream.fileno())
+            if not _try_lock_stream(stream):
+                raise CatalogUpgradeIntegrityError(
+                    "worker Catalog runtime lease could not be acquired",
+                    details={"phase": "RUNTIME_LEASE"},
+                )
+            locked = True
+        yield
+    finally:
+        if stream is not None:
+            if locked:
+                try:
+                    _unlock_stream(stream)
+                except OSError:
+                    pass
+            stream.close()
+        try:
+            lease_path.unlink(missing_ok=True)
+        except OSError:
+            # An unlocked stale marker is harmless; the next upgrade can
+            # acquire its OS lock and remove it during the scan.
+            pass
 
 
 def _write_durable_json(destination: Path, value: Mapping[str, object]) -> None:
@@ -205,6 +308,129 @@ def _state_prefix(value: object, field: str) -> tuple[tuple[str, str], ...]:
             )
         prefix.append((item[0], item[1]))
     return tuple(prefix)
+
+
+def _validate_receipt_identity(row: Mapping[str, object]) -> None:
+    operation_id = row.get("operation_id")
+    if (
+        not isinstance(operation_id, str)
+        or len(operation_id) != 36
+        or not operation_id.startswith("cup_")
+        or len(operation_id[4:]) != 32
+        or any(character not in "0123456789abcdef" for character in operation_id[4:])
+    ):
+        raise CatalogUpgradeIntegrityError(
+            "persisted Catalog upgrade receipt operation identity is invalid"
+        )
+
+
+def _validate_receipt_hashes(row: Mapping[str, object]) -> None:
+    for field in (
+        "source_catalog_path_fingerprint",
+        "source_catalog_sha256",
+        "staged_sha256_before_replace",
+        "final_catalog_sha256",
+    ):
+        if not _is_sha256(row.get(field)):
+            raise CatalogUpgradeIntegrityError(
+                f"persisted Catalog upgrade receipt {field} is invalid"
+            )
+    for field in ("backup_path_fingerprint", "backup_sha256"):
+        value = row.get(field)
+        if value is not None and not _is_sha256(value):
+            raise CatalogUpgradeIntegrityError(
+                f"persisted Catalog upgrade receipt {field} is invalid"
+            )
+
+
+def _validate_receipt_prefixes(row: Mapping[str, object]) -> None:
+    try:
+        _state_prefix(
+            json.loads(str(row["source_schema_prefix_json"])),
+            "receipt_source_schema_prefix",
+        )
+        _state_prefix(
+            json.loads(str(row["target_schema_prefix_json"])),
+            "receipt_target_schema_prefix",
+        )
+    except (KeyError, json.JSONDecodeError, TypeError) as error:
+        raise CatalogUpgradeIntegrityError(
+            "persisted Catalog upgrade receipt migration prefixes are invalid"
+        ) from error
+
+
+def _validate_receipt_integrity(row: Mapping[str, object]) -> None:
+    if row.get("integrity_check") != "PASS" or row.get("foreign_key_check") != "PASS":
+        raise CatalogUpgradeIntegrityError(
+            "persisted Catalog upgrade receipt integrity evidence is invalid"
+        )
+    if row.get("replacement_mode") != "SAME_VOLUME_ATOMIC_REPLACE":
+        raise CatalogUpgradeIntegrityError(
+            "persisted Catalog upgrade receipt replacement mode is invalid"
+        )
+
+
+def _validate_receipt_outcome(row: Mapping[str, object]) -> None:
+    result = row.get("result")
+    recovery_action = row.get("recovery_action")
+    if result not in {"UPGRADED", "NO_CHANGE", "REFUSED", "ROLLED_BACK"}:
+        raise CatalogUpgradeIntegrityError(
+            "persisted Catalog upgrade receipt result is invalid"
+        )
+    if recovery_action not in {"NONE", "RESTORED_BACKUP"}:
+        raise CatalogUpgradeIntegrityError(
+            "persisted Catalog upgrade receipt recovery action is invalid"
+        )
+    has_backup = (
+        row.get("backup_sha256") is not None
+        and row.get("backup_path_fingerprint") is not None
+    )
+    if (result == "NO_CHANGE") != (not has_backup):
+        raise CatalogUpgradeIntegrityError(
+            "persisted Catalog upgrade receipt backup evidence does not match its result"
+        )
+
+
+def _validate_receipt_times_and_error(row: Mapping[str, object]) -> None:
+    for field in ("started_at", "committed_at"):
+        value = row.get(field)
+        if not isinstance(value, str) or not value:
+            raise CatalogUpgradeIntegrityError(
+                f"persisted Catalog upgrade receipt {field} is invalid"
+            )
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise CatalogUpgradeIntegrityError(
+                f"persisted Catalog upgrade receipt {field} is not an ISO timestamp"
+            ) from error
+    error_code = row.get("error_code")
+    if error_code is not None and (
+        not isinstance(error_code, str) or not 1 <= len(error_code) <= 128
+    ):
+        raise CatalogUpgradeIntegrityError(
+            "persisted Catalog upgrade receipt error code is invalid"
+        )
+
+
+def _validate_receipt_row(row: Mapping[str, object]) -> None:
+    _validate_receipt_identity(row)
+    _validate_receipt_hashes(row)
+    _validate_receipt_prefixes(row)
+    _validate_receipt_integrity(row)
+    _validate_receipt_outcome(row)
+    _validate_receipt_times_and_error(row)
+
+
+def _validate_persisted_receipts(connection: sqlite3.Connection) -> None:
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_upgrade_receipt'"
+    ).fetchone()
+    if table is None:
+        return
+    rows = connection.execute("SELECT * FROM catalog_upgrade_receipt").fetchall()
+    for row in rows:
+        _validate_receipt_row(dict(row))
 
 
 def _quote_sqlite_identifier(value: str) -> str:
@@ -506,7 +732,9 @@ def _validate_current(path: Path) -> SchemaReport:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA query_only = ON")
-        return validate_schema(connection)
+        report = validate_schema(connection)
+        _validate_persisted_receipts(connection)
+        return report
     except (sqlite3.DatabaseError, SchemaValidationError) as error:
         raise CatalogUpgradeIntegrityError(
             "Catalog failed exact schema/integrity validation"
@@ -644,6 +872,7 @@ def _read_persisted_receipt(
         ).fetchone()
         if row is None:
             return None
+        _validate_receipt_row(dict(row))
         return CatalogUpgradeReceiptV1(
             operation_id=str(row["operation_id"]),
             source_catalog_path_fingerprint=str(
@@ -1038,6 +1267,7 @@ def upgrade_catalog(
     path = Path(database_path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     with _catalog_upgrade_lock(path, busy_timeout_ms=busy_timeout_ms):
+        _wait_for_runtime_leases(path, busy_timeout_ms)
         return _upgrade_catalog_locked(
             path,
             application_version=application_version,
@@ -1090,27 +1320,32 @@ def _upgrade_catalog_locked(
         return reconciled
     if not path.exists():
         started_at = _utc_now()
-        migration_result = apply_migrations(
-            path,
-            application_version=application_version,
-            versions_dir=versions_dir,
-            backup_dir=backup_dir,
-            busy_timeout_ms=busy_timeout_ms,
-        )
-        _checkpoint_and_remove_sidecars(path, busy_timeout_ms)
-        current = database_file_evidence(path)
-        receipt = _receipt(
-            path=path,
-            migrations=migrations,
-            applied_count=len(migrations),
-            source_sha256=current.sha256,
-            staged_sha256=current.sha256,
-            backup=None,
-            started_at=started_at,
-            result="NO_CHANGE",
-        )
-        _insert_receipt(path, receipt, busy_timeout_ms)
-        return CatalogUpgradeResult(path, migration_result, receipt)
+        try:
+            migration_result = apply_migrations(
+                path,
+                application_version=application_version,
+                versions_dir=versions_dir,
+                backup_dir=backup_dir,
+                busy_timeout_ms=busy_timeout_ms,
+            )
+            _checkpoint_and_remove_sidecars(path, busy_timeout_ms)
+            current = database_file_evidence(path)
+            receipt = _receipt(
+                path=path,
+                migrations=migrations,
+                applied_count=len(migrations),
+                source_sha256=current.sha256,
+                staged_sha256=current.sha256,
+                backup=None,
+                started_at=started_at,
+                result="NO_CHANGE",
+            )
+            _insert_receipt(path, receipt, busy_timeout_ms)
+            return CatalogUpgradeResult(path, migration_result, receipt)
+        except (MigrationError, SchemaValidationError, sqlite3.DatabaseError, OSError) as error:
+            raise CatalogUpgradeIntegrityError(
+                "fresh Catalog migration or exact schema validation failed"
+            ) from error
 
     started_at = _utc_now()
     applied_count = _read_prefix(path, migrations)

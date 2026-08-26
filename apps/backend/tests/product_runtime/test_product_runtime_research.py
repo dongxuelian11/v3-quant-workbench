@@ -43,6 +43,8 @@ from v3_backend.runtime.composition_root import RuntimePorts, RuntimeSession
 from v3_backend.runtime.framed_stdio import FrameDecoder, encode_frame
 from v3_backend.runtime.handshake import create_hello, token_proof
 from v3_backend.runtime.request_router import RequestRouter
+from v3_backend.errors.exceptions import CatalogUpgradeIntegrityError
+from v3_backend.migrations.upgrade import upgrade_catalog
 
 
 class _Frame:
@@ -628,6 +630,7 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 Path(directory),
                 research_worker_config=ProductResearchWorkerConfig(
                     provider_mode=DETERMINISTIC_SUCCESS,
+                    start_delay_seconds=5.0,
                 ),
             )
             try:
@@ -689,6 +692,24 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     _request(project["project_id"], project["project_context_revision_id"])
                 )
                 task_id = response["read_model"]["task_id"]
+                lease_deadline = time.monotonic() + 5.0
+                while (
+                    not tuple(Path(directory).glob(".catalog.sqlite3.runtime-lease-*"))
+                    and time.monotonic() < lease_deadline
+                ):
+                    time.sleep(0.05)
+                self.assertTrue(
+                    tuple(Path(directory).glob(".catalog.sqlite3.runtime-lease-*")),
+                    "worker must hold the Catalog runtime lease before writing",
+                )
+                with self.assertRaises(CatalogUpgradeIntegrityError) as raised:
+                    upgrade_catalog(
+                        product.database_path,
+                        application_version="worker-runtime-lease-test",
+                        backup_dir=Path(directory) / "backups",
+                        busy_timeout_ms=100,
+                    )
+                self.assertEqual(raised.exception.details["phase"], "RUNTIME_LEASE")
                 deadline = time.monotonic() + 15.0
                 task = product.task_persistence.read_task(task_id)
                 while task.state.value not in {"SUCCEEDED", "FAILED", "CANCELLED"} and time.monotonic() < deadline:
