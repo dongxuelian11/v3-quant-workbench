@@ -38,7 +38,10 @@ from v3_backend.runtime.product_workers import (
     ProductResearchWorkerConfig,
     _ProductProcessFactory,
 )
-from v3_backend.control_plane.windows_job_object import StaticJobObjectController
+from v3_backend.control_plane.windows_job_object import (
+    StaticJobObjectController,
+    WindowsJobObjectController,
+)
 from v3_backend.control_plane.worker_supervisor import WorkerSupervisor
 from v3_backend.domain.tasks.entities import AttemptState, RunState, TaskState
 from v3_backend.domain.tasks.state_machine import TaskTransitionContext
@@ -221,6 +224,73 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                         project["project_id"],
                         project["project_context_revision_id"],
                         key="portable-injected-enforcement",
+                    )
+                )
+                task_id = str(response["read_model"]["task_id"])
+                deadline = time.monotonic() + 15.0
+                lease_row = None
+                while time.monotonic() < deadline:
+                    connection = product._connection(read_only=True)
+                    try:
+                        lease_row = connection.execute(
+                            """
+                            SELECT l.enforcement_state, l.job_object_identity
+                            FROM worker_lease AS l
+                            JOIN task_attempt AS a ON a.attempt_id=l.attempt_id
+                            JOIN run AS r ON r.run_id=a.run_id
+                            WHERE r.task_id=? ORDER BY a.attempt_no DESC LIMIT 1
+                            """,
+                            (task_id,),
+                        ).fetchone()
+                    finally:
+                        connection.close()
+                    if lease_row is not None and lease_row[0] == "NOT_CONFIGURED":
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(
+                    None if lease_row is None else tuple(lease_row),
+                    ("NOT_CONFIGURED", None),
+                )
+            finally:
+                product.research_workers.shutdown_all()
+
+    def test_injected_windows_controller_subclass_cannot_mint_windows_enforcement_receipt(self) -> None:
+        class _InjectedWindowsSubclass(WindowsJobObjectController):
+            def __init__(self) -> None:
+                self._delegate = StaticJobObjectController()
+
+            def assign(self, process, grant) -> None:
+                self._delegate.assign(process, grant)
+
+            def query(self, process):
+                return self._delegate.query(process)
+
+            def release(self, process) -> None:
+                self._delegate.release(process)
+
+            def sample(self, process, scratch_root=None):
+                return self._delegate.sample(process, scratch_root)
+
+        with tempfile.TemporaryDirectory(prefix="v3-product-runtime-injected-subclass-") as directory:
+            product = ProductRuntime(
+                Path(directory),
+                research_worker_config=ProductResearchWorkerConfig(
+                    provider_mode=DETERMINISTIC_SUCCESS,
+                    job_object_controller=_InjectedWindowsSubclass(),
+                ),
+            )
+            try:
+                project = create_project(
+                    product,
+                    display_name="Injected Windows subclass enforcement",
+                    notes=None,
+                    idempotency_key="create-injected-windows-subclass-enforcement",
+                )
+                response = _facade_handler(product, "ProductEntryService.v1.submitResearch")(
+                    _request(
+                        project["project_id"],
+                        project["project_context_revision_id"],
+                        key="injected-windows-subclass-enforcement",
                     )
                 )
                 task_id = str(response["read_model"]["task_id"])

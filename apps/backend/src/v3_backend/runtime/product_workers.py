@@ -817,13 +817,19 @@ class ProductResearchWorkerManager:
         # Job Object as the Windows default, while allowing Ubuntu portability
         # CI (and explicit platform adapters) to exercise the lifecycle
         # without pretending that a Windows hard-enforcement primitive exists.
-        # Only the native Windows controller may mint a VERIFIED Windows
-        # enforcement receipt; injected adapters remain useful for bounded
-        # tests but cannot create a synthetic Job Object identity.
+        # Only the manager-created concrete native Windows controller may mint
+        # a VERIFIED Windows enforcement receipt; injected adapters (including
+        # subclasses of the native class) remain useful for bounded tests but
+        # cannot create a synthetic Job Object identity.
         self._job_controller = (
             config.job_object_controller
             if config.job_object_controller is not None
             else (WindowsJobObjectController() if os.name == "nt" else None)
+        )
+        self._native_windows_job_controller = (
+            config.job_object_controller is None
+            and os.name == "nt"
+            and type(self._job_controller) is WindowsJobObjectController
         )
         self.supervisor = WorkerSupervisor(
             governor,
@@ -1432,15 +1438,12 @@ class ProductResearchWorkerManager:
                         response.protocol_version,
                         response.resource_lease_token,
                     )
-                    if not (
-                        os.name == "nt"
-                        and isinstance(self._job_controller, WindowsJobObjectController)
-                    ):
+                    if not self._native_windows_job_controller:
                         # Ubuntu is a backend-portability target, not a
                         # shipped Product target.  Keep the durable lease
                         # honest when no native Windows controller is active;
-                        # injected adapters cannot mint a synthetic Job
-                        # Object identity.
+                        # injected adapters, including subclasses, cannot mint
+                        # a synthetic Job Object identity.
                         self._lease_persistence.set_enforcement(
                             slot.lease_id,
                             state="NOT_CONFIGURED",
