@@ -1458,6 +1458,42 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     )
                 )
 
+                active_lease_id = product.research_workers._slots[task_id].lease_id
+                connection = product._connection(read_only=True)
+                try:
+                    enforcement_before = tuple(
+                        connection.execute(
+                            """
+                            SELECT enforcement_state, job_object_identity
+                            FROM worker_lease WHERE lease_id=?
+                            """,
+                            (active_lease_id,),
+                        ).fetchone()
+                    )
+                finally:
+                    connection.close()
+                with self.assertRaises(PermissionError):
+                    product.research_workers._lease_persistence._set_enforcement(
+                        active_lease_id,
+                        _writer=object(),
+                        state="VERIFIED",
+                        job_object_identity="attacker-supplied",
+                    )
+                connection = product._connection(read_only=True)
+                try:
+                    enforcement_after = tuple(
+                        connection.execute(
+                            """
+                            SELECT enforcement_state, job_object_identity
+                            FROM worker_lease WHERE lease_id=?
+                            """,
+                            (active_lease_id,),
+                        ).fetchone()
+                    )
+                finally:
+                    connection.close()
+                self.assertEqual(enforcement_after, enforcement_before)
+
                 handlers = {}
                 for facade in build_product_facades(product):
                     handlers.update(facade.handlers())
@@ -1579,9 +1615,10 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                         process_id=os.getpid(),
                         process_identity_hash="0" * 64,
                     )
-                with self.assertRaises(KeyError):
-                    product.research_workers._lease_persistence.set_enforcement(
+                with self.assertRaises(PermissionError):
+                    product.research_workers._lease_persistence._set_enforcement(
                         lease_id,
+                        _writer=object(),
                         state="VERIFIED",
                         job_object_identity="late-write",
                     )

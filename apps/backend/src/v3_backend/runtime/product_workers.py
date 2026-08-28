@@ -788,10 +788,12 @@ class ProductResearchWorkerManager:
         self._max_active_workers = selected_limit
         self._context = multiprocessing.get_context("spawn")
         identities = _ProductIdentityAllocator(mint_v3_id)
+        enforcement_writer = object()
         lease_persistence = SQLiteLeasePersistence(
             product.database_path,
             identities.new,
             environment_profile_id=INLINE_ENVIRONMENT_PROFILE_ID,
+            _enforcement_writer=enforcement_writer,
         )
         leases = LeaseManager(lease_persistence)
         scratch_root = product.storage_root / "runtime" / "scratch"
@@ -846,6 +848,7 @@ class ProductResearchWorkerManager:
             product_terminal_owner=True,
         )
         self._lease_persistence = lease_persistence
+        self._enforcement_writer = enforcement_writer
         self._factory = factory
         self._slots: dict[str, _WorkerSlot] = {}
         self._reservations: set[str] = set()
@@ -1448,14 +1451,16 @@ class ProductResearchWorkerManager:
                         # honest when no native Windows controller is active;
                         # injected adapters, including subclasses, cannot mint
                         # a synthetic Job Object identity.
-                        self._lease_persistence.set_enforcement(
+                        self._lease_persistence._set_enforcement(
                             slot.lease_id,
+                            _writer=self._enforcement_writer,
                             state="NOT_CONFIGURED",
                             job_object_identity=None,
                         )
                     else:
-                        self._lease_persistence.set_enforcement(
+                        self._lease_persistence._set_enforcement(
                             slot.lease_id,
+                            _writer=self._enforcement_writer,
                             state="VERIFIED",
                             job_object_identity=f"job-object:{slot.process.pid}",
                         )

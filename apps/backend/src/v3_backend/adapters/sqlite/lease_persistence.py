@@ -37,12 +37,16 @@ class SQLiteLeasePersistence:
         identity_new: Callable[[str], str],
         *,
         environment_profile_id: str,
+        _enforcement_writer: object,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
+        if _enforcement_writer is None:
+            raise ValueError("_enforcement_writer is required")
         self.database_path = Path(database_path).resolve()
         self.identity_new = identity_new
         self.environment_profile_id = environment_profile_id
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self._enforcement_writer = _enforcement_writer
         self._worker_ids: dict[str, str] = {}
         self._grants: dict[str, ResourceGrant] = {}
         self._tokens: dict[str, str] = {}
@@ -384,13 +388,16 @@ class SQLiteLeasePersistence:
         finally:
             connection.close()
 
-    def set_enforcement(
+    def _set_enforcement(
         self,
         lease_id: str,
         *,
+        _writer: object,
         state: str,
         job_object_identity: str | None = None,
     ) -> None:
+        if _writer is not self._enforcement_writer:
+            raise PermissionError("resource enforcement writes are manager-owned")
         if state not in {"PENDING", "VERIFIED", "FAILED", "NOT_CONFIGURED"}:
             raise ValueError("unknown resource enforcement state")
         if state == "VERIFIED" and (
