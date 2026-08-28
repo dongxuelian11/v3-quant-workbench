@@ -831,8 +831,8 @@ class ProductResearchWorkerManager:
             else (WindowsJobObjectController() if _is_native_windows_platform() else None)
         )
         self._native_windows_job_controller = (
-            config.job_object_controller is None
-            and _is_native_windows_platform()
+            _is_native_windows_platform()
+            and config.job_object_controller is None
             and type(self._job_controller) is WindowsJobObjectController
         )
         self.supervisor = WorkerSupervisor(

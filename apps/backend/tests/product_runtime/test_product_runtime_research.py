@@ -275,7 +275,7 @@ class ProductRuntimeResearchTests(unittest.TestCase):
             with patch(
                 "v3_backend.runtime.product_workers._is_native_windows_platform",
                 return_value=True,
-            ):
+            ) as native_platform:
                 product = ProductRuntime(
                     Path(directory),
                     research_worker_config=ProductResearchWorkerConfig(
@@ -283,6 +283,7 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                         job_object_controller=_InjectedWindowsSubclass(),
                     ),
                 )
+                native_platform.assert_called_once_with()
             try:
                 project = create_project(
                     product,
