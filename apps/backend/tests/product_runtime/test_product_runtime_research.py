@@ -272,13 +272,17 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 return self._delegate.sample(process, scratch_root)
 
         with tempfile.TemporaryDirectory(prefix="v3-product-runtime-injected-subclass-") as directory:
-            product = ProductRuntime(
-                Path(directory),
-                research_worker_config=ProductResearchWorkerConfig(
-                    provider_mode=DETERMINISTIC_SUCCESS,
-                    job_object_controller=_InjectedWindowsSubclass(),
-                ),
-            )
+            with patch(
+                "v3_backend.runtime.product_workers._is_native_windows_platform",
+                return_value=True,
+            ):
+                product = ProductRuntime(
+                    Path(directory),
+                    research_worker_config=ProductResearchWorkerConfig(
+                        provider_mode=DETERMINISTIC_SUCCESS,
+                        job_object_controller=_InjectedWindowsSubclass(),
+                    ),
+                )
             try:
                 project = create_project(
                     product,

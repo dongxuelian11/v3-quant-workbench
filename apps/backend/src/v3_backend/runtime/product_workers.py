@@ -106,6 +106,10 @@ class _WorkerExitUnconfirmedError(RuntimeError):
     reason_code = "WORKER_EXIT_UNCONFIRMED"
 
 
+def _is_native_windows_platform() -> bool:
+    return os.name == "nt"
+
+
 def _worker_canonical_input(value: Any) -> dict[str, Any]:
     """Project durable input into protocol-safe, non-authoritative JSON."""
 
@@ -824,11 +828,11 @@ class ProductResearchWorkerManager:
         self._job_controller = (
             config.job_object_controller
             if config.job_object_controller is not None
-            else (WindowsJobObjectController() if os.name == "nt" else None)
+            else (WindowsJobObjectController() if _is_native_windows_platform() else None)
         )
         self._native_windows_job_controller = (
             config.job_object_controller is None
-            and os.name == "nt"
+            and _is_native_windows_platform()
             and type(self._job_controller) is WindowsJobObjectController
         )
         self.supervisor = WorkerSupervisor(
