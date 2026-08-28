@@ -840,7 +840,583 @@
       "frontend_capabilities": [
         "reconnect/event replay"
       ]
+    },
+
+    {
+      "operation_id": "TaskService.v1.getOperationReceipt",
+      "version": "1.0.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "GetOperationReceiptRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "operation_receipt_id"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "operation_receipt_id": {
+              "type": "string",
+              "description": "Durable control-operation receipt identity",
+              "pattern": "^opr_[0-9A-HJKMNP-TV-Z]{26}$"
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "GetOperationReceiptResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Bounded JSON read model; large tables are ArtifactRefs"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "receipt belongs to the requested project",
+        "receipt outcome is read from the durable control owner"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "OperationReceiptReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "operation receipt",
+        "reconnect"
+      ]
+    },
+    {
+      "operation_id": "TaskService.v1.listQueue",
+      "version": "1.0.0",
+      "kind": "QUERY",
+      "request_dto": {
+        "name": "ListQueueRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "filter",
+            "page_size"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "filter": {
+              "type": "object",
+              "description": "Explicit dispatch-state and opaque cursor filters",
+              "additionalProperties": false,
+              "properties": {
+                "states": {
+                  "type": "array",
+                  "description": "Dispatch states to include",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "HOLD",
+                      "READY",
+                      "DISPATCHED",
+                      "TERMINAL"
+                    ]
+                  }
+                },
+                "cursor": {
+                  "type": "string",
+                  "description": "Opaque queue cursor",
+                  "minLength": 1,
+                  "maxLength": 2048
+                }
+              }
+            },
+            "page_size": {
+              "type": "integer",
+              "description": "Bounded queue page size",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "ListQueueResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Bounded JSON read model; large tables are ArtifactRefs"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "ProjectContextRevision exists and is not superseded for this request",
+        "queue rows are read from the project-bound dispatch owner"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "QueuePageReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "queue",
+        "global task drawer"
+      ]
+    },
+    {
+      "operation_id": "TaskService.v1.startQueuedTask",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "StartQueuedTaskRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "task_id",
+            "expected_state_version",
+            "expected_dispatch_state_version"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "task_id": {
+              "type": "string",
+              "description": "Durable user-work identity",
+              "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_state_version": {
+              "type": "integer",
+              "description": "Optimistic Task aggregate state version",
+              "minimum": 0
+            },
+            "expected_dispatch_state_version": {
+              "type": "integer",
+              "description": "Optimistic dispatch-control state version",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "StartQueuedTaskResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Bounded JSON read model; large tables are ArtifactRefs"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "Task is QUEUED and dispatch control is HOLD",
+        "HOLD to READY uses the supplied Task and dispatch versions",
+        "worker request is rebuilt from immutable Run canonical input"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "TaskReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "queue start"
+      ]
+    },
+    {
+      "operation_id": "TaskService.v1.resumeFromCheckpoint",
+      "version": "1.0.0",
+      "kind": "COMMAND",
+      "request_dto": {
+        "name": "ResumeFromCheckpointRequestV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "project_id",
+            "project_context_revision_id",
+            "expected_api_version",
+            "task_id",
+            "checkpoint_artifact_id",
+            "compatibility_hash",
+            "expected_state_version"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Caller-generated UUIDv7; transport deduplication only",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Stable project identity",
+              "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "project_context_revision_id": {
+              "type": "string",
+              "description": "Immutable project-context revision identity",
+              "pattern": "^pcr_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "expected_api_version": {
+              "type": "string",
+              "description": "Exact ASL major.minor contract expected by caller",
+              "const": "1.0"
+            },
+            "task_id": {
+              "type": "string",
+              "description": "Durable user-work identity",
+              "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "checkpoint_artifact_id": {
+              "type": "string",
+              "description": "Content-addressed checkpoint Artifact identity",
+              "pattern": "^art_sha256_[0-9a-f]{64}$"
+            },
+            "compatibility_hash": {
+              "type": "string",
+              "description": "Exact input/code/environment/resource compatibility hash",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "expected_state_version": {
+              "type": "integer",
+              "description": "Optimistic Task aggregate state version",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "response_dto": {
+        "name": "ResumeFromCheckpointResponseV1",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "truth_state",
+            "read_model"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "Echoed request identity",
+              "format": "uuid"
+            },
+            "truth_state": {
+              "type": "string",
+              "description": "Explicit capability truth",
+              "enum": [
+                "FORMAL",
+                "DEMO",
+                "UNAVAILABLE"
+              ]
+            },
+            "read_model": {
+              "type": "object",
+              "description": "Bounded JSON read model; large tables are ArtifactRefs"
+            }
+          }
+        }
+      },
+      "idempotency": {
+        "mode": "REQUEST_ID",
+        "scope": "operation_id + project_id + idempotency_key/request_id",
+        "same_key_same_canonical_request": "return_original_outcome",
+        "same_key_different_canonical_request": "IDEMPOTENCY_CONFLICT"
+      },
+      "async_behavior": {
+        "creates_task_run": false,
+        "run_identity_inputs": [],
+        "artifact_outputs": [],
+        "cancel": "NOT_APPLICABLE",
+        "retry": "NOT_APPLICABLE",
+        "resume": "NOT_APPLICABLE",
+        "input_change": "NOT_APPLICABLE",
+        "attempt_rule": "NOT_APPLICABLE"
+      },
+      "truth_pit_preconditions": [
+        "checkpoint belongs to the active Run",
+        "input/code/environment/operation/resource compatibility is exact",
+        "resume requires a new Attempt and explicit user action"
+      ],
+      "errors": [
+        "INVALID_ARGUMENT",
+        "VERSION_MISMATCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "CAPABILITY_UNAVAILABLE",
+        "TRUTH_PRECONDITION_FAILED",
+        "PIT_UNPROVABLE",
+        "ARTIFACT_NOT_PUBLISHED",
+        "RESOURCE_REJECTED",
+        "INTERNAL_ERROR"
+      ],
+      "provenance_required": [
+        "request_actor",
+        "project_context_revision_id",
+        "operation_id",
+        "contract_version",
+        "input_object_ids",
+        "input_content_hashes",
+        "environment_profile_id",
+        "code_version"
+      ],
+      "read_models": [
+        "TaskReadModelV1"
+      ],
+      "frontend_capabilities": [
+        "resume",
+        "checkpoint"
+      ]
     }
+
   ],
   "forbidden_responsibilities": [
     "performing domain computations",

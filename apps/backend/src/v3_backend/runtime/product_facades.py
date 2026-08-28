@@ -674,6 +674,10 @@ class TaskFacade:
             "TaskService.v1.getTask": self.get_task,
             "TaskService.v1.listTasks": self.list_tasks,
             "TaskService.v1.getEvents": self.get_events,
+            "TaskService.v1.getOperationReceipt": self.get_operation_receipt,
+            "TaskService.v1.listQueue": self.list_queue,
+            "TaskService.v1.startQueuedTask": self.start_queued_task,
+            "TaskService.v1.resumeFromCheckpoint": self.resume_from_checkpoint,
             "TaskService.v1.cancelTask": self.cancel_task,
             "TaskService.v1.retryTask": self.retry_task,
         }
@@ -684,6 +688,73 @@ class TaskFacade:
         if task.project_id != str(request["project_id"]):
             raise TruthPreconditionFailedError("task belongs to a different project")
         return _response(request, _task_read_model(self.product, task_id))
+
+    def get_operation_receipt(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        return _response(
+            request,
+            self.product.read_operation_receipt(
+                project_id=str(request["project_id"]),
+                project_context_revision_id=str(
+                    request["project_context_revision_id"]
+                ),
+                operation_receipt_id=str(request["operation_receipt_id"]),
+            ),
+        )
+
+    def list_queue(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        filter_wire = dict(request["filter"])
+        unknown = set(filter_wire) - {"states", "cursor"}
+        if unknown:
+            raise InvalidArgumentError(
+                f"queue filter fields unsupported: {sorted(unknown)}"
+            )
+        states_value = filter_wire.get("states")
+        states = (
+            ("HOLD", "READY", "DISPATCHED", "TERMINAL")
+            if states_value is None
+            else tuple(states_value)
+        )
+        cursor = filter_wire.get("cursor")
+        return _response(
+            request,
+            self.product.list_queue(
+                project_id=str(request["project_id"]),
+                project_context_revision_id=str(
+                    request["project_context_revision_id"]
+                ),
+                states=states,
+                page_size=int(request["page_size"]),
+                cursor=cursor,
+            ),
+        )
+
+    def start_queued_task(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        task_id = str(request["task_id"])
+        self.product.start_queued_task(
+            task_id=task_id,
+            project_id=str(request["project_id"]),
+            project_context_revision_id=str(
+                request["project_context_revision_id"]
+            ),
+            expected_state_version=int(request["expected_state_version"]),
+            expected_dispatch_state_version=int(
+                request["expected_dispatch_state_version"]
+            ),
+        )
+        return _response(request, _task_read_model(self.product, task_id))
+
+    def resume_from_checkpoint(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        self.product.resume_from_checkpoint(
+            task_id=str(request["task_id"]),
+            project_id=str(request["project_id"]),
+            project_context_revision_id=str(
+                request["project_context_revision_id"]
+            ),
+            checkpoint_artifact_id=str(request["checkpoint_artifact_id"]),
+            compatibility_hash=str(request["compatibility_hash"]),
+            expected_state_version=int(request["expected_state_version"]),
+        )
+        raise AssertionError("ProductRuntime.resume_from_checkpoint must not return")
 
     def list_tasks(self, request: Mapping[str, Any]) -> dict[str, Any]:
         project_id = str(request["project_id"])

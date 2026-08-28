@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
@@ -37,6 +38,7 @@ from v3_backend.domain.tasks.state_machine import (
     TaskTransitionContext,
     transition_task,
 )
+from v3_backend.control_plane.resource_governor import load_resource_policy
 from v3_backend.errors.exceptions import (
     CapabilityUnavailableError,
     ConflictError,
@@ -63,6 +65,7 @@ from .product_publication import (
 from .product_runtime import (
     BACKTEST_RUN_RESULT_ROLE,
     BACKTEST_RUN_SPEC_ROLE,
+    INLINE_ENVIRONMENT_PROFILE_ID,
     LEDGER_MANIFEST_ROLE,
     ProductRuntime,
     _TASK_EVENT_VERSION,
@@ -355,7 +358,11 @@ class ProductResearchBacktestService:
                 """
                 SELECT l.lease_id,l.attempt_id,l.worker_id,l.cpu_slots,
                        l.memory_limit_bytes,l.gpu_device,l.scratch_limit_bytes,
-                       l.granted_at,l.state,w.worker_kind,w.environment_profile_id
+                       l.granted_at,l.state,w.worker_kind,w.environment_profile_id,
+                       l.resource_policy_version,l.resource_class,l.resource_preset,
+                       l.host_snapshot_hash,l.resolved_resource_json,
+                       l.resolved_resource_hash,l.job_cpu_rate_per_10000,
+                       l.runtime_generation_id,l.enforcement_state
                 FROM worker_lease AS l
                 JOIN worker AS w ON w.worker_id=l.worker_id
                 WHERE l.attempt_id=?
@@ -369,12 +376,55 @@ class ProductResearchBacktestService:
                 "Backtest resource admission lease is unavailable"
             )
         row = rows[0]
+        try:
+            resolved = json.loads(str(row[15]))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise TruthPreconditionFailedError(
+                "Backtest resource admission resolution is invalid"
+            ) from error
+        policy = load_resource_policy()
+        minimum = policy.minimum_admission
+        allowed_enforcement_states = {"VERIFIED"}
+        if os.name != "nt":
+            # Ubuntu CI exercises backend portability only.  A portable
+            # result must retain the absence of a Windows hard-enforcement
+            # controller in its durable resource receipt.
+            allowed_enforcement_states.add("NOT_CONFIGURED")
         if (
             str(row[1]) != handles.attempt.attempt_id
             or str(row[8]) not in {"GRANTED", "RENEWED"}
-            or int(row[3]) != 1
-            or int(row[4]) != 1024 * 1024 * 1024
-            or int(row[6]) != 1024 * 1024 * 1024
+            or str(row[12]) != "PRODUCT_BACKTEST_CPU"
+            or str(row[13]) != "CONSERVATIVE"
+            or str(row[9]) != "PRODUCT_RESEARCH_PROCESS_V1"
+            or str(row[10]) != INLINE_ENVIRONMENT_PROFILE_ID
+            or int(row[3]) < int(minimum["cpu_slots"])
+            or int(row[4]) < int(minimum["memory_bytes"])
+            or int(row[6]) < int(minimum["scratch_bytes"])
+            or not isinstance(resolved, dict)
+            or set(resolved)
+            != {
+                "host_snapshot_hash",
+                "job_cpu_rate_per_10000",
+                "logical_cpu_count",
+                "policy_hash",
+                "policy_version",
+                "preset",
+                "resolved_cpu_slots",
+                "resolved_memory_bytes",
+                "resolved_scratch_bytes",
+            }
+            or resolved["policy_version"] != str(row[11])
+            or resolved["policy_hash"] != policy.content_hash
+            or resolved["preset"] != str(row[13])
+            or resolved["host_snapshot_hash"] != str(row[14])
+            or resolved["resolved_cpu_slots"] != int(row[3])
+            or resolved["resolved_memory_bytes"] != int(row[4])
+            or resolved["resolved_scratch_bytes"] != int(row[6])
+            or resolved["job_cpu_rate_per_10000"] != int(row[17])
+            or canonical_sha256(resolved) != str(row[16])
+            or not isinstance(row[18], str)
+            or not row[18]
+            or str(row[19]) not in allowed_enforcement_states
         ):
             raise TruthPreconditionFailedError(
                 "Backtest resource admission lease drifted"
@@ -395,6 +445,15 @@ class ProductResearchBacktestService:
             "granted_at": str(row[7]),
             "worker_kind": str(row[9]),
             "environment_profile_id": str(row[10]),
+            "resource_policy_version": str(row[11]),
+            "resource_class": str(row[12]),
+            "resource_preset": str(row[13]),
+            "host_snapshot_hash": str(row[14]),
+            "resolved_resource_json": resolved,
+            "resolved_resource_hash": str(row[16]),
+            "job_cpu_rate_per_10000": int(row[17]),
+            "runtime_generation_id": str(row[18]),
+            "enforcement_state": str(row[19]),
             "checkpoint_resume": "UNAVAILABLE",
         }
         digest = canonical_sha256(receipt)
@@ -674,6 +733,7 @@ class ProductResearchBacktestService:
         run_id: str,
         request: _PreparedBacktestRequest,
         *,
+        operation_receipt_id: str | None = None,
         event_cursor: int | None = None,
     ) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -687,6 +747,8 @@ class ProductResearchBacktestService:
             "retry": "NEW_ATTEMPT_SAME_RUN_FROM_START",
             "research_backtest_request_id": request.research_backtest_request_id,
         }
+        if operation_receipt_id is not None:
+            value["operation_receipt_id"] = operation_receipt_id
         if event_cursor is not None:
             value["event_cursor"] = event_cursor
         return value
@@ -705,6 +767,7 @@ class ProductResearchBacktestService:
                 "execution_state": "QUEUED_BEFORE_OWNER_RESOLUTION",
             },
             provenance="prv_product_backtest_intent_" + request.request_hash,
+            deadline_at=request.execution_deadline_at,
         )
         return _BacktestTaskHandles(
             *self.product.execution._create_task(
@@ -713,6 +776,11 @@ class ProductResearchBacktestService:
                 project_context_revision_id=request.project_context_revision_id,
                 normalized_input_hash=canonical_sha256(request.semantic),
                 context_artifact_id=context_artifact_id,
+                canonical_input={
+                    "semantic_request": dict(request.semantic),
+                    "request_hash": request.request_hash,
+                    "scope": request.scope,
+                },
                 idempotency=(request.scope, request.request_hash, _accept_outcome_json),
                 execution_deadline_at=request.execution_deadline_at,
                 inline_worker=False,
@@ -728,8 +796,12 @@ class ProductResearchBacktestService:
             self.product, request.scope, request.request_hash
         )
         if existing is not None:
+            task_id = str(existing["task_id"])
             return self._accepted_outcome(
-                str(existing["task_id"]), str(existing["run_id"]), request
+                task_id,
+                str(existing["run_id"]),
+                request,
+                operation_receipt_id=self.product.execution.operation_receipt_id_for_task(task_id),
             )
         self._lightweight_preflight(request)
         workers = getattr(self.product, "product_workers", None)
@@ -752,7 +824,9 @@ class ProductResearchBacktestService:
             )
         except Exception as error:
             workers.release_capacity(reservation)
-            if handles is not None:
+            if handles is not None and not getattr(
+                error, "defer_task_finalization", False
+            ):
                 self.product.execution._finish_failure(
                     handles.task,
                     handles.run,
@@ -765,6 +839,9 @@ class ProductResearchBacktestService:
             handles.task.task_id,
             handles.run.run_id,
             request,
+            operation_receipt_id=self.product.execution.operation_receipt_id_for_task(
+                handles.task.task_id
+            ),
             event_cursor=self.product.latest_event_sequence(request.project_id),
         )
 
@@ -920,6 +997,29 @@ class ProductResearchBacktestService:
                 idempotency_key=f"retry:{task_id}:{latest.ordinal + 1}",
             )
         )
+        try:
+            execution_context = self.product.progress_persistence.execution_context_for_attempt(
+                latest.attempt_id
+            )
+            durable_input = execution_context.get("canonical_input")
+            if not isinstance(durable_input, dict):
+                raise ValueError("durable Run canonical input is not an object")
+            durable_semantic = durable_input.get("semantic_request")
+            durable_request_hash = durable_input.get("request_hash")
+            durable_scope = durable_input.get("scope")
+            if (
+                durable_semantic != replay.semantic
+                or durable_request_hash != replay.request_hash
+                or not isinstance(durable_scope, str)
+                or not durable_scope
+                or len(durable_scope) > 512
+            ):
+                raise ValueError("durable Run canonical input does not match retry")
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            raise TruthPreconditionFailedError(
+                "Product Backtest retry canonical input is not durable"
+            ) from error
+        replay = replace(replay, scope=durable_scope)
         if (
             canonical_sha256(replay.semantic) != run.identity.normalized_input_hash
             or replay.research_backtest_request_id
@@ -994,7 +1094,9 @@ class ProductResearchBacktestService:
             )
         except Exception as error:
             workers.release_capacity(reservation)
-            if handles is not None:
+            if handles is not None and not getattr(
+                error, "defer_task_finalization", False
+            ):
                 self.product.execution._finish_failure(
                     handles.task,
                     handles.run,

@@ -16,7 +16,7 @@ from v3_backend.migrations import (
     discover_migrations,
 )
 from v3_backend.migrations.runner import _apply_one
-from v3_backend.migrations.validator import SchemaValidationError
+from v3_backend.migrations.validator import SchemaValidationError, validate_schema
 
 
 class MigrationTests(unittest.TestCase):
@@ -34,10 +34,11 @@ class MigrationTests(unittest.TestCase):
                     "0005_task_execution_deadline",
                     "0006_catalog_upgrade_session_integrity",
                     "0007_artifact_promotion_gc",
+                    "0008_runtime_execution_truth",
                 ),
             )
-            self.assertEqual(result.schema_report.table_count, 82)
-            self.assertEqual(result.schema_report.user_version, 7)
+            self.assertEqual(result.schema_report.table_count, 86)
+            self.assertEqual(result.schema_report.user_version, 8)
             connection = connect_catalog(path)
             try:
                 tables = {
@@ -107,6 +108,12 @@ class MigrationTests(unittest.TestCase):
                         "idx_runspec_reference_cursor",
                         "idx_task_output_artifact",
                         "idx_publication_intent_recovery",
+                    }.issubset(indexes)
+                )
+                self.assertTrue(
+                    {
+                        "idx_checkpoint_artifact_latest",
+                        "idx_control_receipt_attempt",
                     }.issubset(indexes)
                 )
                 now = "2026-08-23T00:00:00Z"
@@ -217,6 +224,44 @@ class MigrationTests(unittest.TestCase):
                 connection.close()
             with self.assertRaises(SchemaValidationError):
                 apply_migrations(path, application_version="index-drift")
+
+    def test_validator_rejects_non_applied_or_checksum_drifted_migration_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.sqlite3"
+            apply_migrations(path, application_version="test")
+            connection = connect_catalog(path)
+            try:
+                connection.execute(
+                    "UPDATE schema_migration SET state='ROLLED_BACK' WHERE migration_id=?",
+                    ("0008_runtime_execution_truth",),
+                )
+                with self.assertRaises(SchemaValidationError):
+                    validate_schema(connection)
+            finally:
+                connection.close()
+
+            connection = connect_catalog(path)
+            try:
+                connection.execute(
+                    "UPDATE schema_migration SET state='APPLIED', checksum_sha256=? WHERE migration_id=?",
+                    ("0" * 64, "0008_runtime_execution_truth"),
+                )
+                with self.assertRaises(SchemaValidationError):
+                    validate_schema(connection)
+            finally:
+                connection.close()
+
+    def test_validator_rejects_missing_pr03_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.sqlite3"
+            apply_migrations(path, application_version="test")
+            connection = connect_catalog(path)
+            try:
+                connection.execute("DROP INDEX idx_task_dispatch_ready")
+                with self.assertRaises(SchemaValidationError):
+                    validate_schema(connection)
+            finally:
+                connection.close()
 
     def test_migration_is_idempotent_and_checksum_locked(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -380,10 +425,11 @@ class MigrationTests(unittest.TestCase):
                     "0005_task_execution_deadline",
                     "0006_catalog_upgrade_session_integrity",
                     "0007_artifact_promotion_gc",
+                    "0008_runtime_execution_truth",
                 ),
             )
-            self.assertEqual(len(upgraded.backups), 6)
-            self.assertEqual(upgraded.schema_report.user_version, 7)
+            self.assertEqual(len(upgraded.backups), 7)
+            self.assertEqual(upgraded.schema_report.user_version, 8)
             connection = connect_catalog(path)
             try:
                 self.assertIsNone(
@@ -440,7 +486,8 @@ class MigrationTests(unittest.TestCase):
                     "0005_task_execution_deadline",
                     "0006_catalog_upgrade_session_integrity",
                     "0007_artifact_promotion_gc",
+                    "0008_runtime_execution_truth",
                 ),
             )
-            self.assertEqual(upgraded.schema_report.user_version, 7)
-            self.assertEqual(len(upgraded.backups), 4)
+            self.assertEqual(upgraded.schema_report.user_version, 8)
+            self.assertEqual(len(upgraded.backups), 5)

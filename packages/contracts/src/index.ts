@@ -271,6 +271,154 @@ export interface ProductTasksListView {
   readonly nextCursor: string | null;
 }
 
+export type ProductJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly ProductJsonValue[]
+  | { readonly [key: string]: ProductJsonValue };
+
+export type ProductTaskControlDispatchState = "HOLD" | "READY" | "DISPATCHED" | "TERMINAL";
+
+export type ProductOperationReceiptState =
+  | "ACCEPTED"
+  | "RUNNING"
+  | "PRE_COMMIT_ABORTED"
+  | "COMMITTED"
+  | "SUCCEEDED"
+  | "FAILED";
+
+export interface ProductOperationReceiptView {
+  readonly readModelVersion: "v3.operation-receipt/1.0";
+  readonly operationReceiptId: string;
+  readonly correlationId: string;
+  readonly operationId: string;
+  readonly projectId: string;
+  readonly taskId: string | null;
+  readonly runId: string | null;
+  readonly attemptId: string | null;
+  readonly deadlineAt: string;
+  readonly runtimeGenerationId: string | null;
+  readonly state: ProductOperationReceiptState;
+  readonly commitBoundaryAt: string | null;
+  readonly outcome: ProductJsonValue | null;
+  readonly outcomeArtifactId: string | null;
+  readonly errorCode: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly terminalAt: string | null;
+  readonly stateVersion: number;
+}
+
+export type ProductTaskControlTaskState =
+  | "QUEUED"
+  | "RUNNING"
+  | "PAUSE_REQUESTED"
+  | "PAUSED"
+  | "CANCEL_REQUESTED"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "CANCELLED"
+  | "PARTIAL";
+
+export type ProductTaskControlAttemptState =
+  | "QUEUED"
+  | "LEASED"
+  | "STARTING"
+  | "RUNNING"
+  | "CHECKPOINTING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "CANCELLED"
+  | "LOST";
+
+export type ProductTaskControlProgressPhase =
+  | "DISPATCHED"
+  | "EXECUTING"
+  | "PUBLISHED"
+  | "ACQUIRING"
+  | "VALIDATING"
+  | "COMPUTING"
+  | "PUBLISHING"
+  | "RECONCILING";
+
+export interface ProductQueueProgressView {
+  readonly sequence: number;
+  readonly phase: ProductTaskControlProgressPhase;
+  readonly completedUnits: number;
+  readonly totalUnits: number;
+  readonly workUnit: string;
+  readonly occurredAt: string;
+}
+
+export interface ProductQueueItemView {
+  readonly taskId: string;
+  readonly operationId: string;
+  readonly taskState: ProductTaskControlTaskState;
+  readonly taskStateVersion: number;
+  readonly dispatchState: ProductTaskControlDispatchState;
+  readonly dispatchStateVersion: number;
+  readonly holdReason: string | null;
+  readonly userConfirmedAt: string | null;
+  readonly runId: string | null;
+  readonly attemptId: string | null;
+  readonly attemptState: ProductTaskControlAttemptState | null;
+  readonly executionDeadlineAt: string | null;
+  readonly progress: ProductQueueProgressView | null;
+  readonly updatedAt: string;
+}
+
+export interface ProductQueuePageRequest {
+  readonly states?: readonly ProductTaskControlDispatchState[];
+  readonly cursor?: string;
+  readonly pageSize?: number;
+}
+
+export interface ProductQueuePageView {
+  readonly readModelVersion: "v3.task-queue-page/1.0";
+  readonly projectId: string;
+  readonly projectContextRevisionId: string;
+  readonly states: readonly ProductTaskControlDispatchState[];
+  readonly items: readonly ProductQueueItemView[];
+  readonly pageSize: number;
+  readonly truncated: boolean;
+  readonly hasMore: boolean;
+  readonly nextCursor: string | null;
+}
+
+export interface ProductStartQueuedTaskRequest {
+  readonly taskId: string;
+  readonly expectedStateVersion: number;
+  readonly expectedDispatchStateVersion: number;
+}
+
+export interface ProductResumeFromCheckpointRequest {
+  readonly taskId: string;
+  readonly checkpointArtifactId: string;
+  readonly compatibilityHash: string;
+  readonly expectedStateVersion: number;
+}
+
+export interface ProductCancelTaskRequest {
+  readonly taskId: string;
+  readonly expectedStateVersion: number;
+  readonly reason: string;
+}
+
+/**
+ * Main-process TaskControl surface for PR03.  It is separate from the
+ * renderer-facing ProductRuntime bridge until PR05 wires the UI/preload
+ * surface.  Each member still maps to one frozen TaskService operation.
+ */
+export interface V3ProductRuntimeTaskControlBridge {
+  getOperationReceipt(operationReceiptId: string): Promise<ProductOperationReceiptView>;
+  listQueue(request?: ProductQueuePageRequest): Promise<ProductQueuePageView>;
+  startQueuedTask(request: ProductStartQueuedTaskRequest): Promise<ProductTaskView>;
+  resumeFromCheckpoint(request: ProductResumeFromCheckpointRequest): Promise<ProductTaskView>;
+  cancelTask(request: ProductCancelTaskRequest): Promise<ProductTaskView>;
+}
+
 export interface ProductTaskView {
   readonly readModelVersion: "v3.task/1.0";
   readonly taskId: string;
@@ -512,6 +660,7 @@ export interface ProductResearchSubmitOutcomeView {
   readonly truthState: "DEMO";
   readonly taskId: string;
   readonly runId: string;
+  readonly operationReceiptId?: string;
   readonly acceptedState: "QUEUED";
   readonly idempotentReplay: boolean;
   readonly maturity: "PRODUCT_CONNECTED_CANDIDATE";
@@ -545,6 +694,7 @@ export interface ProductLocalDataImportIntent {
 export interface ProductLocalDataImportOutcomeView {
   readonly taskId: string;
   readonly runId: string;
+  readonly operationReceiptId?: string;
   readonly acceptedState: "QUEUED";
   readonly maturity: "PRODUCT_CONNECTED";
   readonly truth: "NOT_FORMAL";
@@ -563,6 +713,7 @@ export interface ProductFactorStudyIntent {
 export interface ProductFactorStudyOutcomeView {
   readonly taskId: string;
   readonly runId: string;
+  readonly operationReceiptId?: string;
   readonly acceptedState: "QUEUED";
   readonly maturity: "PRODUCT_CONNECTED";
   readonly truth: "NOT_FORMAL";
@@ -821,6 +972,7 @@ export interface ProductResearchStrategyIntent {
 export interface ProductResearchStrategyOutcomeView {
   readonly taskId: string;
   readonly runId: string;
+  readonly operationReceiptId?: string;
   readonly acceptedState: "QUEUED";
   readonly maturity: "PRODUCT_CONNECTED";
   readonly truth: "NOT_FORMAL";
@@ -861,6 +1013,7 @@ export interface ProductResearchBacktestIntent {
 export interface ProductResearchBacktestOutcomeView {
   readonly taskId: string;
   readonly runId: string;
+  readonly operationReceiptId?: string;
   readonly acceptedState: "QUEUED";
   readonly maturity: "PRODUCT_CONNECTED";
   readonly truth: "NOT_FORMAL";

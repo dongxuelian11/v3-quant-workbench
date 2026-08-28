@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -63,6 +63,25 @@ def _operation_service(operation_id: str) -> str:
     if not separator or not service:
         raise ValueError("operation_id must identify a frozen service operation")
     return service
+
+
+def _validate_strict_json(value: object, *, name: str) -> None:
+    """Reject values that ``json.dumps`` would silently coerce."""
+
+    if isinstance(value, tuple):
+        raise ValueError(f"{name} must use JSON arrays, not tuples")
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError(f"{name} object keys must be non-empty strings")
+            _validate_strict_json(child, name=name)
+    elif isinstance(value, list):
+        for child in value:
+            _validate_strict_json(child, name=name)
+    try:
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be strict JSON") from error
 
 
 class SQLiteTaskPersistence:
@@ -180,25 +199,65 @@ class SQLiteTaskUnitOfWork:
                     "required_terminal_state": "TERMINAL_ANY",
                 }
             )
+        # PR03 keeps dispatch control in a supplemental table so the frozen
+        # Task aggregate remains unchanged.  INSERT OR IGNORE makes this
+        # compatible with callers that already created the control row in the
+        # surrounding transaction.
+        if self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_dispatch_control'"
+        ).fetchone() is not None:
+            self.connection.execute(
+                """
+                INSERT INTO task_dispatch_control(task_id,state,hold_reason,state_version,updated_at)
+                VALUES(?, 'HOLD', 'ACCEPTED_NOT_STARTED', 0, ?)
+                ON CONFLICT(task_id) DO NOTHING
+                """,
+                (task.task_id, now),
+            )
         self.trace.append("aggregate_mutated")
 
-    def add_run(self, run: Run) -> None:
+    def add_run(
+        self,
+        run: Run,
+        *,
+        canonical_input: Mapping[str, object] | None = None,
+    ) -> None:
         run_no = int(
             self.connection.execute(
                 "SELECT COALESCE(MAX(run_no),0)+1 FROM run WHERE task_id=?", (run.task_id,)
             ).fetchone()[0]
         )
         identity = run.identity
+        durable_input: dict[str, object] = {
+            "normalized_input_hash": identity.normalized_input_hash,
+            "service_contract_version": identity.service_contract_version,
+        }
+        if canonical_input is not None:
+            for key, value in canonical_input.items():
+                if not isinstance(key, str) or not key:
+                    raise ValueError("canonical_input keys must be non-empty strings")
+                if key in durable_input and durable_input[key] != value:
+                    raise ValueError(f"canonical_input cannot override durable Run field: {key}")
+                durable_input[key] = value
+        _validate_strict_json(durable_input, name="canonical_input")
+        try:
+            canonical_input_json = json.dumps(
+                durable_input,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("canonical_input must be strict JSON") from error
+        if len(canonical_input_json.encode("utf-8")) > 65536:
+            raise ValueError("canonical_input exceeds the Catalog bound")
         self.registry.task.table("run").add_new(
             {
                 "run_id": run.run_id,
                 "task_id": run.task_id,
                 "run_no": run_no,
                 "project_context_revision_id": identity.project_context_revision_id,
-                "canonical_input_json": {
-                    "normalized_input_hash": identity.normalized_input_hash,
-                    "service_contract_version": identity.service_contract_version,
-                },
+                "canonical_input_json": canonical_input_json,
                 "input_hash": identity.normalized_input_hash,
                 "code_version": identity.code_version,
                 "environment_profile_id": identity.environment_profile,
@@ -322,6 +381,44 @@ class SQLiteTaskUnitOfWork:
             },
             expected_version=expected_version,
         )
+        if (
+            task.state.value in _TASK_TERMINAL
+            and self.connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_dispatch_control'"
+            ).fetchone()
+            is not None
+        ):
+            self.connection.execute(
+                """
+                UPDATE task_dispatch_control
+                SET state='TERMINAL', hold_reason=NULL,
+                    user_confirmed_at=NULL,
+                    state_version=state_version+1, updated_at=?
+                WHERE task_id=? AND state<>'TERMINAL'
+                """,
+                (now, task.task_id),
+            )
+        elif (
+            task.state.value == "QUEUED"
+            and self.connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_dispatch_control'"
+            ).fetchone()
+            is not None
+        ):
+            # Retry/resume creates a fresh Attempt on the same immutable Run.
+            # A previous terminal Task must therefore reopen only as a HOLD;
+            # dispatch is a separate, explicit CAS and is never inherited from
+            # the old Attempt.
+            self.connection.execute(
+                """
+                UPDATE task_dispatch_control
+                SET state='HOLD', hold_reason='RETRY_OR_RESUME_SCHEDULED',
+                    user_confirmed_at=NULL,
+                    state_version=state_version+1, updated_at=?
+                WHERE task_id=? AND state='TERMINAL'
+                """,
+                (now, task.task_id),
+            )
         task.state_version = expected_version + 1
         self.trace.append("aggregate_mutated")
 
@@ -358,7 +455,11 @@ class SQLiteTaskUnitOfWork:
                 attempt.lease_id,
                 attempt.resume_checkpoint_artifact_id,
                 attempt.terminal_error_category,
-                _wire_time(self.clock()) if attempt.state is not AttemptState.QUEUED else None,
+                (
+                    _wire_time(self.clock())
+                    if attempt.state in {AttemptState.RUNNING, AttemptState.CHECKPOINTING}
+                    else None
+                ),
                 _wire_time(self.clock()) if attempt.state in ATTEMPT_TERMINAL_STATES else None,
                 attempt.attempt_id,
                 current["state"],

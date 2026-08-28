@@ -31,6 +31,21 @@ import type {
   ProductResearchSubmitOutcomeView,
   ProductBindingRefs,
   ProductCapabilityView,
+  ProductCancelTaskRequest,
+  ProductJsonValue,
+  ProductOperationReceiptState,
+  ProductOperationReceiptView,
+  ProductQueueItemView,
+  ProductQueuePageRequest,
+  ProductQueuePageView,
+  ProductQueueProgressView,
+  ProductTaskControlAttemptState,
+  ProductTaskControlDispatchState,
+  ProductTaskControlProgressPhase,
+  ProductTaskControlTaskState,
+  ProductResumeFromCheckpointRequest,
+  ProductStartQueuedTaskRequest,
+  V3ProductRuntimeTaskControlBridge,
   ProductResultView,
   ProductStatusView,
   ProductTaskEventsView,
@@ -53,7 +68,7 @@ import {
   adaptBacktestSubmit,
   adaptCapabilities,
   adaptProjectContext,
-  adaptResearchSubmit,
+  adaptResearchSubmit as adaptLegacyResearchSubmit,
   adaptResult,
   adaptSessionRestore,
   adaptStreamTicket,
@@ -93,6 +108,7 @@ const PROJECT_ID_PATTERN = /^prj_[0-9A-HJKMNP-TV-Z]{26}$/;
 const PROJECT_CONTEXT_REVISION_PATTERN = /^pcr_[0-9A-HJKMNP-TV-Z]{26}$/;
 const TASK_ID_PATTERN = /^tsk_[0-9A-HJKMNP-TV-Z]{26}$/;
 const RUN_ID_PATTERN = /^run_[0-9A-HJKMNP-TV-Z]{26}$/;
+const OPERATION_RECEIPT_ID_PATTERN = /^opr_[0-9A-HJKMNP-TV-Z]{26}$/;
 const CANONICAL_ID_PATTERN = /^[A-Za-z0-9_\-]{1,200}$/;
 const PROJECT_LOCATOR_PREFIX = "v3:";
 const PRODUCT_ENTRY_PROTOCOL_VERSION = "v3.product-entry/1.0.0";
@@ -106,6 +122,7 @@ const RESEARCH_SYMBOL_PATTERN = /^[0-9]{6}$/;
 const RESEARCH_DATE_PATTERN = /^[0-9]{8}$/;
 const DEFAULT_PRODUCT_PAGE_SIZE = 50;
 const MAX_PRODUCT_PAGE_SIZE = 100;
+const MAX_QUEUE_PAGE_SIZE = 200;
 const PRODUCT_CURSOR_VERSION = 1;
 const PROJECT_CURSOR_SORT = "project_id ASC";
 const RUN_SPEC_CURSOR_SORT = "artifact_id ASC";
@@ -117,6 +134,14 @@ const RETRYABLE_PRODUCT_TASK_CATEGORIES = new Set([
   "RETRYABLE_ADAPTER",
   "WORKER_OOM"
 ]);
+
+function optionalOperationReceiptId(value: unknown, operation: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !OPERATION_RECEIPT_ID_PATTERN.test(value)) {
+    throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", `${operation} returned an invalid operation receipt identity`);
+  }
+  return value;
+}
 
 type SessionRestoreWithCanonicalIdentity = SessionRestoreView & {
   readonly canonicalSessionUuid: string;
@@ -290,7 +315,7 @@ function adaptLocalDataImportOutcome(response: unknown): ProductLocalDataImportO
     "accepted_state", "admission", "checkpoint_resume", "maturity", "read_model_version",
     "retry", "run_id", "source_artifact_id", "task_id", "truth"
   ];
-  const allowed = new Set([...required, "event_cursor"]);
+  const allowed = new Set([...required, "event_cursor", "operation_receipt_id"]);
   if (required.some((key) => !(key in readModel)) || Object.keys(readModel).some((key) => !allowed.has(key))) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "local-data import read_model fields do not match the closed shape");
   }
@@ -314,6 +339,7 @@ function adaptLocalDataImportOutcome(response: unknown): ProductLocalDataImportO
   if (readModel.event_cursor !== undefined && (!Number.isSafeInteger(readModel.event_cursor) || Number(readModel.event_cursor) < 0)) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "local-data import event_cursor is invalid");
   }
+  const operationReceiptId = optionalOperationReceiptId(readModel.operation_receipt_id, "local-data import");
   return Object.freeze({
     taskId: readModel.task_id,
     runId: readModel.run_id,
@@ -324,6 +350,7 @@ function adaptLocalDataImportOutcome(response: unknown): ProductLocalDataImportO
     checkpointResume: "UNAVAILABLE",
     retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
     sourceArtifactId: readModel.source_artifact_id,
+    ...(operationReceiptId === undefined ? {} : { operationReceiptId }),
     ...(readModel.event_cursor === undefined ? {} : { eventCursor: Number(readModel.event_cursor) })
   });
 }
@@ -358,7 +385,7 @@ function adaptFactorStudyOutcome(response: unknown): ProductFactorStudyOutcomeVi
     "formula_document_version_id", "maturity", "read_model_version", "retry",
     "run_id", "task_id", "truth"
   ];
-  const allowed = new Set([...required, "event_cursor"]);
+  const allowed = new Set([...required, "event_cursor", "operation_receipt_id"]);
   if (required.some((key) => !(key in model)) || Object.keys(model).some((key) => !allowed.has(key))) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor study acceptance fields do not match the closed shape");
   }
@@ -378,6 +405,7 @@ function adaptFactorStudyOutcome(response: unknown): ProductFactorStudyOutcomeVi
   ) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "Factor study acceptance identity or truth is invalid");
   }
+  const operationReceiptId = optionalOperationReceiptId(model.operation_receipt_id, "Factor study");
   return Object.freeze({
     taskId: model.task_id,
     runId: model.run_id,
@@ -389,6 +417,7 @@ function adaptFactorStudyOutcome(response: unknown): ProductFactorStudyOutcomeVi
     retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
     formulaDocumentVersionId: model.formula_document_version_id,
     analysisOutputName: model.analysis_output_name,
+    ...(operationReceiptId === undefined ? {} : { operationReceiptId }),
     ...(model.event_cursor === undefined ? {} : { eventCursor: Number(model.event_cursor) })
   });
 }
@@ -456,7 +485,7 @@ function adaptQueuedC3Outcome(
     "accepted_state", "admission", "checkpoint_resume", identityKey, "maturity",
     "read_model_version", "retry", "run_id", "task_id", "truth"
   ];
-  const allowed = new Set([...required, "event_cursor"]);
+  const allowed = new Set([...required, "event_cursor", "operation_receipt_id"]);
   if (
     required.some((key) => !(key in model)) || Object.keys(model).some((key) => !allowed.has(key))
     || model.read_model_version !== schemaVersion || model.accepted_state !== "QUEUED"
@@ -469,16 +498,19 @@ function adaptQueuedC3Outcome(
   ) {
     throw new ProductAdapterError("PRODUCT_BRIDGE_ERROR", "product C3 submission identity or truth drifted");
   }
+  optionalOperationReceiptId(model.operation_receipt_id, "product C3 submission");
   return model;
 }
 
 function adaptResearchStrategyOutcome(response: unknown): ProductResearchStrategyOutcomeView {
   const model = adaptQueuedC3Outcome(response, "v3.product-entry-research-strategy/1.1", "research_strategy_spec_id");
+  const operationReceiptId = optionalOperationReceiptId(model.operation_receipt_id, "Strategy submission");
   return Object.freeze({
     taskId: model.task_id as string, runId: model.run_id as string, acceptedState: "QUEUED",
     maturity: "PRODUCT_CONNECTED", truth: "NOT_FORMAL", admission: "PRE_ALPHA",
     checkpointResume: "UNAVAILABLE", retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
     researchStrategySpecId: model.research_strategy_spec_id as string,
+    ...(operationReceiptId === undefined ? {} : { operationReceiptId }),
     ...(model.event_cursor === undefined ? {} : { eventCursor: Number(model.event_cursor) })
   });
 }
@@ -536,11 +568,13 @@ function adaptResearchStrategyPreview(response: unknown): ProductResearchStrateg
 
 function adaptResearchBacktestOutcome(response: unknown): ProductResearchBacktestOutcomeView {
   const model = adaptQueuedC3Outcome(response, "v3.product-entry-research-backtest/1.1", "research_backtest_request_id");
+  const operationReceiptId = optionalOperationReceiptId(model.operation_receipt_id, "Backtest submission");
   return Object.freeze({
     taskId: model.task_id as string, runId: model.run_id as string, acceptedState: "QUEUED",
     maturity: "PRODUCT_CONNECTED", truth: "NOT_FORMAL", admission: "PRE_ALPHA",
     checkpointResume: "UNAVAILABLE", retry: "NEW_ATTEMPT_SAME_RUN_FROM_START",
     researchBacktestRequestId: model.research_backtest_request_id as string,
+    ...(operationReceiptId === undefined ? {} : { operationReceiptId }),
     ...(model.event_cursor === undefined ? {} : { eventCursor: Number(model.event_cursor) })
   });
 }
@@ -1093,6 +1127,290 @@ function closedRecordOneOf(value: unknown, shapes: readonly (readonly string[])[
     throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} fields do not match an admitted closed shape`);
   }
   return record;
+}
+
+const DURABLE_TASK_PROGRESS_KEYS = "completed_units,counters,phase,sequence,total_units,work_unit";
+const RAW_PROGRESS_COUNTER_KEY = /(?:path|database|sqlite|duckdb|parquet|executable|working.?directory|cwd)/i;
+const RENDERER_TASK_PROGRESS_PHASES = new Set([
+  "ACQUIRING",
+  "VALIDATING",
+  "COMPUTING",
+  "PUBLISHING",
+  "RECONCILING"
+]);
+const CONTROL_ONLY_TASK_PROGRESS_PHASES = new Set([
+  "DISPATCHED",
+  "EXECUTING",
+  "PUBLISHED"
+]);
+
+function projectDurableTaskProgressEvents(raw: unknown): unknown {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const response = raw as Record<string, unknown>;
+  const readModelValue = response.read_model;
+  if (readModelValue === null || typeof readModelValue !== "object" || Array.isArray(readModelValue)) return raw;
+  const readModel = readModelValue as Record<string, unknown>;
+  if (!Array.isArray(readModel.items)) return raw;
+
+  let projected = false;
+  const items = readModel.items.flatMap((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return [entry];
+    const item = entry as Record<string, unknown>;
+    if (item.event_type !== "TASK_PROGRESS") return [entry];
+    const body = item.body;
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return [entry];
+    const progress = body as Record<string, unknown>;
+    if (Object.keys(progress).sort().join(",") !== DURABLE_TASK_PROGRESS_KEYS) return [entry];
+    if (
+      !Number.isSafeInteger(progress.sequence)
+      || Number(progress.sequence) < 1
+      || progress.counters === null
+      || typeof progress.counters !== "object"
+      || Array.isArray(progress.counters)
+      || Object.keys(progress.counters as Record<string, unknown>).some((key) => RAW_PROGRESS_COUNTER_KEY.test(key))
+    ) return [entry];
+    if (CONTROL_ONLY_TASK_PROGRESS_PHASES.has(String(progress.phase))) {
+      projected = true;
+      return [];
+    }
+    if (!RENDERER_TASK_PROGRESS_PHASES.has(String(progress.phase))) return [entry];
+    projected = true;
+    return [{
+      ...item,
+      body: {
+        phase: progress.phase,
+        completed_units: progress.completed_units,
+        total_units: progress.total_units,
+        work_unit: progress.work_unit
+      }
+    }];
+  });
+  if (!projected) return raw;
+  return { ...response, read_model: { ...readModel, items } };
+}
+
+const TASK_CONTROL_DISPATCH_STATES = ["HOLD", "READY", "DISPATCHED", "TERMINAL"] as const;
+const TASK_CONTROL_TASK_STATES = [
+  "QUEUED", "RUNNING", "PAUSE_REQUESTED", "PAUSED", "CANCEL_REQUESTED",
+  "SUCCEEDED", "FAILED", "CANCELLED", "PARTIAL"
+] as const;
+const TASK_CONTROL_ATTEMPT_STATES = [
+  "QUEUED", "LEASED", "STARTING", "RUNNING", "CHECKPOINTING", "SUCCEEDED",
+  "FAILED", "CANCELLED", "LOST"
+] as const;
+const TASK_CONTROL_PROGRESS_PHASES = [
+  "DISPATCHED", "EXECUTING", "PUBLISHED", "ACQUIRING", "VALIDATING", "COMPUTING",
+  "PUBLISHING", "RECONCILING"
+] as const;
+const OPERATION_RECEIPT_STATES = [
+  "ACCEPTED", "RUNNING", "PRE_COMMIT_ABORTED", "COMMITTED", "SUCCEEDED", "FAILED"
+] as const;
+const MAX_RECEIPT_JSON_DEPTH = 8;
+const MAX_RECEIPT_JSON_KEYS = 128;
+const MAX_RECEIPT_JSON_ARRAY_ITEMS = 256;
+const MAX_RECEIPT_JSON_STRING = 4096;
+
+function taskControlString(value: unknown, label: string, maxLength = 4096): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > maxLength) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} must be a bounded non-empty string`);
+  }
+  return value;
+}
+
+function taskControlNullableString(value: unknown, label: string, maxLength = 4096): string | null {
+  if (value === null) return null;
+  return taskControlString(value, label, maxLength);
+}
+
+function taskControlInteger(value: unknown, label: string, minimum = 0): number {
+  if (!Number.isSafeInteger(value) || Number(value) < minimum) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} must be a safe integer >= ${minimum}`);
+  }
+  return Number(value);
+}
+
+function taskControlTimestamp(value: unknown, label: string, nullable = false): string | null {
+  if (nullable && value === null) return null;
+  if (typeof value !== "string" || value.length > 64 || !value.endsWith("Z") || Number.isNaN(Date.parse(value))) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} must be a bounded UTC timestamp`);
+  }
+  return value;
+}
+
+function receiptJsonValue(value: unknown, label: string, depth = 0): ProductJsonValue {
+  if (depth > MAX_RECEIPT_JSON_DEPTH) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} exceeds JSON nesting bound`);
+  }
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.length > MAX_RECEIPT_JSON_STRING) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} string exceeds bound`);
+    }
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} contains a non-finite number`);
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > MAX_RECEIPT_JSON_ARRAY_ITEMS) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} array exceeds bound`);
+    }
+    return Object.freeze(value.map((entry, index) => receiptJsonValue(entry, `${label}[${index}]`, depth + 1)));
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > MAX_RECEIPT_JSON_KEYS) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} object exceeds key bound`);
+    }
+    const result: Record<string, ProductJsonValue> = {};
+    for (const [key, entry] of entries) {
+      if (key.length === 0 || key.length > 128 || ["__proto__", "constructor", "prototype"].includes(key)) {
+        throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} contains an unsafe key`);
+      }
+      result[key] = receiptJsonValue(entry, `${label}.${key}`, depth + 1);
+    }
+    return Object.freeze(result);
+  }
+  throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", `${label} contains an unsupported JSON value`);
+}
+
+function adaptOperationReceipt(response: unknown): ProductOperationReceiptView {
+  const top = closedRecord(response, ["read_model", "request_id", "truth_state"], "operation receipt response");
+  if (top.truth_state !== "FORMAL") throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "operation receipt truth state drifted");
+  const model = closedRecord(top.read_model, [
+    "attempt_id", "commit_boundary_at", "correlation_id", "created_at", "deadline_at", "error_code",
+    "operation_id", "operation_receipt_id", "outcome", "outcome_artifact_id", "project_id", "read_model_version",
+    "run_id", "runtime_generation_id", "state", "state_version", "task_id", "terminal_at", "updated_at"
+  ], "operation receipt");
+  const operationReceiptId = taskControlString(model.operation_receipt_id, "operation_receipt_id", 128);
+  if (!OPERATION_RECEIPT_ID_PATTERN.test(operationReceiptId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "operation receipt identity is invalid");
+  const operationId = taskControlString(model.operation_id, "operation_id", 200);
+  const projectId = taskControlString(model.project_id, "project_id", 128);
+  if (!PROJECT_ID_PATTERN.test(projectId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "operation receipt project identity is invalid");
+  const taskId = taskControlNullableString(model.task_id, "task_id", 128);
+  if (taskId !== null && !TASK_ID_PATTERN.test(taskId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "operation receipt task identity is invalid");
+  const runId = taskControlNullableString(model.run_id, "run_id", 128);
+  if (runId !== null && !RUN_ID_PATTERN.test(runId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "operation receipt run identity is invalid");
+  const attemptId = taskControlNullableString(model.attempt_id, "attempt_id", 128);
+  if (attemptId !== null && !/^att_[0-9A-HJKMNP-TV-Z]{26}$/.test(attemptId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "operation receipt attempt identity is invalid");
+  const runtimeGenerationId = taskControlNullableString(model.runtime_generation_id, "runtime_generation_id", 128);
+  const state = model.state;
+  if (!OPERATION_RECEIPT_STATES.includes(state as ProductOperationReceiptState)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "operation receipt state is invalid");
+  if (model.outcome !== null && (typeof model.outcome !== "object" || Array.isArray(model.outcome))) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "operation receipt outcome must be an object or null");
+  const outcome = model.outcome === null ? null : receiptJsonValue(model.outcome, "outcome");
+  const outcomeArtifactId = taskControlNullableString(model.outcome_artifact_id, "outcome_artifact_id", 128);
+  if (outcomeArtifactId !== null && !ARTIFACT_ID_PATTERN.test(outcomeArtifactId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "operation receipt outcome artifact identity is invalid");
+  return Object.freeze({
+    readModelVersion: "v3.operation-receipt/1.0",
+    operationReceiptId,
+    correlationId: taskControlString(model.correlation_id, "correlation_id", 256),
+    operationId,
+    projectId,
+    taskId,
+    runId,
+    attemptId,
+    deadlineAt: taskControlTimestamp(model.deadline_at, "deadline_at")!,
+    runtimeGenerationId,
+    state: state as ProductOperationReceiptState,
+    commitBoundaryAt: taskControlTimestamp(model.commit_boundary_at, "commit_boundary_at", true),
+    outcome,
+    outcomeArtifactId,
+    errorCode: taskControlNullableString(model.error_code, "error_code", 256),
+    createdAt: taskControlTimestamp(model.created_at, "created_at")!,
+    updatedAt: taskControlTimestamp(model.updated_at, "updated_at")!,
+    terminalAt: taskControlTimestamp(model.terminal_at, "terminal_at", true),
+    stateVersion: taskControlInteger(model.state_version, "state_version")
+  });
+}
+
+function adaptQueueProgress(value: unknown): ProductQueueProgressView {
+  const model = closedRecord(value, ["completed_units", "occurred_at", "phase", "sequence", "total_units", "work_unit"], "queue progress");
+  const completedUnits = taskControlInteger(model.completed_units, "progress.completed_units");
+  const totalUnits = taskControlInteger(model.total_units, "progress.total_units", 1);
+  if (completedUnits > totalUnits) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue progress completed units exceed total");
+  if (!TASK_CONTROL_PROGRESS_PHASES.includes(model.phase as ProductTaskControlProgressPhase)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue progress phase is invalid");
+  return Object.freeze({
+    sequence: taskControlInteger(model.sequence, "progress.sequence", 1),
+    phase: model.phase as ProductTaskControlProgressPhase,
+    completedUnits,
+    totalUnits,
+    workUnit: taskControlString(model.work_unit, "progress.work_unit", 256),
+    occurredAt: taskControlTimestamp(model.occurred_at, "progress.occurred_at")!
+  });
+}
+
+function adaptQueuePage(response: unknown): ProductQueuePageView {
+  const top = closedRecord(response, ["read_model", "request_id", "truth_state"], "queue response");
+  if (top.truth_state !== "FORMAL") throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue truth state drifted");
+  const model = closedRecord(top.read_model, [
+    "has_more", "items", "next_cursor", "page_size", "project_context_revision_id", "project_id", "read_model_version", "states", "truncated"
+  ], "queue page");
+  if (model.read_model_version !== "v3.task-queue-page/1.0") throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue page version is unsupported");
+  const projectId = taskControlString(model.project_id, "project_id", 128);
+  if (!PROJECT_ID_PATTERN.test(projectId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue project identity is invalid");
+  const projectContextRevisionId = taskControlString(model.project_context_revision_id, "project_context_revision_id", 128);
+  if (!PROJECT_CONTEXT_REVISION_PATTERN.test(projectContextRevisionId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue context revision identity is invalid");
+  if (!Array.isArray(model.states) || model.states.length === 0 || model.states.length > TASK_CONTROL_DISPATCH_STATES.length || new Set(model.states).size !== model.states.length || model.states.some((state) => !TASK_CONTROL_DISPATCH_STATES.includes(state as ProductTaskControlDispatchState))) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue state filter is invalid");
+  }
+  const canonicalStates = [...model.states].sort();
+  if (model.states.some((state, index) => state !== canonicalStates[index])) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue state filter is not canonically ordered");
+  }
+  if (!Array.isArray(model.items) || model.items.length > 200) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue items exceed the page bound");
+  const items = model.items.map((value, index) => {
+    const item = closedRecord(value, [
+      "attempt_id", "attempt_state", "dispatch_state", "dispatch_state_version", "execution_deadline_at", "hold_reason",
+      "operation_id", "progress", "run_id", "task_id", "task_state", "task_state_version", "updated_at", "user_confirmed_at"
+    ], `queue item ${index}`);
+    const taskId = taskControlString(item.task_id, "queue task_id", 128);
+    if (!TASK_ID_PATTERN.test(taskId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue task identity is invalid");
+    const runId = taskControlNullableString(item.run_id, "queue run_id", 128);
+    if (runId !== null && !RUN_ID_PATTERN.test(runId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue run identity is invalid");
+    const attemptId = taskControlNullableString(item.attempt_id, "queue attempt_id", 128);
+    if (attemptId !== null && !/^att_[0-9A-HJKMNP-TV-Z]{26}$/.test(attemptId)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue attempt identity is invalid");
+    const taskState = item.task_state;
+    const attemptState = item.attempt_state === null ? null : item.attempt_state;
+    if (!TASK_CONTROL_TASK_STATES.includes(taskState as ProductTaskControlTaskState) || (attemptState !== null && !TASK_CONTROL_ATTEMPT_STATES.includes(attemptState as ProductTaskControlAttemptState))) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue task or attempt state is invalid");
+    const dispatchState = item.dispatch_state;
+    if (!TASK_CONTROL_DISPATCH_STATES.includes(dispatchState as ProductTaskControlDispatchState)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue dispatch state is invalid");
+    const progress = item.progress === null ? null : adaptQueueProgress(item.progress);
+    return Object.freeze({
+      taskId,
+      operationId: taskControlString(item.operation_id, "queue operation_id", 256),
+      taskState: taskState as ProductTaskControlTaskState,
+      taskStateVersion: taskControlInteger(item.task_state_version, "queue task_state_version"),
+      dispatchState: dispatchState as ProductTaskControlDispatchState,
+      dispatchStateVersion: taskControlInteger(item.dispatch_state_version, "queue dispatch_state_version"),
+      holdReason: taskControlNullableString(item.hold_reason, "queue hold_reason", 512),
+      userConfirmedAt: taskControlTimestamp(item.user_confirmed_at, "queue user_confirmed_at", true),
+      runId,
+      attemptId,
+      attemptState: attemptState as ProductTaskControlAttemptState | null,
+      executionDeadlineAt: taskControlTimestamp(item.execution_deadline_at, "queue execution_deadline_at", true),
+      progress,
+      updatedAt: taskControlTimestamp(item.updated_at, "queue updated_at")!
+    } satisfies ProductQueueItemView);
+  });
+  const hasMore = model.has_more;
+  const truncated = model.truncated;
+  if (typeof hasMore !== "boolean" || typeof truncated !== "boolean" || hasMore !== truncated) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue continuation flags are inconsistent");
+  const nextCursor = taskControlNullableString(model.next_cursor, "queue next_cursor", 2048);
+  if (hasMore !== (nextCursor !== null)) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue continuation cursor is inconsistent");
+  const pageSize = taskControlInteger(model.page_size, "queue page_size", 1);
+  if (pageSize > 200 || items.length > pageSize) throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue page size is invalid");
+  return Object.freeze({
+    readModelVersion: "v3.task-queue-page/1.0",
+    projectId,
+    projectContextRevisionId,
+    states: Object.freeze(model.states as ProductTaskControlDispatchState[]),
+    items: Object.freeze(items),
+    pageSize,
+    truncated,
+    hasMore,
+    nextCursor
+  });
 }
 
 function decimalText(value: unknown, label: string): string {
@@ -2015,6 +2333,65 @@ function assertCanonicalId(value: string, name: string): void {
   }
 }
 
+function assertTaskControlObject(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+  return closedRecord(value, keys, label);
+}
+
+function assertTaskControlIdentity(value: unknown, pattern: RegExp, name: string): string {
+  if (typeof value !== "string" || !pattern.test(value)) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", `${name} is not a canonical identity`);
+  }
+  return value;
+}
+
+function assertTaskControlVersion(value: unknown, name: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new ProductAdapterError("INVALID_ARGUMENT", `${name} must be a non-negative safe integer`);
+  }
+  return Number(value);
+}
+
+function assertTaskControlResponseProject(
+  task: ProductTaskView,
+  refs: ProductBindingRefs,
+  requestedTaskId: string,
+): ProductTaskView {
+  if (task.taskId !== requestedTaskId || task.projectId !== refs.projectId) {
+    throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "TaskControl response is outside the bound project or request identity");
+  }
+  return task;
+}
+
+function adaptResearchSubmitWithReceipt(
+  response: unknown,
+  requestId: string,
+): ProductResearchSubmitOutcomeView {
+  if (response === null || typeof response !== "object" || Array.isArray(response)) {
+    return adaptLegacyResearchSubmit(response, requestId);
+  }
+  const top = response as Record<string, unknown>;
+  const readModel = top.read_model;
+  if (readModel === null || typeof readModel !== "object" || Array.isArray(readModel)) {
+    return adaptLegacyResearchSubmit(response, requestId);
+  }
+  const {
+    operation_receipt_id: rawOperationReceiptId,
+    ...legacyReadModel
+  } = readModel as Record<string, unknown>;
+  const operationReceiptId = optionalOperationReceiptId(
+    rawOperationReceiptId,
+    "research submission",
+  );
+  const adapted = adaptLegacyResearchSubmit(
+    { ...top, read_model: legacyReadModel },
+    requestId,
+  );
+  return Object.freeze({
+    ...adapted,
+    ...(operationReceiptId === undefined ? {} : { operationReceiptId }),
+  });
+}
+
 function assertTaskListFilter(filter: ProductTaskListFilter | undefined): ProductTaskListFilter {
   const candidate = filter ?? {};
   if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
@@ -2053,7 +2430,7 @@ function assertProductPageRequest(request: ProductPageRequest | undefined): Requ
   return Object.freeze({ pageSize, ...(candidate.cursor === undefined ? {} : { cursor: candidate.cursor }) });
 }
 
-export class ProductBridge {
+export class ProductBridge implements V3ProductRuntimeTaskControlBridge {
   private inflightSubmit = new Map<string, Promise<BacktestSubmitOutcomeView>>();
   private inflightResearch = new Map<string, Promise<ProductResearchSubmitOutcomeView>>();
   private inflightFactor = new Map<string, Promise<ProductFactorStudyOutcomeView>>();
@@ -2348,6 +2725,105 @@ export class ProductBridge {
     return adaptTask(response);
   }
 
+  async getOperationReceipt(operationReceiptId: string): Promise<ProductOperationReceiptView> {
+    const refs = this.requireBinding();
+    if (typeof operationReceiptId !== "string" || !OPERATION_RECEIPT_ID_PATTERN.test(operationReceiptId)) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "operationReceiptId must be a canonical OperationReceipt identity");
+    }
+    const response = await this.supervisor.request("TaskService.v1.getOperationReceipt", {
+      operation_receipt_id: operationReceiptId
+    });
+    const receipt = adaptOperationReceipt(response);
+    if (receipt.operationReceiptId !== operationReceiptId || receipt.projectId !== refs.projectId) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "operation receipt response is outside the bound project or request identity");
+    }
+    return receipt;
+  }
+
+  async listQueue(request?: ProductQueuePageRequest): Promise<ProductQueuePageView> {
+    const refs = this.requireBinding();
+    const candidate = request ?? {};
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "queue page request must be an object");
+    }
+    const unknown = Object.keys(candidate).filter((key) => !["states", "cursor", "pageSize"].includes(key));
+    if (unknown.length > 0) throw new ProductAdapterError("INVALID_ARGUMENT", `unknown queue page request fields: ${unknown.join(", ")}`);
+    const states = candidate.states === undefined ? [...TASK_CONTROL_DISPATCH_STATES] : candidate.states;
+    if (!Array.isArray(states) || states.length === 0 || states.length > TASK_CONTROL_DISPATCH_STATES.length) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "queue states must be a non-empty bounded array");
+    }
+    if (new Set(states).size !== states.length || states.some((state) => !TASK_CONTROL_DISPATCH_STATES.includes(state as ProductTaskControlDispatchState))) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "queue states contain an unsupported or duplicate state");
+    }
+    const pageSize = candidate.pageSize ?? DEFAULT_PRODUCT_PAGE_SIZE;
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > MAX_QUEUE_PAGE_SIZE) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", `queue pageSize must be an integer in [1, ${MAX_QUEUE_PAGE_SIZE}]`);
+    }
+    if (candidate.cursor !== undefined && (typeof candidate.cursor !== "string" || candidate.cursor.length < 1 || candidate.cursor.length > 2048)) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "queue cursor must be a bounded opaque string");
+    }
+    const response = await this.supervisor.request("TaskService.v1.listQueue", {
+      filter: {
+        states: [...states],
+        ...(candidate.cursor === undefined ? {} : { cursor: candidate.cursor })
+      },
+      page_size: pageSize
+    });
+    const page = adaptQueuePage(response);
+    if (page.projectId !== refs.projectId || page.projectContextRevisionId !== refs.projectContextRevisionId) {
+      throw new ProductAdapterError("PRODUCT_READ_MODEL_INVALID", "queue response is outside the bound project context");
+    }
+    return page;
+  }
+
+  async startQueuedTask(request: ProductStartQueuedTaskRequest): Promise<ProductTaskView> {
+    const refs = this.requireBinding();
+    const candidate = assertTaskControlObject(request, ["expectedDispatchStateVersion", "expectedStateVersion", "taskId"], "start queued task request");
+    const taskId = assertTaskControlIdentity(candidate.taskId, TASK_ID_PATTERN, "taskId");
+    const expectedStateVersion = assertTaskControlVersion(candidate.expectedStateVersion, "expectedStateVersion");
+    const expectedDispatchStateVersion = assertTaskControlVersion(candidate.expectedDispatchStateVersion, "expectedDispatchStateVersion");
+    const response = await this.supervisor.request("TaskService.v1.startQueuedTask", {
+      task_id: taskId,
+      expected_state_version: expectedStateVersion,
+      expected_dispatch_state_version: expectedDispatchStateVersion
+    });
+    return assertTaskControlResponseProject(adaptTask(response), refs, taskId);
+  }
+
+  async resumeFromCheckpoint(request: ProductResumeFromCheckpointRequest): Promise<ProductTaskView> {
+    const refs = this.requireBinding();
+    const candidate = assertTaskControlObject(request, ["checkpointArtifactId", "compatibilityHash", "expectedStateVersion", "taskId"], "resume from checkpoint request");
+    const taskId = assertTaskControlIdentity(candidate.taskId, TASK_ID_PATTERN, "taskId");
+    const checkpointArtifactId = assertTaskControlIdentity(candidate.checkpointArtifactId, ARTIFACT_ID_PATTERN, "checkpointArtifactId");
+    if (typeof candidate.compatibilityHash !== "string" || !CONTENT_SHA_PATTERN.test(candidate.compatibilityHash)) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "compatibilityHash must be a canonical SHA-256 digest");
+    }
+    const expectedStateVersion = assertTaskControlVersion(candidate.expectedStateVersion, "expectedStateVersion");
+    const response = await this.supervisor.request("TaskService.v1.resumeFromCheckpoint", {
+      task_id: taskId,
+      checkpoint_artifact_id: checkpointArtifactId,
+      compatibility_hash: candidate.compatibilityHash,
+      expected_state_version: expectedStateVersion
+    });
+    return assertTaskControlResponseProject(adaptTask(response), refs, taskId);
+  }
+
+  async cancelTask(request: ProductCancelTaskRequest): Promise<ProductTaskView> {
+    const refs = this.requireBinding();
+    const candidate = assertTaskControlObject(request, ["expectedStateVersion", "reason", "taskId"], "cancel task request");
+    const taskId = assertTaskControlIdentity(candidate.taskId, TASK_ID_PATTERN, "taskId");
+    const expectedStateVersion = assertTaskControlVersion(candidate.expectedStateVersion, "expectedStateVersion");
+    if (typeof candidate.reason !== "string" || candidate.reason.length < 1 || candidate.reason.length > 512) {
+      throw new ProductAdapterError("INVALID_ARGUMENT", "reason must be a bounded non-empty string");
+    }
+    const response = await this.supervisor.request("TaskService.v1.cancelTask", {
+      task_id: taskId,
+      expected_state_version: expectedStateVersion,
+      reason: candidate.reason
+    });
+    return assertTaskControlResponseProject(adaptTask(response), refs, taskId);
+  }
+
   async retryResearchBacktest(taskId: string): Promise<ProductTaskView> {
     const refs = this.requireBinding();
     assertCanonicalId(taskId, "taskId");
@@ -2392,7 +2868,7 @@ export class ProductBridge {
     if (!Number.isInteger(afterSequence) || afterSequence < 0) throw new ProductAdapterError("INVALID_ARGUMENT", "afterSequence must be a non-negative integer");
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new ProductAdapterError("INVALID_ARGUMENT", "limit must be an integer in [1, 500]");
     const response = await this.supervisor.request("TaskService.v1.getEvents", { after_sequence: afterSequence, limit });
-    return adaptTaskEvents(response);
+    return adaptTaskEvents(projectDurableTaskProgressEvents(response));
   }
 
   async getResult(resultId: string): Promise<ProductResultView> {
@@ -2773,7 +3249,7 @@ export class ProductBridge {
       "ProductEntryService.v1.submitResearch",
       researchOperationPayload(request, idempotencyKey),
       { idempotencyKey, timeoutMs: 120_000 }
-    ).then((response) => adaptResearchSubmit(response, idempotencyKey)).finally(() => {
+    ).then((response) => adaptResearchSubmitWithReceipt(response, idempotencyKey)).finally(() => {
       this.inflightResearch.delete(key);
     });
   }

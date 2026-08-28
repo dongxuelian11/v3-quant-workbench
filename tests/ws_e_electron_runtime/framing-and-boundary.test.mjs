@@ -34,6 +34,15 @@ test("stream tickets remain metadata and raw paths fail closed", () => {
   assert.throws(() => contextBridgeSafe({ value: "D:\\secret\\table.parquet" }), /raw filesystem path/);
 });
 
+test("task progress counters stay semantic at the desktop boundary", () => {
+  const safe = contextBridgeSafe({ counters: { runtime_context_bound: 1 } });
+  assert.equal(safe.counters.runtime_context_bound, 1);
+  assert.throws(
+    () => contextBridgeSafe({ counters: { sqlite_uow_opened: 1 } }),
+    /raw storage field/
+  );
+});
+
 test("preload bridge exposes only explicit narrow capability methods and events", async () => {
   const calls = [];
   const listeners = new Map();

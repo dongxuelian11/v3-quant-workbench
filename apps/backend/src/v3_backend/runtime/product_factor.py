@@ -1252,6 +1252,7 @@ class ProductFactorStudyService:
         run_id: str,
         request: _PreparedFactorStudyRequest,
         *,
+        operation_receipt_id: str | None = None,
         event_cursor: int | None = None,
     ) -> dict[str, Any]:
         outcome: dict[str, Any] = {
@@ -1266,6 +1267,8 @@ class ProductFactorStudyService:
             "formula_document_version_id": request.formula_document_version_id,
             "analysis_output_name": request.analysis_output_name,
         }
+        if operation_receipt_id is not None:
+            outcome["operation_receipt_id"] = operation_receipt_id
         if event_cursor is not None:
             outcome["event_cursor"] = event_cursor
         return outcome
@@ -1281,6 +1284,7 @@ class ProductFactorStudyService:
                 "execution_state": "QUEUED_BEFORE_FACTOR_PUBLICATION",
             },
             provenance="prv_product_factor_intent_" + request.request_hash,
+            deadline_at=request.execution_deadline_at,
         )
         return _FactorTaskHandles(
             *self.product.execution._create_task(
@@ -1289,6 +1293,11 @@ class ProductFactorStudyService:
                 project_context_revision_id=request.project_context_revision_id,
                 normalized_input_hash=canonical_sha256(request.semantic),
                 context_artifact_id=context_artifact_id,
+                canonical_input={
+                    "semantic_request": dict(request.semantic),
+                    "request_hash": request.request_hash,
+                    "scope": request.scope,
+                },
                 idempotency=(request.scope, request.request_hash, _accept_outcome_json),
                 execution_deadline_at=request.execution_deadline_at,
                 inline_worker=False,
@@ -1302,8 +1311,12 @@ class ProductFactorStudyService:
             self.product, request.scope, request.request_hash
         )
         if existing is not None:
+            task_id = str(existing["task_id"])
             return self._accepted_outcome(
-                str(existing["task_id"]), str(existing["run_id"]), request
+                task_id,
+                str(existing["run_id"]),
+                request,
+                operation_receipt_id=self.product.execution.operation_receipt_id_for_task(task_id),
             )
         workers = getattr(self.product, "product_workers", None)
         if workers is None:
@@ -1325,7 +1338,9 @@ class ProductFactorStudyService:
             )
         except Exception as error:
             workers.release_capacity(reservation)
-            if handles is not None:
+            if handles is not None and not getattr(
+                error, "defer_task_finalization", False
+            ):
                 self.product.execution._finish_failure(
                     handles.task,
                     handles.run,
@@ -1338,6 +1353,9 @@ class ProductFactorStudyService:
             handles.task.task_id,
             handles.run.run_id,
             request,
+            operation_receipt_id=self.product.execution.operation_receipt_id_for_task(
+                handles.task.task_id
+            ),
             event_cursor=self.product.latest_event_sequence(request.project_id),
         )
 

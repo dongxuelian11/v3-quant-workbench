@@ -570,6 +570,10 @@
                   "type": "string",
                   "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
                 },
+                "operation_receipt_id": {
+                  "type": "string",
+                  "pattern": "^opr_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
                 "accepted_state": {
                   "type": "string",
                   "const": "QUEUED"
@@ -797,6 +801,10 @@
                   "type": "string",
                   "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
                 },
+                "operation_receipt_id": {
+                  "type": "string",
+                  "pattern": "^opr_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
                 "accepted_state": {
                   "type": "string",
                   "const": "QUEUED"
@@ -953,6 +961,10 @@
                 "run_id": {
                   "type": "string",
                   "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "operation_receipt_id": {
+                  "type": "string",
+                  "pattern": "^opr_[0-9A-HJKMNP-TV-Z]{26}$"
                 },
                 "accepted_state": {
                   "type": "string",
@@ -1422,6 +1434,10 @@
                   "type": "string",
                   "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
                 },
+                "operation_receipt_id": {
+                  "type": "string",
+                  "pattern": "^opr_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
                 "accepted_state": {
                   "type": "string",
                   "const": "QUEUED"
@@ -1852,6 +1868,10 @@
                 "run_id": {
                   "type": "string",
                   "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "operation_receipt_id": {
+                  "type": "string",
+                  "pattern": "^opr_[0-9A-HJKMNP-TV-Z]{26}$"
                 },
                 "accepted_state": {
                   "type": "string",

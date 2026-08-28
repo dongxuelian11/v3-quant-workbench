@@ -47,11 +47,10 @@ OPERATIONS = MappingProxyType({
 })
 SERVICE_COUNT = len(SERVICE_CONTRACTS)
 OPERATION_COUNT = len(OPERATIONS)
-# Bounded non-P0 Product Entry plus Artifact lifecycle expansion (task-
-# authorized): the original registry remains an exact subset; Artifact adds
-# explicit administrative confirmation/quarantine/restore and second-plan
-# PURGE operations while preserving its existing five wire operations.
-if SERVICE_COUNT != 18 or OPERATION_COUNT != 79:
+# Bounded non-P0 Product Entry, Artifact lifecycle and PR03 TaskControl
+# expansions (task-authorized): the original registry remains an exact subset;
+# TaskControl reuses TaskService rather than creating a second owner.
+if SERVICE_COUNT != 18 or OPERATION_COUNT != 83:
     raise RuntimeError(f'frozen registry mismatch: services={SERVICE_COUNT}, operations={OPERATION_COUNT}')
 
 def get_operation(operation_id: str):

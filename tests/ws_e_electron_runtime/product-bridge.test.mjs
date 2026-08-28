@@ -13,6 +13,74 @@ const { BackendRuntimeError } = await import("../../dist/apps/desktop/src/main/b
 
 const REFS = { projectId: "prj_smoke01", projectContextRevisionId: "pcr_smoke01", sessionId: "aaaaaaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee" };
 const RUN_SPEC_ID = `btrs_sha256_${"b".repeat(64)}`;
+const TASK_CONTROL_REFS = {
+  projectId: `prj_${"A".repeat(26)}`,
+  projectContextRevisionId: `pcr_${"B".repeat(26)}`,
+  sessionId: "aaaaaaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
+};
+const TASK_CONTROL_TASK_ID = `tsk_${"C".repeat(26)}`;
+const TASK_CONTROL_RUN_ID = `run_${"D".repeat(26)}`;
+const TASK_CONTROL_ATTEMPT_ID = `att_${"E".repeat(26)}`;
+const TASK_CONTROL_RECEIPT_ID = `opr_${"F".repeat(26)}`;
+const TASK_CONTROL_CHECKPOINT_ID = `art_sha256_${"a".repeat(64)}`;
+
+function taskControlTaskReadModel(projectId, taskId = TASK_CONTROL_TASK_ID, state = "QUEUED") {
+  return {
+    read_model_version: "v3.task/1.0",
+    task_id: taskId,
+    project_id: projectId,
+    operation_id: "TaskService.v1.startQueuedTask",
+    state,
+    state_version: 5,
+    run_id: TASK_CONTROL_RUN_ID,
+    result_id: null,
+    attempt: {
+      attempt_id: TASK_CONTROL_ATTEMPT_ID,
+      ordinal: 1,
+      state: "QUEUED",
+      error_category: null,
+      reason_code: null
+    },
+    outputs: {},
+    created_at: "2026-08-15T00:00:00Z",
+    updated_at: "2026-08-15T00:00:01Z",
+    terminal_at: null
+  };
+}
+
+function taskControlQueueResponse(projectId, projectContextRevisionId, states, pageSize) {
+  const canonicalStates = [...states].sort();
+  return {
+    request_id: "req-queue",
+    truth_state: "FORMAL",
+    read_model: {
+      read_model_version: "v3.task-queue-page/1.0",
+      project_id: projectId,
+      project_context_revision_id: projectContextRevisionId,
+      states: canonicalStates,
+      items: [{
+        task_id: TASK_CONTROL_TASK_ID,
+        operation_id: "TaskService.v1.startQueuedTask",
+        task_state: "QUEUED",
+        task_state_version: 4,
+        dispatch_state: "HOLD",
+        dispatch_state_version: 2,
+        hold_reason: "awaiting user confirmation",
+        user_confirmed_at: null,
+        run_id: TASK_CONTROL_RUN_ID,
+        attempt_id: TASK_CONTROL_ATTEMPT_ID,
+        attempt_state: "QUEUED",
+        execution_deadline_at: "2030-01-01T00:00:00Z",
+        progress: null,
+        updated_at: "2026-08-15T00:00:01Z"
+      }],
+      page_size: pageSize,
+      truncated: false,
+      has_more: false,
+      next_cursor: null
+    }
+  };
+}
 
 function projectContextReadModel(projectId, pcrId) {
   return {
@@ -74,6 +142,58 @@ function stubSupervisor({ failOpen = false, failStartAt = null, failRestoreAt = 
       }
       if (operationId === "TaskService.v1.listTasks" && taskRows !== null) {
         return { read_model: { items: taskRows, page_size: payload.page_size, truncated: false, has_more: false, next_cursor: null } };
+      }
+      if (operationId === "TaskService.v1.getOperationReceipt") {
+        return {
+          request_id: "req-receipt",
+          truth_state: "FORMAL",
+          read_model: {
+            read_model_version: "v3.operation-receipt/1.0",
+            operation_receipt_id: payload.operation_receipt_id,
+            correlation_id: "corr-task-control",
+            operation_id: "TaskService.v1.startQueuedTask",
+            project_id: this.context?.projectId ?? TASK_CONTROL_REFS.projectId,
+            task_id: TASK_CONTROL_TASK_ID,
+            run_id: TASK_CONTROL_RUN_ID,
+            attempt_id: TASK_CONTROL_ATTEMPT_ID,
+            deadline_at: "2030-01-01T00:00:00Z",
+            runtime_generation_id: null,
+            state: "ACCEPTED",
+            commit_boundary_at: null,
+            outcome: { accepted: true },
+            outcome_artifact_id: null,
+            error_code: null,
+            created_at: "2026-08-15T00:00:00Z",
+            updated_at: "2026-08-15T00:00:01Z",
+            terminal_at: null,
+            state_version: 1
+          }
+        };
+      }
+      if (operationId === "TaskService.v1.listQueue") {
+        return taskControlQueueResponse(
+          this.context?.projectId ?? TASK_CONTROL_REFS.projectId,
+          this.context?.projectContextRevisionId ?? TASK_CONTROL_REFS.projectContextRevisionId,
+          payload.filter.states,
+          payload.page_size
+        );
+      }
+      if (operationId === "TaskService.v1.startQueuedTask" || operationId === "TaskService.v1.cancelTask") {
+        return {
+          request_id: "req-task-control",
+          truth_state: "FORMAL",
+          read_model: taskControlTaskReadModel(
+            this.context?.projectId ?? TASK_CONTROL_REFS.projectId,
+            payload.task_id,
+            operationId.endsWith("cancelTask") ? "CANCEL_REQUESTED" : "QUEUED"
+          )
+        };
+      }
+      if (operationId === "TaskService.v1.resumeFromCheckpoint") {
+        throw new BackendRuntimeError(
+          "Product checkpoint resume is not available for this operation",
+          "PRODUCT_CHECKPOINT_RESUME_NOT_AVAILABLE"
+        );
       }
       if (operationId === "ProjectSessionService.v1.openProject") {
         if (failOpen) throw new BackendRuntimeError("canonical project not found", "NOT_FOUND");
@@ -357,6 +477,143 @@ function bindingFileOps({ failRenameAt = null } = {}) {
 }
 
 const stubStore = () => ({ cursors: {}, getProjectEventCursor(id) { return this.cursors[id] ?? 0; }, commitProjectEventCursor(id, sequence) { this.cursors[id] = sequence; return Promise.resolve(); } });
+
+test("ProductBridge projects PR03 durable progress events into the renderer contract", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-progress-"));
+  try {
+    const supervisor = stubSupervisor();
+    const request = supervisor.request.bind(supervisor);
+    supervisor.request = async function(operationId, payload, options) {
+      if (operationId === "TaskService.v1.getEvents") {
+        return {
+          read_model: {
+            high_watermark: 12,
+            items: [{
+              event_id: "tev_progress01",
+              task_id: "tsk_progress01",
+              project_sequence: 12,
+              event_type: "TASK_PROGRESS",
+              occurred_at: "2026-08-24T00:00:00Z",
+              body: {
+                sequence: 2,
+                phase: "RECONCILING",
+                completed_units: 3,
+                total_units: 4,
+                work_unit: "RESULT_RECONCILIATION",
+                counters: { runtime_context_bound: 1 }
+              }
+            }]
+          }
+        };
+      }
+      return request(operationId, payload, options);
+    };
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject(REFS);
+    const events = await bridge.getTaskEvents(0, 50);
+    assert.deepEqual(events.items[0].progress, {
+      phase: "RECONCILING",
+      completedUnits: 3,
+      totalUnits: 4,
+      workUnit: "RESULT_RECONCILIATION"
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("ProductBridge keeps control-plane progress out of the legacy task-event progress contract", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-control-progress-"));
+  try {
+    const supervisor = stubSupervisor();
+    const request = supervisor.request.bind(supervisor);
+    supervisor.request = async function(operationId, payload, options) {
+      if (operationId === "TaskService.v1.getEvents") {
+        const phases = [
+          ["DISPATCHED", 0, "pipeline_phases"],
+          ["EXECUTING", 1, "pipeline_phases"],
+          ["VALIDATING", 0, "CANONICAL_OWNER_RESOLUTION"],
+          ["PUBLISHED", 3, "pipeline_phases"]
+        ];
+        return {
+          read_model: {
+            high_watermark: 16,
+            items: phases.map(([phase, completedUnits, workUnit], index) => ({
+              event_id: `tev_progress0${index}`,
+              task_id: "tsk_progress01",
+              project_sequence: 13 + index,
+              event_type: "TASK_PROGRESS",
+              occurred_at: "2026-08-24T00:00:00Z",
+              body: {
+                sequence: index + 1,
+                phase,
+                completed_units: completedUnits,
+                total_units: phase === "VALIDATING" ? 4 : 3,
+                work_unit: workUnit,
+                counters: { runtime_context_bound: 1 }
+              }
+            }))
+          }
+        };
+      }
+      return request(operationId, payload, options);
+    };
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject(REFS);
+    const events = await bridge.getTaskEvents(0, 50);
+    assert.equal(events.highWatermark, 16);
+    assert.deepEqual(events.items.map((item) => item.progress), [
+      {
+        phase: "VALIDATING",
+        completedUnits: 0,
+        totalUnits: 4,
+        workUnit: "CANONICAL_OWNER_RESOLUTION"
+      }
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("ProductBridge removes a page containing only control-plane progress events", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-control-only-progress-"));
+  try {
+    const supervisor = stubSupervisor();
+    const request = supervisor.request.bind(supervisor);
+    supervisor.request = async function(operationId, payload, options) {
+      if (operationId === "TaskService.v1.getEvents") {
+        return {
+          read_model: {
+            high_watermark: 20,
+            items: ["DISPATCHED", "EXECUTING", "PUBLISHED"].map((phase, index) => ({
+              event_id: `tev_control_only0${index}`,
+              task_id: "tsk_control_only",
+              project_sequence: 17 + index,
+              event_type: "TASK_PROGRESS",
+              occurred_at: "2026-08-24T00:00:00Z",
+              body: {
+                sequence: index + 1,
+                phase,
+                completed_units: index,
+                total_units: 3,
+                work_unit: "pipeline_phases",
+                counters: { runtime_context_bound: 1 }
+              }
+            }))
+          }
+        };
+      }
+      return request(operationId, payload, options);
+    };
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject(REFS);
+    const events = await bridge.getTaskEvents(0, 50);
+    assert.equal(events.highWatermark, 20);
+    assert.deepEqual(events.items, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
 
 test("typed bridge binds only after canonical validation and restarts under the bound context", async () => {
   const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-"));
@@ -661,6 +918,73 @@ test("submitExistingBacktestRunSpec preserves wire compatibility but refuses the
     );
     const submits = supervisor.calls.filter((call) => call.operationId === "BacktestService.v1.submitBacktest");
     assert.equal(submits.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("TaskControl main bridge uses fixed operations and preserves formal ownership", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-task-control-bridge-"));
+  try {
+    const supervisor = stubSupervisor();
+    const bridge = new ProductBridge(
+      supervisor,
+      stubStore(),
+      new ProductBindingStore(productBindingPath(dir))
+    );
+    await bridge.connectExistingProject(TASK_CONTROL_REFS);
+
+    const receipt = await bridge.getOperationReceipt(TASK_CONTROL_RECEIPT_ID);
+    assert.equal(receipt.operationReceiptId, TASK_CONTROL_RECEIPT_ID);
+    assert.equal(receipt.projectId, TASK_CONTROL_REFS.projectId);
+    assert.deepEqual(receipt.outcome, { accepted: true });
+
+    const queue = await bridge.listQueue({ states: ["READY", "HOLD"], pageSize: 1 });
+    assert.deepEqual(queue.states, ["HOLD", "READY"]);
+    assert.equal(queue.projectContextRevisionId, TASK_CONTROL_REFS.projectContextRevisionId);
+    assert.equal(queue.items[0].taskId, TASK_CONTROL_TASK_ID);
+
+    const started = await bridge.startQueuedTask({
+      taskId: TASK_CONTROL_TASK_ID,
+      expectedStateVersion: 4,
+      expectedDispatchStateVersion: 2
+    });
+    assert.equal(started.taskId, TASK_CONTROL_TASK_ID);
+    assert.equal(started.projectId, TASK_CONTROL_REFS.projectId);
+
+    const cancelled = await bridge.cancelTask({
+      taskId: TASK_CONTROL_TASK_ID,
+      expectedStateVersion: 5,
+      reason: "用户取消"
+    });
+    assert.equal(cancelled.taskId, TASK_CONTROL_TASK_ID);
+    assert.equal(cancelled.state, "CANCEL_REQUESTED");
+
+    await assert.rejects(
+      () => bridge.resumeFromCheckpoint({
+        taskId: TASK_CONTROL_TASK_ID,
+        checkpointArtifactId: TASK_CONTROL_CHECKPOINT_ID,
+        compatibilityHash: "b".repeat(64),
+        expectedStateVersion: 5
+      }),
+      (error) => error.code === "PRODUCT_CHECKPOINT_RESUME_NOT_AVAILABLE"
+    );
+
+    const taskControlCalls = supervisor.calls.filter(({ operationId }) => operationId.startsWith("TaskService.v1."));
+    assert.deepEqual(
+      taskControlCalls.map(({ operationId }) => operationId),
+      [
+        "TaskService.v1.getOperationReceipt",
+        "TaskService.v1.listQueue",
+        "TaskService.v1.startQueuedTask",
+        "TaskService.v1.cancelTask",
+        "TaskService.v1.resumeFromCheckpoint"
+      ]
+    );
+    assert.deepEqual(taskControlCalls[1].payload.filter.states, ["READY", "HOLD"]);
+    assert.equal(taskControlCalls[2].payload.expected_state_version, 4);
+    assert.equal(taskControlCalls[2].payload.expected_dispatch_state_version, 2);
+    assert.equal(taskControlCalls[3].payload.reason, "用户取消");
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -1465,8 +1789,8 @@ test("UNAVAILABLE run-spec with null metadata is readable and never fabricated",
 
 test("product IPC channel set is closed and typed", () => {
   const channels = Object.values(PRODUCT_RUNTIME_CHANNELS);
-  assert.equal(channels.length, 30);
-  assert.ok(new Set(channels).size === 30);
+  assert.equal(channels.length, 35);
+  assert.ok(new Set(channels).size === 35);
   for (const channel of channels) assert.ok(channel.startsWith("productRuntime:"));
 });
 
@@ -1479,6 +1803,11 @@ test("product IPC rejects numeric strings instead of coercing pagination", async
   const bridge = {
     async listProjects(request) { return request; },
     async listTasks(request) { return request; },
+    async getOperationReceipt(operationReceiptId) { return { operationReceiptId }; },
+    async listQueue(request) { return request; },
+    async startQueuedTask(request) { return request; },
+    async resumeFromCheckpoint(request) { return request; },
+    async cancelTask(request) { return request; },
     async submitFactorStudy(request) { return request; },
     async previewResearchStrategy(request) { return request; },
     async publishResearchStrategy(request) { return request; },
@@ -1499,6 +1828,56 @@ test("product IPC rejects numeric strings instead of coercing pagination", async
     assert.deepEqual(
       await handlers.get(PRODUCT_RUNTIME_CHANNELS.listProjects)({}, { pageSize: 50 }),
       { pageSize: 50 }
+    );
+    assert.deepEqual(
+      await handlers.get(PRODUCT_RUNTIME_CHANNELS.listQueue)({}, { states: ["READY", "HOLD"], pageSize: 2 }),
+      { states: ["READY", "HOLD"], pageSize: 2 }
+    );
+    assert.deepEqual(
+      await handlers.get(PRODUCT_RUNTIME_CHANNELS.startQueuedTask)({}, {
+        taskId: "tsk_1",
+        expectedStateVersion: 4,
+        expectedDispatchStateVersion: 2
+      }),
+      { taskId: "tsk_1", expectedStateVersion: 4, expectedDispatchStateVersion: 2 }
+    );
+    assert.deepEqual(
+      await handlers.get(PRODUCT_RUNTIME_CHANNELS.cancelTask)({}, {
+        taskId: "tsk_1",
+        expectedStateVersion: 4,
+        reason: "cancel"
+      }),
+      { taskId: "tsk_1", expectedStateVersion: 4, reason: "cancel" }
+    );
+    assert.deepEqual(
+      await handlers.get(PRODUCT_RUNTIME_CHANNELS.resumeFromCheckpoint)({}, {
+        taskId: "tsk_1",
+        checkpointArtifactId: "art_1",
+        compatibilityHash: "hash",
+        expectedStateVersion: 4
+      }),
+      {
+        taskId: "tsk_1",
+        checkpointArtifactId: "art_1",
+        compatibilityHash: "hash",
+        expectedStateVersion: 4
+      }
+    );
+    assert.deepEqual(
+      await handlers.get(PRODUCT_RUNTIME_CHANNELS.getOperationReceipt)({}, { operationReceiptId: "opr_1" }),
+      { operationReceiptId: "opr_1" }
+    );
+    await assert.rejects(
+      () => handlers.get(PRODUCT_RUNTIME_CHANNELS.listQueue)({}, { states: ["HOLD", "HOLD"] }),
+      /INVALID_ARGUMENT/
+    );
+    await assert.rejects(
+      () => handlers.get(PRODUCT_RUNTIME_CHANNELS.startQueuedTask)({}, { taskId: "tsk_1", expectedStateVersion: "4", expectedDispatchStateVersion: 2 }),
+      /INVALID_ARGUMENT/
+    );
+    await assert.rejects(
+      () => handlers.get(PRODUCT_RUNTIME_CHANNELS.cancelTask)({}, { taskId: "tsk_1", expectedStateVersion: 4, reason: "cancel", extra: true }),
+      /INVALID_ARGUMENT/
     );
     assert.deepEqual(
       await handlers.get(PRODUCT_RUNTIME_CHANNELS.submitFactorStudy)({}, { formulaSource: "MJ:CLOSE;", analysisOutputName: "MJ" }),
