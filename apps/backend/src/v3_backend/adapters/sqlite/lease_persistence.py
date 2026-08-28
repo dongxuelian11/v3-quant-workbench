@@ -171,6 +171,11 @@ class SQLiteLeasePersistence:
                     if incoming_terminal
                     else None
                 )
+                # Enforcement state and Job Object identity are manager-owned
+                # attestation columns.  They are initialized with the grant
+                # on insert and may change only through _set_enforcement;
+                # ordinary lease snapshots (heartbeat, parent sampling, or
+                # terminal cleanup) must not replay stale grant values.
                 cursor = connection.execute(
                     """
                     UPDATE worker_lease
@@ -179,7 +184,7 @@ class SQLiteLeasePersistence:
                         wall_clock_seconds=?, heartbeat_interval_seconds=?, lease_expiry_seconds=?,
                         host_snapshot_hash=?, resolved_resource_json=?, resolved_resource_hash=?,
                         job_cpu_rate_per_10000=?, runtime_generation_id=?, scratch_root=?,
-                        enforcement_state=?, last_heartbeat_sequence=?, last_heartbeat_at=?,
+                        last_heartbeat_sequence=?, last_heartbeat_at=?,
                         worker_rss_bytes=?, worker_scratch_bytes=?,
                         parent_sample_memory_bytes=?, parent_sample_scratch_bytes=?, parent_sample_at=?
                     WHERE lease_id=?
@@ -203,7 +208,6 @@ class SQLiteLeasePersistence:
                         lease.grant.job_cpu_rate_per_10000,
                         lease.grant.runtime_generation_id,
                         lease.grant.scratch_root,
-                        lease.grant.enforcement_state,
                         lease.last_heartbeat_sequence,
                         None if lease.last_heartbeat_at is None else _wire_time(lease.last_heartbeat_at),
                         lease.worker_rss_bytes,

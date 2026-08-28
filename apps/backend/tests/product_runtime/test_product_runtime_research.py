@@ -1459,9 +1459,35 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 )
 
                 active_lease_id = product.research_workers._slots[task_id].lease_id
+                lease_persistence = product.research_workers._lease_persistence
+                lease_manager = product.research_workers.supervisor.leases
+                supervisor_lock = product.research_workers.supervisor._lock
+                # Make the heartbeat and parent-sample paths each persist a
+                # snapshot captured before a manager-owned attestation
+                # transition.  This deterministically exercises the race that
+                # would otherwise replay a stale grant into the receipt.
+                with supervisor_lock:
+                    heartbeat_lease = lease_persistence.require(active_lease_id)
+                    lease_persistence._set_enforcement(
+                        active_lease_id,
+                        _writer=product.research_workers._enforcement_writer,
+                        state="FAILED",
+                        job_object_identity=None,
+                    )
+                    with patch.object(
+                        lease_persistence,
+                        "require",
+                        return_value=heartbeat_lease,
+                    ):
+                        lease_manager.heartbeat(
+                            active_lease_id,
+                            heartbeat_lease.last_heartbeat_sequence + 1,
+                            rss_bytes=0,
+                            scratch_bytes=0,
+                        )
                 connection = product._connection(read_only=True)
                 try:
-                    enforcement_before = tuple(
+                    enforcement_after_heartbeat = tuple(
                         connection.execute(
                             """
                             SELECT enforcement_state, job_object_identity
@@ -1472,6 +1498,42 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     )
                 finally:
                     connection.close()
+                self.assertEqual(enforcement_after_heartbeat, ("FAILED", None))
+                with product.research_workers.supervisor._lock:
+                    parent_sample_lease = lease_persistence.require(active_lease_id)
+                    lease_persistence._set_enforcement(
+                        active_lease_id,
+                        _writer=product.research_workers._enforcement_writer,
+                        state="NOT_CONFIGURED",
+                        job_object_identity=None,
+                    )
+                    with patch.object(
+                        lease_persistence,
+                        "require",
+                        return_value=parent_sample_lease,
+                    ):
+                        lease_manager.record_parent_sample(
+                            active_lease_id,
+                            memory_bytes=0,
+                            scratch_bytes=0,
+                        )
+                connection = product._connection(read_only=True)
+                try:
+                    enforcement_after_parent_sample = tuple(
+                        connection.execute(
+                            """
+                            SELECT enforcement_state, job_object_identity
+                            FROM worker_lease WHERE lease_id=?
+                            """,
+                            (active_lease_id,),
+                        ).fetchone()
+                    )
+                finally:
+                    connection.close()
+                self.assertEqual(
+                    enforcement_after_parent_sample,
+                    ("NOT_CONFIGURED", None),
+                )
                 with self.assertRaises(PermissionError):
                     product.research_workers._lease_persistence._set_enforcement(
                         active_lease_id,
@@ -1492,7 +1554,7 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     )
                 finally:
                     connection.close()
-                self.assertEqual(enforcement_after, enforcement_before)
+                self.assertEqual(enforcement_after, enforcement_after_parent_sample)
 
                 handlers = {}
                 for facade in build_product_facades(product):
