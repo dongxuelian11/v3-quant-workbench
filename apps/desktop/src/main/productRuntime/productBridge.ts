@@ -1129,6 +1129,49 @@ function closedRecordOneOf(value: unknown, shapes: readonly (readonly string[])[
   return record;
 }
 
+const DURABLE_TASK_PROGRESS_KEYS = "completed_units,counters,phase,sequence,total_units,work_unit";
+const RAW_PROGRESS_COUNTER_KEY = /(?:path|database|sqlite|duckdb|parquet|executable|working.?directory|cwd)/i;
+
+function projectDurableTaskProgressEvents(raw: unknown): unknown {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const response = raw as Record<string, unknown>;
+  const readModelValue = response.read_model;
+  if (readModelValue === null || typeof readModelValue !== "object" || Array.isArray(readModelValue)) return raw;
+  const readModel = readModelValue as Record<string, unknown>;
+  if (!Array.isArray(readModel.items)) return raw;
+
+  let projected = false;
+  const items = readModel.items.map((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const item = entry as Record<string, unknown>;
+    if (item.event_type !== "TASK_PROGRESS") return entry;
+    const body = item.body;
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return entry;
+    const progress = body as Record<string, unknown>;
+    if (Object.keys(progress).sort().join(",") !== DURABLE_TASK_PROGRESS_KEYS) return entry;
+    if (
+      !Number.isSafeInteger(progress.sequence)
+      || Number(progress.sequence) < 1
+      || progress.counters === null
+      || typeof progress.counters !== "object"
+      || Array.isArray(progress.counters)
+      || Object.keys(progress.counters as Record<string, unknown>).some((key) => RAW_PROGRESS_COUNTER_KEY.test(key))
+    ) return entry;
+    projected = true;
+    return {
+      ...item,
+      body: {
+        phase: progress.phase,
+        completed_units: progress.completed_units,
+        total_units: progress.total_units,
+        work_unit: progress.work_unit
+      }
+    };
+  });
+  if (!projected) return raw;
+  return { ...response, read_model: { ...readModel, items } };
+}
+
 const TASK_CONTROL_DISPATCH_STATES = ["HOLD", "READY", "DISPATCHED", "TERMINAL"] as const;
 const TASK_CONTROL_TASK_STATES = [
   "QUEUED", "RUNNING", "PAUSE_REQUESTED", "PAUSED", "CANCEL_REQUESTED",
@@ -2808,7 +2851,7 @@ export class ProductBridge implements V3ProductRuntimeTaskControlBridge {
     if (!Number.isInteger(afterSequence) || afterSequence < 0) throw new ProductAdapterError("INVALID_ARGUMENT", "afterSequence must be a non-negative integer");
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new ProductAdapterError("INVALID_ARGUMENT", "limit must be an integer in [1, 500]");
     const response = await this.supervisor.request("TaskService.v1.getEvents", { after_sequence: afterSequence, limit });
-    return adaptTaskEvents(response);
+    return adaptTaskEvents(projectDurableTaskProgressEvents(response));
   }
 
   async getResult(resultId: string): Promise<ProductResultView> {
