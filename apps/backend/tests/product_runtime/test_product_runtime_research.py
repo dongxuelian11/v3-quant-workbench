@@ -148,6 +148,53 @@ class ProductRuntimeResearchTests(unittest.TestCase):
             finally:
                 product.research_workers.shutdown_all()
 
+    @unittest.skipUnless(os.name != "nt", "portable backend lifecycle applies on non-Windows hosts")
+    def test_non_windows_product_runtime_records_unconfigured_resource_enforcement(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v3-product-runtime-portable-enforcement-") as directory:
+            product = ProductRuntime(
+                Path(directory),
+                research_worker_config=ProductResearchWorkerConfig(
+                    provider_mode=DETERMINISTIC_SUCCESS,
+                ),
+            )
+            try:
+                project = create_project(
+                    product,
+                    display_name="Portable enforcement truth",
+                    notes=None,
+                    idempotency_key="create-portable-enforcement-truth",
+                )
+                response = _facade_handler(product, "ProductEntryService.v1.submitResearch")(
+                    _request(
+                        project["project_id"],
+                        project["project_context_revision_id"],
+                        key="portable-enforcement-truth",
+                    )
+                )
+                task_id = str(response["read_model"]["task_id"])
+                deadline = time.monotonic() + 15.0
+                lease_row = None
+                while time.monotonic() < deadline:
+                    connection = product._connection(read_only=True)
+                    try:
+                        lease_row = connection.execute(
+                            """
+                            SELECT l.enforcement_state, l.job_object_identity
+                            FROM worker_lease AS l
+                            JOIN task_attempt AS a ON a.attempt_id=l.attempt_id
+                            WHERE a.task_id=? ORDER BY a.attempt_no DESC LIMIT 1
+                            """,
+                            (task_id,),
+                        ).fetchone()
+                    finally:
+                        connection.close()
+                    if lease_row is not None and lease_row[0] == "NOT_CONFIGURED":
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(lease_row, ("NOT_CONFIGURED", None))
+            finally:
+                product.research_workers.shutdown_all()
+
     def test_process_factory_cleans_partial_start_before_dispatch_can_fail(self) -> None:
         class _Endpoint:
             def __init__(self) -> None:

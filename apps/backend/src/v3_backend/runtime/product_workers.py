@@ -1431,11 +1431,22 @@ class ProductResearchWorkerManager:
                         response.protocol_version,
                         response.resource_lease_token,
                     )
-                    self._lease_persistence.set_enforcement(
-                        slot.lease_id,
-                        state="VERIFIED",
-                        job_object_identity=f"job-object:{slot.process.pid}",
-                    )
+                    if self._job_controller is None:
+                        # Ubuntu is a backend-portability target, not a
+                        # shipped Product target.  Keep the durable lease
+                        # honest when no hard platform controller exists;
+                        # never mint a synthetic Job Object identity.
+                        self._lease_persistence.set_enforcement(
+                            slot.lease_id,
+                            state="NOT_CONFIGURED",
+                            job_object_identity=None,
+                        )
+                    else:
+                        self._lease_persistence.set_enforcement(
+                            slot.lease_id,
+                            state="VERIFIED",
+                            job_object_identity=f"job-object:{slot.process.pid}",
+                        )
                     slot.worker.acknowledge(
                         response.protocol_version,
                         response.resource_lease_token,

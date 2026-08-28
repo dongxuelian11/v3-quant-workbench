@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -383,6 +384,12 @@ class ProductResearchBacktestService:
             ) from error
         policy = load_resource_policy()
         minimum = policy.minimum_admission
+        allowed_enforcement_states = {"VERIFIED"}
+        if os.name != "nt":
+            # Ubuntu CI exercises backend portability only.  A portable
+            # result must retain the absence of a Windows hard-enforcement
+            # controller in its durable resource receipt.
+            allowed_enforcement_states.add("NOT_CONFIGURED")
         if (
             str(row[1]) != handles.attempt.attempt_id
             or str(row[8]) not in {"GRANTED", "RENEWED"}
@@ -417,7 +424,7 @@ class ProductResearchBacktestService:
             or canonical_sha256(resolved) != str(row[16])
             or not isinstance(row[18], str)
             or not row[18]
-            or str(row[19]) != "VERIFIED"
+            or str(row[19]) not in allowed_enforcement_states
         ):
             raise TruthPreconditionFailedError(
                 "Backtest resource admission lease drifted"
