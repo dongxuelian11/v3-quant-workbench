@@ -346,7 +346,7 @@ def _product_worker_main(
             Progress(
                 1,
                 3,
-                {"sqlite_uow_opened": 1},
+                {"runtime_context_bound": 1},
                 phase="EXECUTING",
                 work_unit="pipeline_phases",
             ),

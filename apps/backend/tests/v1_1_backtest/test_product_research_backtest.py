@@ -1173,7 +1173,7 @@ class ProductResearchBacktestAcceptanceTests(unittest.TestCase):
                             "total_units": 3,
                             "work_unit": "pipeline_phases",
                             "sequence": 2,
-                            "counters": {"sqlite_uow_opened": 1},
+                            "counters": {"runtime_context_bound": 1},
                         },
                         {
                             "phase": "VALIDATING",
