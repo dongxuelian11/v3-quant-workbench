@@ -575,6 +575,46 @@ test("ProductBridge keeps control-plane progress out of the legacy task-event pr
   }
 });
 
+test("ProductBridge removes a page containing only control-plane progress events", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-control-only-progress-"));
+  try {
+    const supervisor = stubSupervisor();
+    const request = supervisor.request.bind(supervisor);
+    supervisor.request = async function(operationId, payload, options) {
+      if (operationId === "TaskService.v1.getEvents") {
+        return {
+          read_model: {
+            high_watermark: 20,
+            items: ["DISPATCHED", "EXECUTING", "PUBLISHED"].map((phase, index) => ({
+              event_id: `tev_control_only0${index}`,
+              task_id: "tsk_control_only",
+              project_sequence: 17 + index,
+              event_type: "TASK_PROGRESS",
+              occurred_at: "2026-08-24T00:00:00Z",
+              body: {
+                sequence: index + 1,
+                phase,
+                completed_units: index,
+                total_units: 3,
+                work_unit: "pipeline_phases",
+                counters: { runtime_context_bound: 1 }
+              }
+            }))
+          }
+        };
+      }
+      return request(operationId, payload, options);
+    };
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject(REFS);
+    const events = await bridge.getTaskEvents(0, 50);
+    assert.equal(events.highWatermark, 20);
+    assert.deepEqual(events.items, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
 test("typed bridge binds only after canonical validation and restarts under the bound context", async () => {
   const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-"));
   try {

@@ -1169,7 +1169,10 @@ function projectDurableTaskProgressEvents(raw: unknown): unknown {
       || Array.isArray(progress.counters)
       || Object.keys(progress.counters as Record<string, unknown>).some((key) => RAW_PROGRESS_COUNTER_KEY.test(key))
     ) return [entry];
-    if (CONTROL_ONLY_TASK_PROGRESS_PHASES.has(String(progress.phase))) return [];
+    if (CONTROL_ONLY_TASK_PROGRESS_PHASES.has(String(progress.phase))) {
+      projected = true;
+      return [];
+    }
     if (!RENDERER_TASK_PROGRESS_PHASES.has(String(progress.phase))) return [entry];
     projected = true;
     return [{
