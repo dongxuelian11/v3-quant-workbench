@@ -1131,6 +1131,18 @@ function closedRecordOneOf(value: unknown, shapes: readonly (readonly string[])[
 
 const DURABLE_TASK_PROGRESS_KEYS = "completed_units,counters,phase,sequence,total_units,work_unit";
 const RAW_PROGRESS_COUNTER_KEY = /(?:path|database|sqlite|duckdb|parquet|executable|working.?directory|cwd)/i;
+const RENDERER_TASK_PROGRESS_PHASES = new Set([
+  "ACQUIRING",
+  "VALIDATING",
+  "COMPUTING",
+  "PUBLISHING",
+  "RECONCILING"
+]);
+const CONTROL_ONLY_TASK_PROGRESS_PHASES = new Set([
+  "DISPATCHED",
+  "EXECUTING",
+  "PUBLISHED"
+]);
 
 function projectDurableTaskProgressEvents(raw: unknown): unknown {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return raw;
@@ -1141,14 +1153,14 @@ function projectDurableTaskProgressEvents(raw: unknown): unknown {
   if (!Array.isArray(readModel.items)) return raw;
 
   let projected = false;
-  const items = readModel.items.map((entry) => {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
+  const items = readModel.items.flatMap((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return [entry];
     const item = entry as Record<string, unknown>;
-    if (item.event_type !== "TASK_PROGRESS") return entry;
+    if (item.event_type !== "TASK_PROGRESS") return [entry];
     const body = item.body;
-    if (body === null || typeof body !== "object" || Array.isArray(body)) return entry;
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return [entry];
     const progress = body as Record<string, unknown>;
-    if (Object.keys(progress).sort().join(",") !== DURABLE_TASK_PROGRESS_KEYS) return entry;
+    if (Object.keys(progress).sort().join(",") !== DURABLE_TASK_PROGRESS_KEYS) return [entry];
     if (
       !Number.isSafeInteger(progress.sequence)
       || Number(progress.sequence) < 1
@@ -1156,9 +1168,11 @@ function projectDurableTaskProgressEvents(raw: unknown): unknown {
       || typeof progress.counters !== "object"
       || Array.isArray(progress.counters)
       || Object.keys(progress.counters as Record<string, unknown>).some((key) => RAW_PROGRESS_COUNTER_KEY.test(key))
-    ) return entry;
+    ) return [entry];
+    if (CONTROL_ONLY_TASK_PROGRESS_PHASES.has(String(progress.phase))) return [];
+    if (!RENDERER_TASK_PROGRESS_PHASES.has(String(progress.phase))) return [entry];
     projected = true;
-    return {
+    return [{
       ...item,
       body: {
         phase: progress.phase,
@@ -1166,7 +1180,7 @@ function projectDurableTaskProgressEvents(raw: unknown): unknown {
         total_units: progress.total_units,
         work_unit: progress.work_unit
       }
-    };
+    }];
   });
   if (!projected) return raw;
   return { ...response, read_model: { ...readModel, items } };

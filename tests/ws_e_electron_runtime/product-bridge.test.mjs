@@ -522,6 +522,59 @@ test("ProductBridge projects PR03 durable progress events into the renderer cont
   }
 });
 
+test("ProductBridge keeps control-plane progress out of the legacy task-event progress contract", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-control-progress-"));
+  try {
+    const supervisor = stubSupervisor();
+    const request = supervisor.request.bind(supervisor);
+    supervisor.request = async function(operationId, payload, options) {
+      if (operationId === "TaskService.v1.getEvents") {
+        const phases = [
+          ["DISPATCHED", 0, "pipeline_phases"],
+          ["EXECUTING", 1, "pipeline_phases"],
+          ["VALIDATING", 0, "CANONICAL_OWNER_RESOLUTION"],
+          ["PUBLISHED", 3, "pipeline_phases"]
+        ];
+        return {
+          read_model: {
+            high_watermark: 16,
+            items: phases.map(([phase, completedUnits, workUnit], index) => ({
+              event_id: `tev_progress0${index}`,
+              task_id: "tsk_progress01",
+              project_sequence: 13 + index,
+              event_type: "TASK_PROGRESS",
+              occurred_at: "2026-08-24T00:00:00Z",
+              body: {
+                sequence: index + 1,
+                phase,
+                completed_units: completedUnits,
+                total_units: phase === "VALIDATING" ? 4 : 3,
+                work_unit: workUnit,
+                counters: { runtime_context_bound: 1 }
+              }
+            }))
+          }
+        };
+      }
+      return request(operationId, payload, options);
+    };
+    const bridge = new ProductBridge(supervisor, stubStore(), new ProductBindingStore(productBindingPath(dir)));
+    await bridge.connectExistingProject(REFS);
+    const events = await bridge.getTaskEvents(0, 50);
+    assert.equal(events.highWatermark, 16);
+    assert.deepEqual(events.items.map((item) => item.progress), [
+      {
+        phase: "VALIDATING",
+        completedUnits: 0,
+        totalUnits: 4,
+        workUnit: "CANONICAL_OWNER_RESOLUTION"
+      }
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
 test("typed bridge binds only after canonical validation and restarts under the bound context", async () => {
   const dir = await mkdtemp(join(tmpdir(), "v3-product-bridge-"));
   try {

@@ -136,6 +136,18 @@ def _request(project_id: str, revision_id: str, *, key: str = "research-1") -> d
 
 
 class ProductRuntimeResearchTests(unittest.TestCase):
+    @unittest.skipUnless(os.name != "nt", "portable backend lifecycle applies on non-Windows hosts")
+    def test_non_windows_product_runtime_does_not_claim_windows_job_object(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v3-product-runtime-portable-") as directory:
+            product = ProductRuntime(
+                Path(directory),
+                research_worker_config=ProductResearchWorkerConfig(),
+            )
+            try:
+                self.assertIsNone(product.research_workers.supervisor.job_controller)
+            finally:
+                product.research_workers.shutdown_all()
+
     def test_process_factory_cleans_partial_start_before_dispatch_can_fail(self) -> None:
         class _Endpoint:
             def __init__(self) -> None:

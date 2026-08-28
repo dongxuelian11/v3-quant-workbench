@@ -813,7 +813,17 @@ class ProductResearchWorkerManager:
             provider_mode=config.provider_mode,
             cooperative_cancel=bool(config.cooperative_cancel),
         )
-        self._job_controller = config.job_object_controller or WindowsJobObjectController()
+        # The shipped Product runtime is Windows x64 only. Keep the native
+        # Job Object as the Windows default, while allowing Ubuntu portability
+        # CI (and explicit platform adapters) to exercise the lifecycle
+        # without pretending that a Windows hard-enforcement primitive exists.
+        # A non-Windows product caller must inject its own controller before
+        # it can claim resource enforcement; there is no soft fallback here.
+        self._job_controller = (
+            config.job_object_controller
+            if config.job_object_controller is not None
+            else (WindowsJobObjectController() if os.name == "nt" else None)
+        )
         self.supervisor = WorkerSupervisor(
             governor,
             leases,
@@ -1437,7 +1447,13 @@ class ProductResearchWorkerManager:
                         response.rss_bytes,
                         response.scratch_bytes,
                     )
-                    self._sample_parent_resources(slot)
+                    # Windows Job Object sampling is a hard-enforcement
+                    # boundary. Ubuntu CI deliberately exercises the
+                    # portable worker lifecycle without claiming Linux
+                    # product support; an explicitly injected controller is
+                    # still sampled through the same path.
+                    if self._job_controller is not None:
+                        self._sample_parent_resources(slot)
                 elif isinstance(response, Progress):
                     self.supervisor.handle(slot.lease_id, response)
                 elif isinstance(response, WorkerTerminal):
