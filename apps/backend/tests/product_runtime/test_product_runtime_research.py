@@ -38,6 +38,7 @@ from v3_backend.runtime.product_workers import (
     ProductResearchWorkerConfig,
     _ProductProcessFactory,
 )
+from v3_backend.control_plane.windows_job_object import StaticJobObjectController
 from v3_backend.control_plane.worker_supervisor import WorkerSupervisor
 from v3_backend.domain.tasks.entities import AttemptState, RunState, TaskState
 from v3_backend.domain.tasks.state_machine import TaskTransitionContext
@@ -182,7 +183,8 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                             SELECT l.enforcement_state, l.job_object_identity
                             FROM worker_lease AS l
                             JOIN task_attempt AS a ON a.attempt_id=l.attempt_id
-                            WHERE a.task_id=? ORDER BY a.attempt_no DESC LIMIT 1
+                            JOIN run AS r ON r.run_id=a.run_id
+                            WHERE r.task_id=? ORDER BY a.attempt_no DESC LIMIT 1
                             """,
                             (task_id,),
                         ).fetchone()
@@ -191,7 +193,61 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     if lease_row is not None and lease_row[0] == "NOT_CONFIGURED":
                         break
                     time.sleep(0.02)
-                self.assertEqual(lease_row, ("NOT_CONFIGURED", None))
+                self.assertEqual(
+                    None if lease_row is None else tuple(lease_row),
+                    ("NOT_CONFIGURED", None),
+                )
+            finally:
+                product.research_workers.shutdown_all()
+
+    def test_injected_controller_cannot_mint_windows_enforcement_receipt(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v3-product-runtime-injected-enforcement-") as directory:
+            product = ProductRuntime(
+                Path(directory),
+                research_worker_config=ProductResearchWorkerConfig(
+                    provider_mode=DETERMINISTIC_SUCCESS,
+                    job_object_controller=StaticJobObjectController(),
+                ),
+            )
+            try:
+                project = create_project(
+                    product,
+                    display_name="Portable injected enforcement",
+                    notes=None,
+                    idempotency_key="create-portable-injected-enforcement",
+                )
+                response = _facade_handler(product, "ProductEntryService.v1.submitResearch")(
+                    _request(
+                        project["project_id"],
+                        project["project_context_revision_id"],
+                        key="portable-injected-enforcement",
+                    )
+                )
+                task_id = str(response["read_model"]["task_id"])
+                deadline = time.monotonic() + 15.0
+                lease_row = None
+                while time.monotonic() < deadline:
+                    connection = product._connection(read_only=True)
+                    try:
+                        lease_row = connection.execute(
+                            """
+                            SELECT l.enforcement_state, l.job_object_identity
+                            FROM worker_lease AS l
+                            JOIN task_attempt AS a ON a.attempt_id=l.attempt_id
+                            JOIN run AS r ON r.run_id=a.run_id
+                            WHERE r.task_id=? ORDER BY a.attempt_no DESC LIMIT 1
+                            """,
+                            (task_id,),
+                        ).fetchone()
+                    finally:
+                        connection.close()
+                    if lease_row is not None and lease_row[0] == "NOT_CONFIGURED":
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(
+                    None if lease_row is None else tuple(lease_row),
+                    ("NOT_CONFIGURED", None),
+                )
             finally:
                 product.research_workers.shutdown_all()
 

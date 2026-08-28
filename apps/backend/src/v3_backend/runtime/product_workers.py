@@ -817,8 +817,9 @@ class ProductResearchWorkerManager:
         # Job Object as the Windows default, while allowing Ubuntu portability
         # CI (and explicit platform adapters) to exercise the lifecycle
         # without pretending that a Windows hard-enforcement primitive exists.
-        # A non-Windows product caller must inject its own controller before
-        # it can claim resource enforcement; there is no soft fallback here.
+        # Only the native Windows controller may mint a VERIFIED Windows
+        # enforcement receipt; injected adapters remain useful for bounded
+        # tests but cannot create a synthetic Job Object identity.
         self._job_controller = (
             config.job_object_controller
             if config.job_object_controller is not None
@@ -1431,11 +1432,15 @@ class ProductResearchWorkerManager:
                         response.protocol_version,
                         response.resource_lease_token,
                     )
-                    if self._job_controller is None:
+                    if not (
+                        os.name == "nt"
+                        and isinstance(self._job_controller, WindowsJobObjectController)
+                    ):
                         # Ubuntu is a backend-portability target, not a
                         # shipped Product target.  Keep the durable lease
-                        # honest when no hard platform controller exists;
-                        # never mint a synthetic Job Object identity.
+                        # honest when no native Windows controller is active;
+                        # injected adapters cannot mint a synthetic Job
+                        # Object identity.
                         self._lease_persistence.set_enforcement(
                             slot.lease_id,
                             state="NOT_CONFIGURED",
