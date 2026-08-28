@@ -871,6 +871,7 @@ def _local_data_accept_outcome(
     run_id: str,
     source_artifact_id: str,
     *,
+    operation_receipt_id: str | None = None,
     event_cursor: int | None = None,
 ) -> dict[str, Any]:
     outcome: dict[str, Any] = {
@@ -884,6 +885,8 @@ def _local_data_accept_outcome(
         "retry": "NEW_ATTEMPT_SAME_RUN_FROM_START",
         "source_artifact_id": source_artifact_id,
     }
+    if operation_receipt_id is not None:
+        outcome["operation_receipt_id"] = operation_receipt_id
     if event_cursor is not None:
         outcome["event_cursor"] = event_cursor
     return outcome
@@ -1248,6 +1251,7 @@ class ProductDataService:
                 "execution_state": "QUEUED_BEFORE_IMPORT",
             },
             provenance="prv_product_local_data_intent_" + request.request_hash,
+            deadline_at=request.execution_deadline_at,
         )
         return _LocalDataTaskHandles(
             *self.product.execution._create_task(
@@ -1256,6 +1260,11 @@ class ProductDataService:
                 project_context_revision_id=request.project_context_revision_id,
                 normalized_input_hash=canonical_sha256(request.semantic),
                 context_artifact_id=context_artifact_id,
+                canonical_input={
+                    "semantic_request": dict(request.semantic),
+                    "request_hash": request.request_hash,
+                    "scope": request.scope,
+                },
                 idempotency=(request.scope, request.request_hash, _accept_outcome_json),
                 execution_deadline_at=request.execution_deadline_at,
                 inline_worker=False,
@@ -1269,10 +1278,12 @@ class ProductDataService:
             self.product, request.scope, request.request_hash
         )
         if existing is not None:
+            task_id = str(existing["task_id"])
             return _local_data_accept_outcome(
-                str(existing["task_id"]),
+                task_id,
                 str(existing["run_id"]),
                 request.source_ref["artifact_id"],
+                operation_receipt_id=self.product.execution.operation_receipt_id_for_task(task_id),
             )
         _validate_active_context(
             self.product, request.project_id, request.project_context_revision_id
@@ -1297,7 +1308,9 @@ class ProductDataService:
             )
         except Exception as error:
             workers.release_capacity(reservation)
-            if handles is not None:
+            if handles is not None and not getattr(
+                error, "defer_task_finalization", False
+            ):
                 self.product.execution._finish_failure(
                     handles.task,
                     handles.run,
@@ -1310,6 +1323,9 @@ class ProductDataService:
             handles.task.task_id,
             handles.run.run_id,
             request.source_ref["artifact_id"],
+            operation_receipt_id=self.product.execution.operation_receipt_id_for_task(
+                handles.task.task_id
+            ),
             event_cursor=self.product.latest_event_sequence(request.project_id),
         )
 

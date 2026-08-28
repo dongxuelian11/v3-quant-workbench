@@ -39,6 +39,7 @@ _BTRS = r'^btrs_sha256_[0-9a-f]{64}$'
 _ART = r'^art_sha256_[0-9a-f]{64}$'
 _TSK = r'^tsk_[0-9A-HJKMNP-TV-Z]{26}$'
 _RUN = r'^run_[0-9A-HJKMNP-TV-Z]{26}$'
+_OPR = r'^opr_[0-9A-HJKMNP-TV-Z]{26}$'
 _HEX64 = r'^[0-9a-f]{64}$'
 _FDOC = r'^fdoc_sha256_[0-9a-f]{64}$'
 _FDV = r'^fdv_sha256_[0-9a-f]{64}$'
@@ -647,6 +648,7 @@ METHOD_SPECS = {
                             'read_model_version': {'type': 'string', 'const': 'v3.product-entry-research/1.0'},
                             'task_id': {'type': 'string', 'pattern': _TSK},
                             'run_id': {'type': 'string', 'pattern': _RUN},
+                            'operation_receipt_id': {'type': 'string', 'pattern': _OPR},
                             'accepted_state': {'type': 'string', 'const': 'QUEUED'},
                             'maturity': {'type': 'string', 'const': 'PRODUCT_CONNECTED_CANDIDATE'},
                             'research_profile_id': {'type': 'string', 'const': 'RESEARCH_FREE_DATA_V1'},
@@ -738,6 +740,7 @@ METHOD_SPECS = {
                             'read_model_version': {'type': 'string', 'const': 'v3.product-entry-local-data/1.1'},
                             'task_id': {'type': 'string', 'pattern': _TSK},
                             'run_id': {'type': 'string', 'pattern': _RUN},
+                            'operation_receipt_id': {'type': 'string', 'pattern': _OPR},
                             'accepted_state': {'type': 'string', 'const': 'QUEUED'},
                             'maturity': {'type': 'string', 'const': 'PRODUCT_CONNECTED'},
                             'truth': {'type': 'string', 'const': 'NOT_FORMAL'},
@@ -799,6 +802,7 @@ METHOD_SPECS = {
                             'read_model_version': {'type': 'string', 'const': 'v3.product-entry-factor-study/1.1'},
                             'task_id': {'type': 'string', 'pattern': _TSK},
                             'run_id': {'type': 'string', 'pattern': _RUN},
+                            'operation_receipt_id': {'type': 'string', 'pattern': _OPR},
                             'accepted_state': {'type': 'string', 'const': 'QUEUED'},
                             'maturity': {'type': 'string', 'const': 'PRODUCT_CONNECTED'},
                             'truth': {'type': 'string', 'const': 'NOT_FORMAL'},
@@ -967,6 +971,7 @@ METHOD_SPECS = {
                             'read_model_version': {'type': 'string', 'const': 'v3.product-entry-research-strategy/1.1'},
                             'task_id': {'type': 'string', 'pattern': _TSK},
                             'run_id': {'type': 'string', 'pattern': _RUN},
+                            'operation_receipt_id': {'type': 'string', 'pattern': _OPR},
                             'accepted_state': {'type': 'string', 'const': 'QUEUED'},
                             'maturity': {'type': 'string', 'const': 'PRODUCT_CONNECTED'},
                             'truth': {'type': 'string', 'const': 'NOT_FORMAL'},
@@ -1131,6 +1136,7 @@ METHOD_SPECS = {
                             'read_model_version': {'type': 'string', 'const': 'v3.product-entry-research-backtest/1.1'},
                             'task_id': {'type': 'string', 'pattern': _TSK},
                             'run_id': {'type': 'string', 'pattern': _RUN},
+                            'operation_receipt_id': {'type': 'string', 'pattern': _OPR},
                             'accepted_state': {'type': 'string', 'const': 'QUEUED'},
                             'maturity': {'type': 'string', 'const': 'PRODUCT_CONNECTED'},
                             'truth': {'type': 'string', 'const': 'NOT_FORMAL'},

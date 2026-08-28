@@ -23,15 +23,19 @@ truth through the frozen ASL surface.
 from __future__ import annotations
 
 import hashlib
+import base64
+import binascii
 import json
 import os
+import re
 import sqlite3
 import sys
 import uuid
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
 from v3_backend.adapters.artifact_store import FileSystemArtifactStore, StagingReceipt
@@ -106,10 +110,12 @@ from v3_backend.domain.tasks.state_machine import (
 from v3_backend.domain.weights import RuntimeIdentity
 from v3_backend.errors.exceptions import (
     ArtifactNotPublishedError,
+    CapabilityUnavailableError,
     ConflictError,
     IdempotencyConflictError,
     InvalidArgumentError,
     NotFoundError,
+    ResourceRejectedError,
     TruthPreconditionFailedError,
     V3ContractError,
 )
@@ -119,6 +125,12 @@ from v3_backend.repositories.unit_of_work import TransactionMode
 
 from .composition_root import Capability, RuntimePorts
 from .build_manifest import BUILD_MANIFEST, BUILD_MANIFEST_ID
+from v3_backend.control_plane.progress_persistence import (
+    DispatchStateConflict,
+    ProgressPersistence,
+    RuntimeResolutionConflict,
+    compatibility_hash_for_context,
+)
 
 if TYPE_CHECKING:
     from .product_workers import ProductResearchWorkerConfig
@@ -135,6 +147,9 @@ FORMAL_BACKTEST_UNAVAILABLE_REASON = "FORMAL_EXECUTION_CONTRACT_NOT_CLOSED"
 INLINE_WORKER_KIND = "PRODUCT_INLINE_V1"
 INLINE_ENVIRONMENT_PROFILE_ID = "v3.product-inline-executor/1.0.0"
 PRODUCT_CODE_VERSION = BUILD_MANIFEST.code_version
+_CANONICAL_UTC_DEADLINE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"
+)
 
 # Product artifact roles (product composition policy; bounded and explicit).
 BACKTEST_RUN_SPEC_ROLE = "BACKTEST_RUN_SPEC"
@@ -153,6 +168,7 @@ EXPORT_PROFILES = ("LIGHT_REVIEW", "FULL_REPRODUCTION")
 DEFAULT_EXPORT_PROFILE = "LIGHT_REVIEW"
 DEFAULT_RETENTION_PROFILE = "default"
 MAX_EXPERIMENT_CELLS = 64
+MAX_RECONCILIATION_BATCH = 128
 
 # Durable artifact-reference roles owned by a Project (assembly) / Run (execution).
 PROJECT_SPEC_REFERENCE_ROLE = "RESEARCH_RUN_SPEC"
@@ -708,6 +724,16 @@ class ProductResearchSubmission:
     execution_deadline_at: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _QueuedWorkerLaunch:
+    """Prepared Product request and its single worker-owner profile."""
+
+    prepared_request: Any
+    operation_id: str
+    work_kind: str
+    resource_class: str
+
+
 def _rule_profile_params(profile: AshareTradingRuleProfileVersion) -> dict[str, Any]:
     return {
         "profile_name": profile.profile_name,
@@ -1120,8 +1146,15 @@ class DurableIdempotency:
         return json.loads(str(row["outcome_json"]))
 
 
-def _accept_outcome_json(task_id: str, run_id: str) -> str:
-    return json.dumps({"task_id": task_id, "run_id": run_id}, separators=(",", ":"), sort_keys=True)
+def _accept_outcome_json(
+    task_id: str,
+    run_id: str,
+    operation_receipt_id: str | None = None,
+) -> str:
+    outcome: dict[str, str] = {"task_id": task_id, "run_id": run_id}
+    if operation_receipt_id is not None:
+        outcome["operation_receipt_id"] = operation_receipt_id
+    return json.dumps(outcome, separators=(",", ":"), sort_keys=True)
 
 
 class ProductExecution:
@@ -1138,6 +1171,84 @@ class ProductExecution:
         self.product = product
         self.engine = DeterministicAshareBacktestEngine()
         self.retry_policy = RetryPolicy()
+
+    def operation_receipt_id_for_task(self, task_id: str) -> str | None:
+        """Return the durable receipt bound to a newly accepted Task, if any."""
+
+        try:
+            return self.product.progress_persistence.receipt_for_task(task_id).operation_receipt_id
+        except KeyError:
+            # Legacy Tasks without an execution deadline predate PR03
+            # receipts and may legitimately replay without one.  A deadline
+            # Task, however, has a receipt as part of its accepted side
+            # effect.  Do not let a Catalog gap turn that task into a replay
+            # response that cannot be queried for its finality.
+            connection = self.product._connection(read_only=True)
+            try:
+                row = connection.execute(
+                    """
+                    SELECT t.execution_deadline_at,a.execution_deadline_at
+                    FROM task AS t
+                    LEFT JOIN run AS r
+                      ON r.task_id=t.task_id
+                     AND r.run_no=(
+                        SELECT MAX(latest_run.run_no)
+                        FROM run AS latest_run
+                        WHERE latest_run.task_id=t.task_id
+                     )
+                    LEFT JOIN task_attempt AS a
+                      ON a.run_id=r.run_id
+                     AND a.attempt_no=(
+                        SELECT MAX(latest_attempt.attempt_no)
+                        FROM task_attempt AS latest_attempt
+                        WHERE latest_attempt.run_id=r.run_id
+                     )
+                    WHERE t.task_id=?
+                    """,
+                    (task_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+            if row is not None and (row[0] is not None or row[1] is not None):
+                raise self.product._runtime_context_corrupt(
+                    "deadline-bound Task is missing its durable operation receipt"
+                )
+            return None
+
+    @staticmethod
+    def _parse_execution_deadline(value: str) -> datetime:
+        if (
+            not isinstance(value, str)
+            or len(value) > 64
+            or _CANONICAL_UTC_DEADLINE.fullmatch(value) is None
+        ):
+            raise InvalidArgumentError("execution deadline must be bounded RFC3339 UTC")
+        try:
+            parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        except ValueError as error:
+            raise InvalidArgumentError(
+                "execution deadline must be bounded RFC3339 UTC"
+            ) from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise InvalidArgumentError("execution deadline must include UTC")
+        return parsed.astimezone(timezone.utc)
+
+    def _assert_deadline_before_side_effect(self, deadline_at: str | None = None) -> None:
+        """Apply the request-owned absolute deadline at a Catalog boundary."""
+
+        if deadline_at is None:
+            from .request_router import current_request_deadline_at
+
+            deadline_at = current_request_deadline_at()
+        if deadline_at is None:
+            deadline_at = getattr(self.product, "_active_control_deadline_at", None)
+        if deadline_at is None:
+            return
+        if datetime.now(timezone.utc) >= self._parse_execution_deadline(deadline_at):
+            raise ResourceRejectedError(
+                "operation deadline expired before irreversible side effect",
+                details={"reason_code": "DEADLINE_EXCEEDED_PRE_COMMIT"},
+            )
 
     def _record_progress(
         self,
@@ -1166,29 +1277,16 @@ class ProductExecution:
             or len(work_unit) > 128
         ):
             raise ValueError("Task progress work units are invalid")
-        with self.product.task_persistence.begin() as unit:
-            current_task = unit.require_task(task.task_id)
-            if current_task.project_id != task.project_id or current_task.state in TASK_TERMINAL_STATES:
-                raise ImpossibleTransition("terminal or cross-project Task cannot record progress")
-            unit.append_event(
-                PendingTaskEvent(
-                    event_id=mint_v3_id("tev_"),
-                    event_version=_TASK_EVENT_VERSION,
-                    project_id=current_task.project_id,
-                    task_id=current_task.task_id,
-                    event_type="TASK_PROGRESS",
-                    occurred_at=datetime.now(timezone.utc),
-                    payload={
-                        "phase": phase,
-                        "completed_units": completed_units,
-                        "total_units": total_units,
-                        "work_unit": work_unit,
-                    },
-                    run_id=run.run_id,
-                    attempt_id=attempt.attempt_id,
-                )
-            )
-            unit.commit()
+        current_task = self.product.task_persistence.read_task(task.task_id)
+        if current_task.project_id != task.project_id or current_task.state in TASK_TERMINAL_STATES:
+            raise ImpossibleTransition("terminal or cross-project Task cannot record progress")
+        self.product.progress_persistence.record_progress(
+            attempt.attempt_id,
+            phase=phase,
+            completed_units=completed_units,
+            total_units=total_units,
+            work_unit=work_unit,
+        )
 
     # -- durable task phases ------------------------------------------------
 
@@ -1205,7 +1303,11 @@ class ProductExecution:
         execution_deadline_at: str | None = None,
         inline_worker: bool = True,
         service_contract_version: str = "1.0.0",
+        canonical_input: Mapping[str, Any] | None = None,
     ) -> tuple[Task, Run, TaskAttempt]:
+        if self.product._shutdown_prepared or self.product._shutdown_committed:
+            raise ConflictError("runtime is shutting down and no new Task may be accepted")
+        self._assert_deadline_before_side_effect(execution_deadline_at)
         run_id = mint_v3_id("run_")
         task = Task(
             task_id=mint_v3_id("tsk_"),
@@ -1242,10 +1344,27 @@ class ProductExecution:
             resume_checkpoint_artifact_id=None,
             terminal_error_category=None,
         )
+        operation_receipt_id: str | None = None
+        correlation_id: str | None = None
+        receipt_deadline: datetime | None = None
+        if execution_deadline_at is not None:
+            receipt_deadline = self._parse_execution_deadline(execution_deadline_at)
+            from .request_router import current_request_correlation_id
+
+            correlation_id = current_request_correlation_id() or f"local:{run_id}"
+            operation_receipt_id = mint_v3_id("opr_")
+        now = wire_time(datetime.now(timezone.utc))
         with self.product.task_persistence.begin() as unit:
             unit.add_task(task)
-            unit.add_run(run)
+            unit.add_run(run, canonical_input=canonical_input)
             unit.add_attempt(attempt)
+            if self.product.runtime_generation_id is not None:
+                cursor = unit.connection.execute(
+                    "UPDATE task_attempt SET runtime_generation_id=? WHERE attempt_id=?",
+                    (self.product.runtime_generation_id, attempt.attempt_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ConflictError("Attempt runtime generation could not be persisted")
             if execution_deadline_at is not None:
                 unit.connection.execute(
                     "UPDATE task SET execution_deadline_at=? WHERE task_id=?",
@@ -1255,7 +1374,23 @@ class ProductExecution:
                     "UPDATE task_attempt SET execution_deadline_at=? WHERE attempt_id=?",
                     (execution_deadline_at, attempt.attempt_id),
                 )
-            now = wire_time(datetime.now(timezone.utc))
+            if (
+                operation_receipt_id is not None
+                and correlation_id is not None
+                and receipt_deadline is not None
+            ):
+                self.product.progress_persistence.create_receipt_in_transaction(
+                    unit.connection,
+                    operation_receipt_id=operation_receipt_id,
+                    correlation_id=correlation_id,
+                    operation_id=operation_id,
+                    project_id=project_id,
+                    deadline_at=receipt_deadline,
+                    runtime_generation_id=self.product.runtime_generation_id,
+                    task_id=task.task_id,
+                    run_id=run_id,
+                    attempt_id=attempt.attempt_id,
+                )
             if inline_worker:
                 worker_id = mint_v3_id("wrk_")
                 unit.connection.execute(
@@ -1312,21 +1447,46 @@ class ProductExecution:
                         "project_id": project_id,
                         "canonical_request_hash": request_hash,
                         "outcome_kind": "TASK_ACCEPTED",
-                        "outcome_json": outcome_factory(task.task_id, run_id),
+                        "outcome_json": outcome_factory(
+                            task.task_id, run_id, operation_receipt_id
+                        ),
                         "created_at": now,
                         "expires_at": None,
                     }
                 )
+            self._assert_deadline_before_side_effect(execution_deadline_at)
             unit.commit()
         return task, run, attempt
 
     def _transition_to_running(
         self, task: Task, run: Run, attempt: TaskAttempt, *, run_transition: bool = True
     ) -> None:
+        self._assert_deadline_before_side_effect()
         with self.product.task_persistence.begin() as unit:
             current_task = unit.require_task(task.task_id)
             current_run = unit.require_run(run.run_id)
             current_attempt = unit.require_attempt(attempt.attempt_id)
+            deadline_row = unit.connection.execute(
+                "SELECT execution_deadline_at FROM task_attempt WHERE attempt_id=?",
+                (current_attempt.attempt_id,),
+            ).fetchone()
+            deadline_at = None if deadline_row is None else deadline_row[0]
+            if deadline_at is not None:
+                self._assert_deadline_before_side_effect(str(deadline_at))
+            # The inline compatibility path still uses the PR03 durable
+            # admission boundary.  Keep queue control, receipt state and the
+            # aggregate transition in one Catalog transaction so a failed
+            # start cannot leave a visible RUNNING Task with a HOLD receipt or
+            # a stale dispatch control row.
+            self.product.progress_persistence.mark_dispatched_in_transaction(
+                unit.connection,
+                current_task.task_id,
+                user_confirmed_at=datetime.now(timezone.utc),
+            )
+            self.product.progress_persistence.mark_receipt_running_in_transaction(
+                unit.connection,
+                current_attempt.attempt_id,
+            )
             current_task.state = transition_task(
                 current_task.state,
                 "ATTEMPT_STARTED",
@@ -1359,6 +1519,8 @@ class ProductExecution:
                     attempt_id=current_attempt.attempt_id,
                 )
             )
+            if deadline_at is not None:
+                self._assert_deadline_before_side_effect(str(deadline_at))
             unit.commit()
 
     @staticmethod
@@ -1386,10 +1548,36 @@ class ProductExecution:
         run_transition: bool = True,
         artifact_outputs: tuple[tuple[str, int, str], ...] = (),
     ) -> None:
+        self._assert_deadline_before_side_effect()
         with self.product.task_persistence.begin() as unit:
             current_task = unit.require_task(task.task_id)
             current_run = unit.require_run(run.run_id)
             current_attempt = unit.require_attempt(attempt.attempt_id)
+            deadline_row = unit.connection.execute(
+                "SELECT execution_deadline_at FROM task_attempt WHERE attempt_id=?",
+                (current_attempt.attempt_id,),
+            ).fetchone()
+            if deadline_row is not None and deadline_row[0] is not None:
+                self._assert_deadline_before_side_effect(str(deadline_row[0]))
+            # The terminal progress record is part of the same Catalog UoW as
+            # Attempt/Task/receipt finality.  A second connection here would
+            # permit a durable SUCCEEDED Task with a missing or late PUBLISHED
+            # record when the worker exits between the two writes.
+            self.product.progress_persistence.record_progress_in_transaction(
+                unit.connection,
+                current_attempt.attempt_id,
+                phase="PUBLISHED",
+                completed_units=3,
+                total_units=3,
+                work_unit="pipeline_phases",
+                counters={"canonical_terminal": 1},
+                occurred_at=datetime.now(timezone.utc),
+            )
+            # Progress is also an attempt-scoped TaskEvent, and the frozen
+            # SQLite adapter derives Attempt.state_version from that event
+            # stream.  Re-read after the append so the terminal CAS includes
+            # the final progress event rather than using a stale version.
+            current_attempt = unit.require_attempt(current_attempt.attempt_id)
             current_attempt.state = transition_attempt(current_attempt.state, "ATTEMPT_SUCCEEDED")
             unit.save_attempt(current_attempt, expected_version=current_attempt.state_version)
             if run_transition:
@@ -1442,7 +1630,21 @@ class ProductExecution:
             self._stop_worker_for_attempt(
                 unit, current_attempt.attempt_id, wire_time(datetime.now(timezone.utc))
             )
+            committed_receipt = self.product.progress_persistence.finalize_receipt_in_transaction(
+                unit.connection,
+                attempt_id=current_attempt.attempt_id,
+                success=True,
+                outcome={"task_id": current_task.task_id, **dict(outputs)},
+                commit_boundary_at=datetime.now(timezone.utc),
+                complete=False,
+            )
+            if deadline_row is not None and deadline_row[0] is not None:
+                self._assert_deadline_before_side_effect(str(deadline_row[0]))
             unit.commit()
+            if committed_receipt is not None:
+                self.product.progress_persistence.complete_receipt(
+                    committed_receipt.operation_receipt_id
+                )
 
     def _finish_failure(
         self,
@@ -1457,6 +1659,10 @@ class ProductExecution:
         reason_code: str | None = None
         if isinstance(error, V3ContractError):
             candidate = error.details.get("reason_code")
+            if isinstance(candidate, str) and 1 <= len(candidate) <= 128:
+                reason_code = candidate
+        if reason_code is None:
+            candidate = getattr(error, "reason_code", None)
             if isinstance(candidate, str) and 1 <= len(candidate) <= 128:
                 reason_code = candidate
         with self.product.task_persistence.begin() as unit:
@@ -1527,6 +1733,12 @@ class ProductExecution:
             self._stop_worker_for_attempt(
                 unit, current_attempt.attempt_id, wire_time(datetime.now(timezone.utc))
             )
+            self.product.progress_persistence.finalize_receipt_in_transaction(
+                unit.connection,
+                attempt_id=current_attempt.attempt_id,
+                success=False,
+                error_code=reason_code or category.value,
+            )
             unit.commit()
 
     def _latest_sequence(self, project_id: str) -> int:
@@ -1547,8 +1759,10 @@ class ProductExecution:
         *,
         payloads: tuple[tuple[Any, ...], ...],
         references: tuple[tuple[str, str, str], ...],
+        deadline_at: str | None = None,
     ) -> list[Any]:
         """references: (owner_id, role, artifact_index)."""
+        self._assert_deadline_before_side_effect(deadline_at)
         published_at = datetime.now(timezone.utc)
         batch = ProductArtifactBatch(
             store=self.product.artifact_store,
@@ -1557,6 +1771,7 @@ class ProductExecution:
             coordinator=self.product.artifact_publication,
         )
         batch.prepare_intents(references)
+        self._assert_deadline_before_side_effect(deadline_at)
         connection = connect_catalog(self.product.database_path)
         uow = SQLiteUnitOfWork(connection, TransactionMode.PUBLISH, publish_callbacks=batch)
         results: list[Any] = []
@@ -1573,6 +1788,7 @@ class ProductExecution:
                     promotion_intent_id=batch.prepared[index].promotion_intent_id,
                 )
                 results.append(batch.results[index])
+            self._assert_deadline_before_side_effect(deadline_at)
             uow.commit()
             return results
         finally:
@@ -1592,6 +1808,7 @@ class ProductExecution:
     ) -> Any:
         """Publish one bounded stream through the canonical Artifact/Catalog owner."""
 
+        self._assert_deadline_before_side_effect()
         published_at = datetime.now(timezone.utc)
         callbacks = ProductStagedArtifact(
             store=self.product.artifact_store,
@@ -1604,6 +1821,7 @@ class ProductExecution:
             coordinator=self.product.artifact_publication,
         )
         callbacks.prepare_intent(references)
+        self._assert_deadline_before_side_effect()
         connection = connect_catalog(self.product.database_path)
         uow = SQLiteUnitOfWork(connection, TransactionMode.PUBLISH, publish_callbacks=callbacks)
         try:
@@ -1618,6 +1836,7 @@ class ProductExecution:
                 ),
                 promotion_intent_id=callbacks.prepared.promotion_intent_id,
             )
+            self._assert_deadline_before_side_effect()
             uow.commit()
             return callbacks.result
         finally:
@@ -1996,13 +2215,21 @@ class ProductExecution:
         )
         return {"kind": "artifactExport.failed", "task_id": task_id}
 
-    def _persist_context_artifact(self, wire: Mapping[str, Any], *, provenance: str) -> str:
+    def _persist_context_artifact(
+        self,
+        wire: Mapping[str, Any],
+        *,
+        provenance: str,
+        deadline_at: str | None = None,
+    ) -> str:
+        self._assert_deadline_before_side_effect(deadline_at)
         payload = canonical_json_bytes(wire)
         published = self._publish_artifact_batch(
             payloads=(
                 (provenance, payload, PRODUCT_EXECUTION_CONTEXT_ROLE, EXECUTION_CONTEXT_SCHEMA_VERSION),
             ),
             references=((str(wire["project_id"]), PROJECT_SPEC_CONTEXT_REFERENCE_ROLE, 0),),
+            deadline_at=deadline_at,
         )
         return published[0].descriptor.artifact_id
 
@@ -2184,7 +2411,20 @@ class ProductExecution:
             raise InvalidArgumentError("failed_attempt_id is not the latest failed Attempt")
         if latest.terminal_error_category is None:
             raise InvalidArgumentError("failed Attempt carries no error classification")
-        category = ErrorCategory(latest.terminal_error_category)
+        persisted_category = latest.terminal_error_category
+        category_aliases = {
+            "RESOURCE_EXHAUSTED_MEMORY": ErrorCategory.WORKER_OOM,
+            "RESOURCE_EXHAUSTED_SCRATCH": ErrorCategory.WORKER_LOST,
+        }
+        if persisted_category in category_aliases:
+            category = category_aliases[persisted_category]
+        else:
+            try:
+                category = ErrorCategory(persisted_category)
+            except ValueError as error:
+                raise ConflictError(
+                    f"retry not admitted: unknown persisted failure category {persisted_category}"
+                ) from error
         decision = self.retry_policy.decide(category, prior_attempt_count=latest.ordinal)
         if not decision.allowed:
             raise ConflictError(f"retry not admitted: {decision.reason}")
@@ -2195,6 +2435,17 @@ class ProductExecution:
             self.product.read_verified_bytes(context_artifact_id).decode("utf-8")
         )
         kind = context_wire.get("context_kind")
+        prior_receipt = None
+        try:
+            prior_receipt = self.product.progress_persistence.receipt_for_attempt(
+                failed_attempt_id
+            )
+        except KeyError:
+            pass
+        if prior_receipt is not None:
+            self._assert_deadline_before_side_effect(
+                wire_time(prior_receipt.deadline_at)
+            )
         with self.product.task_persistence.begin() as unit:
             current_task = unit.require_task(task_id)
             current_task.state = transition_task(
@@ -2215,6 +2466,40 @@ class ProductExecution:
                 terminal_error_category=None,
             )
             unit.add_attempt(attempt)
+            lineage = unit.connection.execute(
+                """
+                UPDATE task_attempt
+                SET retry_of_attempt_id=?
+                WHERE attempt_id=? AND retry_of_attempt_id IS NULL
+                """,
+                (failed_attempt_id, attempt.attempt_id),
+            )
+            if lineage.rowcount != 1:
+                raise ConflictError("retry Attempt lineage could not be persisted")
+            if self.product.runtime_generation_id is not None:
+                generation_cursor = unit.connection.execute(
+                    """
+                    UPDATE task_attempt
+                    SET runtime_generation_id=?
+                    WHERE attempt_id=? AND runtime_generation_id IS NULL
+                    """,
+                    (self.product.runtime_generation_id, attempt.attempt_id),
+                )
+                if generation_cursor.rowcount != 1:
+                    raise ConflictError("retry Attempt runtime generation could not be persisted")
+            if prior_receipt is not None:
+                self.product.progress_persistence.create_receipt_in_transaction(
+                    unit.connection,
+                    operation_receipt_id=mint_v3_id("opr_"),
+                    correlation_id=f"retry:{attempt.attempt_id}",
+                    operation_id=prior_receipt.operation_id,
+                    project_id=current_task.project_id,
+                    deadline_at=prior_receipt.deadline_at,
+                    runtime_generation_id=self.product.runtime_generation_id,
+                    task_id=task_id,
+                    run_id=run_id,
+                    attempt_id=attempt.attempt_id,
+                )
             now = wire_time(datetime.now(timezone.utc))
             worker_id = mint_v3_id("wrk_")
             unit.connection.execute(
@@ -2353,6 +2638,8 @@ class ProductRuntime:
         storage_root: str | Path,
         *,
         research_provider_factory=None,
+        execution_deadline_at: str | None = None,
+        correlation_id: str | None = None,
     ) -> "ProductRuntime":
         """Open the parent's live Catalog without acquiring upgrade ownership."""
 
@@ -2360,6 +2647,8 @@ class ProductRuntime:
         product._initialize_storage_paths(storage_root)
         require_current_catalog(product.database_path)
         product._initialize_services(research_provider_factory, None, False)
+        product._active_control_deadline_at = execution_deadline_at
+        product._active_control_correlation_id = correlation_id
         return product
 
     def _initialize_storage_paths(self, storage_root: str | Path) -> None:
@@ -2381,15 +2670,30 @@ class ProductRuntime:
             self.database_path, self.artifact_store
         )
         self.task_persistence = SQLiteTaskPersistence(self.database_path)
+        self.progress_persistence = ProgressPersistence(
+            self.database_path,
+            identity_new=mint_v3_id,
+        )
         self.event_replay = ProductEventReplay(self.database_path)
         self.spec_codec = ResearchRunSpecCodec(self)
-        self.execution = ProductExecution(self)
-        self._initialize_worker_manager(research_worker_config)
-        self._initialize_domain_services(research_provider_factory)
         self.idempotency = DurableIdempotency()
         self._shutdown_prepared = False
         self._shutdown_committed = False
         self._cancellation_lock = RLock()
+        self._active_control_deadline_at: str | None = None
+        self._active_control_correlation_id: str | None = None
+        self.runtime_generation_id: str | None = None
+        if reconcile_on_start:
+            self.runtime_generation_id = mint_v3_id("rgen_")
+            self.progress_persistence.create_generation(
+                self.runtime_generation_id,
+                process_identity_hash=hashlib.sha256(
+                    f"pid:{os.getpid()}:generation:{self.runtime_generation_id}".encode("utf-8")
+                ).hexdigest(),
+            )
+        self.execution = ProductExecution(self)
+        self._initialize_worker_manager(research_worker_config)
+        self._initialize_domain_services(research_provider_factory)
         if reconcile_on_start:
             self._reconcile_startup_state()
         else:
@@ -2458,7 +2762,10 @@ class ProductRuntime:
             "active_leases_revoked": 0,
             "expired_leases_reconciled": 0,
             "attempts_lost": 0,
+            "attempts_cancelled_after_restart": 0,
             "tasks_failed": 0,
+            "tasks_cancelled_after_restart": 0,
+            "receipts_completed_after_restart": 0,
             "workers_stopped": 0,
             "publication_intents_seen": 0,
             "publication_finalized": 0,
@@ -2553,6 +2860,927 @@ class ProductRuntime:
         if row is None:
             raise NotFoundError(f"project has no context revision: {project_id}")
         return row
+
+    def _require_current_project_context(
+        self, project_id: str, project_context_revision_id: str
+    ) -> dict[str, Any]:
+        context = self.require_project_context_ownership(
+            project_id, project_context_revision_id
+        )
+        current = self.current_revision(project_id)
+        if str(current["project_context_revision_id"]) != project_context_revision_id:
+            raise ConflictError(
+                "TaskControl requires the current project context revision"
+            )
+        return context
+
+    def _read_task_bundle(self, task_id: str) -> tuple[Task, Run, TaskAttempt]:
+        try:
+            with self.task_persistence.begin() as unit:
+                task = unit.require_task(task_id)
+                run = unit.require_run(task.active_run_id)
+                attempt_row = unit.connection.execute(
+                    """
+                    SELECT attempt_id
+                    FROM task_attempt
+                    WHERE run_id=?
+                    ORDER BY attempt_no DESC
+                    LIMIT 1
+                    """,
+                    (run.run_id,),
+                ).fetchone()
+                if attempt_row is None:
+                    raise KeyError(f"no Attempt for Task: {task_id}")
+                attempt = unit.require_attempt(str(attempt_row[0]))
+                unit.commit()
+                return task, run, attempt
+        except KeyError as error:
+            raise NotFoundError(f"unknown Task: {task_id}") from error
+
+    @staticmethod
+    def _runtime_context_corrupt(message: str) -> TruthPreconditionFailedError:
+        return TruthPreconditionFailedError(
+            message,
+            details={"reason_code": "RUN_CONTEXT_CORRUPT"},
+        )
+
+    def _validate_queued_execution_context(
+        self,
+        *,
+        task: Task,
+        run: Run,
+        attempt: TaskAttempt,
+        context: Mapping[str, object],
+    ) -> tuple[dict[str, Any], str | None]:
+        """Validate the immutable Run input before any start-side mutation."""
+
+        expected = {
+            "task_id": task.task_id,
+            "run_id": run.run_id,
+            "attempt_id": attempt.attempt_id,
+            "operation_id": task.operation_id,
+            "input_hash": run.identity.normalized_input_hash,
+            "code_version": run.identity.code_version,
+            "environment_profile": run.identity.environment_profile,
+        }
+        if any(context.get(name) != value for name, value in expected.items()):
+            raise self._runtime_context_corrupt(
+                "immutable Task/Run/Attempt execution context drifted"
+            )
+        canonical_input = context.get("canonical_input")
+        if not isinstance(canonical_input, dict):
+            raise self._runtime_context_corrupt(
+                "durable Run canonical input is not an object"
+            )
+        semantic = canonical_input.get("semantic_request")
+        request_hash = canonical_input.get("request_hash")
+        scope = canonical_input.get("scope")
+        if not isinstance(semantic, dict):
+            raise self._runtime_context_corrupt(
+                "durable Run semantic request is absent"
+            )
+        if (
+            semantic.get("project_id") != task.project_id
+            or semantic.get("project_context_revision_id")
+            != run.identity.project_context_revision_id
+        ):
+            raise self._runtime_context_corrupt(
+                "durable Run semantic request is not bound to its Task project"
+            )
+        if (
+            not isinstance(request_hash, str)
+            or len(request_hash) != 64
+            or request_hash != request_hash.lower()
+            or any(char not in "0123456789abcdef" for char in request_hash)
+        ):
+            raise self._runtime_context_corrupt(
+                "durable Run request hash is invalid"
+            )
+        if not isinstance(scope, str) or not scope or len(scope) > 512:
+            raise self._runtime_context_corrupt(
+                "durable Run request scope is invalid"
+            )
+        try:
+            semantic_hash = canonical_sha256(semantic)
+            expected_request_hash = _canonical_request_hash(
+                task.operation_id, semantic
+            )
+        except (TypeError, ValueError) as error:
+            raise self._runtime_context_corrupt(
+                "durable Run semantic request is not canonical JSON"
+            ) from error
+        if semantic_hash != run.identity.normalized_input_hash:
+            raise self._runtime_context_corrupt(
+                "durable Run semantic input hash does not match Run identity"
+            )
+        if request_hash != expected_request_hash:
+            raise self._runtime_context_corrupt(
+                "durable Run request hash does not match its operation and input"
+            )
+        if canonical_input.get("normalized_input_hash") != run.identity.normalized_input_hash:
+            raise self._runtime_context_corrupt(
+                "durable canonical input normalized hash drifted"
+            )
+        if canonical_input.get("service_contract_version") != run.identity.service_contract_version:
+            raise self._runtime_context_corrupt(
+                "durable canonical input contract version drifted"
+            )
+        task_deadline = context.get("task_deadline_at")
+        attempt_deadline = context.get("attempt_deadline_at")
+        if task_deadline is not None and not isinstance(task_deadline, str):
+            raise self._runtime_context_corrupt("Task deadline is not text")
+        if attempt_deadline is not None and not isinstance(attempt_deadline, str):
+            raise self._runtime_context_corrupt("Attempt deadline is not text")
+        if task_deadline is not None and attempt_deadline is not None and task_deadline != attempt_deadline:
+            raise self._runtime_context_corrupt(
+                "Task and Attempt deadlines differ"
+            )
+        deadline = attempt_deadline or task_deadline
+        if deadline is not None:
+            try:
+                self.execution._parse_execution_deadline(deadline)
+            except (TypeError, ValueError, InvalidArgumentError) as error:
+                raise self._runtime_context_corrupt(
+                    "durable execution deadline is not canonical"
+                ) from error
+        generation = context.get("runtime_generation_id")
+        if generation is not None and not isinstance(generation, str):
+            raise self._runtime_context_corrupt(
+                "Attempt runtime generation identity is invalid"
+            )
+        return dict(semantic), deadline
+
+    @staticmethod
+    def _bind_rebuilt_request(
+        prepared: Any,
+        *,
+        semantic: Mapping[str, Any],
+        request_hash: str,
+        scope: str,
+        execution_deadline_at: str | None,
+    ) -> Any:
+        if (
+            getattr(prepared, "semantic", None) != dict(semantic)
+            or getattr(prepared, "request_hash", None) != request_hash
+        ):
+            raise TruthPreconditionFailedError(
+                "rebuilt Product request does not match immutable Run input",
+                details={"reason_code": "RUN_CONTEXT_CORRUPT"},
+            )
+        return replace(
+            prepared,
+            scope=scope,
+            execution_deadline_at=execution_deadline_at,
+        )
+
+    def _rebuild_queued_worker_launch(
+        self,
+        *,
+        operation_id: str,
+        semantic: dict[str, Any],
+        request_hash: str,
+        scope: str,
+        execution_deadline_at: str | None,
+    ) -> _QueuedWorkerLaunch:
+        """Rebuild a typed worker request from the immutable Run semantic input."""
+
+        workers = self.product_workers
+        profile_for_operation = getattr(workers, "profile_for_operation", None)
+        if not callable(profile_for_operation):
+            raise CapabilityUnavailableError(
+                "Product worker profile resolver is unavailable",
+                details={"reason_code": "PRODUCT_WORKER_PROFILE_NOT_AVAILABLE"},
+            )
+        try:
+            work_kind, resource_class = profile_for_operation(operation_id)
+        except KeyError as error:
+            raise CapabilityUnavailableError(
+                "Task operation has no admitted Product worker profile",
+                details={
+                    "reason_code": "PRODUCT_OPERATION_NOT_DISPATCHABLE",
+                    "operation_id": operation_id,
+                },
+            ) from error
+        synthetic_key = "__task_control_rebuild_" + request_hash
+        try:
+            if operation_id == "ProductEntryService.v1.submitResearch":
+                from .product_research import ProductResearchSubmission
+
+                source = semantic["source"]
+                prepared = self.research._prepare_request(
+                    ProductResearchSubmission(
+                        project_id=semantic["project_id"],
+                        project_context_revision_id=semantic[
+                            "project_context_revision_id"
+                        ],
+                        research_profile_id=semantic["research_profile_id"],
+                        strategy_profile_id=semantic["strategy_profile_id"],
+                        source=source,
+                        idempotency_key=synthetic_key,
+                        execution_deadline_at=execution_deadline_at,
+                    )
+                )
+            elif operation_id == "ProductEntryService.v1.importLocalDataset":
+                from .product_data import ProductLocalDataSubmission
+
+                prepared = self.data._prepare_submission(
+                    ProductLocalDataSubmission(
+                        project_id=semantic["project_id"],
+                        project_context_revision_id=semantic[
+                            "project_context_revision_id"
+                        ],
+                        source=semantic["source"],
+                        idempotency_key=synthetic_key,
+                        execution_deadline_at=execution_deadline_at,
+                    )
+                )
+            elif operation_id == "ProductEntryService.v1.submitFactorStudy":
+                from .product_factor import ProductFactorStudySubmission
+
+                prepared = self.factor._prepare_submission(
+                    ProductFactorStudySubmission(
+                        project_id=semantic["project_id"],
+                        project_context_revision_id=semantic[
+                            "project_context_revision_id"
+                        ],
+                        formula_source=semantic["formula_source"],
+                        analysis_output_name=semantic["analysis_output_name"],
+                        idempotency_key=synthetic_key,
+                        execution_deadline_at=execution_deadline_at,
+                    )
+                )
+            elif operation_id == "ProductEntryService.v1.publishResearchStrategy":
+                from .product_strategy import ProductStrategySubmission
+
+                spec = semantic["spec"]
+                prepared = self.strategy._prepare_submission(
+                    ProductStrategySubmission(
+                        project_id=semantic["project_id"],
+                        project_context_revision_id=semantic[
+                            "project_context_revision_id"
+                        ],
+                        universe_version_id=spec["universe_version_id"],
+                        entry_signal_factor_version_id=spec[
+                            "entry_signal_factor_version_id"
+                        ],
+                        exit_signal_factor_version_id=spec[
+                            "exit_signal_factor_version_id"
+                        ],
+                        position_sizing=spec["position_sizing"],
+                        max_positions=spec["max_positions"],
+                        gross_exposure=spec["gross_exposure"],
+                        rebalance=spec["rebalance"],
+                        cost_policy_version_id=spec["cost_policy_version_id"],
+                        execution_policy_version_id=spec[
+                            "execution_policy_version_id"
+                        ],
+                        risk_policy_set_version_id=spec[
+                            "risk_policy_set_version_id"
+                        ],
+                        initial_cash=spec["initial_cash"],
+                        assumption_profile_id=spec["assumption_profile_id"],
+                        idempotency_key=synthetic_key,
+                        execution_deadline_at=execution_deadline_at,
+                    )
+                )
+            elif operation_id == "ProductEntryService.v1.submitResearchBacktest":
+                from .product_backtest import ProductResearchBacktestSubmission
+
+                prepared = self.backtest._prepare_submission(
+                    ProductResearchBacktestSubmission(
+                        project_id=semantic["project_id"],
+                        project_context_revision_id=semantic[
+                            "project_context_revision_id"
+                        ],
+                        research_strategy_spec_id=semantic[
+                            "research_strategy_spec_id"
+                        ],
+                        session_start=date.fromisoformat(semantic["session_start"]),
+                        session_end=date.fromisoformat(semantic["session_end"]),
+                        slippage_bps=semantic["slippage_bps"],
+                        daily_volume_participation_rate=semantic[
+                            "daily_volume_participation_rate"
+                        ],
+                        idempotency_key=synthetic_key,
+                        execution_deadline_at=execution_deadline_at,
+                    )
+                )
+            elif operation_id == "ResultService.v1.reconcileLedger":
+                from .product_results import ResultReconcileSubmission
+
+                prepared = self.results._prepare(
+                    operation_id=operation_id,
+                    work_kind=work_kind,
+                    resource_class=resource_class,
+                    project_id=semantic["project_id"],
+                    project_context_revision_id=semantic[
+                        "project_context_revision_id"
+                    ],
+                    backtest_run_id=semantic["backtest_run_id"],
+                    idempotency_key=synthetic_key,
+                    semantic_tail={
+                        "ledger_manifest_artifact_id": semantic[
+                            "ledger_manifest_artifact_id"
+                        ],
+                        "reconciliation_profile_id": semantic[
+                            "reconciliation_profile_id"
+                        ],
+                    },
+                    execution_deadline_at=execution_deadline_at,
+                )
+            elif operation_id == "ResultService.v1.finalizeResult":
+                from .product_results import ResultFinalizeSubmission
+
+                prepared = self.results._prepare(
+                    operation_id=operation_id,
+                    work_kind=work_kind,
+                    resource_class=resource_class,
+                    project_id=semantic["project_id"],
+                    project_context_revision_id=semantic[
+                        "project_context_revision_id"
+                    ],
+                    backtest_run_id=semantic["backtest_run_id"],
+                    idempotency_key=synthetic_key,
+                    semantic_tail={
+                        "reconciliation_artifact_id": semantic[
+                            "reconciliation_artifact_id"
+                        ],
+                        "analytics_spec": semantic["analytics_spec"],
+                    },
+                    execution_deadline_at=execution_deadline_at,
+                )
+            else:
+                raise CapabilityUnavailableError(
+                    "Task operation has no typed Product rebuild path",
+                    details={
+                        "reason_code": "PRODUCT_OPERATION_NOT_DISPATCHABLE",
+                        "operation_id": operation_id,
+                    },
+                )
+        except (KeyError, TypeError, ValueError, V3ContractError) as error:
+            raise self._runtime_context_corrupt(
+                "durable Product semantic request cannot be rebuilt"
+            ) from error
+        prepared = self._bind_rebuilt_request(
+            prepared,
+            semantic=semantic,
+            request_hash=request_hash,
+            scope=scope,
+            execution_deadline_at=execution_deadline_at,
+        )
+        return _QueuedWorkerLaunch(
+            prepared_request=prepared,
+            operation_id=operation_id,
+            work_kind=work_kind,
+            resource_class=resource_class,
+        )
+
+    def read_operation_receipt(
+        self,
+        *,
+        project_id: str,
+        project_context_revision_id: str,
+        operation_receipt_id: str,
+    ) -> dict[str, Any]:
+        """Return a bounded read model from the durable receipt owner."""
+
+        self.require_project_context_ownership(
+            project_id, project_context_revision_id
+        )
+        try:
+            receipt = self.progress_persistence.receipt(operation_receipt_id)
+        except KeyError as error:
+            raise NotFoundError(
+                f"unknown operation receipt: {operation_receipt_id}"
+            ) from error
+        if receipt.project_id != project_id:
+            raise NotFoundError("operation receipt is not owned by the request project")
+        if receipt.task_id is not None and receipt.run_id is None:
+            raise self._runtime_context_corrupt(
+                "operation receipt has a Task without a Run"
+            )
+        if receipt.attempt_id is not None and receipt.run_id is None:
+            raise self._runtime_context_corrupt(
+                "operation receipt has an Attempt without a Run"
+            )
+        if receipt.run_id is not None or receipt.attempt_id is not None:
+            connection = self._connection(read_only=True)
+            try:
+                binding = None
+                if receipt.run_id is not None:
+                    binding = connection.execute(
+                        """
+                        SELECT t.project_id,t.operation_id,r.task_id,
+                               r.project_context_revision_id
+                        FROM run AS r
+                        JOIN task AS t ON t.task_id=r.task_id
+                        WHERE r.run_id=?
+                        """,
+                        (receipt.run_id,),
+                    ).fetchone()
+                attempt_binding = None
+                if receipt.attempt_id is not None:
+                    attempt_binding = connection.execute(
+                        """
+                        SELECT a.run_id,r.task_id,a.runtime_generation_id
+                        FROM task_attempt AS a
+                        JOIN run AS r ON r.run_id=a.run_id
+                        WHERE a.attempt_id=?
+                        """,
+                        (receipt.attempt_id,),
+                    ).fetchone()
+            finally:
+                connection.close()
+            if (
+                binding is None
+                or str(binding[0]) != project_id
+                or str(binding[1]) != receipt.operation_id
+                or str(binding[3]) != project_context_revision_id
+                or (
+                    receipt.task_id is not None
+                    and str(binding[2]) != receipt.task_id
+                )
+                or (
+                    receipt.attempt_id is not None
+                    and (
+                        attempt_binding is None
+                        or str(attempt_binding[0]) != receipt.run_id
+                        or (
+                            receipt.task_id is not None
+                            and str(attempt_binding[1]) != receipt.task_id
+                        )
+                        or (
+                            None
+                            if attempt_binding[2] is None
+                            else str(attempt_binding[2])
+                        )
+                        != receipt.runtime_generation_id
+                    )
+                )
+            ):
+                raise self._runtime_context_corrupt(
+                    "operation receipt binding does not match its Task/Run/Attempt"
+                )
+        outcome: dict[str, Any] | None = None
+        if receipt.outcome_json is not None:
+            if len(receipt.outcome_json.encode("utf-8")) > 65_536:
+                raise self._runtime_context_corrupt(
+                    "operation receipt outcome exceeds the read-model bound"
+                )
+            try:
+                decoded = json.loads(receipt.outcome_json)
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise self._runtime_context_corrupt(
+                    "operation receipt outcome is not valid JSON"
+                ) from error
+            if not isinstance(decoded, dict):
+                raise self._runtime_context_corrupt(
+                    "operation receipt outcome must be an object"
+                )
+            outcome = decoded
+        if receipt.outcome_artifact_id is not None:
+            self.require_project_reachable_artifact(
+                project_id, receipt.outcome_artifact_id
+            )
+        return {
+            "read_model_version": "v3.operation-receipt/1.0",
+            "operation_receipt_id": receipt.operation_receipt_id,
+            "correlation_id": receipt.correlation_id,
+            "operation_id": receipt.operation_id,
+            "project_id": receipt.project_id,
+            "task_id": receipt.task_id,
+            "run_id": receipt.run_id,
+            "attempt_id": receipt.attempt_id,
+            "deadline_at": wire_time(receipt.deadline_at),
+            "runtime_generation_id": receipt.runtime_generation_id,
+            "state": receipt.state,
+            "commit_boundary_at": (
+                None
+                if receipt.commit_boundary_at is None
+                else wire_time(receipt.commit_boundary_at)
+            ),
+            "outcome": outcome,
+            "outcome_artifact_id": receipt.outcome_artifact_id,
+            "error_code": receipt.error_code,
+            "created_at": wire_time(receipt.created_at),
+            "updated_at": wire_time(receipt.updated_at),
+            "terminal_at": (
+                None if receipt.terminal_at is None else wire_time(receipt.terminal_at)
+            ),
+            "state_version": receipt.state_version,
+        }
+
+    @staticmethod
+    def _decode_queue_cursor(
+        cursor: str | None,
+        *,
+        project_id: str,
+        states: tuple[str, ...],
+    ) -> tuple[str, str] | None:
+        if cursor is None:
+            return None
+        if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048:
+            raise InvalidArgumentError("queue cursor must be a bounded opaque string")
+        try:
+            padding = "=" * (-len(cursor) % 4)
+            decoded = json.loads(
+                base64.urlsafe_b64decode(cursor + padding).decode("utf-8")
+            )
+        except (binascii.Error, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise InvalidArgumentError("queue cursor is malformed") from error
+        expected_keys = {
+            "v",
+            "project_id",
+            "states",
+            "updated_at",
+            "task_id",
+            "sort",
+        }
+        if not isinstance(decoded, dict) or set(decoded) != expected_keys:
+            raise InvalidArgumentError("queue cursor shape is invalid")
+        if (
+            decoded["v"] != 1
+            or decoded["project_id"] != project_id
+            or decoded["states"] != list(states)
+            or decoded["sort"] != "updated_at_asc_task_id_asc"
+            or not isinstance(decoded["updated_at"], str)
+            or not isinstance(decoded["task_id"], str)
+            or not decoded["task_id"]
+        ):
+            raise InvalidArgumentError(
+                "queue cursor does not match the current project/filter/sort scope"
+            )
+        try:
+            parsed = datetime.fromisoformat(
+                decoded["updated_at"].replace("Z", "+00:00")
+            )
+        except ValueError as error:
+            raise InvalidArgumentError("queue cursor timestamp is invalid") from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise InvalidArgumentError("queue cursor timestamp must include UTC")
+        if len(decoded["task_id"]) > 128:
+            raise InvalidArgumentError("queue cursor task identity is too long")
+        return decoded["updated_at"], decoded["task_id"]
+
+    @staticmethod
+    def _encode_queue_cursor(
+        *,
+        project_id: str,
+        states: tuple[str, ...],
+        updated_at: str,
+        task_id: str,
+    ) -> str:
+        cursor_wire = {
+            "v": 1,
+            "project_id": project_id,
+            "states": list(states),
+            "updated_at": updated_at,
+            "task_id": task_id,
+            "sort": "updated_at_asc_task_id_asc",
+        }
+        return base64.urlsafe_b64encode(
+            json.dumps(
+                cursor_wire,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+
+    def list_queue(
+        self,
+        *,
+        project_id: str,
+        project_context_revision_id: str,
+        states: tuple[str, ...],
+        page_size: int,
+        cursor: str | None,
+    ) -> dict[str, Any]:
+        """Read a bounded queue page without loading Task payloads or history."""
+
+        self._require_current_project_context(
+            project_id, project_context_revision_id
+        )
+        if (
+            not states
+            or len(set(states)) != len(states)
+            or any(state not in {"HOLD", "READY", "DISPATCHED", "TERMINAL"} for state in states)
+        ):
+            raise InvalidArgumentError("queue state filter is invalid")
+        if (
+            isinstance(page_size, bool)
+            or not isinstance(page_size, int)
+            or not 1 <= page_size <= 200
+        ):
+            raise InvalidArgumentError("queue page_size must be between 1 and 200")
+        normalized_states = tuple(sorted(states))
+        after = self._decode_queue_cursor(
+            cursor, project_id=project_id, states=normalized_states
+        )
+        rows = self.progress_persistence.list_dispatch_controls_page(
+            project_id,
+            states=normalized_states,
+            page_size=page_size,
+            after=after,
+        )
+        truncated = len(rows) > page_size
+        page_rows = rows[:page_size]
+        items: list[dict[str, Any]] = []
+        for row in page_rows:
+            progress = None
+            if row["progress_sequence"] is not None:
+                progress = {
+                    "sequence": int(row["progress_sequence"]),
+                    "phase": str(row["progress_phase"]),
+                    "completed_units": int(row["progress_completed_units"]),
+                    "total_units": int(row["progress_total_units"]),
+                    "work_unit": str(row["progress_work_unit"]),
+                    "occurred_at": str(row["progress_occurred_at"]),
+                }
+            items.append(
+                {
+                    "task_id": str(row["task_id"]),
+                    "operation_id": str(row["operation_id"]),
+                    "task_state": str(row["task_state"]),
+                    "task_state_version": int(row["task_state_version"]),
+                    "dispatch_state": str(row["dispatch_state"]),
+                    "dispatch_state_version": int(row["dispatch_state_version"]),
+                    "hold_reason": (
+                        None
+                        if row["hold_reason"] is None
+                        else str(row["hold_reason"])
+                    ),
+                    "user_confirmed_at": (
+                        None
+                        if row["user_confirmed_at"] is None
+                        else str(row["user_confirmed_at"])
+                    ),
+                    "run_id": None if row["run_id"] is None else str(row["run_id"]),
+                    "attempt_id": (
+                        None
+                        if row["attempt_id"] is None
+                        else str(row["attempt_id"])
+                    ),
+                    "attempt_state": (
+                        None
+                        if row["attempt_state"] is None
+                        else str(row["attempt_state"])
+                    ),
+                    "execution_deadline_at": (
+                        None
+                        if row["execution_deadline_at"] is None
+                        else str(row["execution_deadline_at"])
+                    ),
+                    "progress": progress,
+                    "updated_at": str(row["dispatch_updated_at"]),
+                }
+            )
+        next_cursor = None
+        if truncated and page_rows:
+            last = page_rows[-1]
+            next_cursor = self._encode_queue_cursor(
+                project_id=project_id,
+                states=normalized_states,
+                updated_at=str(last["dispatch_updated_at"]),
+                task_id=str(last["task_id"]),
+            )
+        return {
+            "read_model_version": "v3.task-queue-page/1.0",
+            "project_id": project_id,
+            "project_context_revision_id": project_context_revision_id,
+            "states": list(normalized_states),
+            "items": items,
+            "page_size": page_size,
+            "truncated": truncated,
+            "has_more": truncated,
+            "next_cursor": next_cursor,
+        }
+
+    def start_queued_task(
+        self,
+        *,
+        task_id: str,
+        project_id: str,
+        project_context_revision_id: str,
+        expected_state_version: int,
+        expected_dispatch_state_version: int,
+    ) -> Task:
+        """Explicitly admit one restart-safe queued Task to its worker owner."""
+
+        self._require_current_project_context(
+            project_id, project_context_revision_id
+        )
+        if (
+            isinstance(expected_state_version, bool)
+            or not isinstance(expected_state_version, int)
+            or expected_state_version < 0
+            or isinstance(expected_dispatch_state_version, bool)
+            or not isinstance(expected_dispatch_state_version, int)
+            or expected_dispatch_state_version < 0
+        ):
+            raise InvalidArgumentError("TaskControl state versions are invalid")
+        workers = self.product_workers
+        if workers is None:
+            raise CapabilityUnavailableError(
+                "isolated Product worker is unavailable",
+                details={"reason_code": "PRODUCT_WORKER_NOT_AVAILABLE"},
+            )
+        task, run, attempt = self._read_task_bundle(task_id)
+        if task.project_id != project_id:
+            raise TruthPreconditionFailedError(
+                "task belongs to a different project"
+            )
+        if task.state is not TaskState.QUEUED:
+            raise ConflictError("only a QUEUED Task may be explicitly started")
+        if task.state_version != expected_state_version:
+            raise ConflictError("Task state version is stale")
+        try:
+            dispatch = self.progress_persistence.dispatch_control(task_id)
+        except KeyError as error:
+            raise TruthPreconditionFailedError(
+                "Task has no durable dispatch control row"
+            ) from error
+        if dispatch.state != "HOLD":
+            raise ConflictError(
+                f"Task dispatch control is not HOLD: {dispatch.state}"
+            )
+        if dispatch.state_version != expected_dispatch_state_version:
+            raise ConflictError("dispatch state version is stale")
+        try:
+            context = self.progress_persistence.execution_context_for_attempt(
+                attempt.attempt_id
+            )
+        except RuntimeResolutionConflict as error:
+            raise self._runtime_context_corrupt(
+                "durable Task execution context cannot be read"
+            ) from error
+        semantic, deadline = self._validate_queued_execution_context(
+            task=task,
+            run=run,
+            attempt=attempt,
+            context=context,
+        )
+        self.execution._assert_deadline_before_side_effect(deadline)
+        launch = self._rebuild_queued_worker_launch(
+            operation_id=task.operation_id,
+            semantic=semantic,
+            request_hash=str(context["canonical_input"]["request_hash"]),
+            scope=str(context["canonical_input"]["scope"]),
+            execution_deadline_at=deadline,
+        )
+        self.execution._assert_deadline_before_side_effect(deadline)
+        if not isinstance(self.runtime_generation_id, str) or not self.runtime_generation_id:
+            raise CapabilityUnavailableError(
+                "runtime generation is unavailable for queued start",
+                details={"reason_code": "RUNTIME_GENERATION_NOT_AVAILABLE"},
+            )
+        reservation = workers.reserve_capacity()
+        handles = SimpleNamespace(task=task, run=run, attempt=attempt)
+        admission_committed = False
+        try:
+            confirmation_at = datetime.now(timezone.utc)
+            with self.task_persistence.begin() as unit:
+                current_task = unit.require_task(task_id)
+                current_run = unit.require_run(current_task.active_run_id)
+                current_attempt_row = unit.connection.execute(
+                    """
+                    SELECT attempt_id
+                    FROM task_attempt
+                    WHERE run_id=?
+                    ORDER BY attempt_no DESC
+                    LIMIT 1
+                    """,
+                    (current_run.run_id,),
+                ).fetchone()
+                if current_attempt_row is None:
+                    raise ConflictError("Task has no current Attempt")
+                current_attempt = unit.require_attempt(str(current_attempt_row[0]))
+                if (
+                    current_task.project_id != project_id
+                    or current_task.state is not TaskState.QUEUED
+                    or current_task.state_version != expected_state_version
+                    or current_run.run_id != run.run_id
+                    or current_attempt.attempt_id != attempt.attempt_id
+                    or current_attempt.state is not AttemptState.QUEUED
+                ):
+                    raise ConflictError("Task changed while it was being started")
+                try:
+                    rebound = self.progress_persistence.rebind_queued_attempt_generation_in_transaction(
+                        unit.connection,
+                        attempt.attempt_id,
+                        runtime_generation_id=self.runtime_generation_id,
+                    )
+                    ready = self.progress_persistence.transition_dispatch_in_transaction(
+                        unit.connection,
+                        task_id,
+                        expected_state="HOLD",
+                        new_state="READY",
+                        expected_state_version=expected_dispatch_state_version,
+                        user_confirmed_at=confirmation_at,
+                    )
+                except (DispatchStateConflict, RuntimeResolutionConflict) as error:
+                    raise ConflictError(
+                        "Task dispatch admission changed while it was being started"
+                    ) from error
+                unit.append_event(
+                    PendingTaskEvent(
+                        event_id=mint_v3_id("tev_"),
+                        event_version=_TASK_EVENT_VERSION,
+                        project_id=project_id,
+                        task_id=task_id,
+                        event_type="TASK_DISPATCH_READY",
+                        occurred_at=confirmation_at,
+                        payload={
+                            "dispatch_state": ready.state,
+                            "dispatch_state_version": ready.state_version,
+                            "user_confirmed_at": wire_time(confirmation_at),
+                        },
+                        run_id=run.run_id,
+                        attempt_id=attempt.attempt_id,
+                    )
+                )
+                if rebound.previous_runtime_generation_id != rebound.runtime_generation_id:
+                    unit.append_event(
+                        PendingTaskEvent(
+                            event_id=mint_v3_id("tev_"),
+                            event_version=_TASK_EVENT_VERSION,
+                            project_id=project_id,
+                            task_id=task_id,
+                            event_type="TASK_EXECUTION_GENERATION_REBOUND",
+                            occurred_at=confirmation_at,
+                            payload={
+                                "attempt_id": attempt.attempt_id,
+                                "previous_runtime_generation_id": rebound.previous_runtime_generation_id,
+                                "runtime_generation_id": rebound.runtime_generation_id,
+                                "receipt_rebound": rebound.receipt_rebound,
+                            },
+                            run_id=run.run_id,
+                            attempt_id=attempt.attempt_id,
+                        )
+                    )
+                unit.commit()
+                admission_committed = True
+        except Exception:
+            workers.release_capacity(reservation)
+            raise
+        try:
+            workers.start(
+                launch.prepared_request,
+                handles,
+                reservation_token=reservation,
+                operation_id=launch.operation_id,
+                work_kind=launch.work_kind,
+                resource_class=launch.resource_class,
+            )
+        except Exception as error:
+            workers.release_capacity(reservation)
+            if admission_committed and not getattr(
+                error, "defer_task_finalization", False
+            ):
+                self.execution._finish_failure(
+                    task,
+                    run,
+                    attempt,
+                    error=error,
+                    category=classify_execution_error(error),
+                )
+            raise
+        return self.task_persistence.read_task(task_id)
+
+    def resume_from_checkpoint(
+        self,
+        *,
+        task_id: str,
+        project_id: str,
+        project_context_revision_id: str,
+        checkpoint_artifact_id: str,
+        compatibility_hash: str,
+        expected_state_version: int,
+    ) -> None:
+        """Expose the explicit PR03 boundary until a domain safe point exists."""
+
+        self._require_current_project_context(
+            project_id, project_context_revision_id
+        )
+        task, _, _ = self._read_task_bundle(task_id)
+        if task.project_id != project_id:
+            raise TruthPreconditionFailedError(
+                "task belongs to a different project"
+            )
+        if task.state_version != expected_state_version:
+            raise ConflictError("Task state version is stale")
+        # Product worker profiles deliberately remain non-resumable in PR03;
+        # the input identities are accepted by the contract but must not be
+        # mistaken for authority when no verified checkpoint owner exists.
+        raise CapabilityUnavailableError(
+            "Product checkpoint resume is not available for this operation",
+            details={
+                "reason_code": "PRODUCT_CHECKPOINT_RESUME_NOT_AVAILABLE",
+                "checkpoint_resume": "NOT_AVAILABLE",
+                "checkpoint_artifact_id": checkpoint_artifact_id,
+                "compatibility_hash": compatibility_hash,
+            },
+        )
 
     def read_verified_bytes(self, artifact_id: str) -> bytes:
         """Read content-addressed bytes, applying Catalog authority when registered.
@@ -2832,6 +4060,39 @@ class ProductRuntime:
         expected_state_version: int | None = None,
         reason: str,
     ) -> bool:
+        """Serialize cancellation with Product worker admission when available."""
+
+        workers = self.research_workers
+        with_admission_lock = getattr(workers, "with_admission_lock", None)
+        if callable(with_admission_lock):
+            return bool(
+                with_admission_lock(
+                    lambda: self._cancel_research_task_impl(
+                        task_id,
+                        project_id=project_id,
+                        expected_state_version=expected_state_version,
+                        reason=reason,
+                        allow_queued_without_child=True,
+                    )
+                )
+            )
+        return self._cancel_research_task_impl(
+            task_id,
+            project_id=project_id,
+            expected_state_version=expected_state_version,
+            reason=reason,
+            allow_queued_without_child=False,
+        )
+
+    def _cancel_research_task_impl(
+        self,
+        task_id: str,
+        *,
+        project_id: str | None = None,
+        expected_state_version: int | None = None,
+        reason: str,
+        allow_queued_without_child: bool,
+    ) -> bool:
         """Cancel one isolated research process and durably fence its terminal state.
 
         The first transaction records intent.  The operating-system child is
@@ -2865,66 +4126,103 @@ class ProductRuntime:
                 if attempt_row is None:
                     raise ConflictError("Task has no cancellable Attempt")
                 attempt_id = str(attempt_row[0])
-                current_task.state = transition_task(
-                    current_task.state,
-                    "CANCEL_REQUESTED",
-                    TaskTransitionContext(),
-                )
-                unit.save_task(current_task, expected_version=current_task.state_version)
-                unit.append_event(
-                    PendingTaskEvent(
-                        event_id=mint_v3_id("tev_"),
-                        event_version=_TASK_EVENT_VERSION,
-                        project_id=current_task.project_id,
-                        task_id=task_id,
-                        event_type="TASK_CANCEL_REQUESTED",
-                        occurred_at=datetime.now(timezone.utc),
-                        payload={"reason": reason},
-                        run_id=current_task.active_run_id,
-                        attempt_id=attempt_id,
+                if current_task.state is not TaskState.CANCEL_REQUESTED:
+                    current_task.state = transition_task(
+                        current_task.state,
+                        "CANCEL_REQUESTED",
+                        TaskTransitionContext(),
                     )
-                )
+                    unit.save_task(current_task, expected_version=current_task.state_version)
+                    unit.append_event(
+                        PendingTaskEvent(
+                            event_id=mint_v3_id("tev_"),
+                            event_version=_TASK_EVENT_VERSION,
+                            project_id=current_task.project_id,
+                            task_id=task_id,
+                            event_type="TASK_CANCEL_REQUESTED",
+                            occurred_at=datetime.now(timezone.utc),
+                            payload={"reason": reason},
+                            run_id=current_task.active_run_id,
+                            attempt_id=attempt_id,
+                        )
+                    )
                 unit.commit()
 
             workers = self.research_workers
-            if workers is None or not workers.cancel(task_id):
-                raise ConflictError("Task child process exit could not be confirmed")
+            confirmed_exit = workers is not None and workers.cancel(task_id)
+            if not confirmed_exit:
+                # The listener may have removed the slot after the child had
+                # already written ATTEMPT_CANCELLED. Read back before turning
+                # an idempotent cancellation race into a false conflict.
+                latest = self.task_persistence.latest_attempt(task_id)
+                if latest.state is not AttemptState.CANCELLED:
+                    latest_task = self.task_persistence.read_task(task_id)
+                    if latest_task.state is TaskState.CANCELLED:
+                        return True
+                    if latest_task.state in TASK_TERMINAL_STATES:
+                        return False
+                    if not (
+                        latest_task.state is TaskState.CANCEL_REQUESTED
+                        and latest.state in {
+                            AttemptState.FAILED,
+                            AttemptState.CANCELLED,
+                            AttemptState.LOST,
+                        }
+                    ) and not (
+                        allow_queued_without_child
+                        and latest_task.state is TaskState.CANCEL_REQUESTED
+                        and latest.state is AttemptState.QUEUED
+                    ):
+                        raise ConflictError("Task child process exit could not be confirmed")
 
             with self.task_persistence.begin() as unit:
                 current_task = unit.require_task(task_id)
                 current_attempt = unit.require_attempt(attempt_id)
-                current_run = unit.require_run(current_task.active_run_id)
-                current_attempt.state = transition_attempt(
-                    current_attempt.state, "ATTEMPT_CANCELLED"
-                )
-                unit.save_attempt(
-                    current_attempt, expected_version=current_attempt.state_version
-                )
-                current_run.state = transition_run(
-                    current_run.state,
-                    "TASK_TERMINAL_NO_ACTIVE_ATTEMPT",
-                    no_active_attempt=True,
-                )
-                unit.save_run(current_run, expected_version=current_run.state_version)
-                current_task.state = transition_task(
-                    current_task.state,
-                    "WORKER_CANCELLED_OR_TERMINATED",
-                    TaskTransitionContext(cleanup_complete=True),
-                )
-                unit.save_task(current_task, expected_version=current_task.state_version)
-                unit.append_event(
-                    PendingTaskEvent(
-                        event_id=mint_v3_id("tev_"),
-                        event_version=_TASK_EVENT_VERSION,
-                        project_id=current_task.project_id,
-                        task_id=task_id,
-                        event_type="TASK_CANCELLED",
-                        occurred_at=datetime.now(timezone.utc),
-                        payload={"reason": reason},
-                        run_id=current_task.active_run_id,
-                        attempt_id=current_attempt.attempt_id,
+                if current_task.state in TASK_TERMINAL_STATES:
+                    return current_task.state is TaskState.CANCELLED
+                if current_attempt.state not in ATTEMPT_TERMINAL_STATES:
+                    current_attempt.state = transition_attempt(
+                        current_attempt.state, "ATTEMPT_CANCELLED"
                     )
-                )
+                    unit.save_attempt(
+                        current_attempt, expected_version=current_attempt.state_version
+                    )
+                elif current_attempt.state not in {
+                    AttemptState.CANCELLED,
+                    AttemptState.FAILED,
+                    AttemptState.LOST,
+                }:
+                    # A success/failure/lost result won the race; never
+                    # overwrite an independently owned terminal Attempt.
+                    return False
+                current_run = unit.require_run(current_task.active_run_id)
+                if current_run.state is not RunState.TERMINAL:
+                    current_run.state = transition_run(
+                        current_run.state,
+                        "TASK_TERMINAL_NO_ACTIVE_ATTEMPT",
+                        no_active_attempt=True,
+                    )
+                    unit.save_run(current_run, expected_version=current_run.state_version)
+                if current_task.state is TaskState.CANCEL_REQUESTED:
+                    current_task.state = transition_task(
+                        current_task.state,
+                        "WORKER_CANCELLED_OR_TERMINATED",
+                        TaskTransitionContext(cleanup_complete=True),
+                    )
+                    unit.save_task(current_task, expected_version=current_task.state_version)
+                    unit.append_event(
+                        PendingTaskEvent(
+                            event_id=mint_v3_id("tev_"),
+                            event_version=_TASK_EVENT_VERSION,
+                            project_id=current_task.project_id,
+                            task_id=task_id,
+                            event_type="TASK_CANCELLED",
+                            occurred_at=datetime.now(timezone.utc),
+                            payload={"reason": reason},
+                            run_id=current_task.active_run_id,
+                            attempt_id=current_attempt.attempt_id,
+                        )
+                    )
                 now = wire_time(datetime.now(timezone.utc))
                 unit.connection.execute(
                     """
@@ -2936,137 +4234,615 @@ class ProductRuntime:
                 self.execution._stop_worker_for_attempt(
                     unit, current_attempt.attempt_id, now
                 )
+                self.progress_persistence.abort_receipt_in_transaction(
+                    unit.connection,
+                    attempt_id=current_attempt.attempt_id,
+                    error_code="EXECUTION_CANCELLED_PRE_COMMIT",
+                )
                 unit.commit()
             return True
 
-    def _reconcile_execution_state(self) -> dict[str, int]:
-        """Reconcile inline execution rows after a backend restart.
+    def _compatible_restart_checkpoint(
+        self, connection: sqlite3.Connection, *, attempt_id: str, run_id: str
+    ) -> str | None:
+        """Return a checkpoint only after metadata and final bytes re-verify."""
 
-        The V1 executor has no child process that can survive a backend
-        restart.  Active leases therefore cannot be treated as recoverable;
-        they become REVOKED/LOST and the owning Task becomes FAILED.  Existing
-        terminal history is retained, while stale per-task workers are closed
-        to STOPPED.
+        # A failed/tampered newest checkpoint must not hide an older valid
+        # one, so page backwards by the stable (created_at, checkpoint_id)
+        # ordering instead of applying a LIMIT that changes recovery truth.
+        after: tuple[str, str] | None = None
+        while True:
+            if after is None:
+                rows = connection.execute(
+                    """
+                    SELECT c.artifact_id,c.input_hash,c.code_version,c.environment_profile_id,
+                           c.compatibility_hash,ar.state,ar.sha256,ar.byte_size,
+                           r.input_hash,r.code_version,r.environment_profile_id,
+                           r.operation_id,r.operation_schema_version,
+                           r.resource_policy_version,r.resolved_resource_hash,
+                           r.compatibility_hash,c.created_at,c.checkpoint_id
+                    FROM checkpoint AS c
+                    JOIN artifact AS ar ON ar.artifact_id=c.artifact_id
+                    JOIN run AS r ON r.run_id=?
+                    WHERE c.attempt_id=?
+                    ORDER BY c.created_at DESC,c.checkpoint_id DESC
+                    LIMIT ?
+                    """,
+                    (run_id, attempt_id, MAX_RECONCILIATION_BATCH),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT c.artifact_id,c.input_hash,c.code_version,c.environment_profile_id,
+                           c.compatibility_hash,ar.state,ar.sha256,ar.byte_size,
+                           r.input_hash,r.code_version,r.environment_profile_id,
+                           r.operation_id,r.operation_schema_version,
+                           r.resource_policy_version,r.resolved_resource_hash,
+                           r.compatibility_hash,c.created_at,c.checkpoint_id
+                    FROM checkpoint AS c
+                    JOIN artifact AS ar ON ar.artifact_id=c.artifact_id
+                    JOIN run AS r ON r.run_id=?
+                    WHERE c.attempt_id=?
+                      AND (
+                        c.created_at < ?
+                        OR (c.created_at=? AND c.checkpoint_id < ?)
+                      )
+                    ORDER BY c.created_at DESC,c.checkpoint_id DESC
+                    LIMIT ?
+                    """,
+                    (
+                        run_id,
+                        attempt_id,
+                        after[0],
+                        after[0],
+                        after[1],
+                        MAX_RECONCILIATION_BATCH,
+                    ),
+                ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                if str(row[5]) != "PUBLISHED":
+                    continue
+                if any(
+                    str(row[index]) != str(row[other])
+                    for index, other in (
+                        (1, 8),
+                        (2, 9),
+                        (3, 10),
+                    )
+                ):
+                    continue
+                resolved_hash = str(row[14])
+                if resolved_hash == "0" * 64:
+                    continue
+                try:
+                    expected_compatibility = compatibility_hash_for_context(
+                        input_hash=str(row[8]),
+                        code_version=str(row[9]),
+                        environment_profile=str(row[10]),
+                        operation_id=str(row[11]),
+                        operation_schema_version=str(row[12]),
+                        resource_policy_version=str(row[13]),
+                        resolved_resource_hash=resolved_hash,
+                    )
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    str(row[4]) != expected_compatibility
+                    or str(row[15]) != expected_compatibility
+                    or str(row[6]) != str(row[0]).removeprefix("art_sha256_")
+                    or int(row[7]) < 0
+                ):
+                    continue
+                verifier = getattr(self.artifact_store, "verify_final_bytes", None)
+                if not callable(verifier):
+                    continue
+                try:
+                    observed_sha, observed_size = verifier(
+                        str(row[0]), expected_byte_size=int(row[7])
+                    )
+                except Exception:
+                    continue
+                if observed_sha == str(row[6]) and observed_size == int(row[7]):
+                    return str(row[0])
+            last = rows[-1]
+            after = (str(last[16]), str(last[17]))
+        return None
+
+    def _reconcile_execution_state(self) -> dict[str, int]:
+        """Reconcile live execution rows without inventing restart recovery.
+
+        Inline workers are compatibility-only and fail on restart. Isolated
+        workers are also never auto-spawned: a verified checkpoint can leave a
+        Task PAUSED, otherwise the Task fails with explicit worker-loss truth.
+        Queued/paused rows are always returned to a user-visible HOLD.
         """
+
         terminal_tasks = {item.value for item in TASK_TERMINAL_STATES}
         terminal_attempts = {item.value for item in ATTEMPT_TERMINAL_STATES}
-        now = wire_time(datetime.now(timezone.utc))
-        counts = {
+        isolated_worker_kind = "PRODUCT_RESEARCH_PROCESS_V1"
+        now_dt = datetime.now(timezone.utc)
+        now = wire_time(now_dt)
+        counts: dict[str, int] = {
             "active_leases_revoked": 0,
             "expired_leases_reconciled": 0,
             "attempts_lost": 0,
+            "attempts_cancelled_after_restart": 0,
             "tasks_failed": 0,
+            "tasks_cancelled_after_restart": 0,
+            "tasks_paused": 0,
+            "checkpoint_candidates": 0,
+            "dispatch_holds_after_restart": 0,
             "workers_stopped": 0,
+            "receipts_completed_after_restart": 0,
         }
         with self.task_persistence.begin() as unit:
-            rows = unit.connection.execute(
-                """
-                SELECT l.lease_id, l.attempt_id, l.worker_id, l.state AS lease_state,
-                       a.state AS attempt_state, r.task_id,
-                       r.run_id, r.state AS run_state,
-                       t.project_id, t.state AS task_state, t.state_version
-                FROM worker_lease l
-                JOIN task_attempt a ON a.attempt_id=l.attempt_id
-                JOIN run r ON r.run_id=a.run_id
-                JOIN task t ON t.task_id=r.task_id
-                WHERE l.state IN ('GRANTED','RENEWED','EXPIRED')
-                ORDER BY t.task_id, a.attempt_no
-                """
-            ).fetchall()
-            failed_tasks: set[str] = set()
-            for row in rows:
+            # Reconciliation must drain the complete durable set, but never
+            # materialize an unbounded number of leases in one Python list.
+            # The ordered keyset also remains correct while each yielded row
+            # is moved out of the GRANTED/RENEWED/EXPIRED source set.
+            def active_lease_rows():
+                after: tuple[str, int, str] | None = None
+                while True:
+                    if after is None:
+                        rows = unit.connection.execute(
+                            """
+                            SELECT l.lease_id,l.attempt_id,l.worker_id,l.state AS lease_state,
+                                   a.attempt_no AS attempt_no,
+                                   a.state AS attempt_state,a.runtime_generation_id,
+                                   r.task_id,r.run_id,r.state AS run_state,
+                                   t.project_id,t.state AS task_state,w.worker_kind,
+                                   w.state AS worker_state
+                            FROM worker_lease AS l
+                            JOIN task_attempt AS a ON a.attempt_id=l.attempt_id
+                            JOIN run AS r ON r.run_id=a.run_id
+                            JOIN task AS t ON t.task_id=r.task_id
+                            JOIN worker AS w ON w.worker_id=l.worker_id
+                            WHERE l.state IN ('GRANTED','RENEWED','EXPIRED')
+                            ORDER BY t.task_id,a.attempt_no,l.lease_id
+                            LIMIT ?
+                            """,
+                            (MAX_RECONCILIATION_BATCH,),
+                        ).fetchall()
+                    else:
+                        rows = unit.connection.execute(
+                            """
+                            SELECT l.lease_id,l.attempt_id,l.worker_id,l.state AS lease_state,
+                                   a.attempt_no AS attempt_no,
+                                   a.state AS attempt_state,a.runtime_generation_id,
+                                   r.task_id,r.run_id,r.state AS run_state,
+                                   t.project_id,t.state AS task_state,w.worker_kind,
+                                   w.state AS worker_state
+                            FROM worker_lease AS l
+                            JOIN task_attempt AS a ON a.attempt_id=l.attempt_id
+                            JOIN run AS r ON r.run_id=a.run_id
+                            JOIN task AS t ON t.task_id=r.task_id
+                            JOIN worker AS w ON w.worker_id=l.worker_id
+                            WHERE l.state IN ('GRANTED','RENEWED','EXPIRED')
+                              AND (
+                                t.task_id > ?
+                                OR (t.task_id=? AND a.attempt_no > ?)
+                                OR (t.task_id=? AND a.attempt_no=? AND l.lease_id > ?)
+                              )
+                            ORDER BY t.task_id,a.attempt_no,l.lease_id
+                            LIMIT ?
+                            """,
+                            (
+                                after[0],
+                                after[0],
+                                after[1],
+                                after[0],
+                                after[1],
+                                after[2],
+                                MAX_RECONCILIATION_BATCH,
+                            ),
+                        ).fetchall()
+                    if not rows:
+                        return
+                    yield from rows
+                    last = rows[-1]
+                    after = (
+                        str(last["task_id"]),
+                        int(last["attempt_no"]),
+                        str(last["lease_id"]),
+                    )
+
+            def append_event(
+                row: Any,
+                event_type: str,
+                payload: dict[str, object],
+                *,
+                attempt_id: str | None = None,
+            ) -> None:
+                unit.append_event(
+                    PendingTaskEvent(
+                        event_id=mint_v3_id("tev_"),
+                        event_version=_TASK_EVENT_VERSION,
+                        project_id=str(row["project_id"]),
+                        task_id=str(row["task_id"]),
+                        event_type=event_type,
+                        occurred_at=now_dt,
+                        payload=payload,
+                        run_id=str(row["run_id"]),
+                        attempt_id=attempt_id,
+                    )
+                )
+
+            def hold_task(row: Any) -> None:
                 task_id = str(row["task_id"])
+                control = unit.connection.execute(
+                    "SELECT state,hold_reason,user_confirmed_at FROM task_dispatch_control WHERE task_id=?",
+                    (task_id,),
+                ).fetchone()
+                changed = control is None or (
+                    str(control[0]) != "HOLD"
+                    or str(control[1]) != "HOLD_AFTER_RESTART"
+                    or control[2] is not None
+                )
+                if control is None:
+                    unit.connection.execute(
+                        """
+                        INSERT INTO task_dispatch_control(
+                          task_id,state,hold_reason,user_confirmed_at,state_version,updated_at
+                        ) VALUES(?,'HOLD','HOLD_AFTER_RESTART',NULL,0,?)
+                        """,
+                        (task_id, now),
+                    )
+                elif changed:
+                    unit.connection.execute(
+                        """
+                        UPDATE task_dispatch_control
+                        SET state='HOLD',hold_reason='HOLD_AFTER_RESTART',
+                            user_confirmed_at=NULL,state_version=state_version+1,updated_at=?
+                        WHERE task_id=?
+                        """,
+                        (now, task_id),
+                    )
+                if changed:
+                    counts["dispatch_holds_after_restart"] += 1
+                    append_event(
+                        row,
+                        "TASK_DISPATCH_HELD",
+                        {"reason_code": "HOLD_AFTER_RESTART"},
+                    )
+
+            def terminalize_dispatch(task_id: str) -> None:
+                unit.connection.execute(
+                    """
+                    UPDATE task_dispatch_control
+                    SET state='TERMINAL',hold_reason=NULL,user_confirmed_at=NULL,
+                        state_version=state_version+1,updated_at=?
+                    WHERE task_id=? AND state<>'TERMINAL'
+                    """,
+                    (now, task_id),
+                )
+
+            def finalize_restart_cancellation(row: Any) -> None:
+                """Complete a persisted cancel intent after restart recovery.
+
+                Cancellation intent is durable before the OS signal is sent.
+                If the process dies, or the runtime crashes after the signal,
+                the next generation must not reinterpret that intent as a
+                worker failure or leave the Task in CANCEL_REQUESTED forever.
+                A COMMITTED receipt remains an explicit commit boundary and
+                therefore stops this reconciliation rather than being
+                overwritten by cancellation.
+                """
+
+                task_id = str(row["task_id"])
+                current_task = unit.require_task(task_id)
+                if current_task.state is not TaskState.CANCEL_REQUESTED:
+                    return
+                attempt_id = str(row["attempt_id"])
+                current_attempt = unit.require_attempt(attempt_id)
+                if current_attempt.state is AttemptState.SUCCEEDED:
+                    raise ConflictError(
+                        "cancelled Task has a successful Attempt"
+                    )
+                receipt = self.progress_persistence.abort_receipt_in_transaction(
+                    unit.connection,
+                    attempt_id=attempt_id,
+                    error_code="EXECUTION_CANCELLED_PRE_COMMIT",
+                )
+                if receipt is not None and receipt.state in {"COMMITTED", "SUCCEEDED"}:
+                    raise ConflictError(
+                        "cancelled Task has a committed operation receipt"
+                    )
+                if current_attempt.state not in terminal_attempts:
+                    unit.connection.execute(
+                        """
+                        UPDATE task_attempt
+                        SET state='CANCELLED',
+                            error_code='EXECUTION_CANCELLED_PRE_COMMIT',
+                            interruption_reason=COALESCE(interruption_reason,?),
+                            finished_at=?
+                        WHERE attempt_id=?
+                          AND state NOT IN ('SUCCEEDED','FAILED','CANCELLED','LOST')
+                        """,
+                        ("RUNTIME_RESTART_CANCELLATION", now, attempt_id),
+                    )
+                    counts["attempts_cancelled_after_restart"] += 1
+                    append_event(
+                        row,
+                        "ATTEMPT_TERMINAL",
+                        {
+                            "state": "CANCELLED",
+                            "error_category": "EXECUTION_CANCELLED_PRE_COMMIT",
+                            "reason_code": "RUNTIME_RESTART_CANCELLATION",
+                        },
+                        attempt_id=attempt_id,
+                    )
+                current_run = unit.require_run(current_task.active_run_id)
+                if current_run.state is not RunState.TERMINAL:
+                    current_run.state = transition_run(
+                        current_run.state,
+                        "TASK_TERMINAL_NO_ACTIVE_ATTEMPT",
+                        no_active_attempt=True,
+                    )
+                    unit.save_run(current_run, expected_version=current_run.state_version)
+                current_task.state = transition_task(
+                    current_task.state,
+                    "WORKER_CANCELLED_OR_TERMINATED",
+                    TaskTransitionContext(cleanup_complete=True),
+                )
+                unit.save_task(current_task, expected_version=current_task.state_version)
+                append_event(
+                    row,
+                    "TASK_CANCELLED",
+                    {
+                        "reason_code": "RUNTIME_RESTART_CANCELLATION",
+                        "error_category": "EXECUTION_CANCELLED_PRE_COMMIT",
+                    },
+                    attempt_id=attempt_id,
+                )
+                terminalize_dispatch(task_id)
+                counts["tasks_cancelled_after_restart"] += 1
+
+            for row in active_lease_rows():
+                task_id = str(row["task_id"])
+                attempt_id = str(row["attempt_id"])
                 task_is_terminal = str(row["task_state"]) in terminal_tasks
                 prior_lease_state = str(row["lease_state"])
                 lease_is_active = prior_lease_state in {"GRANTED", "RENEWED"}
-                lease_state = (
-                    ("RELEASED" if task_is_terminal else "REVOKED")
-                    if lease_is_active
-                    else prior_lease_state
-                )
+                isolated = str(row["worker_kind"]) == isolated_worker_kind
+                if lease_is_active:
+                    lease_state = "RELEASED" if task_is_terminal else "REVOKED"
+                    counts["active_leases_revoked"] += 1
+                else:
+                    lease_state = "EXPIRED"
+                    counts["expired_leases_reconciled"] += 1
                 unit.connection.execute(
-                    "UPDATE worker_lease SET state=?, released_at=? WHERE lease_id=? AND state IN ('GRANTED','RENEWED','EXPIRED')",
+                    """
+                    UPDATE worker_lease SET state=?,released_at=?
+                    WHERE lease_id=? AND state IN ('GRANTED','RENEWED','EXPIRED')
+                    """,
                     (lease_state, now, str(row["lease_id"])),
                 )
-                counts["active_leases_revoked" if lease_is_active else "expired_leases_reconciled"] += 1
                 worker_state = "STOPPED" if task_is_terminal else "LOST"
                 worker_cursor = unit.connection.execute(
-                    "UPDATE worker SET state=?, stopped_at=? WHERE worker_id=? AND state IN ('STARTING','IDLE','BUSY','DRAINING')",
+                    """
+                    UPDATE worker SET state=?,stopped_at=?
+                    WHERE worker_id=? AND state IN ('STARTING','IDLE','BUSY','DRAINING')
+                    """,
                     (worker_state, now, str(row["worker_id"])),
                 )
                 counts["workers_stopped"] += worker_cursor.rowcount
                 if str(row["attempt_state"]) not in terminal_attempts:
-                    unit.connection.execute(
+                    attempt_cursor = unit.connection.execute(
                         """
                         UPDATE task_attempt
-                        SET state='LOST', error_code='WORKER_LOST', finished_at=?
+                        SET state='LOST',error_code='WORKER_LOST',
+                            interruption_reason=COALESCE(interruption_reason,?),finished_at=?
                         WHERE attempt_id=? AND state NOT IN ('SUCCEEDED','FAILED','CANCELLED','LOST')
                         """,
-                        (now, str(row["attempt_id"])),
+                        ("RUNTIME_RESTART_RECONCILIATION", now, attempt_id),
                     )
-                    counts["attempts_lost"] += 1
-                    unit.append_event(
-                        PendingTaskEvent(
-                            event_id=mint_v3_id("tev_"),
-                            event_version=_TASK_EVENT_VERSION,
-                            project_id=str(row["project_id"]),
-                            task_id=task_id,
-                            event_type="ATTEMPT_TERMINAL",
-                            occurred_at=datetime.now(timezone.utc),
-                            payload={
+                    if attempt_cursor.rowcount == 1:
+                        counts["attempts_lost"] += 1
+                        append_event(
+                            row,
+                            "ATTEMPT_TERMINAL",
+                            {
                                 "state": "LOST",
                                 "error_category": "WORKER_LOST",
                                 "reason_code": "RUNTIME_RESTART_RECONCILIATION",
                             },
-                            run_id=str(row["run_id"]),
-                            attempt_id=str(row["attempt_id"]),
+                            attempt_id=attempt_id,
                         )
+                if str(row["task_state"]) == "CANCEL_REQUESTED":
+                    finalize_restart_cancellation(row)
+                    continue
+                if task_is_terminal:
+                    # A terminal Task is already the semantic owner of the
+                    # outcome, but its dispatch control row must not remain
+                    # DISPATCHED after a crash between task finality and
+                    # control cleanup.  Close that queue state before
+                    # skipping the worker-loss branch.
+                    terminalize_dispatch(task_id)
+                    continue
+                # Multiple stale leases can point at one Task.  Re-read the
+                # durable Task state after the lease/Attempt cleanup so a
+                # later row cannot repeat terminalization or checkpoint
+                # finality.  This avoids a cross-table-size in-memory set.
+                current_task = unit.require_task(task_id)
+                if current_task.state in TASK_TERMINAL_STATES:
+                    terminalize_dispatch(task_id)
+                    continue
+                if current_task.state is TaskState.PAUSED:
+                    hold_task(row)
+                    continue
+                checkpoint_id = (
+                    self._compatible_restart_checkpoint(
+                        unit.connection, attempt_id=attempt_id, run_id=str(row["run_id"])
                     )
-                if not task_is_terminal and task_id not in failed_tasks:
-                    unit.connection.execute(
+                    if isolated
+                    else None
+                )
+                if checkpoint_id is not None:
+                    counts["checkpoint_candidates"] += 1
+                    cursor = unit.connection.execute(
                         """
                         UPDATE task
-                        SET state='FAILED', state_version=state_version+1, updated_at=?, terminal_at=?
+                        SET state='PAUSED',state_version=state_version+1,
+                            updated_at=?,terminal_at=NULL
+                        WHERE task_id=? AND state NOT IN ('SUCCEEDED','FAILED','CANCELLED','PARTIAL','PAUSED')
+                        """,
+                        (now, task_id),
+                    )
+                    if cursor.rowcount == 1:
+                        counts["tasks_paused"] += 1
+                        append_event(
+                            row,
+                            "TASK_PAUSED",
+                            {
+                                "reason_code": "RUNTIME_RESTART_RECONCILIATION",
+                                "checkpoint_artifact_id": checkpoint_id,
+                            },
+                            attempt_id=attempt_id,
+                        )
+                    hold_task(row)
+                    try:
+                        self.progress_persistence.finalize_receipt_in_transaction(
+                            unit.connection,
+                            attempt_id=attempt_id,
+                            success=False,
+                            error_code="WORKER_LOST",
+                        )
+                    except Exception:
+                        # A receipt may already be terminal because another
+                        # observer won the restart race.  The paused Task and
+                        # verified checkpoint remain the canonical recovery
+                        # view; never rewrite them for a stale receipt error.
+                        pass
+                else:
+                    cursor = unit.connection.execute(
+                        """
+                        UPDATE task
+                        SET state='FAILED',state_version=state_version+1,
+                            updated_at=?,terminal_at=?
                         WHERE task_id=? AND state NOT IN ('SUCCEEDED','FAILED','CANCELLED','PARTIAL')
                         """,
                         (now, now, task_id),
                     )
-                    unit.connection.execute(
-                        "UPDATE run SET state='TERMINAL', terminal_at=? WHERE run_id=? AND state IN ('SEALED','ACTIVE')",
-                        (now, str(row["run_id"])),
-                    )
-                    unit.append_event(
-                        PendingTaskEvent(
-                            event_id=mint_v3_id("tev_"),
-                            event_version=_TASK_EVENT_VERSION,
-                            project_id=str(row["project_id"]),
-                            task_id=task_id,
-                            event_type="TASK_FAILED",
-                            occurred_at=datetime.now(timezone.utc),
-                            payload={
+                    if cursor.rowcount == 1:
+                        counts["tasks_failed"] += 1
+                        unit.connection.execute(
+                            """
+                            UPDATE run SET state='TERMINAL',terminal_at=?
+                            WHERE run_id=? AND state IN ('SEALED','ACTIVE')
+                            """,
+                            (now, str(row["run_id"])),
+                        )
+                        append_event(
+                            row,
+                            "TASK_FAILED",
+                            {
                                 "error_type": "RuntimeRestartReconciliation",
-                                "error_message": "synchronous in-process execution was interrupted by runtime restart",
+                                "error_message": (
+                                    "worker execution was interrupted by runtime restart; "
+                                    "no verified checkpoint was available"
+                                ),
                                 "error_category": "WORKER_LOST",
                                 "reason_code": "RUNTIME_RESTART_RECONCILIATION",
+                                "checkpoint_resume": "NOT_AVAILABLE",
                             },
-                            run_id=str(row["run_id"]),
-                            attempt_id=str(row["attempt_id"]),
+                            attempt_id=attempt_id,
                         )
-                    )
-                    failed_tasks.add(task_id)
-                    counts["tasks_failed"] += 1
+                        try:
+                            self.progress_persistence.finalize_receipt_in_transaction(
+                                unit.connection,
+                                attempt_id=attempt_id,
+                                success=False,
+                                error_code="WORKER_LOST",
+                            )
+                        except Exception:
+                            # A receipt conflict must not rewrite a terminal
+                            # Task; the durable task/error event remains truth.
+                            pass
+                    terminalize_dispatch(task_id)
 
+            # A queue row may have no live lease at all. Rehydrate it as a
+            # HOLD, including a PAUSED task that was left by an earlier run.
+            # These scans are keyset-paged as well: holding a row changes its
+            # control record, not the source Task state, so a LIMIT-only loop
+            # would repeatedly read the same page forever.
+            def queued_task_rows():
+                after = ""
+                while True:
+                    rows = unit.connection.execute(
+                        """
+                        SELECT t.task_id,t.project_id,t.state,r.run_id
+                        FROM task AS t
+                        JOIN run AS r
+                          ON r.task_id=t.task_id
+                         AND r.run_no=(SELECT MAX(run_no) FROM run WHERE task_id=t.task_id)
+                        WHERE t.state IN ('QUEUED','PAUSED','PAUSE_REQUESTED')
+                          AND NOT EXISTS (
+                            SELECT 1
+                            FROM task_attempt AS a
+                            JOIN worker_lease AS l ON l.attempt_id=a.attempt_id
+                            WHERE a.run_id=r.run_id AND l.state IN ('GRANTED','RENEWED','EXPIRED')
+                          )
+                          AND t.task_id>?
+                        ORDER BY t.task_id
+                        LIMIT ?
+                        """,
+                        (after, MAX_RECONCILIATION_BATCH),
+                    ).fetchall()
+                    if not rows:
+                        return
+                    yield from rows
+                    after = str(rows[-1]["task_id"])
+
+            def cancel_requested_rows():
+                after = ""
+                while True:
+                    rows = unit.connection.execute(
+                        """
+                        SELECT t.task_id,t.project_id,t.state AS task_state,
+                               r.run_id,r.state AS run_state,
+                               a.attempt_id,a.state AS attempt_state
+                        FROM task AS t
+                        JOIN run AS r
+                          ON r.task_id=t.task_id
+                         AND r.run_no=(SELECT MAX(run_no) FROM run WHERE task_id=t.task_id)
+                        JOIN task_attempt AS a
+                          ON a.run_id=r.run_id
+                         AND a.attempt_no=(SELECT MAX(attempt_no) FROM task_attempt WHERE run_id=r.run_id)
+                        WHERE t.state='CANCEL_REQUESTED'
+                          AND NOT EXISTS (
+                            SELECT 1
+                            FROM task_attempt AS active_attempt
+                            JOIN worker_lease AS l ON l.attempt_id=active_attempt.attempt_id
+                            WHERE active_attempt.run_id=r.run_id
+                              AND l.state IN ('GRANTED','RENEWED','EXPIRED')
+                          )
+                          AND t.task_id>?
+                        ORDER BY t.task_id
+                        LIMIT ?
+                        """,
+                        (after, MAX_RECONCILIATION_BATCH),
+                    ).fetchall()
+                    if not rows:
+                        return
+                    yield from rows
+                    after = str(rows[-1]["task_id"])
+
+            for row in cancel_requested_rows():
+                finalize_restart_cancellation(row)
+            for row in queued_task_rows():
+                hold_task(row)
             stopped = unit.connection.execute(
                 """
-                UPDATE worker
-                SET state='STOPPED', stopped_at=?
+                UPDATE worker SET state='STOPPED',stopped_at=?
                 WHERE state IN ('STARTING','IDLE','BUSY','DRAINING')
                   AND worker_id IN (
                     SELECT l.worker_id
-                    FROM worker_lease l
-                    JOIN task_attempt a ON a.attempt_id=l.attempt_id
-                    JOIN run r ON r.run_id=a.run_id
-                    JOIN task t ON t.task_id=r.task_id
+                    FROM worker_lease AS l
+                    JOIN task_attempt AS a ON a.attempt_id=l.attempt_id
+                    JOIN run AS r ON r.run_id=a.run_id
+                    JOIN task AS t ON t.task_id=r.task_id
                     WHERE l.state='RELEASED'
                       AND t.state IN ('SUCCEEDED','FAILED','CANCELLED','PARTIAL')
                   )
@@ -3074,28 +4850,78 @@ class ProductRuntime:
                 (now,),
             )
             counts["workers_stopped"] += stopped.rowcount
+            # _finish_success writes Task/Attempt finality and the receipt's
+            # COMMITTED boundary in one transaction, then closes the receipt
+            # in a second idempotent step.  A crash between those steps must
+            # be repaired from the successful durable owner on the next
+            # startup; never infer success from a COMMITTED receipt alone.
+            def committed_success_rows():
+                after = ""
+                while True:
+                    rows = unit.connection.execute(
+                        """
+                        SELECT o.operation_receipt_id
+                        FROM control_operation_receipt AS o
+                        JOIN task AS t ON t.task_id=o.task_id
+                        JOIN task_attempt AS a ON a.attempt_id=o.attempt_id
+                        WHERE o.state='COMMITTED'
+                          AND t.state='SUCCEEDED'
+                          AND a.state='SUCCEEDED'
+                          AND o.operation_receipt_id>?
+                        ORDER BY o.operation_receipt_id
+                        LIMIT ?
+                        """,
+                        (after, MAX_RECONCILIATION_BATCH),
+                    ).fetchall()
+                    if not rows:
+                        return
+                    yield from rows
+                    after = str(rows[-1]["operation_receipt_id"])
+
+            for receipt_row in committed_success_rows():
+                self.progress_persistence.complete_receipt_in_transaction(
+                    unit.connection,
+                    str(receipt_row[0]),
+                    updated_at=now_dt,
+                )
+                counts["receipts_completed_after_restart"] += 1
             unit.commit()
         return counts
 
     def prepare_shutdown(self, deadline: str | None) -> dict[str, str]:
+        # The session has already stopped accepting commands, but the
+        # shutdown owner still must validate and enforce its absolute control
+        # deadline before closing resources or mutating the Catalog.  An
+        # expired/invalid request must not leave a half-prepared runtime.
+        if deadline is not None:
+            self.execution._parse_execution_deadline(deadline)
+            self.execution._assert_deadline_before_side_effect(deadline)
         self._shutdown_prepared = True
+        self.execution._assert_deadline_before_side_effect(deadline)
         self.local_data_transfers.close()
         if self.research_workers is not None:
             for task_id in self.research_workers.task_ids():
+                self.execution._assert_deadline_before_side_effect(deadline)
                 task = self.task_persistence.read_task(task_id)
                 if task.state in TASK_TERMINAL_STATES:
+                    self.execution._assert_deadline_before_side_effect(deadline)
                     if not self.research_workers.confirm_terminal_exit(task_id):
                         raise ConflictError(
                             "shutdown cannot confirm terminal research child exit"
                         )
                 else:
+                    self.execution._assert_deadline_before_side_effect(deadline)
                     self.cancel_research_task(
                         task_id,
                         reason="RUNTIME_SHUTDOWN",
                     )
             if self.research_workers.has_live_processes():
                 raise ConflictError("shutdown cannot confirm all research child exits")
+        self.execution._assert_deadline_before_side_effect(deadline)
         self.reconciliation_summary = self._reconcile_execution_state()
+        if self.runtime_generation_id is not None:
+            self.execution._assert_deadline_before_side_effect(deadline)
+            self.progress_persistence.close_generation(self.runtime_generation_id)
         return {
             "execution_mode": (
                 "ISOLATED_PRODUCT_PROCESS"

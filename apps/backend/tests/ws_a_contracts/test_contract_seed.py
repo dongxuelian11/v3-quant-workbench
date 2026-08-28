@@ -31,15 +31,15 @@ class ContractSeedConformanceTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(data).hexdigest(), entry["sha256"], entry["path"])
 
     def test_registry_counts_and_frozen_seventeen_service_subset(self) -> None:
-        # Product Entry plus bounded Artifact lifecycle expansion (task-
-        # authorized, non-P0): 17->18 services and 64->79 operations. The
-        # original frozen v1 registry remains an EXACT subset.
+        # Product Entry plus bounded Artifact lifecycle and PR03 TaskControl
+        # expansion (task-authorized, non-P0): 17->18 services and 64->83
+        # operations. The original frozen v1 registry remains an EXACT subset.
         legacy_services = [
             item for item in self.index["services"] if item["service"] != "ProductEntryService"
         ]
         self.assertEqual(len(legacy_services), 17)
         self.assertEqual(len(SERVICE_CONTRACTS), 18)
-        self.assertEqual(OPERATION_COUNT, 79)
+        self.assertEqual(OPERATION_COUNT, 83)
         self.assertEqual(len(OPERATIONS), len(set(OPERATIONS)))
         for item in legacy_services:
             contract = SERVICE_CONTRACTS[item["service"]]
@@ -100,7 +100,7 @@ class ContractSeedConformanceTests(unittest.TestCase):
             for item in legacy_services
             for operation_id in item["method_operation_ids"]
         }
-        self.assertEqual(len(legacy_operation_ids), 69)
+        self.assertEqual(len(legacy_operation_ids), 73)
         self.assertEqual(
             set(op.operation_id for op in product_entry.operations) & legacy_operation_ids,
             set(),

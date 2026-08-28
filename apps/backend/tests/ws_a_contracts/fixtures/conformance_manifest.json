@@ -2,7 +2,7 @@
   "schema_id": "urn:v3:ws-a:contract-conformance-fixtures:1.0.0",
   "source_package": "V3_OSS_REBUILD_BR1_WS_A_CONTRACTS_FOUNDATION_SOL_HIGH_01_TASK_PACKAGE_V1_0",
   "service_count": 18,
-  "operation_count": 79,
+  "operation_count": 83,
   "files": [
     {
       "path": "00_SOURCE_AUTHORITY_DIGESTS.json",
@@ -46,8 +46,8 @@
     },
     {
       "path": "asl/index.json",
-      "bytes": 7690,
-      "sha256": "2cf0622191299015029b7ac3d8341f0ad81372df95efaa2f3f3f0f1d5b089de9"
+      "bytes": 7862,
+      "sha256": "aeaff5c1f26e4c1777d9e5938aa7756614e335358bb2f805854a58d14fa9f818"
     },
     {
       "path": "asl/instrument.contract.json",
@@ -101,8 +101,8 @@
     },
     {
       "path": "asl/task.contract.json",
-      "bytes": 26340,
-      "sha256": "14c964b8aa7903a8ec88626bcb84d25dd84de36f201b7703ff976b5a1bdd145b"
+      "bytes": 44512,
+      "sha256": "b7504268e3021343477f6ccb5137d45d1f390e9203a1099b5a3f50bf8f4c28a4"
     },
     {
       "path": "asl/universe.contract.json",
@@ -111,8 +111,8 @@
     },
     {
       "path": "asl/product_entry.contract.json",
-      "bytes": 130815,
-      "sha256": "dc65b42e0135fa0c16c03aecf085d708109ef7aaf65d45a57363094962525a0a"
+      "bytes": 131600,
+      "sha256": "73d55686ff59ceb9554f7c58ef192937aac98ed0f479d4783bd574cefaf973d1"
     }
   ]
 }

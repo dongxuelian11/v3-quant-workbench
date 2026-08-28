@@ -184,6 +184,7 @@ def _research_accept_outcome(
     task_id: str,
     run_id: str,
     *,
+    operation_receipt_id: str | None = None,
     event_cursor: int | None = None,
 ) -> dict[str, Any]:
     outcome: dict[str, Any] = {
@@ -196,6 +197,8 @@ def _research_accept_outcome(
         "research_classification": ["RESEARCH_ONLY", "APPROXIMATE"],
         "truth_admission": dict(RESEARCH_TRUTH_ADMISSION),
     }
+    if operation_receipt_id is not None:
+        outcome["operation_receipt_id"] = operation_receipt_id
     if event_cursor is not None:
         outcome["event_cursor"] = event_cursor
     return outcome
@@ -2775,7 +2778,12 @@ class ProductResearchService:
         )
         if existing is None:
             return None
-        return _research_accept_outcome(str(existing["task_id"]), str(existing["run_id"]))
+        task_id = str(existing["task_id"])
+        return _research_accept_outcome(
+            task_id,
+            str(existing["run_id"]),
+            operation_receipt_id=self.product.execution.operation_receipt_id_for_task(task_id),
+        )
 
     def _capture_provider_submission(self, request: _PreparedResearchRequest) -> Any:
         adapter = self._provider_factory(_provider_runtime_config())
@@ -2849,6 +2857,7 @@ class ProductResearchService:
         context_artifact_id = self.product.execution._persist_context_artifact(
             execution.context_wire,
             provenance="prv_product_research_context_" + execution.request.request_hash,
+            deadline_at=execution.request.execution_deadline_at,
         )
         return self.product.execution._create_task(
             operation_id=PRODUCT_RESEARCH_OPERATION,
@@ -2856,6 +2865,11 @@ class ProductResearchService:
             project_context_revision_id=execution.request.project_context_revision_id,
             normalized_input_hash=canonical_sha256(execution.request.semantic),
             context_artifact_id=context_artifact_id,
+            canonical_input={
+                "semantic_request": dict(execution.request.semantic),
+                "request_hash": execution.request.request_hash,
+                "scope": execution.request.scope,
+            },
             idempotency=(
                 execution.request.scope,
                 execution.request.request_hash,
@@ -2873,6 +2887,7 @@ class ProductResearchService:
         context_artifact_id = self.product.execution._persist_context_artifact(
             _queued_research_context_wire(request),
             provenance="prv_product_research_intent_" + request.request_hash,
+            deadline_at=request.execution_deadline_at,
         )
         return _TaskHandles(
             *self.product.execution._create_task(
@@ -2881,6 +2896,11 @@ class ProductResearchService:
                 project_context_revision_id=request.project_context_revision_id,
                 normalized_input_hash=canonical_sha256(request.semantic),
                 context_artifact_id=context_artifact_id,
+                canonical_input={
+                    "semantic_request": dict(request.semantic),
+                    "request_hash": request.request_hash,
+                    "scope": request.scope,
+                },
                 idempotency=(request.scope, request.request_hash, _accept_outcome_json),
                 execution_deadline_at=request.execution_deadline_at,
                 inline_worker=inline_worker,
@@ -2966,7 +2986,12 @@ class ProductResearchService:
             handles.task, handles.run, handles.attempt, outputs=task_outputs
         )
         return _research_accept_outcome(
-            handles.task.task_id, handles.run.run_id, event_cursor=event_cursor
+            handles.task.task_id,
+            handles.run.run_id,
+            operation_receipt_id=self.product.execution.operation_receipt_id_for_task(
+                handles.task.task_id
+            ),
+            event_cursor=event_cursor,
         )
 
     def _execute_task(
@@ -3028,7 +3053,9 @@ class ProductResearchService:
                 )
             except Exception as error:
                 workers.release_capacity(reservation)
-                if handles is not None:
+                if handles is not None and not getattr(
+                    error, "defer_task_finalization", False
+                ):
                     self.product.execution._finish_failure(
                         handles.task,
                         handles.run,
@@ -3040,6 +3067,9 @@ class ProductResearchService:
             return _research_accept_outcome(
                 handles.task.task_id,
                 handles.run.run_id,
+                operation_receipt_id=self.product.execution.operation_receipt_id_for_task(
+                    handles.task.task_id
+                ),
                 event_cursor=self.product.latest_event_sequence(request.project_id),
             )
         handles = self._accept_request(request, inline_worker=True)

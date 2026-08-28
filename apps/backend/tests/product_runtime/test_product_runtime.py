@@ -17,11 +17,13 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from v3_backend.contracts.registry import OPERATIONS, SERVICE_CONTRACTS
 from v3_backend.errors.codes import ErrorCode
 from v3_backend.errors import ResourceRejectedError
 from v3_backend.errors.exceptions import (
+    ConflictError,
     IdempotencyConflictError,
     InvalidArgumentError,
     TruthPreconditionFailedError,
@@ -50,8 +52,11 @@ from v3_backend.runtime.product_facades import (
     BacktestFacade,
     ProjectSessionFacade,
     _session_row_id_for_value,
+    build_product_facades,
 )
+from v3_backend.runtime.product_research import ProductResearchSubmission
 from v3_backend.runtime.product_entry import create_project
+from v3_backend.control_plane.progress_persistence import DispatchStateConflict
 
 from .helpers import build_product_golden_project
 
@@ -141,6 +146,20 @@ class NormalBootstrapTests(unittest.TestCase):
 
 
 class RegistryRouterTests(_PortsCase):
+    def test_task_control_operations_are_bound_to_existing_task_facade(self) -> None:
+        expected = {
+            "TaskService.v1.getOperationReceipt",
+            "TaskService.v1.listQueue",
+            "TaskService.v1.startQueuedTask",
+            "TaskService.v1.resumeFromCheckpoint",
+        }
+        self.assertTrue(expected.issubset(OPERATIONS))
+        self.assertEqual(
+            {OPERATIONS[operation_id].service for operation_id in expected},
+            {"TaskService"},
+        )
+        self.assertTrue(expected.issubset(self.ports.operation_handlers))
+
     def test_every_bound_operation_is_frozen(self) -> None:
         for operation_id in self.router.bound_operation_ids:
             self.assertIn(operation_id, OPERATIONS)
@@ -159,6 +178,587 @@ class RegistryRouterTests(_PortsCase):
         self.assertEqual(body["truth_state"], "FORMAL")
         self.assertEqual(body["request_id"], response["request_id"])
         self.assertIn("project_context_revision_id", body["read_model"])
+
+
+def _create_canonical_queued_task(
+    product: ProductRuntime,
+    setup: object,
+    *,
+    operation_id: str = "TaskService.v1.getTask",
+    marker: str = "control-task",
+    execution_deadline_at: str | None = None,
+):
+    project_id = str(setup.project_id)
+    revision_id = str(setup.project_context_revision_id)
+    semantic = {
+        "project_id": project_id,
+        "project_context_revision_id": revision_id,
+        "marker": marker,
+    }
+    normalized_input_hash = product_runtime_module.canonical_sha256(semantic)
+    canonical_input = {
+        "normalized_input_hash": normalized_input_hash,
+        "service_contract_version": "1.0.0",
+        "semantic_request": semantic,
+        "request_hash": product_runtime_module._canonical_request_hash(
+            operation_id, semantic
+        ),
+        "scope": "test-task-control",
+    }
+    return product.execution._create_task(
+        operation_id=operation_id,
+        project_id=project_id,
+        project_context_revision_id=revision_id,
+        normalized_input_hash=normalized_input_hash,
+        context_artifact_id=None,
+        execution_deadline_at=execution_deadline_at,
+        inline_worker=False,
+        canonical_input=canonical_input,
+    )
+
+
+class _FakeQueuedWorkers:
+    """System-boundary double: capture the request handed to the worker owner."""
+
+    def __init__(self, *, fail_start: bool = False) -> None:
+        self.reservations: list[str] = []
+        self.released: list[str] = []
+        self.starts: list[tuple[Any, Any, dict[str, Any]]] = []
+        self.admission_lock_calls = 0
+        self.fail_start = fail_start
+
+    @staticmethod
+    def profile_for_operation(operation_id: str) -> tuple[str, str]:
+        if operation_id == "ProductEntryService.v1.submitResearch":
+            return "RESEARCH", "PRODUCT_RESEARCH_CPU"
+        raise KeyError(operation_id)
+
+    def reserve_capacity(self) -> str:
+        token = f"reservation-{len(self.reservations) + 1}"
+        self.reservations.append(token)
+        return token
+
+    def release_capacity(self, token: str) -> None:
+        self.released.append(token)
+
+    def with_admission_lock(self, callback: Any) -> Any:
+        self.admission_lock_calls += 1
+        return callback()
+
+    def cancel(self, task_id: str) -> bool:
+        return False
+
+    def start(self, prepared_request: Any, handles: Any, **kwargs: Any) -> object:
+        self.starts.append((prepared_request, handles, kwargs))
+        if self.fail_start:
+            raise RuntimeError("synthetic worker owner start failure")
+        return object()
+
+
+class TaskControlReadTests(_PortsCase):
+    def test_operation_receipt_is_read_from_durable_control_owner(self) -> None:
+        task, run, attempt = _create_canonical_queued_task(
+            self.product,
+            self.setup,
+            execution_deadline_at="2099-01-01T00:00:00Z",
+        )
+        receipt = self.product.progress_persistence.receipt_for_task(task.task_id)
+
+        response = self.route(
+            "TaskService.v1.getOperationReceipt",
+            operation_receipt_id=receipt.operation_receipt_id,
+        )
+
+        self.assertEqual(response["status"], "OK", response)
+        model = response["body"]["read_model"]
+        self.assertEqual(model["read_model_version"], "v3.operation-receipt/1.0")
+        self.assertEqual(model["operation_receipt_id"], receipt.operation_receipt_id)
+        self.assertEqual(model["state"], "ACCEPTED")
+        self.assertEqual(model["task_id"], task.task_id)
+        self.assertEqual(model["run_id"], run.run_id)
+        self.assertEqual(model["attempt_id"], attempt.attempt_id)
+        self.assertIsNone(model["outcome"])
+
+    def test_deadline_replay_receipt_gap_fails_closed(self) -> None:
+        task, _, _ = _create_canonical_queued_task(
+            self.product,
+            self.setup,
+            execution_deadline_at="2099-01-01T00:00:00Z",
+        )
+        original_reader = self.product.progress_persistence.receipt_for_task
+
+        def missing_receipt(task_id: str) -> object:
+            raise KeyError(task_id)
+
+        self.product.progress_persistence.receipt_for_task = missing_receipt  # type: ignore[method-assign]
+        try:
+            with self.assertRaises(TruthPreconditionFailedError) as caught:
+                self.product.execution.operation_receipt_id_for_task(task.task_id)
+        finally:
+            self.product.progress_persistence.receipt_for_task = original_reader  # type: ignore[method-assign]
+        self.assertEqual(caught.exception.details["reason_code"], "RUN_CONTEXT_CORRUPT")
+
+    def test_operation_receipt_rejects_runtime_generation_drift(self) -> None:
+        task, _, _ = _create_canonical_queued_task(
+            self.product,
+            self.setup,
+            execution_deadline_at="2099-01-01T00:00:00Z",
+        )
+        receipt = self.product.progress_persistence.receipt_for_task(task.task_id)
+        tampered_generation = "rgen_receipt_drift_" + "A" * 16
+        self.product.progress_persistence.create_generation(
+            tampered_generation,
+            process_identity_hash="d" * 64,
+        )
+        connection = self.product._connection()
+        try:
+            connection.execute(
+                "UPDATE control_operation_receipt SET runtime_generation_id=? WHERE operation_receipt_id=?",
+                (tampered_generation, receipt.operation_receipt_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        response = self.route(
+            "TaskService.v1.getOperationReceipt",
+            operation_receipt_id=receipt.operation_receipt_id,
+        )
+
+        error = self.assert_error(response, ErrorCode.TRUTH_PRECONDITION_FAILED.value)
+        self.assertEqual(
+            error["error"]["details"]["reason_code"],
+            "RUN_CONTEXT_CORRUPT",
+        )
+
+    def test_operation_receipt_rejects_orphaned_attempt_binding(self) -> None:
+        task, _, _ = _create_canonical_queued_task(
+            self.product,
+            self.setup,
+            execution_deadline_at="2099-01-01T00:00:00Z",
+        )
+        receipt = self.product.progress_persistence.receipt_for_task(task.task_id)
+        connection = self.product._connection()
+        try:
+            connection.execute(
+                "UPDATE control_operation_receipt SET task_id=NULL,run_id=NULL WHERE operation_receipt_id=?",
+                (receipt.operation_receipt_id,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        response = self.route(
+            "TaskService.v1.getOperationReceipt",
+            operation_receipt_id=receipt.operation_receipt_id,
+        )
+
+        error = self.assert_error(response, ErrorCode.TRUTH_PRECONDITION_FAILED.value)
+        self.assertEqual(
+            error["error"]["details"]["reason_code"],
+            "RUN_CONTEXT_CORRUPT",
+        )
+
+    def test_queue_list_is_project_bound_and_cursor_paged(self) -> None:
+        first, _, _ = _create_canonical_queued_task(
+            self.product, self.setup, marker="queue-first"
+        )
+        second, _, _ = _create_canonical_queued_task(
+            self.product, self.setup, marker="queue-second"
+        )
+
+        first_response = self.route(
+            "TaskService.v1.listQueue",
+            filter={"states": ["HOLD"]},
+            page_size=1,
+        )
+        self.assertEqual(first_response["status"], "OK", first_response)
+        first_page = first_response["body"]["read_model"]
+        self.assertEqual(len(first_page["items"]), 1)
+        self.assertTrue(first_page["has_more"])
+        self.assertIsNotNone(first_page["next_cursor"])
+
+        second_response = self.route(
+            "TaskService.v1.listQueue",
+            filter={"states": ["HOLD"], "cursor": first_page["next_cursor"]},
+            page_size=1,
+        )
+        self.assertEqual(second_response["status"], "OK", second_response)
+        second_page = second_response["body"]["read_model"]
+        self.assertEqual(len(second_page["items"]), 1)
+        self.assertFalse(second_page["has_more"])
+        self.assertEqual(
+            {first_page["items"][0]["task_id"], second_page["items"][0]["task_id"]},
+            {first.task_id, second.task_id},
+        )
+
+    def test_resume_from_checkpoint_stays_truthfully_unavailable(self) -> None:
+        task, _, _ = _create_canonical_queued_task(self.product, self.setup)
+        before_task = self.product.task_persistence.read_task(task.task_id)
+        before_dispatch = self.product.progress_persistence.dispatch_control(task.task_id)
+
+        response = self.route(
+            "TaskService.v1.resumeFromCheckpoint",
+            task_id=task.task_id,
+            checkpoint_artifact_id="art_sha256_" + "0" * 64,
+            compatibility_hash="0" * 64,
+            expected_state_version=before_task.state_version,
+        )
+
+        error = self.assert_error(response, ErrorCode.CAPABILITY_UNAVAILABLE.value)
+        self.assertEqual(
+            error["error"]["details"]["reason_code"],
+            "PRODUCT_CHECKPOINT_RESUME_NOT_AVAILABLE",
+        )
+        after_task = self.product.task_persistence.read_task(task.task_id)
+        after_dispatch = self.product.progress_persistence.dispatch_control(task.task_id)
+        self.assertEqual(after_task, before_task)
+        self.assertEqual(after_dispatch, before_dispatch)
+
+
+class TaskControlStartTests(_PortsCase):
+    @staticmethod
+    def _research_source() -> dict[str, str]:
+        return {
+            "provider_id": "pvd_akshare_eastmoney_a_share_eod_v1",
+            "connector_version_id": "cov_akshare_eod_research_v1",
+            "logical_dataset": "CN_A_SHARE_EOD",
+            "frequency": "P1D",
+            "symbol": "000001",
+            "start_date": "20260106",
+            "end_date": "20260107",
+        }
+
+    def test_start_rebuilds_research_request_from_immutable_run_input(self) -> None:
+        source = self._research_source()
+        prepared = self.product.research._prepare_request(
+            ProductResearchSubmission(
+                project_id=self.setup.project_id,
+                project_context_revision_id=self.setup.project_context_revision_id,
+                research_profile_id="RESEARCH_FREE_DATA_V1",
+                strategy_profile_id="RESEARCH_CLOSE_RANK_TOP1_V1",
+                source=source,
+                idempotency_key="queued-research-control",
+            )
+        )
+        handles = self.product.research._accept_request(prepared)
+        fake_workers = _FakeQueuedWorkers()
+        self.product.product_workers = fake_workers
+        self.product.research_workers = fake_workers
+
+        handler = next(
+            facade.handlers()["TaskService.v1.startQueuedTask"]
+            for facade in build_product_facades(self.product)
+            if "TaskService.v1.startQueuedTask" in facade.handlers()
+        )
+        response = handler(
+            {
+                "request_id": mint_uuid7(),
+                "project_id": self.setup.project_id,
+                "project_context_revision_id": self.setup.project_context_revision_id,
+                "expected_api_version": "1.0",
+                "task_id": handles.task.task_id,
+                "expected_state_version": handles.task.state_version,
+                "expected_dispatch_state_version": 0,
+            }
+        )
+
+        self.assertEqual(response["truth_state"], "FORMAL")
+        self.assertEqual(response["read_model"]["task_id"], handles.task.task_id)
+        self.assertEqual(len(fake_workers.starts), 1)
+        rebuilt, rebuilt_handles, launch = fake_workers.starts[0]
+        self.assertEqual(rebuilt.semantic, prepared.semantic)
+        self.assertEqual(rebuilt.request_hash, prepared.request_hash)
+        self.assertEqual(rebuilt.scope, prepared.scope)
+        self.assertEqual(rebuilt_handles.task.task_id, handles.task.task_id)
+        self.assertEqual(
+            launch["operation_id"], "ProductEntryService.v1.submitResearch"
+        )
+        self.assertEqual(launch["work_kind"], "RESEARCH")
+        self.assertEqual(launch["resource_class"], "PRODUCT_RESEARCH_CPU")
+        dispatch = self.product.progress_persistence.dispatch_control(handles.task.task_id)
+        self.assertEqual(dispatch.state, "READY")
+        self.assertIsNotNone(dispatch.user_confirmed_at)
+
+    def test_queued_cancel_closes_attempt_when_admission_has_no_child(self) -> None:
+        task, run, attempt = _create_canonical_queued_task(
+            self.product,
+            self.setup,
+            marker="queued-cancel-before-worker-admission",
+        )
+        fake_workers = _FakeQueuedWorkers()
+        self.product.product_workers = fake_workers
+        self.product.research_workers = fake_workers
+
+        self.assertTrue(
+            self.product.cancel_research_task(
+                task.task_id,
+                reason="USER_CANCEL_BEFORE_WORKER_ADMISSION",
+            )
+        )
+
+        self.assertEqual(fake_workers.admission_lock_calls, 1)
+        self.assertEqual(
+            self.product.task_persistence.read_task(task.task_id).state,
+            TaskState.CANCELLED,
+        )
+        self.assertEqual(
+            self.product.task_persistence.latest_attempt(task.task_id).state.value,
+            "CANCELLED",
+        )
+        self.assertEqual(
+            self.product.progress_persistence.dispatch_control(task.task_id).state,
+            "TERMINAL",
+        )
+
+    def test_restart_held_task_rebinds_generation_only_on_explicit_start(self) -> None:
+        prepared = self.product.research._prepare_request(
+            ProductResearchSubmission(
+                project_id=self.setup.project_id,
+                project_context_revision_id=self.setup.project_context_revision_id,
+                research_profile_id="RESEARCH_FREE_DATA_V1",
+                strategy_profile_id="RESEARCH_CLOSE_RANK_TOP1_V1",
+                source=self._research_source(),
+                idempotency_key="queued-research-restart-control",
+                execution_deadline_at="2099-01-01T00:00:00Z",
+            )
+        )
+        handles = self.product.research._accept_request(prepared)
+        original_generation = self.product.runtime_generation_id
+        original_receipt = self.product.progress_persistence.receipt_for_task(
+            handles.task.task_id
+        )
+        self.assertEqual(original_receipt.runtime_generation_id, original_generation)
+
+        restarted = ProductRuntime(self.storage_root)
+        held_task = restarted.task_persistence.read_task(handles.task.task_id)
+        held_dispatch = restarted.progress_persistence.dispatch_control(handles.task.task_id)
+        held_receipt = restarted.progress_persistence.receipt_for_task(handles.task.task_id)
+        self.assertEqual(held_dispatch.state, "HOLD")
+        self.assertEqual(held_receipt.state, "ACCEPTED")
+        self.assertNotEqual(restarted.runtime_generation_id, original_generation)
+        self.assertEqual(held_receipt.runtime_generation_id, original_generation)
+
+        fake_workers = _FakeQueuedWorkers()
+        restarted.product_workers = fake_workers
+        restarted.research_workers = fake_workers
+        handler = next(
+            facade.handlers()["TaskService.v1.startQueuedTask"]
+            for facade in build_product_facades(restarted)
+            if "TaskService.v1.startQueuedTask" in facade.handlers()
+        )
+        response = handler(
+            {
+                "request_id": mint_uuid7(),
+                "project_id": self.setup.project_id,
+                "project_context_revision_id": self.setup.project_context_revision_id,
+                "expected_api_version": "1.0",
+                "task_id": handles.task.task_id,
+                "expected_state_version": held_task.state_version,
+                "expected_dispatch_state_version": held_dispatch.state_version,
+            }
+        )
+
+        self.assertEqual(response["truth_state"], "FORMAL")
+        attempt = restarted.task_persistence.latest_attempt(handles.task.task_id)
+        rebound_receipt = restarted.progress_persistence.receipt_for_task(
+            handles.task.task_id
+        )
+        self.assertEqual(
+            restarted.progress_persistence.execution_context_for_attempt(
+                attempt.attempt_id
+            )["runtime_generation_id"],
+            restarted.runtime_generation_id,
+        )
+        self.assertEqual(rebound_receipt.runtime_generation_id, restarted.runtime_generation_id)
+        self.assertEqual(
+            restarted.progress_persistence.dispatch_control(handles.task.task_id).state,
+            "READY",
+        )
+
+    def test_dispatch_cas_failure_rolls_back_rebind_and_releases_capacity(self) -> None:
+        prepared = self.product.research._prepare_request(
+            ProductResearchSubmission(
+                project_id=self.setup.project_id,
+                project_context_revision_id=self.setup.project_context_revision_id,
+                research_profile_id="RESEARCH_FREE_DATA_V1",
+                strategy_profile_id="RESEARCH_CLOSE_RANK_TOP1_V1",
+                source=self._research_source(),
+                idempotency_key="queued-research-cas-control",
+            )
+        )
+        handles = self.product.research._accept_request(prepared)
+        fake_workers = _FakeQueuedWorkers()
+        self.product.product_workers = fake_workers
+        self.product.research_workers = fake_workers
+        original_transition = self.product.progress_persistence.transition_dispatch_in_transaction
+
+        def raise_dispatch_conflict(*args: Any, **kwargs: Any) -> Any:
+            raise DispatchStateConflict("synthetic stale dispatch CAS")
+
+        self.product.progress_persistence.transition_dispatch_in_transaction = (  # type: ignore[method-assign]
+            raise_dispatch_conflict
+        )
+        try:
+            with self.assertRaises(ConflictError):
+                self.product.start_queued_task(
+                    task_id=handles.task.task_id,
+                    project_id=self.setup.project_id,
+                    project_context_revision_id=self.setup.project_context_revision_id,
+                    expected_state_version=handles.task.state_version,
+                    expected_dispatch_state_version=0,
+                )
+        finally:
+            self.product.progress_persistence.transition_dispatch_in_transaction = original_transition  # type: ignore[method-assign]
+
+        self.assertEqual(fake_workers.released, ["reservation-1"])
+        self.assertEqual(
+            self.product.progress_persistence.dispatch_control(handles.task.task_id).state,
+            "HOLD",
+        )
+        self.assertEqual(
+            self.product.progress_persistence.execution_context_for_attempt(
+                handles.attempt.attempt_id
+            )["runtime_generation_id"],
+            self.product.runtime_generation_id,
+        )
+        self.assertEqual(fake_workers.starts, [])
+
+    def test_canonical_run_input_drift_fails_before_queue_mutation(self) -> None:
+        prepared = self.product.research._prepare_request(
+            ProductResearchSubmission(
+                project_id=self.setup.project_id,
+                project_context_revision_id=self.setup.project_context_revision_id,
+                research_profile_id="RESEARCH_FREE_DATA_V1",
+                strategy_profile_id="RESEARCH_CLOSE_RANK_TOP1_V1",
+                source=self._research_source(),
+                idempotency_key="queued-research-corrupt-control",
+            )
+        )
+        handles = self.product.research._accept_request(prepared)
+        original_context = self.product.progress_persistence.execution_context_for_attempt(
+            handles.attempt.attempt_id
+        )
+        corrupted = dict(original_context["canonical_input"])
+        corrupted["semantic_request"] = {
+            **dict(corrupted["semantic_request"]),
+            "source": {
+                **dict(corrupted["semantic_request"]["source"]),
+                "symbol": "000002",
+            },
+        }
+        original_reader = self.product.progress_persistence.execution_context_for_attempt
+
+        def return_corrupted_context(_attempt_id: str) -> dict[str, object]:
+            return {**original_context, "canonical_input": corrupted}
+
+        self.product.progress_persistence.execution_context_for_attempt = (  # type: ignore[method-assign]
+            return_corrupted_context
+        )
+        fake_workers = _FakeQueuedWorkers()
+        self.product.product_workers = fake_workers
+        self.product.research_workers = fake_workers
+
+        try:
+            with self.assertRaises(TruthPreconditionFailedError) as caught:
+                self.product.start_queued_task(
+                    task_id=handles.task.task_id,
+                    project_id=self.setup.project_id,
+                    project_context_revision_id=self.setup.project_context_revision_id,
+                    expected_state_version=handles.task.state_version,
+                    expected_dispatch_state_version=0,
+                )
+        finally:
+            self.product.progress_persistence.execution_context_for_attempt = original_reader  # type: ignore[method-assign]
+        self.assertEqual(caught.exception.details["reason_code"], "RUN_CONTEXT_CORRUPT")
+        self.assertEqual(fake_workers.reservations, [])
+        self.assertEqual(
+            self.product.progress_persistence.dispatch_control(handles.task.task_id).state,
+            "HOLD",
+        )
+
+    def test_expired_queued_deadline_fails_before_reservation(self) -> None:
+        prepared = self.product.research._prepare_request(
+            ProductResearchSubmission(
+                project_id=self.setup.project_id,
+                project_context_revision_id=self.setup.project_context_revision_id,
+                research_profile_id="RESEARCH_FREE_DATA_V1",
+                strategy_profile_id="RESEARCH_CLOSE_RANK_TOP1_V1",
+                source=self._research_source(),
+                idempotency_key="queued-research-deadline-control",
+                execution_deadline_at="2099-01-01T00:00:00Z",
+            )
+        )
+        handles = self.product.research._accept_request(prepared)
+        expired = "2020-01-01T00:00:00Z"
+        connection = self.product._connection()
+        try:
+            connection.execute(
+                "UPDATE task SET execution_deadline_at=? WHERE task_id=?",
+                (expired, handles.task.task_id),
+            )
+            connection.execute(
+                "UPDATE task_attempt SET execution_deadline_at=? WHERE attempt_id=?",
+                (expired, handles.attempt.attempt_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        fake_workers = _FakeQueuedWorkers()
+        self.product.product_workers = fake_workers
+        self.product.research_workers = fake_workers
+
+        with self.assertRaises(ResourceRejectedError):
+            self.product.start_queued_task(
+                task_id=handles.task.task_id,
+                project_id=self.setup.project_id,
+                project_context_revision_id=self.setup.project_context_revision_id,
+                expected_state_version=handles.task.state_version,
+                expected_dispatch_state_version=0,
+            )
+        self.assertEqual(fake_workers.reservations, [])
+        self.assertEqual(
+            self.product.progress_persistence.dispatch_control(handles.task.task_id).state,
+            "HOLD",
+        )
+
+    def test_worker_start_failure_terminalizes_after_ready_admission(self) -> None:
+        prepared = self.product.research._prepare_request(
+            ProductResearchSubmission(
+                project_id=self.setup.project_id,
+                project_context_revision_id=self.setup.project_context_revision_id,
+                research_profile_id="RESEARCH_FREE_DATA_V1",
+                strategy_profile_id="RESEARCH_CLOSE_RANK_TOP1_V1",
+                source=self._research_source(),
+                idempotency_key="queued-research-worker-failure-control",
+            )
+        )
+        handles = self.product.research._accept_request(prepared)
+        fake_workers = _FakeQueuedWorkers(fail_start=True)
+        self.product.product_workers = fake_workers
+        self.product.research_workers = fake_workers
+
+        with self.assertRaisesRegex(RuntimeError, "synthetic worker owner start failure"):
+            self.product.start_queued_task(
+                task_id=handles.task.task_id,
+                project_id=self.setup.project_id,
+                project_context_revision_id=self.setup.project_context_revision_id,
+                expected_state_version=handles.task.state_version,
+                expected_dispatch_state_version=0,
+            )
+        self.assertEqual(fake_workers.released, ["reservation-1"])
+        self.assertEqual(
+            self.product.task_persistence.read_task(handles.task.task_id).state,
+            TaskState.FAILED,
+        )
+        self.assertEqual(
+            self.product.progress_persistence.dispatch_control(handles.task.task_id).state,
+            "TERMINAL",
+        )
+        self.assertEqual(
+            self.product.task_persistence.latest_attempt(handles.task.task_id).state.value,
+            "FAILED",
+        )
 
 
 class CapabilityMatrixTests(_PortsCase):
@@ -234,7 +834,9 @@ class CapabilityMatrixTests(_PortsCase):
             for operation in SERVICE_CONTRACTS["TaskService"].operations
         }
         bound_ops = frozen_ops & set(self.ports.operation_handlers)
-        self.assertEqual(len(bound_ops), 5)
+        # PR03 binds the four TaskControl operations through TaskFacade while
+        # the pre-existing TaskService set remains otherwise unchanged.
+        self.assertEqual(len(bound_ops), 9)
         self.assertEqual(
             frozen_ops - bound_ops,
             {"TaskService.v1.resumeTask"},
@@ -878,6 +1480,128 @@ class GoldenExecutionTests(_PortsCase):
 
 
 class RestartRecoveryTests(_PortsCase):
+    def test_restart_completes_receipt_left_at_committed_boundary(self) -> None:
+        task, run, attempt = self.product.execution._create_task(
+            operation_id="ProductEntryService.v1.submitResearch",
+            project_id=self.setup.project_id,
+            project_context_revision_id=self.setup.project_context_revision_id,
+            normalized_input_hash="e" * 64,
+            context_artifact_id=None,
+            execution_deadline_at="2030-01-01T00:00:00Z",
+        )
+        self.product.execution._transition_to_running(task, run, attempt)
+
+        original_complete_receipt = self.product.progress_persistence.complete_receipt
+
+        def crash_after_commit(_: str):
+            raise RuntimeError("simulated crash after COMMITTED boundary")
+
+        self.product.progress_persistence.complete_receipt = crash_after_commit
+        try:
+            with self.assertRaisesRegex(RuntimeError, "after COMMITTED boundary"):
+                self.product.execution._finish_success(
+                    task,
+                    run,
+                    attempt,
+                    outputs={"result": "committed"},
+                )
+        finally:
+            self.product.progress_persistence.complete_receipt = original_complete_receipt
+
+        before_restart = self.product.progress_persistence.receipt_for_attempt(attempt.attempt_id)
+        self.assertEqual(before_restart.state, "COMMITTED")
+        restarted = ProductRuntime(self.storage_root)
+        after_restart = restarted.progress_persistence.receipt_for_attempt(attempt.attempt_id)
+        self.assertEqual(after_restart.state, "SUCCEEDED")
+        self.assertEqual(
+            restarted.reconciliation_summary["receipts_completed_after_restart"],
+            1,
+        )
+
+    def test_restart_completes_queued_cancel_intent_without_a_lease(self) -> None:
+        task, _, _ = self.product.execution._create_task(
+            operation_id="BacktestService.v1.submitBacktest",
+            project_id=self.setup.project_id,
+            project_context_revision_id=self.setup.project_context_revision_id,
+            normalized_input_hash="c" * 64,
+            context_artifact_id=None,
+            inline_worker=False,
+        )
+
+        # The in-process compatibility owner has no worker to signal, but the
+        # first transaction still durably records CANCEL_REQUESTED.  A crash
+        # at that boundary must not strand the queue row forever.
+        with self.assertRaises(ConflictError):
+            self.product.cancel_research_task(task.task_id, reason="USER_CANCEL")
+
+        restarted = ProductRuntime(self.storage_root)
+        self.assertEqual(
+            restarted.task_persistence.read_task(task.task_id).state,
+            TaskState.CANCELLED,
+        )
+        self.assertGreaterEqual(
+            restarted.reconciliation_summary["tasks_cancelled_after_restart"], 1
+        )
+        connection = restarted._connection(read_only=True)
+        try:
+            row = connection.execute(
+                """
+                SELECT t.state AS task_state,r.state AS run_state,
+                       a.state AS attempt_state,d.state AS dispatch_state
+                FROM task AS t
+                JOIN run AS r ON r.task_id=t.task_id
+                JOIN task_attempt AS a ON a.run_id=r.run_id
+                JOIN task_dispatch_control AS d ON d.task_id=t.task_id
+                WHERE t.task_id=?
+                """,
+                (task.task_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(
+            tuple(row), ("CANCELLED", "TERMINAL", "CANCELLED", "TERMINAL")
+        )
+
+    def test_restart_preserves_cancel_intent_over_worker_loss(self) -> None:
+        task, run, attempt = self.product.execution._create_task(
+            operation_id="BacktestService.v1.submitBacktest",
+            project_id=self.setup.project_id,
+            project_context_revision_id=self.setup.project_context_revision_id,
+            normalized_input_hash="d" * 64,
+            context_artifact_id=None,
+        )
+        self.product.execution._transition_to_running(task, run, attempt)
+
+        with self.assertRaises(ConflictError):
+            self.product.cancel_research_task(task.task_id, reason="USER_CANCEL")
+
+        restarted = ProductRuntime(self.storage_root)
+        self.assertEqual(
+            restarted.task_persistence.read_task(task.task_id).state,
+            TaskState.CANCELLED,
+        )
+        connection = restarted._connection(read_only=True)
+        try:
+            row = connection.execute(
+                """
+                SELECT t.state AS task_state,r.state AS run_state,
+                       a.state AS attempt_state,l.state AS lease_state,
+                       w.state AS worker_state
+                FROM task AS t
+                JOIN run AS r ON r.task_id=t.task_id
+                JOIN task_attempt AS a ON a.run_id=r.run_id
+                JOIN worker_lease AS l ON l.attempt_id=a.attempt_id
+                JOIN worker AS w ON w.worker_id=l.worker_id
+                WHERE t.task_id=?
+                """,
+                (task.task_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(
+            tuple(row), ("CANCELLED", "TERMINAL", "LOST", "REVOKED", "LOST")
+        )
+
     def test_restart_reconciles_orphan_active_task_lease_and_worker(self) -> None:
         task, run, attempt = self.product.execution._create_task(
             operation_id="BacktestService.v1.submitBacktest",

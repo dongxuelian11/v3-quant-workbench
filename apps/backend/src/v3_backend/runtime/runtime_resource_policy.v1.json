@@ -1,0 +1,47 @@
+{
+  "schema_id": "urn:v3:runtime-resource-policy:1.0.0",
+  "soft_pressure_ratio": "0.80",
+  "minimum_admission": {
+    "cpu_slots": 1,
+    "memory_bytes": 536870912,
+    "scratch_bytes": 1073741824
+  },
+  "presets": {
+    "CONSERVATIVE": {
+      "cpu_slots": 1,
+      "memory_bytes": 1073741824,
+      "scratch_bytes": 2147483648
+    },
+    "STANDARD": {
+      "cpu_slots": 2,
+      "memory_bytes": 2147483648,
+      "scratch_bytes": 8589934592
+    },
+    "HIGH": {
+      "cpu_slots": 4,
+      "memory_bytes": 4294967296,
+      "scratch_bytes": 34359738368
+    }
+  },
+  "host_reserve": {
+    "memory_min_bytes": 2147483648,
+    "memory_total_ratio": "0.25",
+    "memory_available_min_bytes": 1073741824,
+    "volume_min_free_bytes": 5368709120,
+    "volume_free_ratio": "0.20"
+  },
+  "operation_stall_seconds": {
+    "RESEARCH": 900,
+    "LOCAL_DATA_IMPORT": 180,
+    "FACTOR_STUDY": 180,
+    "RESEARCH_BACKTEST": 180,
+    "STRATEGY_AUTHORING": 120,
+    "RESULT_VERIFY": 120
+  },
+  "cancellation_seconds": {
+    "stall_checkpoint_grace": 30,
+    "cooperative_cancel": 5,
+    "terminate_wait": 5,
+    "kill_wait": 2
+  }
+}

@@ -158,6 +158,20 @@ class RequestRouterTests(unittest.TestCase):
         self.assertEqual(response["error"]["details"]["reason_code"], "DEADLINE_EXPIRED")
         self.assertEqual(calls, [], "an expired request must never reach the operation handler")
 
+    def test_deadline_accepts_legacy_rfc3339_fractional_precision_beyond_python_microseconds(self) -> None:
+        observed: list[object] = []
+
+        def handler(dto: dict[str, object]) -> dict[str, object]:
+            observed.append(dto)
+            return {"request_id": dto["request_id"], "truth_state": "UNAVAILABLE", "read_model": {}}
+
+        wire = request()
+        wire["deadline_at"] = "2099-01-01T00:00:00.123456789Z"
+        response = RequestRouter({"TaskService.v1.getTask": handler}).route(wire)
+
+        self.assertEqual(response["status"], "OK")
+        self.assertEqual(len(observed), 1)
+
     def test_operation_correlation_and_unknown_operation(self) -> None:
         calls: list[str] = []
 
@@ -193,6 +207,24 @@ class RequestRouterTests(unittest.TestCase):
         conflicting = request({**get_task_body(), "task_id": "tsk_11111111111111111111111111"})
         with self.assertRaises(ProtocolViolation):
             router.route(conflicting)
+
+    def test_mapped_handler_error_is_replayed_without_reexecution(self) -> None:
+        calls = 0
+
+        def handler(dto: dict[str, object]) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("side effect outcome is now uncertain")
+
+        router = RequestRouter({"TaskService.v1.getTask": handler})
+        original = request()
+        first = router.route(original)
+        second = router.route(original)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["status"], "ERROR")
+        self.assertEqual(calls, 1)
+        self.assertEqual(router.retained_response_count, 1)
 
 
 class FakeReplay:

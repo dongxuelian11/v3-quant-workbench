@@ -299,8 +299,8 @@ test("renderer-facing bridge contract stays free of generic transport members", 
   // Product Entry Data/Factor/Strategy/Backtest/Result paths remain individually typed. The two
   // unavailable-runtime registrations deliberately reuse status/capabilities.
   const registrations = [...ipc.matchAll(/handle\((PRODUCT_RUNTIME_CHANNELS\.[A-Za-z]+)/g)].map((match) => match[1]);
-  assert.equal(registrations.length, 32);
-  assert.equal(new Set(registrations).size, 30);
+  assert.equal(registrations.length, 37);
+  assert.equal(new Set(registrations).size, 35);
   assert.match(ipc, /PRODUCT_RUNTIME_CHANNELS\.previewResearchBacktest/);
   assert.doesNotMatch(ipc, /operation_?[Ii]d/);
   assert.match(ipc, /trusted\(event\)/);

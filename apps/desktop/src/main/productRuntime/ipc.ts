@@ -23,6 +23,11 @@ export const PRODUCT_RUNTIME_CHANNELS = Object.freeze({
   connectExistingProject: "productRuntime:connectExistingProject",
   listTasks: "productRuntime:listTasks",
   getTask: "productRuntime:getTask",
+  getOperationReceipt: "productRuntime:getOperationReceipt",
+  listQueue: "productRuntime:listQueue",
+  startQueuedTask: "productRuntime:startQueuedTask",
+  resumeFromCheckpoint: "productRuntime:resumeFromCheckpoint",
+  cancelTask: "productRuntime:cancelTask",
   retryResearchBacktest: "productRuntime:retryResearchBacktest",
   getTaskEvents: "productRuntime:getTaskEvents",
   getResult: "productRuntime:getResult",
@@ -125,6 +130,53 @@ export function registerProductRuntimeIpc(
   handle(PRODUCT_RUNTIME_CHANNELS.getTask, (value) => {
     const item = assertObject(value, ["taskId"]);
     return bridge.getTask(requiredString(item, "taskId"));
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.getOperationReceipt, (value) => {
+    const item = assertObject(value, ["operationReceiptId"]);
+    return bridge.getOperationReceipt(requiredString(item, "operationReceiptId"));
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.listQueue, (value) => {
+    if (value === undefined) return bridge.listQueue();
+    const item = assertObject(value, ["states", "cursor", "pageSize"]);
+    const states = item.states;
+    if (states !== undefined) {
+      if (!Array.isArray(states) || states.length === 0 || states.length > 4) {
+        throw new ProductAdapterError("INVALID_ARGUMENT", "queue states must be a non-empty array of at most four items");
+      }
+      if (new Set(states).size !== states.length || states.some((state) => !["HOLD", "READY", "DISPATCHED", "TERMINAL"].includes(String(state)))) {
+        throw new ProductAdapterError("INVALID_ARGUMENT", "queue states contain an unsupported or duplicate value");
+      }
+    }
+    return bridge.listQueue({
+      ...(states === undefined ? {} : { states: states as ("HOLD" | "READY" | "DISPATCHED" | "TERMINAL")[] }),
+      ...(item.cursor === undefined ? {} : { cursor: requiredString(item, "cursor") }),
+      ...(item.pageSize === undefined ? {} : { pageSize: requiredInteger(item, "pageSize", 1, 200) })
+    });
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.startQueuedTask, (value) => {
+    const item = assertObject(value, ["taskId", "expectedStateVersion", "expectedDispatchStateVersion"]);
+    return bridge.startQueuedTask({
+      taskId: requiredString(item, "taskId"),
+      expectedStateVersion: requiredInteger(item, "expectedStateVersion", 0, Number.MAX_SAFE_INTEGER),
+      expectedDispatchStateVersion: requiredInteger(item, "expectedDispatchStateVersion", 0, Number.MAX_SAFE_INTEGER)
+    });
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.resumeFromCheckpoint, (value) => {
+    const item = assertObject(value, ["taskId", "checkpointArtifactId", "compatibilityHash", "expectedStateVersion"]);
+    return bridge.resumeFromCheckpoint({
+      taskId: requiredString(item, "taskId"),
+      checkpointArtifactId: requiredString(item, "checkpointArtifactId"),
+      compatibilityHash: requiredString(item, "compatibilityHash"),
+      expectedStateVersion: requiredInteger(item, "expectedStateVersion", 0, Number.MAX_SAFE_INTEGER)
+    });
+  });
+  handle(PRODUCT_RUNTIME_CHANNELS.cancelTask, (value) => {
+    const item = assertObject(value, ["taskId", "expectedStateVersion", "reason"]);
+    return bridge.cancelTask({
+      taskId: requiredString(item, "taskId"),
+      expectedStateVersion: requiredInteger(item, "expectedStateVersion", 0, Number.MAX_SAFE_INTEGER),
+      reason: requiredString(item, "reason")
+    });
   });
   handle(PRODUCT_RUNTIME_CHANNELS.retryResearchBacktest, (value) => {
     const item = assertObject(value, ["taskId"]);

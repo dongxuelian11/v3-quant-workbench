@@ -21,7 +21,10 @@ from v3_backend.contracts.product_entry import (
 )
 from v3_backend.runtime.product_entry import create_project
 from v3_backend.runtime.product_facades import build_product_facades
-from v3_backend.runtime.product_research import _ensure_provider_admission
+from v3_backend.runtime.product_research import (
+    ProductResearchSubmission,
+    _ensure_provider_admission,
+)
 from v3_backend.runtime.product_release_acceptance import (
     DETERMINISTIC_SUCCESS,
     DETERMINISTIC_UNAVAILABLE,
@@ -33,11 +36,17 @@ from v3_backend.runtime.product_workers import (
     PRODUCT_LEASE_EXPIRY_SECONDS,
     ProductResearchWorkerManager,
     ProductResearchWorkerConfig,
+    _ProductProcessFactory,
 )
 from v3_backend.control_plane.worker_supervisor import WorkerSupervisor
-from v3_backend.domain.tasks.entities import TaskState
-from v3_backend.workers.protocol import Progress, WorkerHeartbeat, WorkerHello
-from v3_backend.errors import CapabilityUnavailableError, ResourceRejectedError
+from v3_backend.domain.tasks.entities import AttemptState, RunState, TaskState
+from v3_backend.domain.tasks.state_machine import TaskTransitionContext
+from v3_backend.workers.protocol import Progress, WorkerHeartbeat, WorkerHello, WorkerRequest
+from v3_backend.errors import (
+    CapabilityUnavailableError,
+    InvalidArgumentError,
+    ResourceRejectedError,
+)
 from v3_backend.contracts.registry import SERVICE_CONTRACTS
 from v3_backend.runtime.composition_root import RuntimePorts, RuntimeSession
 from v3_backend.runtime.framed_stdio import FrameDecoder, encode_frame
@@ -127,6 +136,213 @@ def _request(project_id: str, revision_id: str, *, key: str = "research-1") -> d
 
 
 class ProductRuntimeResearchTests(unittest.TestCase):
+    def test_process_factory_cleans_partial_start_before_dispatch_can_fail(self) -> None:
+        class _Endpoint:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        class _PartiallyStartedProcess:
+            pid = 90210
+
+            def __init__(self) -> None:
+                self.live = False
+                self.terminated = False
+
+            def start(self) -> None:
+                self.live = True
+                raise RuntimeError("synthetic process start failure")
+
+            def is_alive(self) -> bool:
+                return self.live
+
+            def terminate(self) -> None:
+                self.terminated = True
+                self.live = False
+
+            def kill(self) -> None:
+                self.live = False
+
+            def join(self, _timeout: float | None = None) -> None:
+                return
+
+        class _Context:
+            def __init__(self) -> None:
+                self.endpoints: list[_Endpoint] = []
+                self.process = _PartiallyStartedProcess()
+
+            def Pipe(self, *, duplex: bool) -> tuple[_Endpoint, _Endpoint]:
+                self.assert_duplex = duplex
+                first, second = _Endpoint(), _Endpoint()
+                self.endpoints.extend((first, second))
+                return first, second
+
+            def Event(self) -> Event:
+                return Event()
+
+            def Process(self, **_kwargs: object) -> _PartiallyStartedProcess:
+                return self.process
+
+        attempt_id = "att_" + "A" * 26
+        run_id = "run_" + "A" * 26
+        task_id = "tsk_" + "A" * 26
+        request = WorkerRequest(
+            attempt_id=attempt_id,
+            run_id=run_id,
+            operation_id="ProductEntryService.v1.submitResearch",
+            canonical_input={"bounded": "input"},
+            input_hash="a" * 64,
+            read_tickets=(),
+            staging_namespace=f"attempt/{attempt_id}",
+            resource_lease_token="lease-token",
+            cancellation_channel=f"cancel/{attempt_id}",
+            checkpoint_policy="NOT_AVAILABLE",
+        )
+        handles = SimpleNamespace(
+            task=SimpleNamespace(task_id=task_id),
+            run=SimpleNamespace(run_id=run_id),
+            attempt=SimpleNamespace(attempt_id=attempt_id),
+        )
+        context = _Context()
+        factory = _ProductProcessFactory(
+            context,
+            Path("."),
+            start_delay_seconds=0.0,
+            provider_mode=None,
+            cooperative_cancel=True,
+        )
+        factory.stage(
+            attempt_id,
+            object(),
+            handles,
+            operation_id=request.operation_id,
+            work_kind="RESEARCH",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "synthetic process start failure"):
+            factory.spawn(request)
+
+        self.assertTrue(context.process.terminated)
+        self.assertFalse(context.process.is_alive())
+        self.assertTrue(all(endpoint.closed for endpoint in context.endpoints))
+        self.assertNotIn(attempt_id, factory._pending)
+        self.assertNotIn(attempt_id, factory._spawned)
+
+    def test_process_factory_discard_cleans_child_after_dispatch_persistence_failure(self) -> None:
+        class _Endpoint:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        class _StartedProcess:
+            pid = 90211
+
+            def __init__(self) -> None:
+                self.live = False
+                self.terminated = False
+
+            def start(self) -> None:
+                self.live = True
+
+            def is_alive(self) -> bool:
+                return self.live
+
+            def terminate(self) -> None:
+                self.terminated = True
+                self.live = False
+
+            def kill(self) -> None:
+                self.live = False
+
+            def join(self, _timeout: float | None = None) -> None:
+                return
+
+        class _Context:
+            def __init__(self) -> None:
+                self.endpoints: list[_Endpoint] = []
+                self.process = _StartedProcess()
+
+            def Pipe(self, *, duplex: bool) -> tuple[_Endpoint, _Endpoint]:
+                del duplex
+                first, second = _Endpoint(), _Endpoint()
+                self.endpoints.extend((first, second))
+                return first, second
+
+            def Event(self) -> Event:
+                return Event()
+
+            def Process(self, **_kwargs: object) -> _StartedProcess:
+                return self.process
+
+        attempt_id = "att_" + "B" * 26
+        run_id = "run_" + "B" * 26
+        task_id = "tsk_" + "B" * 26
+        request = WorkerRequest(
+            attempt_id=attempt_id,
+            run_id=run_id,
+            operation_id="ProductEntryService.v1.submitResearch",
+            canonical_input={"bounded": "input"},
+            input_hash="b" * 64,
+            read_tickets=(),
+            staging_namespace=f"attempt/{attempt_id}",
+            resource_lease_token="lease-token",
+            cancellation_channel=f"cancel/{attempt_id}",
+            checkpoint_policy="NOT_AVAILABLE",
+        )
+        handles = SimpleNamespace(
+            task=SimpleNamespace(task_id=task_id),
+            run=SimpleNamespace(run_id=run_id),
+            attempt=SimpleNamespace(attempt_id=attempt_id),
+        )
+        context = _Context()
+        factory = _ProductProcessFactory(
+            context,
+            Path("."),
+            start_delay_seconds=0.0,
+            provider_mode=None,
+            cooperative_cancel=True,
+        )
+        factory.stage(
+            attempt_id,
+            object(),
+            handles,
+            operation_id=request.operation_id,
+            work_kind="RESEARCH",
+        )
+
+        factory.spawn(request)
+        self.assertIn(attempt_id, factory._spawned)
+        factory.discard(attempt_id)
+
+        self.assertTrue(context.process.terminated)
+        self.assertFalse(context.process.is_alive())
+        self.assertTrue(all(endpoint.closed for endpoint in context.endpoints))
+        self.assertNotIn(attempt_id, factory._pending)
+        self.assertNotIn(attempt_id, factory._spawned)
+
+    def test_unconfirmed_partial_exit_defers_task_finalization_to_reaper(self) -> None:
+        manager = object.__new__(ProductResearchWorkerManager)
+        manager._lock = RLock()
+        manager._slots = {"tsk_unconfirmed": SimpleNamespace(task_id="tsk_unconfirmed")}
+        manager._monitor_error = None
+        manager.cancel = lambda task_id: False
+        slot = manager._slots["tsk_unconfirmed"]
+
+        with patch("v3_backend.runtime.product_workers.Thread") as thread:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "partially started research child exit could not be confirmed",
+            ) as raised:
+                manager._abort_partial_start(slot)
+
+        self.assertTrue(getattr(raised.exception, "defer_task_finalization", False))
+        thread.return_value.start.assert_called_once()
+        self.assertIs(manager._slots["tsk_unconfirmed"], slot)
+
     def test_terminal_exit_trace_waits_for_protocol_reap_after_kill(self) -> None:
         class _DelayedReapProcess:
             def __init__(self, kill_requested: Event, reaped: Event) -> None:
@@ -183,6 +399,50 @@ class ProductRuntimeResearchTests(unittest.TestCase):
         finally:
             protocol_thread.join(timeout=1.0)
 
+    def test_expired_lease_does_not_reconcile_until_process_exit_is_confirmed(self) -> None:
+        class _Process:
+            def is_alive(self) -> bool:
+                return True
+
+        class _Stop:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def wait(self, _timeout: float) -> bool:
+                self.calls += 1
+                return self.calls > 1
+
+        manager = object.__new__(ProductResearchWorkerManager)
+        manager._lock = RLock()
+        manager._stop_monitor = _Stop()
+        manager._slots = {
+            "task-expired": SimpleNamespace(
+                task_id="task-expired",
+                attempt_id="attempt-expired",
+                process=_Process(),
+                progress_stall_seconds=None,
+            )
+        }
+        manager._monitor_error = None
+        manager._product = SimpleNamespace(
+            reconciliation_summary={},
+            _reconcile_execution_state=lambda: (_ for _ in ()).throw(
+                AssertionError("reconciliation must wait for exit proof")
+            ),
+        )
+        manager.supervisor = SimpleNamespace(
+            reap_expired=lambda: ("attempt-expired",),
+        )
+        with patch.object(manager, "_confirm_slot_exit", return_value=False) as confirm:
+            manager._monitor_expired_leases()
+
+        confirm.assert_called_once_with(
+            "task-expired",
+            manager._slots["task-expired"],
+            request_cooperative_cancel=False,
+        )
+        self.assertIsNotNone(manager._monitor_error)
+
     def test_shutdown_waits_for_terminal_task_process_exit_without_cancelling_task(self) -> None:
         class _TerminalExitRaceWorkers:
             def __init__(self) -> None:
@@ -220,6 +480,64 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 truth["active_task_policy"],
                 "CANCEL_AND_CONFIRM_EXIT_BEFORE_SHUTDOWN",
             )
+
+    def test_shutdown_deadline_is_validated_before_draining_or_closing_resources(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v3-product-shutdown-deadline-") as directory:
+            product = ProductRuntime(Path(directory))
+            with patch.object(product.local_data_transfers, "close") as close:
+                with self.assertRaises(InvalidArgumentError):
+                    product.prepare_shutdown("2026-08-27T00:00:00+00:00")
+                with self.assertRaises(ResourceRejectedError):
+                    product.prepare_shutdown("2026-08-26T00:00:00Z")
+
+            close.assert_not_called()
+            self.assertFalse(product._shutdown_prepared)
+
+    def test_expired_direct_research_deadline_has_no_context_artifact_or_task_side_effect(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v3-product-research-expired-admission-") as directory:
+            product = ProductRuntime(Path(directory))
+            project = create_project(
+                product,
+                display_name="Expired direct research",
+                notes=None,
+                idempotency_key="create-expired-direct-research",
+            )
+            connection = product._connection(read_only=True)
+            try:
+                before = tuple(
+                    connection.execute(
+                        "SELECT (SELECT COUNT(*) FROM task), (SELECT COUNT(*) FROM artifact)"
+                    ).fetchone()
+                )
+            finally:
+                connection.close()
+
+            source = _request(
+                project["project_id"], project["project_context_revision_id"], key="expired-direct"
+            )["source"]
+            with self.assertRaises(ResourceRejectedError):
+                product.research.submit(
+                    ProductResearchSubmission(
+                        project_id=project["project_id"],
+                        project_context_revision_id=project["project_context_revision_id"],
+                        research_profile_id="RESEARCH_FREE_DATA_V1",
+                        strategy_profile_id="RESEARCH_CLOSE_RANK_TOP1_V1",
+                        source=source,
+                        idempotency_key="expired-direct",
+                        execution_deadline_at="2026-08-26T00:00:00Z",
+                    )
+                )
+
+            connection = product._connection(read_only=True)
+            try:
+                after = tuple(
+                    connection.execute(
+                        "SELECT (SELECT COUNT(*) FROM task), (SELECT COUNT(*) FROM artifact)"
+                    ).fetchone()
+                )
+            finally:
+                connection.close()
+            self.assertEqual(after, before)
 
     def test_lease_monitor_failure_stops_new_worker_admission(self) -> None:
         with tempfile.TemporaryDirectory(prefix="v3-product-lease-monitor-failure-") as directory:
@@ -310,6 +628,129 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 tuple(row),
                 ("FAILED", "FAILED", "INTERNAL_ERROR", "REVOKED", "STOPPED"),
             )
+
+    def test_handle_transfer_failure_fences_child_after_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v3-product-worker-handle-transfer-") as directory:
+            product = ProductRuntime(
+                Path(directory),
+                research_provider_factory=_provider_factory,
+                research_worker_config=ProductResearchWorkerConfig(
+                    start_delay_seconds=30.0,
+                    cancel_grace_seconds=0.2,
+                    terminate_timeout_seconds=0.2,
+                    kill_timeout_seconds=0.2,
+                ),
+            )
+            try:
+                project = create_project(
+                    product,
+                    display_name="Worker handle transfer failure",
+                    notes=None,
+                    idempotency_key="create-worker-handle-transfer-failure",
+                )
+                submit = _facade_handler(product, "ProductEntryService.v1.submitResearch")
+                with patch.object(
+                    product.research_workers._factory,
+                    "take",
+                    side_effect=KeyError("staged worker handle missing"),
+                ):
+                    with self.assertRaises(KeyError):
+                        submit(
+                            _request(
+                                project["project_id"],
+                                project["project_context_revision_id"],
+                                key="worker-handle-transfer-failure",
+                            )
+                        )
+                self.assertFalse(product.research_workers.has_live_processes())
+                connection = product._connection(read_only=True)
+                try:
+                    row = connection.execute(
+                        """
+                        SELECT t.state, a.state, a.error_code, a.started_at, l.state, w.state
+                        FROM task AS t
+                        JOIN run AS r ON r.task_id=t.task_id
+                        JOIN task_attempt AS a ON a.run_id=r.run_id
+                        JOIN worker_lease AS l ON l.attempt_id=a.attempt_id
+                        JOIN worker AS w ON w.worker_id=l.worker_id
+                        """
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual(
+                    tuple(row),
+                    ("FAILED", "FAILED", "INTERNAL_ERROR", None, "REVOKED", "STOPPED"),
+                )
+            finally:
+                product.research_workers.shutdown_all()
+
+    def test_cancel_closes_task_after_worker_failure_wins_cancel_intent_race(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v3-product-cancel-failure-race-") as directory:
+            product = ProductRuntime(
+                Path(directory),
+                research_provider_factory=_provider_factory,
+                research_worker_config=ProductResearchWorkerConfig(),
+            )
+            try:
+                project = create_project(
+                    product,
+                    display_name="Cancellation failure race",
+                    notes=None,
+                    idempotency_key="create-cancellation-failure-race",
+                )
+                task, run, attempt = product.execution._create_task(
+                    operation_id="ProductEntryService.v1.submitResearch",
+                    project_id=project["project_id"],
+                    project_context_revision_id=project["project_context_revision_id"],
+                    normalized_input_hash="a" * 64,
+                    context_artifact_id=None,
+                    inline_worker=False,
+                    canonical_input={"fault_injection": "cancel-after-worker-failure"},
+                )
+                task_owner = product.research_workers.supervisor.tasks
+                task_owner.transition_task(
+                    task.task_id,
+                    "CANCEL_REQUESTED",
+                    TaskTransitionContext(),
+                )
+                task_owner.transition_attempt(
+                    attempt.attempt_id,
+                    "ATTEMPT_FAILED",
+                    error_category="INTERNAL_ERROR",
+                )
+
+                self.assertTrue(
+                    product.cancel_research_task(
+                        task.task_id,
+                        reason="worker failure won after cancel intent",
+                    )
+                )
+
+                connection = product._connection(read_only=True)
+                try:
+                    row = connection.execute(
+                        """
+                        SELECT t.state, r.state, a.state, a.error_code
+                        FROM task AS t
+                        JOIN run AS r ON r.task_id=t.task_id
+                        JOIN task_attempt AS a ON a.run_id=r.run_id
+                        WHERE t.task_id=?
+                        """,
+                        (task.task_id,),
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual(
+                    tuple(row),
+                    (
+                        TaskState.CANCELLED.value,
+                        RunState.TERMINAL.value,
+                        AttemptState.FAILED.value,
+                        "INTERNAL_ERROR",
+                    ),
+                )
+            finally:
+                product.research_workers.shutdown_all()
 
     def test_post_spawn_persistence_failure_confirms_child_exit_before_task_failure(self) -> None:
         with tempfile.TemporaryDirectory(prefix="v3-product-worker-post-spawn-") as directory:
@@ -557,7 +998,14 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                     "body": body,
                 })
                 self.assertEqual(response["status"], "OK")
-                task_id = response["body"]["read_model"]["task_id"]
+                accepted_model = response["body"]["read_model"]
+                task_id = accepted_model["task_id"]
+                operation_receipt_id = accepted_model["operation_receipt_id"]
+                self.assertRegex(operation_receipt_id, r"^opr_[0-9A-HJKMNP-TV-Z]{26}$")
+                self.assertEqual(
+                    product.progress_persistence.receipt_for_task(task_id).operation_receipt_id,
+                    operation_receipt_id,
+                )
                 worker = product.research_workers.task_process(task_id)
                 self.assertIsNotNone(worker)
                 self.assertTrue(worker.is_alive())
@@ -654,11 +1102,27 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 worker = product.research_workers.task_process(task_id)
                 self.assertEqual(task.state.value, "SUCCEEDED")
                 self.assertIsNotNone(worker)
+                # The durable Task may be terminal before the child and its
+                # parent protocol listener have finished unwinding. A second
+                # runtime must wait for that Catalog replacement fence rather
+                # than racing Windows WAL sidecar cleanup.
+                restarted = ProductRuntime(Path(directory))
+                self.assertEqual(
+                    restarted.task_persistence.read_task(task_id).state.value,
+                    "SUCCEEDED",
+                )
                 self.assertTrue(
                     product.research_workers.confirm_terminal_exit(task_id),
                     "canonical success requires the production terminal-exit boundary",
                 )
                 self.assertFalse(worker.is_alive())
+                attempt = product.task_persistence.latest_attempt(task_id)
+                timeline = product.progress_persistence.progress_timeline(attempt.attempt_id)
+                self.assertEqual(
+                    [item.phase for item in timeline],
+                    ["DISPATCHED", "EXECUTING", "PUBLISHED"],
+                )
+                self.assertEqual(timeline[-1].completed_units, timeline[-1].total_units)
                 trace = product.research_workers.termination_trace(task_id)
                 self.assertEqual(trace[0], "TERMINAL_EXIT_WAIT_STARTED")
                 self.assertEqual(trace[-1], "EXIT_CONFIRMED")
@@ -892,6 +1356,62 @@ class ProductRuntimeResearchTests(unittest.TestCase):
                 finally:
                     connection.close()
                 self.assertEqual(attempt_state, "CANCELLED")
+
+                connection = product._connection(read_only=True)
+                try:
+                    lease_row = connection.execute(
+                        """
+                        SELECT l.lease_id, l.state, l.enforcement_state,
+                               w.state, w.process_id
+                        FROM worker_lease AS l
+                        JOIN worker AS w ON w.worker_id=l.worker_id
+                        WHERE l.attempt_id=(
+                          SELECT a.attempt_id FROM task_attempt AS a
+                          JOIN run AS r ON r.run_id=a.run_id
+                          WHERE r.task_id=? ORDER BY a.attempt_no DESC LIMIT 1
+                        )
+                        """,
+                        (task_id,),
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertIsNotNone(lease_row)
+                lease_id, lease_state, enforcement_state, worker_state, process_id = lease_row
+                self.assertIn(lease_state, {"RELEASED", "REVOKED"})
+                self.assertEqual(worker_state, "STOPPED")
+                with self.assertRaises(KeyError):
+                    product.research_workers._lease_persistence.set_process_id(
+                        lease_id, os.getpid()
+                    )
+                with self.assertRaises(KeyError):
+                    product.research_workers._lease_persistence.set_process_identity(
+                        lease_id,
+                        process_id=os.getpid(),
+                        process_identity_hash="0" * 64,
+                    )
+                with self.assertRaises(KeyError):
+                    product.research_workers._lease_persistence.set_enforcement(
+                        lease_id,
+                        state="VERIFIED",
+                        job_object_identity="late-write",
+                    )
+                connection = product._connection(read_only=True)
+                try:
+                    late_row = connection.execute(
+                        """
+                        SELECT l.state, l.enforcement_state, w.state, w.process_id
+                        FROM worker_lease AS l
+                        JOIN worker AS w ON w.worker_id=l.worker_id
+                        WHERE l.lease_id=?
+                        """,
+                        (lease_id,),
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual(
+                    tuple(late_row),
+                    (lease_state, enforcement_state, "STOPPED", process_id),
+                )
             finally:
                 product.research_workers.shutdown_all()
 

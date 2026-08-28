@@ -180,14 +180,18 @@
       "service": "TaskService",
       "contract_id": "urn:v3:asl:task:1.0.0",
       "path": "task.contract.json",
-      "method_count": 6,
+      "method_count": 10,
       "method_operation_ids": [
         "TaskService.v1.getTask",
         "TaskService.v1.listTasks",
         "TaskService.v1.cancelTask",
         "TaskService.v1.retryTask",
         "TaskService.v1.resumeTask",
-        "TaskService.v1.getEvents"
+        "TaskService.v1.getEvents",
+        "TaskService.v1.getOperationReceipt",
+        "TaskService.v1.listQueue",
+        "TaskService.v1.startQueuedTask",
+        "TaskService.v1.resumeFromCheckpoint"
       ]
     },
     {
