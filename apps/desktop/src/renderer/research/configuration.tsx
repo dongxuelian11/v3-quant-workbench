@@ -52,8 +52,9 @@ export function validateDates(dates: JsonObject) {
   if (v.every(d => !d)) return;
   if (v.some(d => !d) || !(v[0] <= v[1] && v[1] < v[2] && v[2] <= v[3] && v[3] < v[4] && v[4] <= v[5])) throw new Error("请填写完整、按时间顺序且互不重叠的训练／验证／测试日期，或全部留空。");
 }
-export function FactorProcessingEditor() {
-  const s = useResearch(); const [value, setValue] = useState(() => factorProcessing(s.project!.settings));
+export function FactorProcessingEditor({ value: supplied, onChange }: Partial<EditorProps> = {}) {
+  const s = useResearch(); const [local, setLocal] = useState(() => factorProcessing(s.project!.settings));
+  const value = supplied ?? local; const setValue = onChange ?? setLocal;
   const factors = [...s.factors, ...customFactors(s.project!.settings)].filter(f => s.selectedFactors.includes(f.id));
   return <details><summary>因子方向与预处理</summary><div className="r-form-grid"><ChoiceSetting value={value} onChange={setValue} name="winsorize" label="异常值处理" choices={{ mad: "MAD 去极值", none: "不处理" }} /><NumberSetting value={value} onChange={setValue} name="madScale" label="MAD 倍数" min={.1} /><ToggleSetting value={value} onChange={setValue} name="standardize" label="截面标准化" /><ToggleSetting value={value} onChange={setValue} name="neutralizeIndustry" label="行业中性化" /><ToggleSetting value={value} onChange={setValue} name="neutralizeSize" label="市值中性化（对数流通市值）" /></div><div className="r-table-scroll"><table><thead><tr><th>已选因子</th><th>方向</th></tr></thead><tbody>{factors.map(f => <tr key={f.id}><td>{f.name}</td><td><select aria-label={`${f.name}方向`} value={Number(object(value.directions)[f.id] ?? 1)} onChange={e => setValue({ ...value, directions: { ...object(value.directions), [f.id]: Number(e.target.value) } })}><option value={1}>正向 · 越高越好</option><option value={-1}>反向 · 越低越好</option></select></td></tr>)}</tbody></table></div><p className="r-note">顺序：方向 → 去极值 → 中性化 → 标准化。历史行业或市值缺失以实际分析说明为准。</p><button onClick={() => void s.act(async () => { await s.save({ settings: { ...s.project!.settings, factorProcessing: value } }); s.setNotice("因子处理设置已保存"); })}>保存因子处理设置</button></details>;
 }

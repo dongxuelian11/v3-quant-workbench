@@ -57,11 +57,11 @@ function FactorResults({ detail }: { detail: ExperimentDetails }) {
   const factors = Array.isArray(detail.details.factors) ? detail.details.factors.flatMap(f =>
     f && typeof f === "object" && !Array.isArray(f) && typeof f.factor === "string"
       ? [{ id: f.factor, samples: typeof f.samples === "number" ? f.samples : null }] : []) : [];
-  const periods = [...new Set(Object.keys(detail.experiment.metrics).filter(k => k.includes(":IC:")).map(k => k.split(":IC:")[1]))];
+  const periods = [...new Set(factors.flatMap(f => Object.keys(detail.experiment.metrics).filter(k => k.startsWith(`${f.id}:`)).map(k => k.slice(f.id.length + 1))))];
   const summary: ResearchTable = {
-    name: "批量因子汇总", columns: ["因子", "样本数", ...periods.map(p => `${p} IC`)],
+    name: "批量因子汇总", columns: ["因子", "样本数", ...periods],
     rows: factors.map(f => ({ factorId: f.id, 因子: names.get(f.id) ?? f.id, 样本数: f.samples,
-      ...Object.fromEntries(periods.map(p => [`${p} IC`, detail.experiment.metrics[`${f.id}:IC:${p}`] ?? null])) }))
+      ...Object.fromEntries(periods.map(p => [p, detail.experiment.metrics[`${f.id}:${p}`] ?? null])) }))
   };
   useEffect(() => {
     let active = true;
@@ -98,7 +98,8 @@ function FactorResults({ detail }: { detail: ExperimentDetails }) {
 }
 function SingleFactorTable({ table, factorName }: { table: ResearchTable; factorName: string }) {
   const grouped = table.name.endsWith("_quantile_returns");
-  const title = `${factorName} · ${grouped ? "分组收益" : table.name.endsWith("_turnover") ? "换手率" : "IC"}`;
+  const suffix = table.name.toLowerCase();
+  const title = `${factorName} · ${grouped ? "分组收益" : /rank.*ic/.test(suffix) ? "Rank IC" : /icir/.test(suffix) ? "ICIR" : /decay/.test(suffix) ? "因子衰减" : /stability/.test(suffix) ? "分期稳定性" : /cumulative/.test(suffix) ? "累计分组表现" : /turnover/.test(suffix) ? "换手率" : suffix.endsWith("_ic") ? "Pearson IC" : table.name}`;
   const axis = grouped ? "factor_quantile" : table.columns.find(c => /date|datetime|time/i.test(c)) ?? table.columns[0];
   const numeric = table.columns.filter(c => c !== axis && table.rows.some(row => typeof row[c] === "number"));
   return <section><p className="r-note">{title} · 完整分析表 {table.rows.length} 行</p>{table.rows.length > 0 && numeric.length > 0 && <Plot title={title} option={{ tooltip: { trigger: "axis" }, legend: { type: "scroll" }, grid: { left: 64, right: 24, top: 45, bottom: 65 }, xAxis: { type: "category", data: table.rows.map(row => valueText(row[axis], axis)) }, yAxis: { type: "value", scale: true }, dataZoom: grouped ? [] : [{ type: "inside" }, { type: "slider", height: 18 }], series: numeric.map(column => ({ name: column, type: grouped ? "bar" : "line", showSymbol: false, connectNulls: false, data: table.rows.map(row => typeof row[column] === "number" ? row[column] : null) })) }} />}<DataTable table={{ ...table, name: title }} /></section>;
