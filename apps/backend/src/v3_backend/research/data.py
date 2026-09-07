@@ -2,7 +2,7 @@
 from pathlib import Path
 import re
 
-from .storage import now, write_json
+from .storage import now, write_json, read_json
 
 
 def symbol(value):
@@ -51,7 +51,8 @@ def normalize(frame, kind):
         if (frame.announcementDate < frame.reportDate).any():
             raise ValueError('公告日期不能早于报告期')
         keys = ['symbol', 'reportDate', 'announcementDate']
-    return frame.drop_duplicates(keys, keep='last').sort_values(keys), kind
+    frame = frame.drop_duplicates(keys, keep='last') if kind == 'prices' else frame.groupby(keys, as_index=False, dropna=False).last()
+    return frame.sort_values(keys), kind
 
 
 def read_table(project, kind='prices'):
@@ -93,7 +94,11 @@ def import_files(project, params, progress):
         saved = merge_table(project, frame, kind)
         summaries.append({'file': str(path), 'kind': kind, 'importedRows': len(frame), 'totalRows': len(saved)})
         progress((index + 1) / len(files) * 0.9, f'已导入 {path.name}')
-    return {'imports': summaries, 'warnings': ['导入数据的复权口径和历史修订完整性由来源决定。财务按公告日之后交易日生效。']}
+    warnings = ['导入数据的复权口径和历史修订完整性由来源决定。财务按公告日之后交易日生效。']
+    old_source = read_json(Path(project['path']) / 'data' / 'source.json', {})
+    write_json(Path(project['path']) / 'data' / 'source.json', {'source': 'import', 'updatedAt': now(), 'imports': summaries,
+        'warnings': list(dict.fromkeys(old_source.get('warnings', []) + warnings))})
+    return {'imports': summaries, 'warnings': warnings}
 
 
 def _bs_rows(result):
@@ -164,8 +169,6 @@ def update(project, params, progress):
         import akshare as ak
         if not symbols:
             raise ValueError('AKShare 更新需要项目明确股票列表')
-        if params.get('financials'):
-            raise ValueError('AKShare 财务自动更新尚无统一公告日期契约，请用 BaoStock 或带 announcementDate 的 CSV')
         for index, code in enumerate(symbols):
             frame = ak.stock_zh_a_hist(symbol=code[2:], period='daily', start_date=start.replace('-', ''), end_date=end.replace('-', ''), adjust='qfq')
             raw = ak.stock_zh_a_hist(symbol=code[2:], period='daily', start_date=start.replace('-', ''), end_date=end.replace('-', ''), adjust='')
@@ -175,6 +178,24 @@ def update(project, params, progress):
             frame['成交量'] = frame['成交量'] * 100
             frames.append(frame)
             progress((index + 1) / len(symbols) * .85, f'已采集 {code}')
+        if params.get('financials'):
+            # Keep the established announcement-date contract when supplementing prices via AKShare.
+            import baostock as bs
+            login = bs.login()
+            if login.error_code != '0':
+                raise ValueError('BaoStock 财务补充登录失败: ' + login.error_msg)
+            try:
+                for index, code in enumerate(symbols):
+                    remote = code[:2].lower() + '.' + code[2:]
+                    for year in range(pd.Timestamp(start).year - 1, pd.Timestamp(end).year + 1):
+                        for quarter in range(1, 5):
+                            for query in [bs.query_profit_data, bs.query_growth_data, bs.query_balance_data, bs.query_cash_flow_data]:
+                                result = _bs_rows(query(code=remote, year=year, quarter=quarter))
+                                if not result.empty:
+                                    financials.append(result)
+                    progress(.85 + .1 * (index + 1) / len(symbols), f'BaoStock 公告财务 {code}')
+            finally:
+                bs.logout()
     else:
         raise ValueError('未知数据源')
     if not frames:
@@ -194,8 +215,14 @@ def update(project, params, progress):
         normalized, _ = normalize(frame, 'financials')
         merge_table(project, normalized, 'financials')
     metadata = {'source': source, 'updatedAt': now(), 'symbols': symbols, 'adjustment': 'forward-adjusted',
+                'financialSource': 'baostock' if params.get('financials') else None,
+                'financialRows': sum(len(frame) for frame in financials),
                 'warnings': ['免费源历史修订完整性未保证；当前指数名单不是历史成分股，回测存在幸存者偏差。',
                              '前复权行情随来源最新复权基准变化；更新后应重新运行实验。']}
+    if source == 'akshare' and params.get('financials'):
+        metadata['warnings'].append('行情来自 AKShare，带公告日期的财务来自 BaoStock。')
+    if params.get('financials') and not financials:
+        metadata['warnings'].append('本次财务查询未返回记录，请检查财务覆盖。')
     write_json(Path(project['path']) / 'data' / 'source.json', metadata)
     return metadata
 
@@ -207,10 +234,23 @@ def preview(project):
         frame = pd.read_parquet(path)
         date = 'date' if 'date' in frame else 'announcementDate'
         datasets.append(dict(name=path.stem, rows=len(frame), symbols=int(frame.symbol.nunique()),
-                             startDate=str(frame[date].min())[:10], endDate=str(frame[date].max())[:10], columns=list(frame.columns)))
+                             startDate=str(frame[date].min())[:10], endDate=str(frame[date].max())[:10], columns=list(frame.columns),
+                             missingValues=int(frame.drop(columns=['symbol', 'date', 'announcementDate', 'reportDate'], errors='ignore').isna().sum().sum())))
         if path.stem == 'prices':
             rows = records(frame.tail(500))
-    return {'datasets': datasets, 'rows': rows}
+    source = read_json(Path(project['path']) / 'data' / 'source.json', {})
+    warnings = source.get('warnings', [])
+    if datasets and not source:
+        warnings = ['导入数据的复权口径和历史修订完整性未验证。']
+    price_dataset = next((dataset for dataset in datasets if dataset['name'] == 'prices'), None)
+    if price_dataset:
+        if project['universe'].get('excludeST') and 'isST' not in price_dataset['columns']:
+            warnings.append('行情缺少 isST，排除 ST 筛选不可用。')
+        if project['universe'].get('minListingDays', 0) and 'listingDate' not in price_dataset['columns']:
+            warnings.append('行情缺少 listingDate，最短上市天数筛选不可用。')
+        if 'factor' not in price_dataset['columns']:
+            warnings.append('行情未提供复权因子，回测按未复权单位解释价格和数量。')
+    return {'datasets': datasets, 'rows': rows, 'warnings': warnings}
 
 
 def records(frame):

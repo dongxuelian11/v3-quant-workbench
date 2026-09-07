@@ -37,6 +37,9 @@ class AdjustmentUpdateTest(unittest.TestCase):
             updated = data.read_table(project)
             self.assertEqual(updated.close.tolist(), [10, 10, 10])
             self.assertEqual(updated.factor.tolist(), [.5, .5, .5])
+            preview = data.preview(project)
+            self.assertIn('missingValues', preview['datasets'][0])
+            self.assertTrue(preview['warnings'])
 
 
 if __name__ == '__main__':
