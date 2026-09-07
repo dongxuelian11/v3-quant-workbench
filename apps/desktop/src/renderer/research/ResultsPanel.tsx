@@ -5,6 +5,8 @@ import { DataTable, Empty, Heading, Plot, valueText, fieldLabel, tradeDirection 
 import { PriceChart, type TradeMarker } from "./PriceChart";
 import { PagedExperimentTable, type TablePage } from "./PagedTable";
 
+import { object } from "./configuration";
+
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 function tradeFromRow(row: JsonObject): TradeMarker | null {
   const date = row.date ?? row.trade_date, price = row.price ?? row.execution_price ?? row.trade_price, side = tradeDirection(row.side ?? row.direction);
@@ -36,10 +38,10 @@ export function ResultsPanel() {
   const onRow = (row: JsonObject) => { const symbol = row.symbol ?? row.instrument ?? row.code; const date = row.date ?? row.trade_date; const trade = tradeFromRow(row); if (typeof symbol === "string") setReplay({ symbol, date: typeof date === "string" ? date : undefined, ...(trade ? { trade } : {}) }); };
   const tradeMarkers = detail?.tables.filter(t => /trade|交易/i.test(t.name)).flatMap(t => t.rows.filter(r => (r.symbol ?? r.instrument ?? r.code) === replay?.symbol).flatMap(r => { const trade = tradeFromRow(r); return trade ? [trade] : []; })) ?? [];
   return <div className="r-page"><Heading title="实验与结果" description="整体表现、横向比较，以及交易与持仓回放。结果仅来自已保存的实验。" /><div className="r-results-layout"><aside className="r-runs">{s.experiments.map(e => <div key={e.id} className={id === e.id ? "active" : ""}><input type="checkbox" aria-label={`比较 ${e.name}`} checked={selected.includes(e.id)} onChange={() => setSelected(ids => ids.includes(e.id) ? ids.filter(x => x !== e.id) : [...ids, e.id])} /><button onClick={() => { s.setSelectedExperiment(e.id); setTab("overall"); }}><strong>{e.starred ? "★ " : ""}{e.name}</strong><small>{new Date(e.createdAt).toLocaleDateString("zh-CN")}</small></button></div>)}<button disabled={selected.length < 2} onClick={() => void s.act(async () => { setComparison(await request<ExperimentDetails[]>("experiments.compare", { projectId: s.project!.id, experimentIds: selected })); setTab("compare"); })}>比较已选（{selected.length}）</button></aside><section className="r-result-content">{loading ? <Empty title="正在读取实验…" /> : !detail ? <Empty title="还没有实验结果">运行因子分析、回测或模型训练后，在这里查看真实结果。</Empty> : <><div className="r-toolbar"><input aria-label="实验名称" value={name} onChange={e => setName(e.target.value)} /><button disabled={!name.trim()} onClick={() => void s.act(async () => { await request("experiments.update", { projectId: s.project!.id, experimentId: id, name: name.trim() }); await s.refresh(); })}>重命名</button><button onClick={() => void s.act(async () => { await request("experiments.update", { projectId: s.project!.id, experimentId: id, starred: !detail.experiment.starred }); await s.refresh(); })}>{detail.experiment.starred ? "取消收藏" : "收藏"}</button><button className="r-danger" onClick={() => { if (window.confirm(`删除实验“${detail.experiment.name}”？`)) void s.act(async () => { await request("experiments.delete", { projectId: s.project!.id, experimentId: id }); s.setSelectedExperiment(""); setComparison([]); setSelected(ids => ids.filter(x => x !== id)); await s.refresh(); }); }}>删除</button></div><nav className="r-subtabs" aria-label="结果视图">{[["overall", "整体表现"], ["tables", "交易与持仓"], ["compare", "实验比较"], ["parameters", "参数与输出"]].map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{label}</button>)}</nav><p>{detail.experiment.summary}</p><UnavailableFactors details={detail.details} />
-      {tab === "overall" && (detail.experiment.kind === "factor.analyze" ? <FactorResults key={detail.experiment.id} detail={detail} /> : <><Metrics metrics={detail.experiment.metrics} /><SeriesPlot details={[detail]} />{detail.tables.filter(t => /ic|quantile|group|correlation|turnover/i.test(t.name)).map(t => <AnalysisTable key={t.name} table={t} />)}</>)}
+      {tab === "overall" && (detail.experiment.kind === "factor.analyze" ? <FactorResults key={detail.experiment.id} detail={detail} /> : <><Metrics metrics={detail.experiment.metrics} /><SeriesPlot details={[detail]} /><ExtendedResults detail={detail} />{detail.tables.filter(t => /ic|quantile|group|correlation|turnover/i.test(t.name)).map(t => <AnalysisTable key={t.name} table={t} />)}</>)}
       {tab === "tables" && <>{detail.tables.length ? detail.tables.map(t => <PagedExperimentTable key={`${id}-${t.name}`} experimentId={id} table={artifactTableName(detail, t.name)} onRow={onRow} />) : <Empty title="这个实验没有返回表格" />}{replay && <PriceChart symbol={replay.symbol} focusDate={replay.date} trades={tradeMarkers} experimentId={id} tradeTable={detail.tables.find(t => /trade|交易/i.test(t.name)) ? artifactTableName(detail, detail.tables.find(t => /trade|交易/i.test(t.name))!.name) : undefined} />}</>}
       {tab === "compare" && (comparison.length ? <><DataTable table={{ name: "实验指标比较", columns: ["实验", ...new Set(comparison.flatMap(d => Object.keys(d.experiment.metrics)))], rows: comparison.map(d => ({ 实验: d.experiment.name, ...d.experiment.metrics })) }} /><SeriesPlot details={comparison} /><p className="r-note">请核对数据日期、股票池和参数差异后解释比较结果。</p></> : <Empty title="选择两个或更多实验进行比较" />)}
-      {tab === "parameters" && <><h3>输入参数</h3><pre>{JSON.stringify(detail.experiment.parameters, null, 2)}</pre><h3>详细信息</h3><pre>{JSON.stringify(detail.details, null, 2)}</pre><DataTable table={{ name: "输出文件", columns: ["name", "type", "path"], rows: detail.experiment.artifacts.map(a => ({ ...a })) }} /><button onClick={() => void s.act(() => s.submit(detail.experiment.kind, detail.experiment.parameters, `${detail.experiment.name} · 重跑`))}>使用这些参数重跑</button></>}
+      {tab === "parameters" && <><ApplyBest detail={detail} /><h3>输入参数</h3><pre>{JSON.stringify(detail.experiment.parameters, null, 2)}</pre><h3>详细信息</h3><pre>{JSON.stringify(detail.details, null, 2)}</pre><DataTable table={{ name: "输出文件", columns: ["name", "type", "path"], rows: detail.experiment.artifacts.map(a => ({ ...a })) }} /><button onClick={() => void s.act(() => s.submit(detail.experiment.kind, detail.experiment.parameters, `${detail.experiment.name} · 重跑`))}>使用这些参数重跑</button></>}
       <div className="r-toolbar"><button onClick={() => exportResult("csv")}>导出 CSV</button><button onClick={() => exportResult("xlsx")}>导出 Excel</button><button onClick={() => exportResult("pdf")}>导出 PDF 报告</button></div></>}</section></div></div>;
 }
 function FactorResults({ detail }: { detail: ExperimentDetails }) {
@@ -64,7 +66,7 @@ function FactorResults({ detail }: { detail: ExperimentDetails }) {
   useEffect(() => {
     let active = true;
     setLoaded(null); setFailure("");
-    const tableNames = selected ? [`${selected}_IC`, `${selected}_quantile_returns`, `${selected}_turnover`] : ["factor_correlation"];
+    const tableNames = selected ? detail.experiment.artifacts.filter(a => a.name.startsWith(`${selected}_`)).map(a => a.name) : ["factor_correlation"];
     async function loadTable(name: string): Promise<ResearchTable | null> {
       const artifact = detail.experiment.artifacts.find(a => a.name === name);
       if (!artifact) throw new Error(`缺少分析表：${name}`);
@@ -121,4 +123,41 @@ function AnalysisTable({ table }: { table: ResearchTable }) {
   const label = table.columns.find(c => !numeric.includes(c)) ?? table.columns[0];
   if (/correlation/i.test(table.name) && numeric.length && table.rows.length) return <><DataTable table={table} /><Plot title="因子相关性" option={{ tooltip: { position: "top" }, grid: { top: 20, left: 90, right: 30, bottom: 90 }, xAxis: { type: "category", data: numeric }, yAxis: { type: "category", data: table.rows.map(r => valueText(r[label])) }, visualMap: { min: -1, max: 1, calculable: true, orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#b97468", "#f8f7ef", "#287775"] } }, series: [{ type: "heatmap", data: table.rows.flatMap((r, y) => numeric.flatMap((c, x) => typeof r[c] === "number" ? [[x, y, r[c]]] : [])), label: { show: true } }] }} /></>;
   return <><DataTable table={table} />{numeric.length > 0 && table.rows.length > 0 && <Plot title={table.name} option={{ tooltip: { trigger: "axis" }, legend: { type: "scroll" }, grid: { left: 64, right: 24, top: 45, bottom: 50 }, xAxis: { type: "category", data: table.rows.map(r => valueText(r[label])) }, yAxis: { type: "value" }, series: numeric.map(c => ({ name: c, type: /ic|turnover/i.test(table.name) ? "line" : "bar", data: table.rows.map(r => typeof r[c] === "number" ? r[c] : null) })) }} />}</>;
+}
+
+function ApplyBest({ detail }: { detail: ExperimentDetails }) {
+  const s = useResearch(); const best = object(detail.details.bestParameters);
+  if (detail.experiment.kind !== "optimize.run" || !Object.keys(best).length) return null;
+  return <section><h3>寻优选出的参数</h3><pre>{JSON.stringify(best, null, 2)}</pre><button onClick={() => void s.act(async () => {
+    const target = detail.experiment.parameters.target === "model" ? "model" : "backtest";
+    const config = structuredClone(object(detail.experiment.parameters.baseParameters));
+    for (const [path, value] of Object.entries(best)) {
+      const keys = path.split(".");
+      if (keys.some(k => !k || ["__proto__", "prototype", "constructor"].includes(k))) throw new Error("最佳参数包含不支持的字段。");
+      let cursor = config;
+      for (const key of keys.slice(0, -1)) { cursor[key] = { ...object(cursor[key]) }; cursor = cursor[key] as JsonObject; }
+      cursor[keys[keys.length - 1]] = value;
+    }
+    await s.save({ settings: { ...s.project!.settings, [target]: config } });
+    if (Array.isArray(config.factorIds)) s.setSelectedFactors(config.factorIds.filter((v): v is string => typeof v === "string"));
+    s.setPage(target); s.setNotice("最佳参数已应用，请核对独立测试区间后运行。");
+  })}>应用最佳参数到配置</button><p className="r-note">应用不会自动运行实验。验证集用于选参，测试集用于独立评价。</p></section>;
+}
+function ExtendedResults({ detail }: { detail: ExperimentDetails }) {
+  const tables = detail.tables.filter(t => /benchmark|excess|drawdown|monthly|industry|risk|contribution|trial|window|constraint|unfilled/i.test(t.name));
+  return <><ApplyBest detail={detail} />{detail.details.executable === false && <p role="status">当前组合不可执行：{valueText(detail.details.conflicts)}</p>}{tables.map(table => <CompleteAnalysis key={`${detail.experiment.id}-${table.name}`} detail={detail} name={table.name} />)}</>;
+}
+function CompleteAnalysis({ detail, name }: { detail: ExperimentDetails; name: string }) {
+  const [table, setTable] = useState<ResearchTable | null>(null); const [error, setError] = useState("");
+  useEffect(() => { let active = true; setTable(null); setError(""); void (async () => {
+    let offset = 0; const rows: JsonObject[] = [];
+    while (active) {
+      const page = await request<TablePage>("experiments.table", { projectId: detail.experiment.projectId, experimentId: detail.experiment.id, table: artifactTableName(detail, name), offset, limit: 500 });
+      if (!active) return;
+      rows.push(...page.rows); offset += page.rows.length;
+      if (offset >= page.total) { setTable({ name: fieldLabel(name), columns: page.columns, rows }); return; }
+      if (!page.rows.length) throw new Error("结果表未返回剩余行。");
+    }
+  })().catch(e => { if (active) setError(errorText(e)); }); return () => { active = false; }; }, [detail, name]);
+  return <section>{error ? <p role="alert">{error}</p> : table ? <AnalysisTable table={table} /> : <p role="status">正在读取 {fieldLabel(name)}…</p>}</section>;
 }

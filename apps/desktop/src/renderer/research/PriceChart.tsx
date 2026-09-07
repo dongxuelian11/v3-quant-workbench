@@ -12,6 +12,7 @@ function dateAt(timestamp: number) { return new Date(timestamp + 8 * 3600000).to
 export function PriceChart({ symbol: initial = "", focusDate, trades = [], experimentId, tradeTable }: { symbol?: string; focusDate?: string; trades?: TradeMarker[]; experimentId?: string; tradeTable?: string }) {
   const s = useResearch(); const projectId = s.project!.id;
   const [symbol, setSymbol] = useState(initial || s.project!.universe.symbols[0] || ""); const [input, setInput] = useState(symbol);
+  const [start, setStart] = useState(""); const [end, setEnd] = useState(""); const [rangeWindow, setRangeWindow] = useState<{ startDate?: string; endDate?: string }>({});
   const [note, setNote] = useState(""); const [status, setStatus] = useState(""); const [count, setCount] = useState(0);
   const node = useRef<HTMLDivElement>(null); const chart = useRef<Chart | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -40,13 +41,23 @@ export function PriceChart({ symbol: initial = "", focusDate, trades = [], exper
       try {
         const day = 86400000;
         const anchor = focusDate ? Date.parse(`${focusDate.slice(0, 10)}T00:00:00+08:00`) : null;
-        const range = type === "forward" && timestamp != null ? { startDate: dateAt(timestamp - 365 * day), endDate: dateAt(timestamp - day) }
+        const range = type === "forward" && timestamp != null ? { beforeDate: dateAt(timestamp) }
           : type === "backward" && timestamp != null ? { startDate: dateAt(timestamp + day), endDate: dateAt(timestamp + 365 * day) }
-          : anchor != null ? { startDate: dateAt(anchor - 90 * day), endDate: dateAt(anchor + 90 * day) } : {};
-        const bars = await request<Bar[]>("data.bars", { projectId, symbol, ...range });
+          : rangeWindow.startDate ? rangeWindow : anchor != null ? { startDate: dateAt(anchor - 90 * day), endDate: dateAt(anchor + 90 * day) } : {};
+        const bars = await request<Bar[]>("data.bars", { projectId, symbol, ...range, limit: 500 });
+        if (type === "init" && rangeWindow.startDate) {
+          let page = bars;
+          while (active && page.length === 500) {
+            const earliest = page.reduce((a, b) => a < b.date ? a : b.date, page[0].date).slice(0, 10);
+            if (earliest <= rangeWindow.startDate) break;
+            page = await request<Bar[]>("data.bars", { projectId, symbol, ...rangeWindow, beforeDate: earliest, limit: 500 });
+            if (page.some(b => b.date.slice(0, 10) >= earliest)) throw new Error("历史行情分页未前进。");
+            bars.push(...page);
+          }
+        }
         if (!active) return;
         const data = bars.map(b => ({ ...b, timestamp: Date.parse(`${b.date.slice(0, 10)}T00:00:00+08:00`) })).filter(b => Number.isFinite(b.timestamp)).sort((a, b) => a.timestamp - b.timestamp);
-        callback(data, type === "init" ? { forward: data.length > 0, backward: anchor != null && data.length > 0 } : data.length > 0);
+        callback(data, type === "init" ? { forward: data.length > 0, backward: (anchor != null || !!rangeWindow.endDate) && data.length > 0 } : data.length > 0);
         delivered = true;
         if (type === "init") { setCount(data.length); setStatus(data.length ? `${symbol} · 日线，可拖动加载历史` : "没有这只证券在该区间的日线数据"); if (data.length > 0 && instance.getDataList().length > 0 && anchor != null && Number.isFinite(anchor)) instance.scrollToTimestamp(anchor); }
         if (experimentId && tradeTable && data.length) {
@@ -74,7 +85,7 @@ export function PriceChart({ symbol: initial = "", focusDate, trades = [], exper
     const observer = new ResizeObserver(() => instance.resize()); observer.observe(node.current);
     const container = node.current;
     return () => { active = false; observer.disconnect(); dispose(container); chart.current = null; };
-  }, [symbol, projectId, focusDate, experimentId, tradeTable]);
+  }, [symbol, projectId, focusDate, experimentId, tradeTable, rangeWindow]);
   const markers = experimentId && tradeTable ? windowTrades : trades;
   useEffect(() => {
     const instance = chart.current; if (!instance || !count) return;
@@ -88,5 +99,5 @@ export function PriceChart({ symbol: initial = "", focusDate, trades = [], exper
     if (Number.isFinite(timestamp)) instance.scrollToTimestamp(timestamp);
   }, [focusDate, count]);
   const draw = (name: string) => chart.current?.createOverlay({ name, ...(name === "research_note" ? { extendData: note } : {}), onDrawEnd: changed, onPressedMoveEnd: changed, onRemoved: changed });
-  return <div className="r-chart-panel"><Heading title="行情与批注" description="拖动、缩放日线；添加趋势线、区间和研究笔记。" /><div className="r-toolbar"><form onSubmit={e => { e.preventDefault(); if (input.trim() && (!dirty || window.confirm("当前批注尚未保存，切换证券？"))) setSymbol(input.trim()); }}><input aria-label="证券代码" placeholder="输入证券代码" value={input} onChange={e => setInput(e.target.value)} /><button type="submit">加载</button></form><span>{status}</span><span>{tradeStatus}</span></div><div className="r-toolbar"><button disabled={!count} onClick={() => draw("segment")}>趋势线</button><button disabled={!count} onClick={() => draw("horizontalStraightLine")}>水平线</button><button disabled={!count} onClick={() => draw("research_rect")}>区间框</button><input aria-label="批注文字" placeholder="写下批注，再点击图表定位" value={note} onChange={e => setNote(e.target.value)} /><button disabled={!count || !note.trim()} onClick={() => draw("research_note")}>文字批注</button><button disabled={!count} onClick={() => chart.current?.createIndicator({ name: "MA", paneId: "candle_pane" }, true)}>均线</button><button disabled={!count} onClick={() => { chart.current?.removeOverlay(); setDirty(true); }}>清除批注</button></div>{!symbol && <Empty title="选择一只证券开始查看">从交易或持仓表点击证券也可打开回放。</Empty>}<div ref={node} className="r-kline" style={{ height: 400 }} /><div className="r-toolbar"><button disabled={!symbol || !chart.current} onClick={() => void s.act(async () => { const annotations = chart.current!.getOverlays().filter(o => o.groupId !== "research-trade").map(o => ({ id: o.id, name: o.name, points: o.points, extendData: o.extendData ?? null, lock: o.lock, visible: o.visible })); await request("charts.save", { projectId, symbol, annotations }); setDirty(false); s.setNotice("批注已保存到项目"); })}>{dirty ? "保存批注 · 未保存" : "保存批注"}</button><button disabled={!count} onClick={() => void s.act(async () => { const dataUrl = chart.current!.getConvertPictureUrl(true, "png", "#fffefa"); const path = await window.v3Research!.exportFile({ format: "png", dataUrl, suggestedName: `${symbol}-日线.png` }); if (path) s.setNotice(`已导出：${path}`); })}>导出图片</button></div></div>;
+  return <div className="r-chart-panel"><Heading title="行情与批注" description="拖动、缩放日线；添加趋势线、区间和研究笔记。" /><div className="r-toolbar"><form onSubmit={e => { e.preventDefault(); if (input.trim() && (!dirty || window.confirm("当前批注尚未保存，切换证券？"))) setSymbol(input.trim()); }}><input aria-label="证券代码" placeholder="输入证券代码" value={input} onChange={e => setInput(e.target.value)} /><button type="submit">加载</button></form><label>开始 <input type="date" value={start} onChange={e => setStart(e.target.value)} /></label><label>结束 <input type="date" value={end} onChange={e => setEnd(e.target.value)} /></label><button disabled={!start || !end || start > end} onClick={() => setRangeWindow({ startDate: start, endDate: end })}>加载日期区间</button><button onClick={() => { setStart(""); setEnd(""); setRangeWindow({}); }}>最近行情</button><button disabled={!count} onClick={() => chart.current?.scrollToDataIndex(0)}>向前查看历史</button><span>{status}</span><span>{tradeStatus}</span></div><div className="r-toolbar"><button disabled={!count} onClick={() => draw("segment")}>趋势线</button><button disabled={!count} onClick={() => draw("horizontalStraightLine")}>水平线</button><button disabled={!count} onClick={() => draw("research_rect")}>区间框</button><input aria-label="批注文字" placeholder="写下批注，再点击图表定位" value={note} onChange={e => setNote(e.target.value)} /><button disabled={!count || !note.trim()} onClick={() => draw("research_note")}>文字批注</button><button disabled={!count} onClick={() => chart.current?.createIndicator({ name: "MA", paneId: "candle_pane" }, true)}>均线</button><button disabled={!count} onClick={() => { chart.current?.removeOverlay(); setDirty(true); }}>清除批注</button></div>{!symbol && <Empty title="选择一只证券开始查看">从交易或持仓表点击证券也可打开回放。</Empty>}<div ref={node} className="r-kline" style={{ height: 400 }} /><div className="r-toolbar"><button disabled={!symbol || !chart.current} onClick={() => void s.act(async () => { const annotations = chart.current!.getOverlays().filter(o => o.groupId !== "research-trade").map(o => ({ id: o.id, name: o.name, points: o.points, extendData: o.extendData ?? null, lock: o.lock, visible: o.visible })); await request("charts.save", { projectId, symbol, annotations }); setDirty(false); s.setNotice("批注已保存到项目"); })}>{dirty ? "保存批注 · 未保存" : "保存批注"}</button><button disabled={!count} onClick={() => void s.act(async () => { const dataUrl = chart.current!.getConvertPictureUrl(true, "png", "#fffefa"); const path = await window.v3Research!.exportFile({ format: "png", dataUrl, suggestedName: `${symbol}-日线.png` }); if (path) s.setNotice(`已导出：${path}`); })}>导出图片</button></div></div>;
 }

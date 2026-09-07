@@ -3,6 +3,8 @@ import type { JsonObject, UniverseConfig } from "../../../../../packages/contrac
 import { request, useResearch } from "./state";
 import { CodeEditor, DataTable, Empty, Field, Heading } from "./ui";
 
+import { object, factorProcessing, FactorProcessingEditor, NumberSetting, ChoiceSetting } from "./configuration";
+
 export function Overview() {
   const s = useResearch(); const p = s.project!;
   const [objective, setObjective] = useState(p.objective);
@@ -38,12 +40,15 @@ export function UniversePanel() {
 }
 export function FactorPanel() {
   const s = useResearch(); const [search, setSearch] = useState(""); const [family, setFamily] = useState("");
+  const [analysis, setAnalysis] = useState<JsonObject>({ periods: [1, 5, 10, 20], quantiles: 5, labelMode: "next_open", ...object(s.project!.settings.factorAnalysis) });
+  const [periods, setPeriods] = useState(String((analysis.periods as number[]).join(",")));
   const [formula, setFormula] = useState(""); const [name, setName] = useState("");
   const [custom, setCustom] = useState<{ id: string; name: string; expression: string }[]>(() => (s.project?.settings.customFactors as unknown as { id: string; name: string; expression: string }[]) ?? []);
   const all = [...s.factors, ...custom.map(c => ({ ...c, family: "自定义", description: c.expression }))];
   const list = all.filter(f => (!family || f.family === family) && `${f.id} ${f.name} ${f.description}`.toLowerCase().includes(search.toLowerCase()));
   const toggle = (id: string) => s.setSelectedFactors(v => v.includes(id) ? v.filter(x => x !== id) : [...v, id]);
   return <div className="r-page"><Heading title="因子研究" description="选择一组量价或财务因子，检查 IC、分组表现、换手与相关性。" /><div className="r-toolbar"><input aria-label="搜索因子" placeholder="搜索名称、表达式…" value={search} onChange={e => setSearch(e.target.value)} /><select aria-label="因子分类" value={family} onChange={e => setFamily(e.target.value)}><option value="">所有分类</option>{[...new Set(all.map(f => f.family))].map(f => <option key={f}>{f}</option>)}</select><button onClick={() => s.setSelectedFactors([...new Set([...s.selectedFactors, ...list.map(f => f.id)])])}>选择筛选结果</button><button onClick={() => s.setSelectedFactors([])}>清空</button></div><div className="r-factor-list">{list.map(f => <label key={f.id} className={s.selectedFactors.includes(f.id) ? "selected" : ""}><input type="checkbox" checked={s.selectedFactors.includes(f.id)} onChange={() => toggle(f.id)} /><div><strong>{f.name}</strong><code>{f.id}</code><p>{f.description}</p></div><span className="r-tag">{f.family}</span></label>)}</div>{!list.length && <Empty title="没有匹配的因子">调整筛选条件，或检查研究服务是否返回因子库。</Empty>}
-    <div className="r-toolbar"><span>已选 {s.selectedFactors.length} 个</span><button className="r-primary" disabled={!s.selectedFactors.length} onClick={() => void s.act(() => s.submit("factor.analyze", { factorIds: s.selectedFactors, periods: [1, 5, 10], quantiles: 5, customFactors: custom.filter(c => s.selectedFactors.includes(c.id)) }))}>运行批量分析</button><button onClick={() => s.setPage("results")}>查看分析结果 →</button></div>
+    <FactorProcessingEditor /><div className="r-form-grid"><Field label="分析周期（交易日，逗号分隔）"><input value={periods} onChange={e => setPeriods(e.target.value)} /></Field><NumberSetting label="分组数" name="quantiles" value={analysis} onChange={setAnalysis} min={2} step={1} /><ChoiceSetting label="标签口径" name="labelMode" value={analysis} onChange={setAnalysis} choices={{ next_open: "下一开盘起算", close: "收盘到收盘（研究）" }} /></div>
+    <div className="r-toolbar"><span>已选 {s.selectedFactors.length} 个</span><button className="r-primary" disabled={!s.selectedFactors.length} onClick={() => void s.act(async () => { const days = [...new Set(periods.split(/[,，\s]+/).filter(Boolean).map(Number))]; if (!days.length || days.some(n => !Number.isInteger(n) || n < 1)) throw new Error("分析周期必须为正整数。"); const config = { ...analysis, periods: days }; await s.save({ settings: { ...s.project!.settings, factorAnalysis: config, selectedFactors: s.selectedFactors } }); await s.submit("factor.analyze", { ...config, factorIds: s.selectedFactors, factorProcessing: factorProcessing(s.project!.settings), customFactors: custom.filter(c => s.selectedFactors.includes(c.id)) }); })}>运行批量分析</button><button onClick={() => s.setPage("results")}>查看分析结果 →</button></div>
     <details><summary>公式编辑 · 自定义因子</summary><Field label="因子名称"><input value={name} onChange={e => setName(e.target.value)} /></Field><CodeEditor label="因子表达式" language="plaintext" value={formula} onChange={setFormula} /><button disabled={!name.trim() || !formula.trim()} onClick={() => void s.act(async () => { const next = [...custom, { id: `custom_${crypto.randomUUID().replace(/-/g, "")}`, name: name.trim(), expression: formula.trim() }]; await s.save({ settings: { ...s.project!.settings, customFactors: next } }); setCustom(next); setName(""); setFormula(""); })}>保存自定义因子</button><p className="r-note">表达式由后端验证与计算。保存公式不代表已通过分析。</p></details></div>;
 }
