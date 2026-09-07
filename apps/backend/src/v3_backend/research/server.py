@@ -89,16 +89,28 @@ class Service:
             from .data import preview
             return preview(store.project(p['projectId']))
         if method == 'data.bars':
-            from .data import read_table, records, symbol
-            frame = read_table(store.project(p['projectId']))
-            frame = frame[frame.symbol == symbol(p['symbol'])]
+            import pandas as pd
+            from .data import records, symbol
+            root = Path(store.project(p['projectId'])['path']) / 'data'
+            code = symbol(p['symbol'])
+            columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+            # Legacy tables can overlap newer partitions; the partition is the latest copy.
+            frames = []
+            if (root / 'prices.parquet').exists():
+                frames.append(pd.read_parquet(root / 'prices.parquet', columns=columns, filters=[('symbol', '==', code)]))
+            partition = root / 'prices' / f'{code}.parquet'
+            if partition.exists():
+                frames.append(pd.read_parquet(partition, columns=columns))
+            if not frames:
+                return []
+            frame = pd.concat(frames, ignore_index=True).drop_duplicates('date', keep='last').sort_values('date')
             if p.get('startDate'):
                 frame = frame[frame.date >= p['startDate']]
             if p.get('endDate'):
                 frame = frame[frame.date <= p['endDate']]
             if p.get('beforeDate'):
                 frame = frame[frame.date < p['beforeDate']]
-            return records(frame[['date', 'open', 'high', 'low', 'close', 'volume']].tail(max(1, min(500, int(p.get('limit', 500))))))
+            return records(frame.tail(max(1, min(500, int(p.get('limit', 500))))))
         if method in {'charts.load', 'charts.save'}:
             from .data import symbol
             project = store.project(p['projectId'])

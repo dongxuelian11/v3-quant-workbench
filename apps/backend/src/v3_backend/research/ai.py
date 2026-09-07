@@ -111,7 +111,7 @@ def _create_agent(service, project_id, model):
 
     @agent.tool_plain
     def list_experiments(limit: int = 20) -> list[dict]:
-        """列出本项目真实实验的ID、配置、指标及可读取的结果表名。"""
+        """列出本项目真实实验的ID、指标及结果表名；配置通过read_experiment读取。"""
         return [_experiment_summary(item) for item in service.store.experiments(project_id)[:max(1, min(limit, 100))]]
 
     @agent.tool_plain

@@ -31,7 +31,7 @@ function registerIpc(): void {
     const result = await dialog.showOpenDialog(window!, {
       title: positions ? "导入当前持仓" : membership ? "导入历史股票池或行业" : "导入行情或财务数据",
       properties: positions ? ["openFile"] : ["openFile", "multiSelections"],
-      filters: [{ name: positions ? "持仓表格" : "研究数据", extensions: positions ? ["csv", "xlsx"] : ["csv", "parquet", "xlsx"] }],
+      filters: [{ name: positions ? "持仓表格" : "研究数据", extensions: positions ? ["csv", "xlsx"] : ["csv", "parquet"] }],
     });
     return result.canceled ? [] : result.filePaths;
   });

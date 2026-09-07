@@ -26,7 +26,7 @@ export function ResultsPanel() {
   const exportResult = (format: "csv" | "xlsx" | "pdf") => void s.act(async () => {
     if (!detail) return;
     if (format !== "pdf") {
-      const result = await request<{ path: string }>("exports.create", { projectId: s.project!.id, experimentId: id, format });
+      const result = await request<{ path: string }>("exports.create", { projectId: s.project!.id, experimentId: id, format, ...(detail.experiment.kind === "selection.run" ? { table: "rebalance" } : {}) });
       const path = await window.v3Research!.exportFile({ format, sourcePath: result.path, suggestedName: `${detail.experiment.name}.${format}` });
       if (path) s.setNotice(`已导出：${path}`);
     } else {
