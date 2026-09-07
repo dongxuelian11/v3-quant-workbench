@@ -38,6 +38,7 @@ def normalize(frame, kind):
         if frame[col].isna().any():
             raise ValueError(f'{col} 不能缺失；财务数据必须提供公告日期')
     if kind == 'prices':
+        frame = frame.drop_duplicates(['symbol', 'date'], keep='last')
         for col in ['open', 'close', 'high', 'low', 'volume']:
             frame[col] = pd.to_numeric(frame[col], errors='raise')
         if not np.isfinite(frame[['open', 'close', 'high', 'low', 'volume']]).all().all() or (frame[['open', 'close', 'high', 'low']] <= 0).any().any() or (frame.volume < 0).any():
@@ -80,6 +81,8 @@ def merge_table(project, frame, kind, return_all=True):
             if prior is not None:
                 part = pd.concat([prior[prior.symbol.eq(code)], part], ignore_index=True)
             part = normalize(part, kind)[0]
+            if prior is not None and target.exists() and prior.reset_index(drop=True).equals(part.reset_index(drop=True)):
+                continue
             temporary = target.with_suffix('.tmp')
             part.to_parquet(temporary, index=False)
             temporary.replace(target)
@@ -87,6 +90,8 @@ def merge_table(project, frame, kind, return_all=True):
     if path.exists():
         frame = pd.concat([pd.read_parquet(path), frame], ignore_index=True)
     frame, _ = normalize(frame, kind)
+    if path.exists() and pd.read_parquet(path).reset_index(drop=True).equals(frame.reset_index(drop=True)):
+        return frame
     temporary = path.with_suffix('.tmp.parquet')
     frame.to_parquet(temporary, index=False)
     temporary.replace(path)

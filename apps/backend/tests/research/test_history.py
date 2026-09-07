@@ -34,3 +34,6 @@ class HistoricalDataTest(unittest.TestCase):
             data.merge_table(project,update,'prices',return_all=False)
             self.assertEqual((root/'SH600001.parquet').stat().st_mtime_ns,stamp)
             self.assertEqual(data.read_table(project).set_index('symbol').loc['SH600000','close'],11)
+            unchanged = (root/'SH600000.parquet').stat().st_mtime_ns
+            data.merge_table(project,update,'prices',return_all=False)
+            self.assertEqual((root/'SH600000.parquet').stat().st_mtime_ns,unchanged)
