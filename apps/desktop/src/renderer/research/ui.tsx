@@ -14,7 +14,15 @@ const resultMetricLabels: Record<string, string> = {
   total_cost_ratio: "费用比例合计", "valid:mse": "验证 MSE", "valid:r2": "验证 R²",
   "test:mse": "测试 MSE", "test:r2": "测试 R²", best_value: "最优目标值"
 };
+export function tableLabel(name: string) { return ({ benchmark: "策略与基准净值", excess: "超额收益", drawdown: "策略与基准回撤", monthly: "月度收益" } as Record<string, string>)[name] ?? fieldLabel(name); }
 export function fieldLabel(key: string, tableName = "") {
+  const labels: Record<string, Record<string, string>> = {
+    benchmark: { portfolio: "策略净值", benchmark: "基准净值" },
+    excess: { return: "日超额收益", cumulative: "累计超额收益" },
+    drawdown: { portfolio: "策略回撤", benchmark: "基准回撤" },
+    monthly: { portfolio: "策略月收益", benchmark: "基准月收益" }
+  };
+  if (labels[tableName]?.[key]) return labels[tableName][key];
   if (key === "amount" && /trade|holding|交易|持仓/i.test(tableName)) return "实际股数";
   if (key === "adjustedPrice") return "前复权价格";
   if (key === "adjustedAmount") return "复权数量";
@@ -40,7 +48,7 @@ export function DataTable({ table, onRow }: { table: ResearchTable; onRow?: (row
   const data = useMemo(() => table.rows.filter(row => !filter || Object.values(row).some(v => valueText(v).toLowerCase().includes(filter.toLowerCase()))), [table.rows, filter]);
   const columns = useMemo(() => table.columns.map(key => ({ id: key, accessorFn: (row: JsonObject) => row[key], header: fieldLabel(key, table.name), cell: (info: { getValue: () => unknown }) => valueText(info.getValue(), key) })), [table.columns, table.name]);
   const grid = useReactTable({ data, columns, state: { sorting }, onSortingChange: setSorting, getCoreRowModel: getCoreRowModel(), getSortedRowModel: getSortedRowModel() });
-  return <section className="r-table-section"><div className="r-toolbar"><strong>{table.name}</strong><span>{data.length} 行预览</span><input aria-label={`筛选${table.name}`} placeholder="筛选表格…" value={filter} onChange={e => setFilter(e.target.value)} /></div>{!data.length ? <Empty title="暂无记录">尚未产生可显示的数据。</Empty> : <div className="r-table-scroll"><table><thead>{grid.getHeaderGroups().map(g => <tr key={g.id}>{g.headers.map(h => <th key={h.id}><button onClick={h.column.getToggleSortingHandler()}>{flexRender(h.column.columnDef.header, h.getContext())}{h.column.getIsSorted() === "asc" ? " ↑" : h.column.getIsSorted() === "desc" ? " ↓" : ""}</button></th>)}</tr>)}</thead><tbody>{grid.getRowModel().rows.map(r => <tr key={r.id} onClick={() => onRow?.(r.original)}>{r.getVisibleCells().map((c, i) => <td key={c.id}>{onRow && i === 0 ? <button className="r-link" onClick={e => { e.stopPropagation(); onRow(r.original); }}>{flexRender(c.column.columnDef.cell, c.getContext())}</button> : flexRender(c.column.columnDef.cell, c.getContext())}</td>)}</tr>)}</tbody></table></div>}</section>;
+  return <section className="r-table-section"><div className="r-toolbar"><strong>{tableLabel(table.name)}</strong><span>{data.length} 行预览</span><input aria-label={`筛选${table.name}`} placeholder="筛选表格…" value={filter} onChange={e => setFilter(e.target.value)} /></div>{!data.length ? <Empty title="暂无记录">尚未产生可显示的数据。</Empty> : <div className="r-table-scroll"><table><thead>{grid.getHeaderGroups().map(g => <tr key={g.id}>{g.headers.map(h => <th key={h.id}><button onClick={h.column.getToggleSortingHandler()}>{flexRender(h.column.columnDef.header, h.getContext())}{h.column.getIsSorted() === "asc" ? " ↑" : h.column.getIsSorted() === "desc" ? " ↓" : ""}</button></th>)}</tr>)}</thead><tbody>{grid.getRowModel().rows.map(r => <tr key={r.id} onClick={() => onRow?.(r.original)}>{r.getVisibleCells().map((c, i) => <td key={c.id}>{onRow && i === 0 ? <button className="r-link" onClick={e => { e.stopPropagation(); onRow(r.original); }}>{flexRender(c.column.columnDef.cell, c.getContext())}</button> : flexRender(c.column.columnDef.cell, c.getContext())}</td>)}</tr>)}</tbody></table></div>}</section>;
 }
 export function Plot({ option, title, onImage }: { option: echarts.EChartsOption; title: string; onImage?: (url: string) => void }) {
   const node = useRef<HTMLDivElement>(null);

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { ExperimentDetails, JsonObject, ResearchTable } from "../../../../../packages/contracts/src/research";
 import { errorText, request, useResearch } from "./state";
-import { DataTable, Empty, Heading, Plot, valueText, fieldLabel, tradeDirection } from "./ui";
+import { DataTable, Empty, Heading, Plot, valueText, fieldLabel, tableLabel, tradeDirection } from "./ui";
 import { PriceChart, type TradeMarker } from "./PriceChart";
 import { PagedExperimentTable, type TablePage } from "./PagedTable";
 
@@ -123,7 +123,7 @@ function AnalysisTable({ table }: { table: ResearchTable }) {
   const numeric = useMemo(() => table.columns.filter(c => table.rows.some(r => typeof r[c] === "number")), [table]);
   const label = table.columns.find(c => !numeric.includes(c)) ?? table.columns[0];
   if (/correlation/i.test(table.name) && numeric.length && table.rows.length) return <><DataTable table={table} /><Plot title="因子相关性" option={{ tooltip: { position: "top" }, grid: { top: 20, left: 90, right: 30, bottom: 90 }, xAxis: { type: "category", data: numeric }, yAxis: { type: "category", data: table.rows.map(r => valueText(r[label])) }, visualMap: { min: -1, max: 1, calculable: true, orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#b97468", "#f8f7ef", "#287775"] } }, series: [{ type: "heatmap", data: table.rows.flatMap((r, y) => numeric.flatMap((c, x) => typeof r[c] === "number" ? [[x, y, r[c]]] : [])), label: { show: true } }] }} /></>;
-  return <><DataTable table={table} />{numeric.length > 0 && table.rows.length > 0 && <Plot title={table.name} option={{ tooltip: { trigger: "axis" }, legend: { type: "scroll" }, grid: { left: 64, right: 24, top: 45, bottom: 50 }, xAxis: { type: "category", data: table.rows.map(r => valueText(r[label])) }, yAxis: { type: "value" }, series: numeric.map(c => ({ name: c, type: /ic|turnover/i.test(table.name) ? "line" : "bar", data: table.rows.map(r => typeof r[c] === "number" ? r[c] : null) })) }} />}</>;
+  return <><DataTable table={table} />{numeric.length > 0 && table.rows.length > 0 && <Plot title={tableLabel(table.name)} option={{ tooltip: { trigger: "axis" }, legend: { type: "scroll" }, grid: { left: 64, right: 24, top: 45, bottom: 50 }, xAxis: { type: "category", data: table.rows.map(r => valueText(r[label])) }, yAxis: { type: "value" }, series: numeric.map(c => ({ name: fieldLabel(c, table.name), type: /ic|turnover|benchmark|excess|drawdown/i.test(table.name) ? "line" : "bar", data: table.rows.map(r => typeof r[c] === "number" ? r[c] : null) })) }} />}</>;
 }
 
 function ApplyBest({ detail }: { detail: ExperimentDetails }) {
@@ -156,9 +156,9 @@ function CompleteAnalysis({ detail, name }: { detail: ExperimentDetails; name: s
       const page = await request<TablePage>("experiments.table", { projectId: detail.experiment.projectId, experimentId: detail.experiment.id, table: artifactTableName(detail, name), offset, limit: 500 });
       if (!active) return;
       rows.push(...page.rows); offset += page.rows.length;
-      if (offset >= page.total) { setTable({ name: fieldLabel(name), columns: page.columns, rows }); return; }
+      if (offset >= page.total) { setTable({ name, columns: page.columns, rows }); return; }
       if (!page.rows.length) throw new Error("结果表未返回剩余行。");
     }
   })().catch(e => { if (active) setError(errorText(e)); }); return () => { active = false; }; }, [detail, name]);
-  return <section>{error ? <p role="alert">{error}</p> : table ? <AnalysisTable table={table} /> : <p role="status">正在读取 {fieldLabel(name)}…</p>}</section>;
+  return <section>{error ? <p role="alert">{error}</p> : table ? <AnalysisTable table={table} /> : <p role="status">正在读取 {tableLabel(name)}…</p>}</section>;
 }
