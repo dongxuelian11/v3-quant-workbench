@@ -1,11 +1,11 @@
 # V3 开源量化内核与可视化研究桌面
 
 ## 当前状态
-- 目标：交付日常可用的 Windows A 股日线研究软件，量价和财务多因子选股优先，完成下列首版范围。
+- 目标：在已交付首版上完成第二轮全部范围：沪深 A 股 2015 年至今的研究补强、四种组合构建、每日目标组合和调仓清单，以及 Ling 真实联调。
 - 已完成：从main建立并推送codex/v3-rebuild，已创建[草稿PR #54](https://github.com/dongxuelian11/v3-quant-workbench/pull/54)。开工及9月8日收尾刷新均无旧开放PR。Python3.12.14及依赖、Electron39.8.10、桌面桥、B视觉前端和研究后端均已合入；CI/README/打包已精简。最终Windows安装包已生成并在本机安装启动，使用随包Python，无开发环境覆盖。最终已安装程序截图见artifacts/research-journey/final-desktop.png。
 - 实测完成：6股2024..2025行情和72条公告财务落盘；GUI五因子分析、多因子周调仓、Ridge、LightGBM TPE两次寻优、组合Grid两次试参、模型评分回测与实验比较。CSV464行、Excel四张完整表464/1383/285/2790行、18页PDF和PNG成功导出读取。自定义公式和Python评分反转完成单因子回测；任务取消后重跑、重命名/收藏/删除均通过。四种批注重开/拖动保存、双窗格恢复、侧栏尺寸恢复通过。回放空行情定位已修，实际第二页成交可打开65个标记；单因子查看读取475行IC/换手、5行分组收益。最终打包产物与已安装程序均包含回放修复及短标记。
-- 当前：本地首版已交付，草稿PR已推送，未合并。安装程序退出0；已安装程序更新至最终产物的程序和app.asar后，重新启动并读取真实475行因子结果通过，验证应用均已关闭。4份旧规则文档的精简草稿因工具自动审批要求 P0_AUTHORITY_AMENDMENT，仍未提交，已询问用户。AI服务地址/模型尚无配置，仅TestModel路径通过，未进行真实在线/本地推理或Ling质量测试；未进行独立干净机器安装验证。
-- 下一步：用户可运行artifacts/package/v3-quant-workbench-1.0.0-x64.exe安装体验；在设置页填写AI服务后进行一次实际连接检查。明确授权后提交4份旧规则草稿。只针对新反馈继续修复，不重跑已通过的研究流程或旧全量测试。
+- 当前：第二轮计划已由用户明确要求实施，继续 codex/v3-rebuild 和三个现有任务；正在对齐接口与分发。首版基线 3a8616b，PR54 research CI 已成功，未合并。4份旧规则文档精简草稿仍未提交，因自动审批要求 P0_AUTHORITY_AMENDMENT；不影响程序开发。AI尚无真实推理验证，密钥由用户在软件设置填写。
+- 下一步：后端历史数据/成交/研究计算/选股；前端 B 视觉控件与选股结果；主任务共享类型、Electron 持仓文件选择、AI 工具与持久化及最终整合打包；审核先检查计算规则，再集中审查新实现。旧首版检查不重复执行。
 - 任务：主任务 01a07ab5-7f36-73c2-8a58-5f6b8b3ae66e；前端 01a07c31-a51e-7901-a91d-b7a15669878c（worktree 63d0）；后端 01a07c32-49f0-75a3-847b-106b1cd50a68（worktree 3170）；审核 01a07c4a-b63d-7300-988b-1d393b4ca42d。三任务均 Astra low。
 
 ## 已确认的产品设计
@@ -67,3 +67,62 @@ JobEvent.progress=0..1；charts.load/save 返回 {annotations:[]}。Grid searchS
 experiments.table {projectId,experimentId,table,offset?:0,limit?:200,symbol?,startDate?,endDate?} 返回 {name,columns,rows,total,offset,limit}，最多500行，用于完整回放翻页；图表按日期窗口再取该证券成交。trades price/amount为原始价/实际股数，图表前复权坐标用adjustedPrice；direction=1买/0卖。批量因子 details.unavailableFactors 记录个别失败，全失败仍报错。
 
 当前本机实测项目 artifacts/research-journey/project，id=6c6e6d0c1ed945dc8a81dd3626dd3464；成功数据job=06731d47d76e4f259c83c23e13e455bd，因子=f1db4c274a3847428885ea68bee67dfb，五因子回测=e12574ae76454664ab0d7d8a12963854，Ridge=fec3dcc7e20d46e7bff177fa2a4806af，模型评分回测=05fa4b398f3f40baae2a76794c5283d0，自定义公式/Python回测=0811aa78cb4b4a89a9d7f72266751c3b。旧失败更新f988f28639ab44cd8f3ba8ee7fe7e444保留；逐股保存94deba3已通过。导入项目 artifacts/research-journey/import-project，id=10d933051a1a4c51827f6ed17512b25f。安装目录artifacts/installed-v3，最终产物artifacts/package/v3-quant-workbench-1.0.0-x64.exe。实际检查脚本.cache/installed-check.cjs，验证会话均已关闭。正常Windows权限运行，无开发Python配置；截图见artifacts/research-journey/final-desktop.png、factor-detail.png。不要重复已通过的整套检查。
+
+## 第二轮已批准范围（2026-09-08）
+
+以下为本轮实际施工依据，覆盖首版中较简单的计算口径。保留旧项目与实验，新运行补齐并保存实际配置。只维护本文件；主任务整合，前后端与审核沿用原任务，Astra low；无例行 SHA256、逐功能审批或反复全量测试。券商下单、北交所、分钟数据不在本轮。
+
+### 数据与执行
+- BaoStock 主源、AKShare 补充，沪深 A 股 2015 年至今。增加指数、原始 OHLC、昨收、换手、上市日期、历史行业和成员快照。按证券 Parquet 分区，增量更新、按需补历史、分批取消续传；项目内复用 Qlib 与因子缓存，以数据更新时间和计算配置判断重算。
+- 沪深300/中证500按信号日期取历史成分；全市场按历史上市状态。免费快照按其记录日期生效，展示日期/覆盖范围；允许导入成员起止日期。禁止最新成分、行业或市值倒填历史。财务以公告日期可知，修订完整性按来源实际说明。
+- 市值中性化用对数流通市值，优先明确流通股本；可用 BaoStock 成交量与换手估算并注明口径。
+- 基准沪深300/中证500，股票池自动匹配，其他默认沪深300。新增基准净值、超额、回撤、月度收益、跟踪误差和信息比率。
+- T日收盘后信号、T+1开盘成交；原始价格和精度决定涨跌停，覆盖主板/创业板/科创板/ST/IPO历史规则，替代统一9.5%。停牌不成交，涨停开盘不买、跌停开盘不卖。
+- 整手、科创板最低申报量、零股卖出、可卖数量和资金不足逐项处理，保存未成交原因。佣金/最低佣金/印花税/过户费/滑点分别配置，印花税按历史日期，记录采用假设。成交量限制使用信号日已知的历史量，不能使用下一日全天量判断开盘成交。
+
+### 因子、验证和组合
+- 因子方向 → MAD三倍尺度 → 可选行业/市值中性化 → 截面标准化；中性化分别开关，默认关闭，历史数据缺失显示覆盖。常数因子标为无区分度。
+- 因子页提供方向/处理方式/分析周期/分组数。Pearson IC、明确标识 Rank IC、ICIR、累计分组表现、衰减、分期稳定性；因子相关性默认每日截面相关性的平均。
+- 交易标签为 T+1 开盘到 T+H+1 开盘收益，跨区间标签剔除；收盘到收盘保留为明确研究选项。默认 H=5，分析1/5/10/20日、5组。
+- 单次训练/验证/测试按交易日70/15/15，日期可编辑。滚动为3年训练/6个月验证/1个月测试，按自然月滚动并对齐交易日。复用 Qlib 日历/窗口工具与现有队列，不新增任务系统。
+- 模型寻优默认验证集 MSE，组合寻优默认验证集信息比率；支持已实现指标切换，选好参数后再跑独立测试。每个窗口/试参结果保存，用户明确应用最佳参数。测试表现不参与选参。
+- 组合四种：等权、非负排名评分归一、真实风险贡献优化的风险平价、均值方差。后两者复用 SciPy/CVXPY/sklearn Ledoit–Wolf/Qlib 薄适配。均值方差历史收益或明确选择的模型收益预测，默认历史；预测评分不能冒充预期收益。
+- 共用总仓位、单股上限、行业上限、换手上限。换手=包含现金的权重变化绝对值之和/2。目标30只、周调仓、95%仓位，其余上限默认关闭。
+- 协方差与历史收益最近252交易日、至少126有效样本、Ledoit–Wolf；年化口径一致，风险厌恶3。只用信号日前可知记录。
+- 有效股票/容量不足保留现金，显示目标与实际仓位和原因。不得自动放宽约束；已有持仓与约束冲突时保留记录/已算结果，标明不可执行及冲突。保存目标和实际成交权重，风险平价显示约束后的实际贡献偏差。
+
+### 每日选股、GUI 与 AI
+- 独立“选股”页及概览入口，顶部启用策略/数据日期/模型更新时间/更新并生成，持仓手填或 CSV/Excel 导入，含可卖数量与可用现金。
+- 用户明确启用策略与模型方案。一次运行顺序：增量更新 → 到期模型重训 → 最新评分 → 组合 → 调仓清单 → 实验保存。每月首次运行选股时重训，沿用确认参数，自动寻优单独发起。
+- 三视图候选股票/目标组合/调仓清单，评分、因子贡献、当前/目标权重、数量、估算金额和不能调整原因。金额用最新完成交易日价格估算。生成清单不改变实际持仓，用户操作后自行更新。
+- 常用因子方向/权重、模型和寻优参数使用表格/下拉/数值控件，代码与 JSON 放高级。结果补齐基准/行业/风险贡献/持仓收益贡献；行情按日期窗口加载，可继续向前，取消只能最近500根的限制。沿用 B 视觉和可记忆布局。
+- OpenRouter默认 https://openrouter.ai/api/v1，模型 inclusionai/ling-3.0-flash-fin:free，密钥用户设置。PydanticAI 工具读取真实数据概况/配置/实验/相关表，辅助新组合/验证/选股。
+- AI 提出阶段 → 用户运行 → AI读实际结果 → 讨论下一阶段；聊天与阶段随项目保存，实验引用可打开。真实连接和三种操作验证后才称已接通，TestModel不算。
+
+### 本轮接口约定
+保留四类核心对象。以下为现有 JsonObject 参数的键名约定，不增加另一套配置或身份系统。旧字段继续接受，新运行保存完整默认值。
+- 共享 JobKind 加 selection.run；chooseFiles({purpose:"positions"|"membership"|"research"})，缺省仍为研究导入，持仓支持 CSV/XLSX。
+- positions.get {projectId}、positions.save {projectId,positions}、positions.import {projectId,path}，均返回 {asOfDate,cash,rows:[{symbol,quantity,sellableQuantity,costPrice?}],updatedAt?}。无文件持仓默认空表现金0，导入错误明确指出行/字段。
+- ProjectConfig.settings 使用 selectedFactors/customFactors/backtest/model 原键，增加 factorProcessing、factorAnalysis、selection。因子和模型/回测任务传 factorProcessing；结构 {directions:{factorId:1|-1},winsorize:"mad"|"none",madScale:3,standardize:true,neutralizeIndustry:false,neutralizeSize:false}。
+- factorAnalysis/factor.analyze：periods:[1,5,10,20],quantiles:5,labelMode:"next_open"|"close"，以及 factorIds/customFactors/factorProcessing。默认next_open。
+- backtest 保留 template/factorIds/weights/topN/rebalance/capital/modelExperimentId/code 等。增加 benchmark:"csi300"|"csi500"，portfolio:{method:"equal"|"score"|"risk_parity"|"mean_variance",grossExposure:0.95,maxWeight:null,industryCap:null,turnoverLimit:null,lookback:252,minObservations:126,riskAversion:3,returnSource:"historical"|"model"}。约束比例范围0..1，null表示未启用。
+- costs:{commissionBuy:0.0003,commissionSell:0.0003,minCommission:5,stampDuty:"historical"|number,transferFee:0.00001,slippage:0.001,volumeParticipation:0.1}；旧 commissionBuy/Sell/minFee/slippage 在缺 costs 时兼容，成本假设随实验保存。
+- model 保留现有六个日期字段与 hyperparameters/labelHorizon；增加 validation:{mode:"single"|"rolling",trainYears:3,validMonths:6,testMonths:1,stepMonths:1}。单次日期留空由服务生成70/15/15。labelMode默认next_open，实时预测不能要求未来标签。
+- optimize.run 保留 target/sampler/trials/baseParameters/searchSpace，增加 objective（model默认valid:mse，backtest默认valid:information_ratio）、validation（含上述mode/窗口及六日期）。details.bestParameters 用于用户明确应用；trial/window表与最终测试单独标识。
+- selection:{enabled:boolean,strategy:{完整backtest参数},model:{完整model参数},retrain:"monthly",dataSource:"baostock"|"akshare",updateData:true,financials:true}，用户点击启用才保存 enabled:true。selection.run.parameters 可为此快照，空则用已启用的项目selection。每次快照当前持仓，结果保存 candidates/target_weights/rebalance/positions 表；rebalance 至少 symbol,side,quantity,estimatedPrice,estimatedAmount,reason,currentWeight,targetWeight。量化约束冲突通过 details.executable:false 和 details.conflicts 显示。
+- data.bars 增加 beforeDate（严格早于）和 limit（默认500）并保留数组返回；startDate/endDate窗口可往前取，不能永远先截最近500再过滤。experiments.table 原分页保留，新增表沿用现有导出。
+- ai.state.get/save {projectId,state?} 返回 {messages:[],phase:"",proposals:[],stageJobIds:[],mode:"assist"}；messages包含 role/content/phase?/experimentIds?，持久化项目内。ai.chat保留既有返回，增加工具读取实验详情及表，不自动执行。
+
+### 实现提醒与已核实依赖
+- BaoStock实际支持 query_hs300_stocks(date)/query_zz500_stocks(date)/query_stock_industry(date)；已实取2015与2020成分，记录 updateDate 有时早于请求日；必须用记录日期生效。
+- Qlib0.9.7 RollingGen 默认任务扩展会引入完整workflow，使用 ds_extra_mod_func=None 或直接复用 TimeAdjuster 日历窗口送现有队列。月窗口按日历月而非固定21交易日。
+- 已安装 SciPy1.15.3/CVXPY1.7.5/sklearn1.9.0，不需要额外组合包。Qlib原RiskParity优化失败也可能返回权重，必须检查求解与实际约束；科创板最少200股但后续递增1股，不能写成200股整手。
+- 历史规则：创业板2020-08-24起20%；沪深主板风险警示2026-07-06起10%；注册制主板2023-04-10起首5日无涨跌幅；证券印花税2023-08-28起卖出0.0005，此前0.001。按证券上市阶段和历史ST判断。
+- 官方依据：https://www.szse.cn/aboutus/trends/conference/t20200821_580925.html 、https://www.sse.com.cn/aboutus/mediacenter/hotandd/c/c_20260424_10816474.shtml 、https://www.szse.cn/lawrules/service/member/t20260630_621404.html 、https://edu.sse.com.cn/tib/ysptj/c/4868129.shtml 。
+- Ling当前服务列出 tools/tool_choice，不支持 response_format；采用PydanticAI工具输出路径。Context7工具本会话不可调用，已查本地安装源码与官方文档，不重复尝试不存在的工具。
+
+### 集中验证与完成状态
+- 待实现：数据/历史成员/缓存/基准/成交；因子/标签/验证/组合；每日选股/持仓/GUI；真实AI/导出/安装包。
+- 针对新增计算用小样本核对成员切换、公告、规则日期、停牌/费用/申报；手算基准/换手/现金/权重/风险贡献；标签边界、验证集选参、滚动衔接、最新预测。
+- 集成后一次真实数据研究流程覆盖四组合/持仓导入/清单/保存重开/导出；300股规模记录首次与缓存计算耗时/内存，增量/历史加载/取消续传。
+- 用户在设置填写Key后，Ling完成辅助配置/解释真实实验/一阶段研究讨论。最终更新Windows安装包，一次实际安装启动和关键流程检查。缺少真实验证保持待完成，不用模拟结果替代。

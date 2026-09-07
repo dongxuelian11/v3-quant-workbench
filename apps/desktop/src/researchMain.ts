@@ -24,11 +24,14 @@ function registerIpc(): void {
     const result = await dialog.showOpenDialog(window!, { title: "选择研究项目文件夹", properties: ["openDirectory", "createDirectory"] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
-  ipcMain.handle("research:choose-files", async (event) => {
+  ipcMain.handle("research:choose-files", async (event, options: Parameters<ResearchBridge["chooseFiles"]>[0] = {}) => {
     ownWindow(event);
+    const positions = options.purpose === "positions";
+    const membership = options.purpose === "membership";
     const result = await dialog.showOpenDialog(window!, {
-      title: "导入行情或财务数据", properties: ["openFile", "multiSelections"],
-      filters: [{ name: "研究数据", extensions: ["csv", "parquet"] }],
+      title: positions ? "导入当前持仓" : membership ? "导入历史股票池或行业" : "导入行情或财务数据",
+      properties: positions ? ["openFile"] : ["openFile", "multiSelections"],
+      filters: [{ name: positions ? "持仓表格" : "研究数据", extensions: positions ? ["csv", "xlsx"] : ["csv", "parquet", "xlsx"] }],
     });
     return result.canceled ? [] : result.filePaths;
   });

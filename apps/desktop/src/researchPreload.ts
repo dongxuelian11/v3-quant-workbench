@@ -11,7 +11,7 @@ const research: ResearchBridge = {
   request: (method, params = {}) => ipcRenderer.invoke("research:request", method, params),
   onEvent: (listener) => subscribe<JobEvent>("research:event", listener),
   chooseDirectory: () => ipcRenderer.invoke("research:choose-directory"),
-  chooseFiles: () => ipcRenderer.invoke("research:choose-files"),
+  chooseFiles: (options) => ipcRenderer.invoke("research:choose-files", options),
   exportFile: (request) => ipcRenderer.invoke("research:export", request),
 };
 contextBridge.exposeInMainWorld("v3Research", research);

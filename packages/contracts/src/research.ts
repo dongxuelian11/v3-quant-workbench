@@ -22,7 +22,7 @@ export interface ProjectConfig {
   layout?: JsonObject;
   settings: JsonObject;
 }
-export type JobKind = "data.update" | "data.import" | "factor.analyze" | "backtest.run" | "model.train" | "optimize.run";
+export type JobKind = "data.update" | "data.import" | "factor.analyze" | "backtest.run" | "model.train" | "optimize.run" | "selection.run";
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface JobSpec { projectId: string; kind: JobKind; name?: string; parameters: JsonObject; }
 export interface JobEvent {
@@ -58,11 +58,16 @@ export interface ExperimentDetails {
   details: JsonObject;
 }
 export interface FactorDefinition { id: string; name: string; family: string; description: string; expression?: string; }
+/** Saved user holdings; generating a selection never changes this snapshot. */
+export interface PositionRow { symbol: string; quantity: number; sellableQuantity: number; costPrice?: number; }
+export interface Positions { asOfDate: string; cash: number; rows: PositionRow[]; updatedAt?: string; }
+export type PortfolioMethod = "equal" | "score" | "risk_parity" | "mean_variance";
+export interface FilePickerOptions { purpose?: "research" | "positions" | "membership"; }
 export interface ResearchBridge {
   request<T = unknown>(method: string, params?: object): Promise<T>;
   onEvent(listener: (event: JobEvent) => void): () => void;
   chooseDirectory(): Promise<string | null>;
-  chooseFiles(): Promise<string[]>;
+  chooseFiles(options?: FilePickerOptions): Promise<string[]>;
   exportFile(request: { suggestedName: string; content?: string; dataUrl?: string; sourcePath?: string; html?: string; format: "csv" | "xlsx" | "png" | "pdf" }): Promise<string | null>;
 }
 declare global { interface Window { v3Research?: ResearchBridge; } }
