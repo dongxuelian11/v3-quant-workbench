@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import uuid
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,14 @@ def write_json(path, value):
     temporary = path.with_name(path.name + '.' + identifier() + '.tmp')
     try:
         temporary.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2), encoding='utf-8')
-        os.replace(temporary, path)
+        for attempt in range(5):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as exc:
+                if getattr(exc, 'winerror', None) not in {5, 32} or attempt == 4:
+                    raise
+                time.sleep(.02 * (attempt + 1))
     finally:
         temporary.unlink(missing_ok=True)
 
