@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { ExperimentDetails, JsonObject, ResearchTable } from "../../../../../packages/contracts/src/research";
-import { request, useResearch } from "./state";
+import { errorText, request, useResearch } from "./state";
 import { DataTable, Empty, Heading, Plot, valueText, fieldLabel, tradeDirection } from "./ui";
 import { PriceChart, type TradeMarker } from "./PriceChart";
-import { PagedExperimentTable } from "./PagedTable";
+import { PagedExperimentTable, type TablePage } from "./PagedTable";
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 function tradeFromRow(row: JsonObject): TradeMarker | null {
@@ -36,11 +36,70 @@ export function ResultsPanel() {
   const onRow = (row: JsonObject) => { const symbol = row.symbol ?? row.instrument ?? row.code; const date = row.date ?? row.trade_date; const trade = tradeFromRow(row); if (typeof symbol === "string") setReplay({ symbol, date: typeof date === "string" ? date : undefined, ...(trade ? { trade } : {}) }); };
   const tradeMarkers = detail?.tables.filter(t => /trade|交易/i.test(t.name)).flatMap(t => t.rows.filter(r => (r.symbol ?? r.instrument ?? r.code) === replay?.symbol).flatMap(r => { const trade = tradeFromRow(r); return trade ? [trade] : []; })) ?? [];
   return <div className="r-page"><Heading title="实验与结果" description="整体表现、横向比较，以及交易与持仓回放。结果仅来自已保存的实验。" /><div className="r-results-layout"><aside className="r-runs">{s.experiments.map(e => <div key={e.id} className={id === e.id ? "active" : ""}><input type="checkbox" aria-label={`比较 ${e.name}`} checked={selected.includes(e.id)} onChange={() => setSelected(ids => ids.includes(e.id) ? ids.filter(x => x !== e.id) : [...ids, e.id])} /><button onClick={() => { s.setSelectedExperiment(e.id); setTab("overall"); }}><strong>{e.starred ? "★ " : ""}{e.name}</strong><small>{new Date(e.createdAt).toLocaleDateString("zh-CN")}</small></button></div>)}<button disabled={selected.length < 2} onClick={() => void s.act(async () => { setComparison(await request<ExperimentDetails[]>("experiments.compare", { projectId: s.project!.id, experimentIds: selected })); setTab("compare"); })}>比较已选（{selected.length}）</button></aside><section className="r-result-content">{loading ? <Empty title="正在读取实验…" /> : !detail ? <Empty title="还没有实验结果">运行因子分析、回测或模型训练后，在这里查看真实结果。</Empty> : <><div className="r-toolbar"><input aria-label="实验名称" value={name} onChange={e => setName(e.target.value)} /><button disabled={!name.trim()} onClick={() => void s.act(async () => { await request("experiments.update", { projectId: s.project!.id, experimentId: id, name: name.trim() }); await s.refresh(); })}>重命名</button><button onClick={() => void s.act(async () => { await request("experiments.update", { projectId: s.project!.id, experimentId: id, starred: !detail.experiment.starred }); await s.refresh(); })}>{detail.experiment.starred ? "取消收藏" : "收藏"}</button><button className="r-danger" onClick={() => { if (window.confirm(`删除实验“${detail.experiment.name}”？`)) void s.act(async () => { await request("experiments.delete", { projectId: s.project!.id, experimentId: id }); s.setSelectedExperiment(""); setComparison([]); setSelected(ids => ids.filter(x => x !== id)); await s.refresh(); }); }}>删除</button></div><nav className="r-subtabs" aria-label="结果视图">{[["overall", "整体表现"], ["tables", "交易与持仓"], ["compare", "实验比较"], ["parameters", "参数与输出"]].map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{label}</button>)}</nav><p>{detail.experiment.summary}</p><UnavailableFactors details={detail.details} />
-      {tab === "overall" && <><Metrics metrics={detail.experiment.metrics} /><SeriesPlot details={[detail]} />{detail.tables.filter(t => /ic|quantile|group|correlation|turnover/i.test(t.name)).map(t => <AnalysisTable key={t.name} table={t} />)}</>}
+      {tab === "overall" && (detail.experiment.kind === "factor.analyze" ? <FactorResults key={detail.experiment.id} detail={detail} /> : <><Metrics metrics={detail.experiment.metrics} /><SeriesPlot details={[detail]} />{detail.tables.filter(t => /ic|quantile|group|correlation|turnover/i.test(t.name)).map(t => <AnalysisTable key={t.name} table={t} />)}</>)}
       {tab === "tables" && <>{detail.tables.length ? detail.tables.map(t => <PagedExperimentTable key={`${id}-${t.name}`} experimentId={id} table={artifactTableName(detail, t.name)} onRow={onRow} />) : <Empty title="这个实验没有返回表格" />}{replay && <PriceChart symbol={replay.symbol} focusDate={replay.date} trades={tradeMarkers} experimentId={id} tradeTable={detail.tables.find(t => /trade|交易/i.test(t.name)) ? artifactTableName(detail, detail.tables.find(t => /trade|交易/i.test(t.name))!.name) : undefined} />}</>}
       {tab === "compare" && (comparison.length ? <><DataTable table={{ name: "实验指标比较", columns: ["实验", ...new Set(comparison.flatMap(d => Object.keys(d.experiment.metrics)))], rows: comparison.map(d => ({ 实验: d.experiment.name, ...d.experiment.metrics })) }} /><SeriesPlot details={comparison} /><p className="r-note">请核对数据日期、股票池和参数差异后解释比较结果。</p></> : <Empty title="选择两个或更多实验进行比较" />)}
       {tab === "parameters" && <><h3>输入参数</h3><pre>{JSON.stringify(detail.experiment.parameters, null, 2)}</pre><h3>详细信息</h3><pre>{JSON.stringify(detail.details, null, 2)}</pre><DataTable table={{ name: "输出文件", columns: ["name", "type", "path"], rows: detail.experiment.artifacts.map(a => ({ ...a })) }} /><button onClick={() => void s.act(() => s.submit(detail.experiment.kind, detail.experiment.parameters, `${detail.experiment.name} · 重跑`))}>使用这些参数重跑</button></>}
       <div className="r-toolbar"><button onClick={() => exportResult("csv")}>导出 CSV</button><button onClick={() => exportResult("xlsx")}>导出 Excel</button><button onClick={() => exportResult("pdf")}>导出 PDF 报告</button></div></>}</section></div></div>;
+}
+function FactorResults({ detail }: { detail: ExperimentDetails }) {
+  const s = useResearch();
+  const [selected, setSelected] = useState("");
+  const [loaded, setLoaded] = useState<{ selection: string; tables: ResearchTable[] } | null>(null);
+  const [failure, setFailure] = useState("");
+  const names = new Map(s.factors.map(f => [f.id, f.name]));
+  const custom = detail.experiment.parameters.customFactors;
+  if (Array.isArray(custom)) for (const f of custom) {
+    if (f && typeof f === "object" && !Array.isArray(f) && typeof f.id === "string" && typeof f.name === "string") names.set(f.id, f.name);
+  }
+  const factors = Array.isArray(detail.details.factors) ? detail.details.factors.flatMap(f =>
+    f && typeof f === "object" && !Array.isArray(f) && typeof f.factor === "string"
+      ? [{ id: f.factor, samples: typeof f.samples === "number" ? f.samples : null }] : []) : [];
+  const periods = [...new Set(Object.keys(detail.experiment.metrics).filter(k => k.includes(":IC:")).map(k => k.split(":IC:")[1]))];
+  const summary: ResearchTable = {
+    name: "批量因子汇总", columns: ["因子", "样本数", ...periods.map(p => `${p} IC`)],
+    rows: factors.map(f => ({ factorId: f.id, 因子: names.get(f.id) ?? f.id, 样本数: f.samples,
+      ...Object.fromEntries(periods.map(p => [`${p} IC`, detail.experiment.metrics[`${f.id}:IC:${p}`] ?? null])) }))
+  };
+  useEffect(() => {
+    let active = true;
+    setLoaded(null); setFailure("");
+    const tableNames = selected ? [`${selected}_IC`, `${selected}_quantile_returns`, `${selected}_turnover`] : ["factor_correlation"];
+    async function loadTable(name: string): Promise<ResearchTable | null> {
+      const artifact = detail.experiment.artifacts.find(a => a.name === name);
+      if (!artifact) throw new Error(`缺少分析表：${name}`);
+      let offset = 0;
+      const rows: JsonObject[] = [];
+      let columns: string[] = [];
+      while (active) {
+        const page = await request<TablePage>("experiments.table", { projectId: detail.experiment.projectId, experimentId: detail.experiment.id, table: artifact.name, offset, limit: 500 });
+        if (!active) return null;
+        columns = page.columns;
+        rows.push(...page.rows); offset += page.rows.length;
+        if (offset >= page.total) return { name, columns, rows };
+        if (!page.rows.length) throw new Error(`分析表 ${name} 未返回剩余记录。`);
+      }
+      return null;
+    }
+    void Promise.all(tableNames.map(loadTable)).then(tables => {
+      if (active) setLoaded({ selection: selected, tables: tables.filter((t): t is ResearchTable => t !== null) });
+    }).catch(e => { if (active) setFailure(errorText(e)); });
+    return () => { active = false; };
+  }, [detail, selected]);
+  const select = (id: string) => { setLoaded(null); setFailure(""); setSelected(id); };
+  return <section><div className="r-toolbar"><label htmlFor={`factor-result-${detail.experiment.id}`}>查看因子</label><select id={`factor-result-${detail.experiment.id}`} value={selected} onChange={e => select(e.target.value)}><option value="">汇总 · 全部因子</option>{factors.map(f => <option key={f.id} value={f.id}>{names.get(f.id) ?? f.id}</option>)}</select></div>
+    {!selected && <DataTable table={summary} onRow={row => { if (typeof row.factorId === "string") select(row.factorId); }} />}
+    {failure ? <p role="alert" className="r-note">{failure}</p> : !loaded || loaded.selection !== selected ? <p role="status">正在读取完整分析表…</p> : loaded.tables.map(table => selected
+      ? <SingleFactorTable key={table.name} table={table} factorName={names.get(selected) ?? selected} />
+      : <AnalysisTable key={table.name} table={table} />)}
+  </section>;
+}
+function SingleFactorTable({ table, factorName }: { table: ResearchTable; factorName: string }) {
+  const grouped = table.name.endsWith("_quantile_returns");
+  const title = `${factorName} · ${grouped ? "分组收益" : table.name.endsWith("_turnover") ? "换手率" : "IC"}`;
+  const axis = grouped ? "factor_quantile" : table.columns.find(c => /date|datetime|time/i.test(c)) ?? table.columns[0];
+  const numeric = table.columns.filter(c => c !== axis && table.rows.some(row => typeof row[c] === "number"));
+  return <section><p className="r-note">{title} · 完整分析表 {table.rows.length} 行</p>{table.rows.length > 0 && numeric.length > 0 && <Plot title={title} option={{ tooltip: { trigger: "axis" }, legend: { type: "scroll" }, grid: { left: 64, right: 24, top: 45, bottom: 65 }, xAxis: { type: "category", data: table.rows.map(row => valueText(row[axis], axis)) }, yAxis: { type: "value", scale: true }, dataZoom: grouped ? [] : [{ type: "inside" }, { type: "slider", height: 18 }], series: numeric.map(column => ({ name: column, type: grouped ? "bar" : "line", showSymbol: false, connectNulls: false, data: table.rows.map(row => typeof row[column] === "number" ? row[column] : null) })) }} />}<DataTable table={{ ...table, name: title }} /></section>;
 }
 function UnavailableFactors({ details }: { details: JsonObject }) {
   const entries = details.unavailableFactors;
