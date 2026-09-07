@@ -4,9 +4,18 @@ import { useResearch } from "./state";
 import { CodeEditor, Field, Heading } from "./ui";
 
 function objectText(text: string): JsonObject { const v: unknown = JSON.parse(text); if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("参数必须是 JSON 对象。"); return v as JsonObject; }
+function savedCustomFactors(settings: JsonObject): { id: string; name: string; expression: string }[] {
+  if (!Array.isArray(settings.customFactors)) return [];
+  return settings.customFactors.flatMap(factor => {
+    if (!factor || typeof factor !== "object" || Array.isArray(factor)) return [];
+    return typeof factor.id === "string" && typeof factor.name === "string" && typeof factor.expression === "string"
+      ? [{ id: factor.id, name: factor.name, expression: factor.expression }] : [];
+  });
+}
 export function FactorSelection() {
   const s = useResearch();
-  return <section><div className="r-toolbar"><h3>参与因子</h3><button onClick={() => s.setPage("factors")}>前往因子库 →</button></div><div className="r-chips">{s.factors.map(f => <label key={f.id}><input type="checkbox" checked={s.selectedFactors.includes(f.id)} onChange={() => s.setSelectedFactors(ids => ids.includes(f.id) ? ids.filter(id => id !== f.id) : [...ids, f.id])} />{f.name}</label>)}</div><p className="r-note">已选 {s.selectedFactors.length} 个因子。计算与校验由研究服务完成。</p></section>;
+  const factors = [...s.factors, ...savedCustomFactors(s.project!.settings)];
+  return <section><div className="r-toolbar"><h3>参与因子</h3><button onClick={() => s.setPage("factors")}>前往因子库 →</button></div><div className="r-chips">{factors.map(f => <label key={f.id}><input type="checkbox" checked={s.selectedFactors.includes(f.id)} onChange={() => s.setSelectedFactors(ids => ids.includes(f.id) ? ids.filter(id => id !== f.id) : [...ids, f.id])} />{f.name}</label>)}</div><p className="r-note">已选 {s.selectedFactors.length} 个因子。计算与校验由研究服务完成。</p></section>;
 }
 export function StrategyPanel({ run = false }: { run?: boolean }) {
   const s = useResearch();
@@ -18,7 +27,7 @@ export function StrategyPanel({ run = false }: { run?: boolean }) {
   const [minFee, setMinFee] = useState(Number(saved.minFee ?? 5)); const [slippage, setSlippage] = useState(Number(saved.slippage ?? 0.001));
   const [weights, setWeights] = useState(JSON.stringify(saved.weights ?? {}, null, 2));
   const [code, setCode] = useState(String(saved.code ?? "")); const [model, setModel] = useState(String(saved.modelExperimentId ?? ""));
-  const parameters = (): JsonObject => ({ template, factorIds: s.selectedFactors, weights: objectText(weights), topN, rebalance, capital, commissionBuy: buy, commissionSell: sell, minFee, slippage, ...(model ? { modelExperimentId: model } : {}), ...(code.trim() ? { code } : {}) });
+  const parameters = (): JsonObject => ({ template, factorIds: s.selectedFactors, customFactors: savedCustomFactors(s.project!.settings).filter(f => s.selectedFactors.includes(f.id)), weights: objectText(weights), topN, rebalance, capital, commissionBuy: buy, commissionSell: sell, minFee, slippage, ...(model ? { modelExperimentId: model } : {}), ...(code.trim() ? { code } : {}) });
   const save = async () => { const p = parameters(); await s.save({ settings: { ...s.project!.settings, selectedFactors: s.selectedFactors, backtest: p } }); return p; };
   return <div className="r-page"><Heading title={run ? "策略回测" : "策略模板"} description="多头组合 · 参数可调整。每次运行保存独立实验及输入参数。" /><div className="r-form-grid"><Field label="组合模板"><select value={template} onChange={e => setTemplate(e.target.value)}><option value="single_factor">单因子排序</option><option value="multi_factor">多因子加权</option><option value="model_score">模型评分</option></select></Field><Field label="持仓数量"><input type="number" min={1} value={topN} onChange={e => setTopN(Number(e.target.value))} /></Field><Field label="调仓频率"><select value={rebalance} onChange={e => setRebalance(e.target.value)}><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></Field><Field label="初始资金（元）"><input type="number" min={1} value={capital} onChange={e => setCapital(Number(e.target.value))} /></Field></div>
     {template === "model_score" ? <Field label="模型实验"><select value={model} onChange={e => setModel(e.target.value)}><option value="">选择已完成的模型实验</option>{s.experiments.filter(e => e.kind === "model.train").map(e => <option key={e.id} value={e.id}>{e.name}</option>)}</select></Field> : <FactorSelection />}
@@ -33,7 +42,7 @@ export function ModelPanel() {
   const [dates, setDates] = useState<Record<string, string>>(() => Object.fromEntries(dateKeys.map(k => [k, String(saved[k] ?? "")])));
   const [horizon, setHorizon] = useState(Number(saved.labelHorizon ?? 5));
   const [hyper, setHyper] = useState(JSON.stringify(saved.hyperparameters ?? {}, null, 2));
-  const parameters = (): JsonObject => ({ model, factorIds: s.selectedFactors, ...dates, labelHorizon: horizon, hyperparameters: objectText(hyper) });
+  const parameters = (): JsonObject => ({ model, factorIds: s.selectedFactors, customFactors: savedCustomFactors(s.project!.settings).filter(f => s.selectedFactors.includes(f.id)), ...dates, labelHorizon: horizon, hyperparameters: objectText(hyper) });
   const ordered = dateKeys.every(k => dates[k]) && dates.trainStart <= dates.trainEnd && dates.trainEnd < dates.validStart && dates.validStart <= dates.validEnd && dates.validEnd < dates.testStart && dates.testStart <= dates.testEnd;
   return <div className="r-page"><Heading title="模型训练" description="按时间分离训练、验证与测试；寻优只使用验证区间。" /><div className="r-form-grid"><Field label="模型"><select value={model} onChange={e => setModel(e.target.value)}><option value="lightgbm">LightGBM</option><option value="ridge">Ridge</option></select></Field><Field label="预测周期（交易日）"><input type="number" min={1} value={horizon} onChange={e => setHorizon(Number(e.target.value))} /></Field>{dateKeys.map((key, i) => <Field key={key} label={labels[i]}><input type="date" value={dates[key]} onChange={e => setDates({ ...dates, [key]: e.target.value })} /></Field>)}</div>{!ordered && <p className="r-note">请填写完整、互不重叠的训练 → 验证 → 测试区间。</p>}<FactorSelection /><details><summary>高级模型参数</summary><Field label="超参数 JSON"><textarea rows={7} value={hyper} onChange={e => setHyper(e.target.value)} /></Field></details><div className="r-toolbar"><button onClick={() => void s.act(async () => { await s.save({ settings: { ...s.project!.settings, selectedFactors: s.selectedFactors, model: parameters() } }); s.setNotice("模型设置已保存"); })}>保存设置</button><button className="r-primary" disabled={!ordered || !s.selectedFactors.length || horizon < 1} onClick={() => void s.act(async () => { const p = parameters(); await s.save({ settings: { ...s.project!.settings, selectedFactors: s.selectedFactors, model: p } }); await s.submit("model.train", p); })}>训练模型</button></div><Optimization key={model} target="model" getParameters={parameters} disabled={!ordered || !s.selectedFactors.length} /></div>;
 }
