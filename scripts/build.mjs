@@ -1,14 +1,17 @@
 import { rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
-await rm(resolve(root, "dist"), { recursive: true, force: true });
-function run(command, args) {
-  const result = spawnSync(command, args, { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+const output = resolve(root, "dist");
+if (relative(root, output) !== "dist") throw new Error("Invalid build output directory");
+await rm(output, { recursive: true, force: true });
+function run(script, args) {
+  const result = spawnSync(process.execPath, [resolve(root, script), ...args], { cwd: root, stdio: "inherit", windowsHide: true });
+  if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
-run(process.platform === "win32" ? "tsc.cmd" : "tsc", ["-p", "tsconfig.json"]);
-run(process.platform === "win32" ? "node.exe" : "node", ["scripts/generate-build-manifest.mjs"]);
-run(process.platform === "win32" ? "vite.cmd" : "vite", ["build", "--config", "vite.config.mjs"]);
+run("node_modules/typescript/bin/tsc", ["-p", "tsconfig.json"]);
+run("node_modules/typescript/bin/tsc", ["-p", "tsconfig.renderer.json"]);
+run("node_modules/vite/bin/vite.js", ["build", "--config", "vite.config.mjs"]);
 console.log(`Built Electron 39 + React/Vite renderer to ${resolve(root, "dist")}`);
