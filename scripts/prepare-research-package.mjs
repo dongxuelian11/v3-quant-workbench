@@ -1,4 +1,4 @@
-import { cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, dirname, relative, resolve } from "node:path";
 import { researchPython, root, runPython } from "./research-python.mjs";
@@ -18,4 +18,14 @@ await cp(pythonRoot, resolve(staging, "python"), { recursive: true, filter: (pat
 await cp(resolve(root, "apps/backend/src/v3_backend/research"), resolve(staging, "backend-package/v3_backend/research"), { recursive: true, filter: (path) => basename(path) !== "__pycache__" });
 await writeFile(resolve(staging, "backend-package/v3_backend/__init__.py"), '"""V3 desktop research backend."""\n');
 await cp(resolve(root, "apps/backend/requirements-research.txt"), resolve(staging, "requirements-research.txt"));
+// Renderer modules are bundled by Vite. Keep their upstream license texts in the installer.
+for (const name of ["react", "react-dom", "scheduler", "dockview-react", "dockview", "dockview-core", "@tanstack/react-table", "@tanstack/table-core", "monaco-editor", "echarts", "zrender", "klinecharts", "tslib"]) {
+  const source = resolve(root, "node_modules", name);
+  if (!existsSync(source)) continue;
+  const destination = resolve(staging, "frontend-licenses", name.replaceAll("/", "-"));
+  await mkdir(destination, { recursive: true });
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    if (entry.isFile() && /license|notice/i.test(entry.name)) await cp(resolve(source, entry.name), resolve(destination, entry.name));
+  }
+}
 console.log(`Windows 研究运行时已准备：${staging}`);

@@ -5,9 +5,12 @@ directories:
   output: artifacts/package
   buildResources: packaging/resources
 asar: true
+npmRebuild: false
 files:
   - dist/**
   - package.json
+  - LICENSE
+  - '!node_modules/**'
 extraResources:
   - from: artifacts/package-staging/backend-runtime
     to: backend-runtime
