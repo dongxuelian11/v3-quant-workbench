@@ -33,7 +33,7 @@ def returns(project, name, dates):
     if not path.exists():
         raise ValueError('缺少真实基准行情，请先更新指数数据')
     frame = pd.read_parquet(path).set_index('date').sort_index()
-    result = frame.close.pct_change(fill_method=None).reindex(dates)
+    result = (frame.close/pd.to_numeric(frame.preclose,errors='coerce')-1).reindex(dates) if 'preclose' in frame else frame.close.pct_change(fill_method=None).reindex(dates)
     if result.isna().any():
         raise ValueError('基准日期覆盖不足，不以零收益替代')
     return result

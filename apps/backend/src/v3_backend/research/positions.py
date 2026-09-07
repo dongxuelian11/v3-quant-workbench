@@ -16,7 +16,7 @@ def validate(value):
         try:
             code = symbol(row['symbol'])
             quantity = float(row['quantity'])
-            sellable = float(row.get('sellableQuantity', quantity))
+            sellable = float(row['sellableQuantity'])
             if code in seen or not math.isfinite(quantity + sellable) or quantity < 0 or not 0 <= sellable <= quantity or quantity % 1 or sellable % 1:
                 raise ValueError('重复证券或 quantity/sellableQuantity 无效')
             item = dict(symbol=code, quantity=int(quantity), sellableQuantity=int(sellable))
@@ -51,8 +51,20 @@ def import_file(project, path):
         frame = pd.read_excel(path, dtype={'symbol': str})
     else:
         raise ValueError('持仓只支持 CSV/XLSX')
+    frame = frame.rename(columns={'证券代码': 'symbol', '股票代码': 'symbol', '持仓数量': 'quantity', '数量': 'quantity',
+                                   '可卖数量': 'sellableQuantity', '成本价': 'costPrice', '可用资金': 'cash', '日期': 'asOfDate'})
     if not {'symbol', 'quantity', 'sellableQuantity'}.issubset(frame):
         raise ValueError('持仓缺少 symbol/quantity/sellableQuantity 列')
+    def code(value):
+        text = str(value).strip()
+        try:
+            number = float(text)
+            if number.is_integer() and 0 <= number <= 999999:
+                return f'{int(number):06d}'
+        except ValueError:
+            pass
+        return text
+    frame['symbol'] = frame.symbol.map(code)
     old = get(project)
     return save(project, dict(asOfDate=frame.asOfDate.dropna().iloc[0] if 'asOfDate' in frame and frame.asOfDate.notna().any() else old['asOfDate'],
         cash=frame.cash.dropna().iloc[0] if 'cash' in frame and frame.cash.notna().any() else old['cash'], rows=frame.to_dict('records')))

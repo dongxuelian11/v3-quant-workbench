@@ -33,10 +33,13 @@ def run(directory):
             result = engines.backtest(project, params, directory, progress, store=store)
         elif job['kind'] == 'optimize.run':
             result = engines.optimize(project, params, directory, progress, store)
+        elif job['kind'] == 'selection.run':
+            from .selection import run as select
+            result = select(project, params, directory, progress)
         else:
             raise ValueError('未知任务')
         experiment = dict(id=job['id'], projectId=job['projectId'], kind=job['kind'], name=job['name'], starred=False,
-                          createdAt=now(), parameters=params, metrics=result['metrics'], artifacts=result['artifacts'], summary=result['summary'])
+                          createdAt=now(), parameters=result.get('parameters', params), metrics=result['metrics'], artifacts=result['artifacts'], summary=result['summary'])
         details = result.get('details', {})
         details['dataContext'] = data.preview(project)['datasets']
         details['source'] = read_json(Path(project['path']) / 'data' / 'source.json', {'source': 'import', 'warnings': ['导入文件的复权与历史修订完整性未验证']})

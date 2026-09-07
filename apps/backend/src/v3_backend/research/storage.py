@@ -164,5 +164,10 @@ class Store:
             write_json(path, old)
         result = {'ai': {'baseUrl': 'https://openrouter.ai/api/v1', 'model': 'inclusionai/ling-3.0-flash-fin:free', 'apiKey': '', 'temperature': 0.2}, 'defaultDataSource': 'baostock'}
         saved = read_json(path, {})
+        defaults = dict(result['ai'])
         result.update(saved)
+        result['ai'] = {**defaults, **saved.get('ai', {})}
+        for key in ['baseUrl', 'model']:
+            if not result['ai'].get(key):
+                result['ai'][key] = defaults[key]
         return result

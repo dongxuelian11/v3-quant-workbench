@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from v3_backend.research.storage import Store
-from v3_backend.research.data import merge_table
+from v3_backend.research.data import merge_table, read_table
 from v3_backend.research import engines
 
 
@@ -23,6 +23,10 @@ def sample_project(root):
             rows.append(dict(symbol=f'SH{600000 + number}', date=date, open=value * .999, high=value * 1.01,
                              low=value * .99, close=value, volume=1000000, amount=value * 1000000, isST=0))
     merge_table(project, pd.DataFrame(rows), 'prices')
+    # Explicit synthetic benchmark for local integration, never production fallback.
+    benchmark = Path(project['path']) / 'data/benchmarks'
+    benchmark.mkdir()
+    pd.DataFrame({'date':dates,'close':np.arange(len(dates))+1000.,'preclose':np.arange(len(dates))+999.}).to_parquet(benchmark/'SH000300.parquet',index=False)
     return project, dates, store
 
 
@@ -44,8 +48,9 @@ class EngineTest(unittest.TestCase):
             output = Path(directory) / 'pit'
             output.mkdir()
             prices = engines.prepare(project, output, lambda *_: None)
-            values = engines.features(project, {'factorIds': ['roe']}, prices)
-            series = values.xs('SH600000', level='instrument').roe
+            from qlib.data import D
+            values = D.features(['SH600000'], ['P($$roeavg_q)'], start_time=dates[0], end_time=dates[-1])
+            series = values.xs('SH600000', level='instrument').iloc[:,0]
             self.assertTrue(pd.isna(series.loc[dates[40]]))
             self.assertAlmostEqual(series.loc[dates[41]], 3.5)
 
@@ -54,16 +59,16 @@ class EngineTest(unittest.TestCase):
         frame = pd.DataFrame({'label': 1}, index=pd.MultiIndex.from_product([dates, ['SH600000']], names=['datetime', 'instrument']))
         params = dict(trainStart=str(dates[0]), trainEnd=str(dates[9]), validStart=str(dates[10]), validEnd=str(dates[19]), testStart=str(dates[20]), testEnd=str(dates[29]))
         split = engines.time_segments(frame, dates, params, 3)
-        self.assertEqual(split['train'].index.get_level_values(0).max(), dates[6])
-        self.assertEqual(split['valid'].index.get_level_values(0).max(), dates[16])
+        self.assertEqual(split['train'].index.get_level_values(0).max(), dates[5])
+        self.assertEqual(split['valid'].index.get_level_values(0).max(), dates[15])
 
     def test_real_qlib_cost_and_next_session(self):
         with tempfile.TemporaryDirectory() as directory:
             project, dates, store = sample_project(Path(directory))
             market_path = Path(project['path']) / 'data' / 'prices.parquet'
-            market = pd.read_parquet(market_path)
+            market = read_table(project, 'prices')
             market['factor'] = .5
-            market.to_parquet(market_path, index=False)
+            merge_table(project, market, 'prices')
             output = Path(directory) / 'backtest'
             output.mkdir()
             result = engines.backtest(project, {'template': 'single_factor', 'factorIds': ['momentum20'], 'topN': 3, 'rebalance': 'weekly', 'capital': 1000000}, output, lambda *_: None, store=store)
@@ -74,6 +79,8 @@ class EngineTest(unittest.TestCase):
             self.assertGreater(pd.Timestamp(trades.date.min()), signals.datetime.min())
             np.testing.assert_allclose(trades.amount, trades.adjustedAmount * .5)
             np.testing.assert_allclose(trades.amount * trades.price, trades.value)
+            contribution = pd.read_parquet(output/'contribution.parquet').groupby('date').returnContribution.sum()
+            np.testing.assert_allclose(contribution.reindex(pd.to_datetime(report.date),fill_value=0).to_numpy(),(report['return']-report.cost).to_numpy(),atol=1e-7)
 
     def test_custom_expression_rejects_future_and_python(self):
         for expression in ["__import__('os').system('whoami')", 'Ref($close,-1)', 'Ref($close,1-2)', '$close.__class__']:
@@ -102,12 +109,12 @@ class EngineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             project, dates, store = sample_project(Path(directory))
             path = Path(project['path']) / 'data' / 'prices.parquet'
-            prices = pd.read_parquet(path)
+            prices = read_table(project, 'prices')
             prices['tradestatus'] = 1
             halted = prices.symbol.eq('SH600000')
             prices.loc[halted, 'volume'] = 0
             prices.loc[halted, 'tradestatus'] = 0
-            prices.to_parquet(path, index=False)
+            merge_table(project, prices, 'prices')
             output = Path(directory) / 'suspended'
             output.mkdir()
             engines.backtest(project, dict(template='single_factor', factorIds=['momentum20'], topN=1, rebalance='daily',

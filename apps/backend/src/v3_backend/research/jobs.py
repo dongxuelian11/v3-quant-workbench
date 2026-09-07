@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .storage import Store, identifier, now, read_json, write_json
 
-KINDS = {'data.import', 'data.update', 'factor.analyze', 'backtest.run', 'model.train', 'optimize.run'}
+KINDS = {'data.import', 'data.update', 'factor.analyze', 'backtest.run', 'model.train', 'optimize.run', 'selection.run'}
 
 
 def validate_spec(spec):
@@ -16,8 +16,8 @@ def validate_spec(spec):
         raise ValueError('任务参数无效')
     p, kind = spec['parameters'], spec['kind']
     required = {'data.import': ['files'], 'data.update': ['startDate'], 'factor.analyze': ['factorIds'],
-                'backtest.run': ['template'], 'model.train': ['model', 'factorIds', 'trainStart', 'trainEnd', 'validStart', 'validEnd', 'testStart', 'testEnd'],
-                'optimize.run': ['target', 'sampler', 'baseParameters', 'searchSpace']}[kind]
+                'backtest.run': ['template'], 'model.train': ['model', 'factorIds'],
+                'selection.run': [], 'optimize.run': ['target', 'sampler', 'baseParameters', 'searchSpace']}[kind]
     if any(key not in p for key in required):
         raise ValueError('任务缺少参数: ' + ', '.join(key for key in required if key not in p))
     if kind in {'factor.analyze', 'model.train'} or kind == 'backtest.run' and p.get('template') != 'model_score':
