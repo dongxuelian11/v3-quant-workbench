@@ -188,7 +188,7 @@ def features(project, params, prices):
     frame = frame.swaplevel().sort_index()
     frame.index.names = ['datetime', 'instrument']
     from .history import members
-    if project['universe']['source'] != 'manual':
+    if project['universe']['source'] != 'manual' or project['universe']['symbols']:
         keep = []
         for date, panel in frame.groupby(level=0):
             allowed = members(project, date)

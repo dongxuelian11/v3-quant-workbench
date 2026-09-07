@@ -102,18 +102,26 @@ def run(project, params, output, progress):
         raise ValueError('选股需要已确认的完整策略和模型配置')
     if config.get('retrain', 'monthly') != 'monthly':
         raise ValueError('当前仅支持每月首次运行重训')
+    snapshot = positions.get(project)
+    held_codes = [row['symbol'] for row in snapshot['rows'] if row['quantity']>0]
+    prepare_project = {**project,'universe':dict(project['universe'])}
+    if project['universe']['source']=='manual' and project['universe']['symbols']:
+        prepare_project['universe']['symbols'] = sorted(set(map(data.symbol,project['universe']['symbols'])) | set(held_codes))
     if config.get('updateData', True):
-        data.update(project, dict(source=config.get('dataSource','baostock'), financials=config.get('financials',True),
+        update_params = dict(source=config.get('dataSource','baostock'), financials=config.get('financials',True),
                                  startDate=project.get('startDate') or '2015-01-01',
                                  endDate=update_end_date(),
-                                 factorProcessing=model_params.get('factorProcessing', {}), portfolio=strategy.get('portfolio', {})),
+                                 factorProcessing=model_params.get('factorProcessing', {}), portfolio=strategy.get('portfolio', {}))
+        data.update(prepare_project, update_params,
                     lambda value, message: progress(value*.4, message))
-    prices = completed_prices(engines.prepare(project, output, lambda value,message: progress(.4+value*.1,message)))
+        if held_codes and project['universe']['source']!='manual':
+            holdings_project = {**project,'universe':{**project['universe'],'source':'manual','symbols':held_codes}}
+            data.update(holdings_project,update_params,lambda value,message:progress(.35+value*.05,message))
+    prices = completed_prices(engines.prepare(prepare_project, output, lambda value,message: progress(.4+value*.1,message)))
     if prices.empty:
         raise ValueError('没有已完成交易日的行情')
     date = pd.Timestamp(prices.date.max())
     month = date.strftime('%Y-%m')
-    snapshot = positions.get(project)
     if snapshot.get('asOfDate') and pd.Timestamp(snapshot['asOfDate']) > date:
         raise ValueError('持仓日期晚于最新完成行情，无法一致估值')
     state_path = Path(project['path'])/'.research/selection-model.json'

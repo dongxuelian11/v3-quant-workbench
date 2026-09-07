@@ -15,11 +15,27 @@ class SelectionTest(unittest.TestCase):
         orders,_,_,_ = selection.estimate_orders(dict(cash=100000,rows=[]),pd.Series({'SH600000':.9}),market,COST_DEFAULTS,DEFAULTS,pd.Series(dtype=object))
         self.assertEqual(orders.quantity.iloc[0],100)
         self.assertIn('参与率',orders.reason.iloc[0])
-        project = dict(path='unused',startDate='2015-01-01',endDate='2020-01-01')
+        project = dict(path='unused',startDate='2015-01-01',endDate='2020-01-01',universe={'source':'manual','symbols':[]})
         with patch('v3_backend.research.selection.data.update',side_effect=RuntimeError('captured')) as update:
             with self.assertRaisesRegex(RuntimeError,'captured'):
                 selection.run(project,dict(enabled=True,model={'model':'ridge'},strategy={'template':'model_score'}),Path('unused'),lambda *_:None)
             self.assertEqual(update.call_args.args[1]['endDate'],selection.update_end_date())
+
+    def test_old_holding_can_exit_without_becoming_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project,dates,_ = sample_project(Path(directory))
+            project['universe']['symbols'] = ['SH600000','SH600001']
+            positions.save(project,dict(asOfDate=str(dates[-1])[:10],cash=50000,rows=[dict(symbol='SH600002',quantity=500,sellableQuantity=500)]))
+            params = dict(enabled=True,updateData=False,model=dict(model='ridge',factorIds=['momentum20'],labelHorizon=5),
+                          strategy=dict(template='model_score',topN=2,portfolio={'method':'equal'}))
+            output = Path(project['path'])/'.research/runs/old-holding'
+            output.mkdir(parents=True)
+            selection.run(project,params,output,lambda *_:None)
+            candidates = pd.read_parquet(output/'candidates.parquet')
+            self.assertEqual(set(candidates.symbol),{'SH600000','SH600001'})
+            orders = pd.read_parquet(output/'rebalance.parquet').set_index('symbol')
+            self.assertEqual(orders.loc['SH600002','side'],'sell')
+            self.assertEqual(orders.loc['SH600002','quantity'],500)
 
     def test_historical_rules_and_star_cash(self):
         self.assertEqual(limits('SH600000','2025-01-01',10.05)[1],11.06)
