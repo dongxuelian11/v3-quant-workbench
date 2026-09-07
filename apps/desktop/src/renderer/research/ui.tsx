@@ -7,12 +7,22 @@ import type { JsonObject, ResearchTable } from "../../../../../packages/contract
 export function Empty({ title, children }: { title: string; children?: React.ReactNode }) { return <div className="r-empty"><span className="r-empty-mark" aria-hidden="true">∿</span><h3>{title}</h3><p>{children}</p></div>; }
 export function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="r-field"><span>{label}</span>{children}</label>; }
 export function Heading({ title, description, children }: { title: string; description?: string; children?: React.ReactNode }) { return <header className="r-heading"><div><h1>{title}</h1>{description && <p>{description}</p>}</div>{children}</header>; }
-export function valueText(v: unknown) { return v == null ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v); }
+const fieldLabels: Record<string, string> = { name: "名称", rows: "行数", symbols: "股票数", startDate: "开始日期", endDate: "结束日期", missingValues: "缺失值", date: "日期", trade_date: "成交日期", symbol: "证券", instrument: "证券", code: "证券代码", open: "开盘", high: "最高", low: "最低", close: "收盘", volume: "成交量", amount: "成交额", side: "方向", direction: "方向", price: "成交价", execution_price: "成交价", trade_price: "成交价", quantity: "数量", shares: "股数", weight: "权重", cash: "现金", equity: "资产净值", net_value: "净值", nav: "净值", returns: "收益率", daily_return: "日收益率", benchmark: "基准", drawdown: "回撤", turnover: "换手率", commission: "佣金", fee: "费用", fees: "费用", slippage: "滑点", factor: "因子", factor_id: "因子", quantile: "分组", period: "周期", holding: "持仓", holdings: "持仓", type: "类型", path: "文件路径", createdAt: "创建日期", status: "状态", ic: "IC", rank_ic: "Rank IC", mean_ic: "平均 IC", ic_std: "IC 标准差", icir: "ICIR", total_return: "累计收益率", annual_return: "年化收益率", sharpe: "夏普比率", max_drawdown: "最大回撤" };
+export function fieldLabel(key: string) { return fieldLabels[key] ?? key; }
+export function valueText(v: unknown, key = "") {
+  if (v == null) return "—";
+  if (typeof v === "number") return Number.isFinite(v) ? v.toLocaleString("zh-CN", { maximumFractionDigits: 6 }) : "—";
+  if (typeof v === "object") return JSON.stringify(v);
+  const text = String(v);
+  if (/^\d{4}-\d{2}-\d{2}(T|\s|$)/.test(text) && /date|At$|time/i.test(key)) return text.slice(0, 10);
+  if (key === "side" || key === "direction") return /^(buy|买入)$/i.test(text) ? "买入" : /^(sell|卖出)$/i.test(text) ? "卖出" : text;
+  return text;
+}
 export function DataTable({ table, onRow }: { table: ResearchTable; onRow?: (row: JsonObject) => void }) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [filter, setFilter] = useState("");
   const data = useMemo(() => table.rows.filter(row => !filter || Object.values(row).some(v => valueText(v).toLowerCase().includes(filter.toLowerCase()))), [table.rows, filter]);
-  const columns = useMemo(() => table.columns.map(key => ({ id: key, accessorFn: (row: JsonObject) => row[key], header: key, cell: (info: { getValue: () => unknown }) => valueText(info.getValue()) })), [table.columns]);
+  const columns = useMemo(() => table.columns.map(key => ({ id: key, accessorFn: (row: JsonObject) => row[key], header: fieldLabel(key), cell: (info: { getValue: () => unknown }) => valueText(info.getValue(), key) })), [table.columns]);
   const grid = useReactTable({ data, columns, state: { sorting }, onSortingChange: setSorting, getCoreRowModel: getCoreRowModel(), getSortedRowModel: getSortedRowModel() });
   return <section className="r-table-section"><div className="r-toolbar"><strong>{table.name}</strong><span>{data.length} 行预览</span><input aria-label={`筛选${table.name}`} placeholder="筛选表格…" value={filter} onChange={e => setFilter(e.target.value)} /></div>{!data.length ? <Empty title="暂无记录">尚未产生可显示的数据。</Empty> : <div className="r-table-scroll"><table><thead>{grid.getHeaderGroups().map(g => <tr key={g.id}>{g.headers.map(h => <th key={h.id}><button onClick={h.column.getToggleSortingHandler()}>{flexRender(h.column.columnDef.header, h.getContext())}{h.column.getIsSorted() === "asc" ? " ↑" : h.column.getIsSorted() === "desc" ? " ↓" : ""}</button></th>)}</tr>)}</thead><tbody>{grid.getRowModel().rows.map(r => <tr key={r.id} onClick={() => onRow?.(r.original)}>{r.getVisibleCells().map((c, i) => <td key={c.id}>{onRow && i === 0 ? <button className="r-link" onClick={e => { e.stopPropagation(); onRow(r.original); }}>{flexRender(c.column.columnDef.cell, c.getContext())}</button> : flexRender(c.column.columnDef.cell, c.getContext())}</td>)}</tr>)}</tbody></table></div>}</section>;
 }
