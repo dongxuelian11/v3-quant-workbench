@@ -570,6 +570,7 @@ def backtest(project, params, output, progress, prices=None, store=None):
     metrics['total_cost_ratio'] = float(report.cost.sum())
     metrics['sharpe'] = metrics.get('information_ratio')
     excess_metrics, benchmark_tables = benchmarks.analyze(report)
+    metrics['max_drawdown'] = float(benchmark_tables['drawdown'].portfolio.min())
     metrics['information_ratio'] = excess_metrics['information_ratio']
     metrics['tracking_error'] = excess_metrics['tracking_error']
     metrics['benchmark_total_return'] = float((1+report.bench).prod()-1)
@@ -631,7 +632,7 @@ def backtest(project, params, output, progress, prices=None, store=None):
                   save_table(output,'industry',pd.DataFrame(industry_rows)),save_table(output,'contribution',pd.DataFrame(contribution_rows))]
     progress(.95, 'Qlib 组合回测完成')
     return dict(metrics=metrics, artifacts=artifacts, summary='Qlib 日期规则组合回测',parameters={**params,'costs':costs,'portfolio':portfolio_config,'benchmark':benchmark_name,'topN':top_n},
-                details={'engine': 'pyqlib', 'annualizationDays':252, 'benchmark': benchmark_name, 'signalTiming': 'previous trading session -> next session open', 'rebalance': frequency,
+                details={'engine': 'pyqlib', 'annualizationDays':252, 'annualizedReturnMethod':'arithmetic', 'benchmark': benchmark_name, 'signalTiming': 'previous trading session -> next session open', 'rebalance': frequency,
                          'executable':not conflicts,'conflicts':list(dict.fromkeys(conflicts)),
                          'warnings': list(dict.fromkeys(portfolio_warnings))+['日线开盘价近似开盘成交，非逐笔9:25集合报价；旧制IPO缺发行价时不成交。', '原始参考昨收、历史ST/上市日期不足的边界不会自动补齐。']})
 
