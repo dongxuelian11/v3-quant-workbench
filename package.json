@@ -1,6 +1,6 @@
 {
   "name": "v3-oss-rebuild",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Windows A-share quantitative research desktop with open-source Python engines.",
   "license": "Apache-2.0",

@@ -27,8 +27,9 @@ def save_state(service, params):
     return state
 
 
-def _experiment_summary(experiment):
-    return {key: value for key, value in experiment.items() if key != 'artifacts'} | {
+def _experiment_summary(experiment, include_parameters=False):
+    hidden = {'artifacts'} if include_parameters else {'artifacts', 'parameters'}
+    return {key: value for key, value in experiment.items() if key not in hidden} | {
         'tables': [item['name'] for item in experiment['artifacts'] if item['type'] == 'parquet']
     }
 
@@ -42,10 +43,12 @@ def _project_context(service, project_id):
         'selectedFactors', 'customFactors', 'factorProcessing', 'factorAnalysis',
         'backtest', 'model', 'selection',
     ) if key in settings}
+    data = preview(project)
+    data['rows'] = data.get('rows', [])[:20]
     return {
         'project': {key: project[key] for key in ('id', 'name', 'objective', 'universe', 'startDate', 'endDate')},
         'configuration': research_settings,
-        'data': preview(project),
+        'data': data,
     }
 
 
@@ -117,7 +120,7 @@ def _create_agent(service, project_id, model):
         try:
             experiment = service.store.experiment(project_id, experiment_id)
             directory = Path(service.store.project(project_id)['path']) / '.research' / 'runs' / experiment_id
-            return {'experiment': _experiment_summary(experiment), 'details': read_json(directory / 'details.json', {})}
+            return {'experiment': _experiment_summary(experiment, include_parameters=True), 'details': read_json(directory / 'details.json', {})}
         except ValueError as exc:
             return {'error': str(exc)}
 
