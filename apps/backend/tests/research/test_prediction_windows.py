@@ -9,6 +9,18 @@ from v3_backend.research import engines,benchmarks
 
 
 class PredictionWindowsTest(unittest.TestCase):
+    def test_annualization_uses_252_days(self):
+        from qlib.contrib.evaluate import risk_analysis
+        report = pd.DataFrame({'return':[.01,-.02,.015],'cost':[.001,.001,.001],'bench':[.002,-.003,.001]},index=pd.bdate_range('2024-01-01',periods=3))
+        metrics,_ = benchmarks.analyze(report)
+        excess = report['return']-report.cost-report.bench
+        self.assertAlmostEqual(metrics['annualized_return'],excess.mean()*252)
+        self.assertAlmostEqual(metrics['tracking_error'],excess.std(ddof=1)*np.sqrt(252))
+        self.assertAlmostEqual(metrics['information_ratio'],excess.mean()/excess.std(ddof=1)*np.sqrt(252))
+        net = report['return']-report.cost
+        strategy = risk_analysis(net,N=252,freq='day').iloc[:,0]
+        self.assertAlmostEqual(strategy['annualized_return'],net.mean()*252)
+
     def test_one_rolling_window_keeps_window_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
             project,dates,_ = sample_project(Path(directory))

@@ -564,7 +564,7 @@ def backtest(project, params, output, progress, prices=None, store=None):
     report, positions = portfolio['1day']
     report.index.name = 'date'
     net = report['return'] - report['cost']
-    risk = risk_analysis(net, freq='day')
+    risk = risk_analysis(net, N=252)
     metrics = {str(key): float(value) if pd.notna(value) else None for key, value in risk.iloc[:, 0].items()}
     metrics['total_return'] = float((1 + net).prod() - 1)
     metrics['total_cost_ratio'] = float(report.cost.sum())
@@ -631,7 +631,7 @@ def backtest(project, params, output, progress, prices=None, store=None):
                   save_table(output,'industry',pd.DataFrame(industry_rows)),save_table(output,'contribution',pd.DataFrame(contribution_rows))]
     progress(.95, 'Qlib 组合回测完成')
     return dict(metrics=metrics, artifacts=artifacts, summary='Qlib 日期规则组合回测',parameters={**params,'costs':costs,'portfolio':portfolio_config,'benchmark':benchmark_name,'topN':top_n},
-                details={'engine': 'pyqlib', 'benchmark': benchmark_name, 'signalTiming': 'previous trading session -> next session open', 'rebalance': frequency,
+                details={'engine': 'pyqlib', 'annualizationDays':252, 'benchmark': benchmark_name, 'signalTiming': 'previous trading session -> next session open', 'rebalance': frequency,
                          'executable':not conflicts,'conflicts':list(dict.fromkeys(conflicts)),
                          'warnings': list(dict.fromkeys(portfolio_warnings))+['日线开盘价近似开盘成交，非逐笔9:25集合报价；旧制IPO缺发行价时不成交。', '原始参考昨收、历史ST/上市日期不足的边界不会自动补齐。']})
 

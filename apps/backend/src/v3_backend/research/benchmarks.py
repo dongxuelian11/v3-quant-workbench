@@ -47,7 +47,7 @@ def analyze(report):
     nav = (1+net).cumprod()
     benchmark_nav = (1+benchmark).cumprod()
     excess = net-benchmark
-    risk = risk_analysis(excess, freq='day')
+    risk = risk_analysis(excess, N=252)
     metrics = {str(key): float(value) if pd.notna(value) else None for key, value in risk.iloc[:, 0].items()}
     metrics['tracking_error'] = float(excess.std(ddof=1)*252**.5)
     tables = {'benchmark': pd.DataFrame({'portfolio': nav, 'benchmark': benchmark_nav}),
