@@ -2,10 +2,10 @@
 
 ## 当前状态
 - 目标：交付日常可用的 Windows A 股日线研究软件，量价和财务多因子选股优先，完成下列首版范围。
-- 已完成：从main建立codex/v3-rebuild，GitHub开放PR为0（9月7日开工查询）；Python3.12.14及依赖、Electron39.8.10；桌面桥、B视觉前端和研究后端均已合入；CI/README/打包精简已提交0c6f911。真实Electron已创建项目、保存20股股票池及独立个人模板、提交BaoStock更新；源码限定审核及相关小样本已修停牌成交、寻优参数、复权拼接、移动工件、分页和交易方向。截图见artifacts/research-journey/data-desktop.png。
+- 已完成：从main建立并推送codex/v3-rebuild，已创建[草稿PR #54](https://github.com/dongxuelian11/v3-quant-workbench/pull/54)。开工及9月8日收尾刷新均无旧开放PR。Python3.12.14及依赖、Electron39.8.10、桌面桥、B视觉前端和研究后端均已合入；CI/README/打包已精简。最终Windows安装包已生成并在本机安装启动，使用随包Python，无开发环境覆盖。最终已安装程序截图见artifacts/research-journey/final-desktop.png。
 - 实测完成：6股2024..2025行情和72条公告财务落盘；GUI五因子分析、多因子周调仓、Ridge、LightGBM TPE两次寻优、组合Grid两次试参、模型评分回测与实验比较。CSV464行、Excel四张完整表464/1383/285/2790行、18页PDF和PNG成功导出读取。自定义公式和Python评分反转完成单因子回测；任务取消后重跑、重命名/收藏/删除均通过。四种批注重开/拖动保存、双窗格恢复、侧栏尺寸恢复通过。回放空行情定位已修，实际第二页成交可打开65个标记；单因子查看读取475行IC/换手、5行分组收益。最终打包产物与已安装程序均包含回放修复及短标记。
-- 正在做：最终安装包和GitHub草稿PR收尾。安装程序已退出0，安装版使用自身Python重开项目，最后界面更新使用同一最终产物的程序和app.asar，无需重复部署Python。4份旧规则文档提交被自动审批要求 P0_AUTHORITY_AMENDMENT，已问用户，未收到明确回答，保留未提交。AI实连地址/模型也已询问，尚无配置，不把TestModel检查称真实在线/本地连接。
-- 下一步：最终安装产物启动复验后提交并推送重构分支，创建同一份草稿PR交付。AI实际在线/本地服务连接待用户配置；4份旧规则草稿的提交待自动审批要求的明确授权。不要重跑已经通过的研究流程或旧全量测试。
+- 当前：本地首版已交付，草稿PR已推送，未合并。安装程序退出0；已安装程序更新至最终产物的程序和app.asar后，重新启动并读取真实475行因子结果通过，验证应用均已关闭。4份旧规则文档的精简草稿因工具自动审批要求 P0_AUTHORITY_AMENDMENT，仍未提交，已询问用户。AI服务地址/模型尚无配置，仅TestModel路径通过，未进行真实在线/本地推理或Ling质量测试；未进行独立干净机器安装验证。
+- 下一步：用户可运行artifacts/package/v3-quant-workbench-1.0.0-x64.exe安装体验；在设置页填写AI服务后进行一次实际连接检查。明确授权后提交4份旧规则草稿。只针对新反馈继续修复，不重跑已通过的研究流程或旧全量测试。
 - 任务：主任务 01a07ab5-7f36-73c2-8a58-5f6b8b3ae66e；前端 01a07c31-a51e-7901-a91d-b7a15669878c（worktree 63d0）；后端 01a07c32-49f0-75a3-847b-106b1cd50a68（worktree 3170）；审核 01a07c4a-b63d-7300-988b-1d393b4ca42d。三任务均 Astra low。
 
 ## 已确认的产品设计
@@ -66,4 +66,4 @@ JobEvent.progress=0..1；charts.load/save 返回 {annotations:[]}。Grid searchS
 
 experiments.table {projectId,experimentId,table,offset?:0,limit?:200,symbol?,startDate?,endDate?} 返回 {name,columns,rows,total,offset,limit}，最多500行，用于完整回放翻页；图表按日期窗口再取该证券成交。trades price/amount为原始价/实际股数，图表前复权坐标用adjustedPrice；direction=1买/0卖。批量因子 details.unavailableFactors 记录个别失败，全失败仍报错。
 
-当前本机实测项目 artifacts/research-journey/project，id=6c6e6d0c1ed945dc8a81dd3626dd3464；成功数据job=06731d47d76e4f259c83c23e13e455bd，因子=f1db4c274a3847428885ea68bee67dfb，五因子回测=e12574ae76454664ab0d7d8a12963854，Ridge=fec3dcc7e20d46e7bff177fa2a4806af，模型评分回测=05fa4b398f3f40baae2a76794c5283d0，自定义公式/Python回测=0811aa78cb4b4a89a9d7f72266751c3b。旧失败更新f988f28639ab44cd8f3ba8ee7fe7e444保留；逐股保存94deba3已通过。导入项目 artifacts/research-journey/import-project，id=10d933051a1a4c51827f6ed17512b25f。安装目录artifacts/installed-v3，最终产物artifacts/package/v3-quant-workbench-1.0.0-x64.exe。实际检查脚本.cache/installed-check.cjs（最新unpacked检查exec61050；21521/35382/45058已关闭）。正常Windows权限运行，无开发Python配置；截图见artifacts/research-journey/final-trade-replay.png、factor-detail.png。不要重复已通过的整套检查。
+当前本机实测项目 artifacts/research-journey/project，id=6c6e6d0c1ed945dc8a81dd3626dd3464；成功数据job=06731d47d76e4f259c83c23e13e455bd，因子=f1db4c274a3847428885ea68bee67dfb，五因子回测=e12574ae76454664ab0d7d8a12963854，Ridge=fec3dcc7e20d46e7bff177fa2a4806af，模型评分回测=05fa4b398f3f40baae2a76794c5283d0，自定义公式/Python回测=0811aa78cb4b4a89a9d7f72266751c3b。旧失败更新f988f28639ab44cd8f3ba8ee7fe7e444保留；逐股保存94deba3已通过。导入项目 artifacts/research-journey/import-project，id=10d933051a1a4c51827f6ed17512b25f。安装目录artifacts/installed-v3，最终产物artifacts/package/v3-quant-workbench-1.0.0-x64.exe。实际检查脚本.cache/installed-check.cjs，验证会话均已关闭。正常Windows权限运行，无开发Python配置；截图见artifacts/research-journey/final-desktop.png、factor-detail.png。不要重复已通过的整套检查。
