@@ -12,7 +12,7 @@ const resultMetricLabels: Record<string, string> = {
   estimatedActualWeight: "估算实际权重", riskContribution: "风险贡献", estimatedFees: "估算费用",
   actualWeight: "实际权重", pnl: "持仓损益", returnContribution: "收益贡献", targetRiskContribution: "目标风险贡献", actualRiskContribution: "实际风险贡献", contributionDeviation: "风险贡献偏差", baseValue: "基础值",
   candidates: "候选股票", target_weights: "目标组合", rebalance: "调仓清单", positions: "实际持仓", currentWeight: "当前权重", targetWeight: "目标权重", estimatedPrice: "估算价格", estimatedAmount: "估算金额", sellableQuantity: "可卖数量", costPrice: "成本价", reason: "原因", score: "评分", industry: "行业", tracking_error: "跟踪误差", monthly_returns: "月度收益", risk_contributions: "风险贡献", return_contributions: "收益贡献", industry_weights: "行业权重", trials: "寻优试参", windows: "验证窗口",
-  mean: "日均收益", std: "日收益波动", annualized_return: "年化收益", information_ratio: "信息比率",
+  mean: "日均收益", std: "日收益波动", annualized_return: "年化收益（算术）", excess_annualized_return: "年化超额收益（算术）", benchmark_total_return: "基准累计收益", information_ratio: "信息比率",
   total_cost_ratio: "费用比例合计", "valid:mse": "验证 MSE", "valid:r2": "验证 R²",
   "test:mse": "测试 MSE", "test:r2": "测试 R²", best_value: "最优目标值"
 };
