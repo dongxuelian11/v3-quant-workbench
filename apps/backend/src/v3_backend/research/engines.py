@@ -236,6 +236,8 @@ def analyze(project, params, output, progress, prices=None):
     from .processing import label_prices, forward_returns, DEFAULTS as PROCESS_DEFAULTS
     prices = prepare(project, output, progress) if prices is None else prices
     values = features(project, params, prices)
+    processing_coverage = values.attrs.get('processingCoverage', [])
+    values.attrs = {}
     market = label_prices(prices, params.get('labelMode','next_open'))
     periods = tuple(int(p) for p in params.get('periods', [1, 5, 10, 20]))
     if not periods or any(p < 1 or p > 252 for p in periods):
@@ -299,7 +301,7 @@ def analyze(project, params, output, progress, prices=None):
         raise ValueError('所有因子均不可分析: ' + '; '.join(f'{item["factor"]}: {item["reason"]}' for item in unavailable))
     correlation = values.groupby(level=0).corr().groupby(level=1).mean().rename_axis('factor')
     artifacts.append(save_table(output, 'factor_correlation', correlation))
-    artifacts.append(save_table(output,'processing_coverage',pd.DataFrame(values.attrs['processingCoverage'])))
+    artifacts.append(save_table(output,'processing_coverage',pd.DataFrame(processing_coverage)))
     return dict(metrics=metrics, artifacts=artifacts, summary=f'Alphalens 分析 {len(summaries)} 项，{len(unavailable)} 项不可分析',
                 parameters={**params,'labelMode':params.get('labelMode','next_open'),'periods':list(periods),'quantiles':params.get('quantiles',5),'factorProcessing':{**PROCESS_DEFAULTS,**params.get('factorProcessing',{})}},
                 details={'factors': summaries, 'unavailableFactors': unavailable, 'engine': 'alphalens-reloaded',
