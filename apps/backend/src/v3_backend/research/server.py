@@ -28,7 +28,7 @@ class Service:
         for artifact in experiment['artifacts']:
             if artifact['type'] != 'parquet':
                 continue
-            frame = pd.read_parquet(artifact['path'])
+            frame = pd.read_parquet(self.store.artifact_path(project_id, artifact))
             tables.append({'name': artifact['name'], 'columns': list(frame.columns), 'rows': records(frame.head(row_limit))})
             if artifact['name'] == 'portfolio' and 'date' in frame and 'return' in frame:
                 net = (1 + frame['return'] - frame['cost']).cumprod()
@@ -99,6 +99,31 @@ class Service:
             return store.experiments(p['projectId'])
         if method == 'experiments.get':
             return self.experiment_details(p['projectId'], p['experimentId'])
+        if method == 'experiments.table':
+            import pandas as pd
+            from .data import records, symbol
+            experiment = store.experiment(p['projectId'], p['experimentId'])
+            artifact = next((item for item in experiment['artifacts'] if item['name'] == p['table'] and item['type'] == 'parquet'), None)
+            if artifact is None:
+                raise ValueError('实验中没有此数据表')
+            frame = pd.read_parquet(store.artifact_path(p['projectId'], artifact))
+            instrument = next((name for name in ('symbol', 'instrument', 'asset') if name in frame), None)
+            date_column = 'date' if 'date' in frame else 'datetime' if 'datetime' in frame else None
+            if p.get('symbol'):
+                if instrument is None:
+                    raise ValueError('此表没有股票代码列')
+                frame = frame[frame[instrument] == symbol(p['symbol'])]
+            if p.get('startDate') or p.get('endDate'):
+                if date_column is None:
+                    raise ValueError('此表没有日期列')
+                dates = pd.to_datetime(frame[date_column], utc=True)
+                if p.get('startDate'):
+                    frame = frame[dates >= pd.to_datetime(p['startDate'], utc=True)]
+                    dates = dates.loc[frame.index]
+                if p.get('endDate'):
+                    frame = frame[dates < pd.to_datetime(p['endDate'], utc=True).normalize() + pd.Timedelta(days=1)]
+            offset, limit = max(0, int(p.get('offset', 0))), max(1, min(500, int(p.get('limit', 200))))
+            return dict(name=artifact['name'], columns=list(frame.columns), rows=records(frame.iloc[offset:offset + limit]), total=len(frame), offset=offset, limit=limit)
         if method == 'experiments.compare':
             ids = p['experimentIds']
             if len(ids) > 10:
@@ -139,7 +164,7 @@ class Service:
         experiment = self.store.experiment(p['projectId'], p['experimentId'])
         output = Path(self.store.project(p['projectId'])['path']) / 'exports'
         output.mkdir(exist_ok=True)
-        tables = [(artifact['name'], pd.read_parquet(artifact['path'])) for artifact in experiment['artifacts'] if artifact['type'] == 'parquet']
+        tables = [(artifact['name'], pd.read_parquet(self.store.artifact_path(p['projectId'], artifact))) for artifact in experiment['artifacts'] if artifact['type'] == 'parquet']
         if not tables:
             tables = [('metrics', pd.DataFrame(list(experiment['metrics'].items()), columns=['metric', 'value']))]
         if p['format'] == 'xlsx':

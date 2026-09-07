@@ -135,7 +135,26 @@ class Store:
         return self.project_store(project_id).get('experiment', experiment_id)
 
     def save_experiment(self, project_id, value):
+        value = {**value, 'artifacts': [dict(artifact) for artifact in value['artifacts']]}
+        project_root = Path(self.project(project_id)['path']).resolve()
+        for artifact in value['artifacts']:
+            artifact['path'] = self.artifact_path(project_id, artifact).relative_to(project_root).as_posix()
         return self.project_store(project_id).put('experiment', value, project_id)
+
+    def artifact_path(self, project_id, artifact):
+        root = Path(self.project(project_id)['path']).resolve()
+        path = Path(artifact['path'])
+        if path.is_absolute():
+            marker = '/.research/runs/'
+            normalized = path.as_posix()
+            if marker in normalized:
+                path = root / '.research' / 'runs' / normalized.split(marker, 1)[1]
+        else:
+            path = root / path
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError('实验工件必须位于项目目录内')
+        return resolved
 
     def settings(self, value=None):
         path = self.root / 'settings.json'

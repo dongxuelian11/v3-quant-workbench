@@ -114,6 +114,13 @@ def update(project, params, progress):
         raise ValueError('请指定开始日期')
     source = params.get('source', 'baostock')
     symbols = [symbol(s) for s in project['universe']['symbols']]
+    existing_path = Path(project['path']) / 'data' / 'prices.parquet'
+    existing = pd.read_parquet(existing_path) if existing_path.exists() else pd.DataFrame()
+    if not existing.empty:
+        relevant = existing[existing.symbol.isin(symbols)] if symbols else existing
+        if not relevant.empty:
+            start = min(str(start)[:10], str(relevant.date.min())[:10])
+            end = max(str(end)[:10], str(relevant.date.max())[:10])
     frames, financials = [], []
     if source == 'baostock':
         import baostock as bs
@@ -173,6 +180,12 @@ def update(project, params, progress):
     if not frames:
         raise ValueError('来源未返回行情')
     prices, _ = normalize(pd.concat(frames, ignore_index=True), 'prices')
+    if not existing.empty:
+        refreshed = set(prices.symbol)
+        old_keys = set(map(tuple, existing[existing.symbol.isin(refreshed)][['symbol', 'date']].to_numpy()))
+        new_keys = set(map(tuple, prices[['symbol', 'date']].to_numpy()))
+        if old_keys - new_keys:
+            raise ValueError('来源未完整返回已有历史区间；为避免混合前复权基准，本次更新未写入行情')
     merge_table(project, prices, 'prices')
     if financials:
         frame = pd.concat(financials, ignore_index=True).replace('', float('nan'))

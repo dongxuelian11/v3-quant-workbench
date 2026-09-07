@@ -49,6 +49,8 @@ def run(directory):
                 shutil.copyfile(file, target)
                 experiment['artifacts'].append({'name': file.stem, 'path': str(target), 'type': 'parquet'})
         write_json(directory / 'details.json', details)
+        for artifact in experiment['artifacts']:
+            artifact['path'] = Path(artifact['path']).resolve().relative_to(Path(project['path']).resolve()).as_posix()
         write_json(directory / 'result.json', {'experiment': experiment})
         return 0
     except Exception as exc:

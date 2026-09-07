@@ -276,7 +276,7 @@ def backtest(project, params, output, progress, prices=None, store=None):
         artifact = next((a for a in experiment['artifacts'] if a['name'] == 'test_predictions'), None)
         if artifact is None:
             raise ValueError('模型实验没有样本外评分')
-        predictions = pd.read_parquet(artifact['path'])
+        predictions = pd.read_parquet(store.artifact_path(project['id'], artifact))
         score = predictions.set_index(['datetime', 'instrument']).score
     elif template in {'single_factor', 'multi_factor'}:
         values = features(project, params, prices)
