@@ -53,13 +53,14 @@ function Shell() {
   };
   useEffect(() => { if (s.project) openPanel(s.page); }, [s.page, s.project?.id]);
   const resize = (kind: "left" | "right" | "bottom", e: React.PointerEvent<HTMLDivElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId); const startX = e.clientX, startY = e.clientY, start = dimensions.current;
-    e.currentTarget.onpointermove = event => {
+    const element = e.currentTarget;
+    element.setPointerCapture(e.pointerId); const startX = e.clientX, startY = e.clientY, start = dimensions.current;
+    element.onpointermove = event => {
       if (kind === "left") setLeft(Math.max(160, Math.min(320, start.left + event.clientX - startX)));
       if (kind === "right") setRight(Math.max(250, Math.min(500, start.right - event.clientX + startX)));
       if (kind === "bottom") setBottom(Math.max(100, Math.min(360, start.bottom - event.clientY + startY)));
     };
-    e.currentTarget.onpointerup = () => { e.currentTarget.onpointermove = null; persistLayout(); };
+    element.onpointerup = () => { element.onpointermove = null; element.onpointerup = null; persistLayout(); };
   };
   const activeJobs = s.jobs.filter(j => ["queued", "running"].includes(j.status));
   return <div className="r-app" data-testid="research-app" style={{ "--r-sidebar": `${left}px`, "--r-ai": `${right}px`, "--r-tasks": `${bottom}px` } as React.CSSProperties}>
