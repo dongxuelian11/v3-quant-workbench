@@ -378,7 +378,7 @@ def train(project, params, output, progress, prices=None):
     params = {**params, 'labelMode': params.get('labelMode', 'next_open'), 'labelHorizon': params.get('labelHorizon', 5),
               'validation': {**dict(mode='single', trainYears=3, validMonths=6, testMonths=1, stepMonths=1), **params.get('validation', {})}}
     ranges = windows(pd.DatetimeIndex(sorted(prices.date.unique())), params)
-    if len(ranges) == 1:
+    if params['validation']['mode'] == 'single':
         resolved = {**params, **ranges[0]}
         result = _train_single(project, resolved, output, progress, prices)
         result['parameters'] = resolved
