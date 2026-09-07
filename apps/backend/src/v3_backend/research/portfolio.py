@@ -160,7 +160,10 @@ def construct_portfolio(scores: pd.Series, returns: pd.DataFrame, config: dict,
 
     def finish(weights, executable):
         rc = pd.Series(np.nan, index=universe, dtype=float)
-        if covariance is not None:
+        uncovered = universe[(weights != 0) & ~universe.isin(risk_index)]
+        if len(uncovered):
+            warnings.append('持仓风险覆盖不足，风险贡献不可用：' + '、'.join(map(str, uncovered)))
+        elif covariance is not None:
             contributions = weights * (covariance @ weights)
             if contributions.sum() > 1e-30:
                 rc = pd.Series(contributions / contributions.sum(), index=universe)

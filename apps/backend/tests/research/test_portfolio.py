@@ -155,6 +155,17 @@ def test_solver_failure_does_not_replace_current_weights():
     assert any('unavailable' in value for value in result['conflicts'])
 
 
+def test_infeasible_fallback_marks_uncovered_exit_risk_unavailable():
+    data = history().rename(columns={'B': 'EXIT'})
+    current = pd.Series({'A': .2, 'EXIT': .8})
+    result = construct_portfolio(pd.Series({'A': 1.}), data,
+                                 {'method': 'risk_parity', 'turnoverLimit': .1}, current)
+    assert not result['executable']
+    pd.testing.assert_series_equal(result['weights'], current)
+    assert result['riskContributions'].isna().all()
+    assert any('覆盖不足' in value and 'EXIT' in value for value in result['warnings'])
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(value) for name, value in globals().items() if name.startswith('test_') and callable(value))
 
