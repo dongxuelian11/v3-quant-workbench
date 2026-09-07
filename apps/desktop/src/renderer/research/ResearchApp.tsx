@@ -15,8 +15,8 @@ import { WindowControls } from "../components/WindowControls";
 const panels = { research: ({ params }: IDockviewPanelProps<{ page: Page }>) => {
   const s = useResearch();
   switch (params.page) {
-    case "overview": return <Overview />; case "selection": return <SelectionPanel />; case "data": return <DataPanel />; case "universe": return <UniversePanel />;
-    case "factors": return <FactorPanel />; case "strategy": return <StrategyPanel key={JSON.stringify(s.project?.settings.backtest)} />; case "model": return <ModelPanel key={JSON.stringify(s.project?.settings.model)} />;
+    case "overview": return <Overview />; case "selection": return <SelectionPanel key={s.configurationVersions.selection ?? 0} />; case "data": return <DataPanel />; case "universe": return <UniversePanel />;
+    case "factors": return <FactorPanel key={s.configurationVersions.factors ?? 0} />; case "strategy": return <StrategyPanel key={JSON.stringify(s.project?.settings.backtest)} />; case "model": return <ModelPanel key={JSON.stringify(s.project?.settings.model)} />;
     case "backtest": return <StrategyPanel run key={JSON.stringify(s.project?.settings.backtest)} />; case "results": return <ResultsPanel />; case "chart": return <div className="r-page"><PriceChart /></div>;
   }
 } };

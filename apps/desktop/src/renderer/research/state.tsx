@@ -21,6 +21,7 @@ export function useResearchState() {
   const [page, setPage] = useState<Page>("overview");
   const [selectedExperiment, setSelectedExperiment] = useState("");
   const [selectedFactors, setSelectedFactors] = useState<string[]>([]);
+  const [configurationVersions, setConfigurationVersions] = useState<Record<string, number>>({});
   const [revision, setRevision] = useState(0);
   const [submissionVersion, setSubmissionVersion] = useState(0);
   const current = useRef(project); current.current = project;
@@ -73,7 +74,7 @@ export function useResearchState() {
       if (["completed", "failed", "cancelled", "interrupted"].includes(event.status)) void act(() => refresh());
     });
   }, []);
-  return { projects, project, experiments, jobs, factors, error, setError, notice, setNotice, page, setPage, selectedExperiment, setSelectedExperiment, selectedFactors, setSelectedFactors, revision, submissionVersion, act, refresh, refreshProjects, open, save, submit };
+  return { configurationVersions, setConfigurationVersions, projects, project, experiments, jobs, factors, error, setError, notice, setNotice, page, setPage, selectedExperiment, setSelectedExperiment, selectedFactors, setSelectedFactors, revision, submissionVersion, act, refresh, refreshProjects, open, save, submit };
 }
 export type ResearchState = ReturnType<typeof useResearchState>;
 export const ResearchContext = createContext<ResearchState | null>(null);
