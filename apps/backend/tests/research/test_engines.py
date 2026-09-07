@@ -44,7 +44,8 @@ class EngineTest(unittest.TestCase):
     def test_pit_never_uses_same_day_announcement(self):
         with tempfile.TemporaryDirectory() as directory:
             project, dates, _ = sample_project(Path(directory))
-            merge_table(project, pd.DataFrame([dict(symbol='SH600000', reportDate=pd.Timestamp('2019-12-31'), announcementDate=dates[40], roeAvg=3.5)]), 'financials')
+            merge_table(project, pd.DataFrame([dict(symbol='SH600000', reportDate=pd.Timestamp('2019-12-31'), announcementDate=dates[40], roeAvg=3.5, npMargin=.25, MBRevenue=1000),
+                dict(symbol='SH600001', reportDate=pd.Timestamp('2019-12-31'), announcementDate=dates[40], netProfitMargin=.15)]), 'financials')
             output = Path(directory) / 'pit'
             output.mkdir()
             prices = engines.prepare(project, output, lambda *_: None)
@@ -53,6 +54,12 @@ class EngineTest(unittest.TestCase):
             series = values.xs('SH600000', level='instrument').iloc[:,0]
             self.assertTrue(pd.isna(series.loc[dates[40]]))
             self.assertAlmostEqual(series.loc[dates[41]], 3.5)
+            for code,expected in [('SH600000',.25),('SH600001',.15)]:
+                margin = D.features([code],['P($$npmargin_q)'],start_time=dates[0],end_time=dates[-1]).xs(code,level='instrument').iloc[:,0]
+                self.assertTrue(pd.isna(margin.loc[dates[40]]))
+                self.assertAlmostEqual(margin.loc[dates[41]],expected)
+            catalog = {item['id']:item for item in engines.factor_catalog()}
+            self.assertIn('未从MBRevenue推算',catalog['growth_revenue']['description'])
 
     def test_labels_do_not_cross_segments(self):
         dates = pd.bdate_range('2020-01-01', periods=30)

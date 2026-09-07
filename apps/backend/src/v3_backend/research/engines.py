@@ -6,7 +6,7 @@ import re
 from .data import read_table, records
 from .storage import write_json, read_json
 
-FINANCIAL = {'roe': 'roeAvg', 'growth_profit': 'YOYNI', 'growth_revenue': 'YOYRevenue', 'profit_margin': 'netProfitMargin', 'leverage': 'liabilityToAsset'}
+FINANCIAL = {'roe': 'roeAvg', 'growth_profit': 'YOYNI', 'growth_revenue': 'YOYRevenue', 'profit_margin': 'npMargin', 'leverage': 'liabilityToAsset'}
 EXTRA = {'momentum20': '$close/Ref($close,20)-1', 'volatility20': 'Std($close/Ref($close,1)-1,20)',
          'volume_ratio': '$volume/Mean($volume,20)', 'earnings_yield': '1/$pettm', 'book_yield': '1/$pbmrq'}
 NAMES = {'momentum20': '20日动量', 'volatility20': '20日波动率', 'volume_ratio': '相对成交量',
@@ -20,6 +20,11 @@ def factor_catalog():
     result = [dict(id=name, name=name, family='Alpha158', description='Qlib Alpha158', expression=expr) for expr, name in zip(expressions, names)]
     result.extend(dict(id=key, name=NAMES[key], family='量价/估值', description='Qlib 表达式', expression=expr) for key, expr in EXTRA.items())
     result.extend(dict(id=key, name=NAMES[key], family='财务', description='公告后交易日生效的季度财务', expression=f'P($${value.lower()}_q)') for key, value in FINANCIAL.items())
+    for item in result:
+        if item['id'] == 'growth_revenue':
+            item['description'] = '需要导入带公告日期的YOYRevenue；当前BaoStock适配未提供收入同比，未从MBRevenue推算'
+        elif item['id'] == 'profit_margin':
+            item['description'] = '公告后交易日生效的季度净利率；BaoStock npMargin，兼容导入netProfitMargin'
     return result
 
 
@@ -62,7 +67,7 @@ def prepare(project, output, progress):
     import time
     data_root = Path(project['path']) / 'data'
     cache_root = Path(project['path']) / '.research' / 'cache'
-    signature = {'version': 2, 'files': [(str(path.relative_to(data_root)), path.stat().st_mtime_ns, path.stat().st_size) for path in sorted(data_root.rglob('*.parquet'))], 'symbols': sorted(prices.symbol.unique())}
+    signature = {'version': 3, 'files': [(str(path.relative_to(data_root)), path.stat().st_mtime_ns, path.stat().st_size) for path in sorted(data_root.rglob('*.parquet'))], 'symbols': sorted(prices.symbol.unique())}
     signature = __import__('json').loads(__import__('json').dumps(signature))
     cache_state = read_json(cache_root / 'qlib.json', {})
     if cache_state.get('signature') == signature:
@@ -133,6 +138,8 @@ def prepare(project, output, progress):
                 period = pd.Timestamp(row.reportDate)
                 for field in FINANCIAL.values():
                     value = pd.to_numeric(row.get(field), errors='coerce')
+                    if field == 'npMargin' and pd.isna(value):
+                        value = pd.to_numeric(row.get('netProfitMargin'), errors='coerce')
                     if pd.notna(value):
                         entries.append(dict(date=calendar[offset].strftime('%Y-%m-%d'), period=period.year * 100 + period.quarter, field=field.lower(), value=float(value)))
             if entries:
@@ -240,6 +247,8 @@ def analyze(project, params, output, progress, prices=None):
         series = values[name].dropna()
         try:
             if series.empty:
+                if name == 'growth_revenue':
+                    raise ValueError('收入同比不可用：当前BaoStock适配未提供YOYRevenue；可导入带公告日期的同口径收入同比，未从MBRevenue推算')
                 raise ValueError('因子没有非空数值，请检查所需数据字段')
             clean = utils.get_clean_factor_and_forward_returns(series, market, periods=periods, quantiles=int(params.get('quantiles', 5)), max_loss=.5, filter_zscore=None)
             if clean.empty:
