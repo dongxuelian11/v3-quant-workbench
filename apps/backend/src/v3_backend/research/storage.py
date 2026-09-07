@@ -162,7 +162,7 @@ class Store:
             old = read_json(path, {})
             old.update(value)
             write_json(path, old)
-        result = {'ai': {'baseUrl': '', 'model': '', 'apiKey': '', 'temperature': 0.2}, 'defaultDataSource': 'baostock'}
+        result = {'ai': {'baseUrl': 'https://openrouter.ai/api/v1', 'model': 'inclusionai/ling-3.0-flash-fin:free', 'apiKey': '', 'temperature': 0.2}, 'defaultDataSource': 'baostock'}
         saved = read_json(path, {})
         result.update(saved)
         return result

@@ -67,6 +67,15 @@ class Service:
             return store.settings()
         if method == 'settings.save':
             return store.settings(p['settings'])
+        if method in {'positions.get', 'positions.save', 'positions.import'}:
+            from . import positions
+            project = store.project(p['projectId'])
+            if method == 'positions.get':
+                return positions.get(project)
+            return positions.save(project, p['positions']) if method == 'positions.save' else positions.import_file(project, p['path'])
+        if method in {'ai.state.get', 'ai.state.save'}:
+            from .ai import get_state, save_state
+            return get_state(self, p) if method == 'ai.state.get' else save_state(self, p)
         if method == 'jobs.submit':
             return self.jobs.submit(p['spec'])
         if method == 'jobs.list':
@@ -87,7 +96,9 @@ class Service:
                 frame = frame[frame.date >= p['startDate']]
             if p.get('endDate'):
                 frame = frame[frame.date <= p['endDate']]
-            return records(frame[['date', 'open', 'high', 'low', 'close', 'volume']].tail(500))
+            if p.get('beforeDate'):
+                frame = frame[frame.date < p['beforeDate']]
+            return records(frame[['date', 'open', 'high', 'low', 'close', 'volume']].tail(max(1, min(500, int(p.get('limit', 500))))))
         if method in {'charts.load', 'charts.save'}:
             from .data import symbol
             project = store.project(p['projectId'])
