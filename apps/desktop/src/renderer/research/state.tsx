@@ -1,9 +1,9 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { Experiment, FactorDefinition, JobEvent, JobKind, JsonObject, ProjectConfig } from "../../../../../packages/contracts/src/research";
 
-export type Page = "overview" | "data" | "universe" | "factors" | "strategy" | "model" | "backtest" | "results" | "chart";
-export const pages: Record<Page, string> = { overview: "概览", data: "数据", universe: "股票池", factors: "因子", strategy: "策略", model: "模型", backtest: "回测", results: "结果", chart: "行情与批注" };
-export const jobLabels: Record<JobKind, string> = { "data.update": "更新数据", "data.import": "导入数据", "factor.analyze": "因子分析", "backtest.run": "回测", "model.train": "模型训练", "optimize.run": "参数寻优" };
+export type Page = "overview" | "data" | "universe" | "factors" | "strategy" | "model" | "backtest" | "results" | "chart" | "selection";
+export const pages: Record<Page, string> = { overview: "概览", data: "数据", universe: "股票池", factors: "因子", strategy: "策略", model: "模型", backtest: "回测", results: "结果", chart: "行情与批注", selection: "选股" };
+export const jobLabels: Record<JobKind, string> = { "data.update": "更新数据", "data.import": "导入数据", "factor.analyze": "因子分析", "backtest.run": "回测", "model.train": "模型训练", "optimize.run": "参数寻优", "selection.run": "每日选股" };
 export function jobTitle(kind: JobKind, name?: string) { return !name?.trim() ? jobLabels[kind] : name.startsWith(kind) ? jobLabels[kind] + name.slice(kind.length) : name; }
 export async function request<T>(method: string, params?: object): Promise<T> {
   if (!window.v3Research) throw new Error("研究服务未连接，请从桌面应用打开。");

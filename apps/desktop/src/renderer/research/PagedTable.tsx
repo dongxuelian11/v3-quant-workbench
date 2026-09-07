@@ -4,7 +4,7 @@ import { request, useResearch } from "./state";
 import { DataTable, Field } from "./ui";
 
 export interface TablePage extends ResearchTable { total: number; offset: number; limit: number }
-export function PagedExperimentTable({ experimentId, table, onRow }: { experimentId: string; table: string; onRow: (row: JsonObject) => void }) {
+export function PagedExperimentTable({ experimentId, table, onRow }: { experimentId: string; table: string; onRow?: (row: JsonObject) => void }) {
   const s = useResearch();
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState<TablePage | null>(null);
