@@ -1,0 +1,14 @@
+pyqlib==0.9.7
+alphalens-reloaded==0.4.6
+baostock==0.9.3
+akshare==1.18.84
+numpy>=1.26,<2
+pandas>=2.2,<3
+scipy>=1.11,<1.16
+lightgbm>=4.6,<5
+scikit-learn>=1.7,<2
+optuna>=4,<6
+pydantic-ai-slim[openai]==2.27.0
+pyarrow>=23,<24
+openpyxl>=3,<4
+tzdata

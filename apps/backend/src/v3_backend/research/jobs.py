@@ -1,0 +1,139 @@
+"""Persisted subprocess jobs. One writer job per project prevents dataset races."""
+from __future__ import annotations
+import os
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+from .storage import Store, identifier, now, read_json, write_json
+
+KINDS = {'data.import', 'data.update', 'factor.analyze', 'backtest.run', 'model.train', 'optimize.run'}
+
+
+def validate_spec(spec):
+    if not isinstance(spec, dict) or spec.get('kind') not in KINDS or not isinstance(spec.get('parameters'), dict) or not isinstance(spec.get('projectId'), str):
+        raise ValueError('任务参数无效')
+    p, kind = spec['parameters'], spec['kind']
+    required = {'data.import': ['files'], 'data.update': ['startDate'], 'factor.analyze': ['factorIds'],
+                'backtest.run': ['template'], 'model.train': ['model', 'factorIds', 'trainStart', 'trainEnd', 'validStart', 'validEnd', 'testStart', 'testEnd'],
+                'optimize.run': ['target', 'sampler', 'baseParameters', 'searchSpace']}[kind]
+    if any(key not in p for key in required):
+        raise ValueError('任务缺少参数: ' + ', '.join(key for key in required if key not in p))
+    if kind in {'factor.analyze', 'model.train'} or kind == 'backtest.run' and p.get('template') != 'model_score':
+        if not isinstance(p.get('factorIds'), list) or not p['factorIds'] or any(not isinstance(value, str) for value in p['factorIds']):
+            raise ValueError('任务需要非空 factorIds 数组')
+    if kind == 'data.import' and (not isinstance(p['files'], list) or not p['files']):
+        raise ValueError('请选择导入文件')
+    if kind == 'data.update' and p.get('source', 'baostock') not in {'baostock', 'akshare'}:
+        raise ValueError('未知数据源')
+    if kind == 'backtest.run' and p['template'] not in {'single_factor', 'multi_factor', 'model_score'}:
+        raise ValueError('未知组合模板')
+    return spec
+
+
+class Jobs:
+    def __init__(self, store, emit):
+        self.store, self.emit = store, emit
+        self.lock = threading.RLock()
+        self.processes = {}
+        self.closed = False
+        for job in store.list('job'):
+            if job['status'] in {'queued', 'running'}:
+                self._save(job, status='interrupted', message='上次运行中断，可用原参数重新运行')
+
+    def _save(self, job, **changes):
+        job = {**job, **changes, 'updatedAt': now()}
+        self.store.put('job', job, job['projectId'])
+        self.store.project_store(job['projectId']).put('job', job, job['projectId'])
+        self.emit(job)
+        return job
+
+    def submit(self, spec):
+        validate_spec(spec)
+        self.store.project(spec['projectId'])
+        with self.lock:
+            if self.closed:
+                raise ValueError('任务服务已关闭')
+            job = dict(id=identifier(), projectId=spec['projectId'], kind=spec['kind'], name=spec.get('name') or spec['kind'],
+                       status='queued', progress=0, message='等待执行', createdAt=now(), updatedAt=now(), spec=spec)
+            job = self._save(job)
+            self._start_next(spec['projectId'])
+            return self.store.get('job', job['id'])
+
+    def _start_next(self, project_id):
+        if self.closed or any(self.store.get('job', key)['projectId'] == project_id for key in self.processes):
+            return
+        queued = [job for job in self.store.list('job', project_id) if job['status'] == 'queued']
+        if not queued:
+            return
+        job = queued[-1]
+        directory = Path(self.store.project(project_id)['path']) / '.research' / 'runs' / job['id']
+        directory.mkdir(parents=True, exist_ok=True)
+        write_json(directory / 'request.json', {'appData': str(self.store.root), 'job': job})
+        env = os.environ.copy()
+        env['PYTHONUNBUFFERED'] = '1'
+        env['PYTHONPATH'] = str(Path(__file__).resolve().parents[2]) + os.pathsep + env.get('PYTHONPATH', '')
+        log = (directory / 'worker.log').open('wb')
+        try:
+            process = subprocess.Popen([sys.executable, '-m', 'v3_backend.research.worker', str(directory)],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=env,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except Exception as exc:
+            log.close()
+            self._save(job, status='failed', message=str(exc))
+            self._start_next(project_id)
+            return
+        self.processes[job['id']] = process
+        self._save(job, status='running', message='子进程运行中')
+        threading.Thread(target=self._watch, args=(job['id'], process, directory, log), daemon=True).start()
+
+    def _watch(self, key, process, directory, log):
+        previous = None
+        while True:
+            try:
+                process.wait(timeout=.25)
+                break
+            except subprocess.TimeoutExpired:
+                update = read_json(directory / 'progress.json')
+                if update and update != previous:
+                    with self.lock:
+                        job = self.store.get('job', key)
+                        if job['status'] == 'running':
+                            self._save(job, progress=update['progress'], message=update['message'])
+                    previous = update
+        log.close()
+        with self.lock:
+            job = self.store.get('job', key)
+            result = read_json(directory / 'result.json')
+            if job['status'] == 'running':
+                if process.returncode == 0 and result and result.get('experiment'):
+                    experiment = result['experiment']
+                    self.store.save_experiment(job['projectId'], experiment)
+                    self._save(job, status='completed', progress=1, message='已完成', experimentId=experiment['id'])
+                else:
+                    self._save(job, status='failed', message=(result or {}).get('error', f'子进程退出 {process.returncode}，请查看 {directory / "worker.log"}'))
+            self.processes.pop(key, None)
+            self._start_next(job['projectId'])
+
+    def cancel(self, key):
+        with self.lock:
+            job = self.store.get('job', key)
+            if job['status'] in {'queued', 'running'}:
+                job = self._save(job, status='cancelled', message='用户取消；已保存任务参数和中间文件')
+                process = self.processes.get(key)
+                if process:
+                    process.terminate()
+            return job
+
+    def close(self):
+        with self.lock:
+            self.closed = True
+            for job in self.store.list('job'):
+                if job['status'] in {'queued', 'running'}:
+                    self._save(job, status='interrupted', message='应用关闭；已保存任务参数和中间文件')
+            processes = list(self.processes.values())
+            for process in processes:
+                process.terminate()
+        for process in processes:
+            process.wait(timeout=10)
