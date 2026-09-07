@@ -9,13 +9,18 @@ export function Field({ label, children }: { label: string; children: React.Reac
 export function Heading({ title, description, children }: { title: string; description?: string; children?: React.ReactNode }) { return <header className="r-heading"><div><h1>{title}</h1>{description && <p>{description}</p>}</div>{children}</header>; }
 const fieldLabels: Record<string, string> = { name: "名称", rows: "行数", symbols: "股票数", startDate: "开始日期", endDate: "结束日期", missingValues: "缺失值", date: "日期", trade_date: "成交日期", symbol: "证券", instrument: "证券", code: "证券代码", open: "开盘", high: "最高", low: "最低", close: "收盘", volume: "成交量", amount: "成交额", side: "方向", direction: "方向", price: "成交价", execution_price: "成交价", trade_price: "成交价", quantity: "数量", shares: "股数", weight: "权重", cash: "现金", equity: "资产净值", net_value: "净值", nav: "净值", returns: "收益率", daily_return: "日收益率", benchmark: "基准", drawdown: "回撤", turnover: "换手率", commission: "佣金", fee: "费用", fees: "费用", slippage: "滑点", factor: "因子", factor_id: "因子", quantile: "分组", period: "周期", holding: "持仓", holdings: "持仓", type: "类型", path: "文件路径", createdAt: "创建日期", status: "状态", ic: "IC", rank_ic: "Rank IC", mean_ic: "平均 IC", ic_std: "IC 标准差", icir: "ICIR", total_return: "累计收益率", annual_return: "年化收益率", sharpe: "夏普比率", max_drawdown: "最大回撤" };
 export function fieldLabel(key: string) { return fieldLabels[key] ?? key; }
+export function tradeDirection(value: unknown): string | null {
+  if (value === 1 || value === "1" || typeof value === "string" && /^(buy|买入)$/i.test(value)) return "买入";
+  if (value === 0 || value === "0" || typeof value === "string" && /^(sell|卖出)$/i.test(value)) return "卖出";
+  return typeof value === "string" && value.trim() ? value : null;
+}
 export function valueText(v: unknown, key = "") {
   if (v == null) return "—";
+  if (key === "side" || key === "direction") return tradeDirection(v) ?? String(v);
   if (typeof v === "number") return Number.isFinite(v) ? v.toLocaleString("zh-CN", { maximumFractionDigits: 6 }) : "—";
   if (typeof v === "object") return JSON.stringify(v);
   const text = String(v);
   if (/^\d{4}-\d{2}-\d{2}(T|\s|$)/.test(text) && /date|At$|time/i.test(key)) return text.slice(0, 10);
-  if (key === "side" || key === "direction") return /^(buy|买入)$/i.test(text) ? "买入" : /^(sell|卖出)$/i.test(text) ? "卖出" : text;
   return text;
 }
 export function DataTable({ table, onRow }: { table: ResearchTable; onRow?: (row: JsonObject) => void }) {
@@ -60,4 +65,3 @@ export function CodeEditor({ value, onChange, language = "python", label = "Pyth
   useEffect(() => { if (editor.current && editor.current.getValue() !== value) editor.current.setValue(value); }, [value]);
   return failed ? <textarea aria-label={label} value={value} onChange={e => onChange(e.target.value)} rows={12} /> : <div className="r-code" ref={node} style={{ height: 260 }} />;
 }
-
