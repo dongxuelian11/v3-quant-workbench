@@ -33,7 +33,8 @@ jobs:
         shell: pwsh
         run: |
           npm.cmd ci --no-audit --no-fund
-          python -m pip install -r apps/backend/requirements-research.txt
+          python -m pip install setuptools wheel
+          python -m pip install --no-build-isolation -r apps/backend/requirements-research.txt
           "V3_RESEARCH_PYTHON=$env:pythonLocation/python.exe" >> $env:GITHUB_ENV
       - name: Build desktop
         run: npm run build

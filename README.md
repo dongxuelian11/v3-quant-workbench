@@ -24,6 +24,16 @@ npm run dev 开启前端热更新。Python 运行时位于 runtime/research-pyth
 
 财务因子按公告日期进入研究。免费数据源的覆盖和历史修订能力以实际数据为准。模型按时间区间训练、验证和测试，寻优在验证区间进行。AI 的服务地址、模型和 API Key 在设置中填写；Ling-3.0-flash-Fin 可作为兼容服务候选，模型权重不随应用交付。
 
+首次使用免费数据源，先在“股票池”保存证券代码，再到“数据”选择日期并手动更新。数据逐股保存，后台可取消；同一天重新运行相同的未完成批次，会复用已完成的股票。导入已有文件后，可单独点击“保存研究区间”，无需联网更新。
+
+CSV / Parquet 的行情列为 `symbol,date,open,high,low,close,volume`；证券代码支持 `SH600000`、`sh.600000`、`600000.SH` 或六位代码，成交量单位为股。估值因子使用 `peTTM,pbMRQ`。若输入前复权价格，应一并提供 `factor=前复权价/原始价`，用于还原实际成交价和股数；缺少的字段会在数据说明中列出。
+
+财务文件包含 `symbol,announcementDate,reportDate`，其中公告日期不可省略；对应因子字段为 `roeAvg,YOYNI,YOYRevenue,netProfitMargin,liabilityToAsset`。BaoStock 的 `code,pubDate,statDate` 列名也可直接导入。
+
+因子页支持 Qlib 公式，例如 `$close/Ref($close,10)-1`。策略的 Python 编辑器提供 `pd`、行情表 `prices` 和按日期、证券索引的评分 `scores`；修改 `scores` 并保留索引即可，例如 `scores = -scores` 将排序方向反转。撮合、费用和持仓仍由 Qlib 处理。
+
+结果页先看整体表现；因子实验可从汇总进入单因子的完整 IC、分组收益和换手图。交易与持仓表支持分页和证券/日期筛选，点击一行打开对应行情。CSV 导出第一张完整结果表，Excel 包含全部表，PDF 为指标、参数和表格预览报告；图表图片单独导出。
+
 ## 开发与交付
 
     npm run typecheck

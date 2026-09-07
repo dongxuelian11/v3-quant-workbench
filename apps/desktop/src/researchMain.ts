@@ -28,7 +28,7 @@ function registerIpc(): void {
     ownWindow(event);
     const result = await dialog.showOpenDialog(window!, {
       title: "导入行情或财务数据", properties: ["openFile", "multiSelections"],
-      filters: [{ name: "研究数据", extensions: ["csv", "parquet", "tsv"] }],
+      filters: [{ name: "研究数据", extensions: ["csv", "parquet"] }],
     });
     return result.canceled ? [] : result.filePaths;
   });
