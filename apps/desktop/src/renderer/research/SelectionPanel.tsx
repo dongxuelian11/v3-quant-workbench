@@ -19,13 +19,14 @@ export function SelectionPanel() {
   const [strategyChoice, setStrategyChoice] = useState("project");
   const [modelChoice, setModelChoice] = useState("project");
   const [result, setResult] = useState<ExperimentDetails | null>(null);
+  const [contributionSymbol, setContributionSymbol] = useState("");
   const [view, setView] = useState("candidates");
   const [chosen, setChosen] = useState("");
   const [busy, setBusy] = useState(false);
   const runs = s.experiments.filter(e => e.kind === "selection.run");
   const resultId = chosen || runs[0]?.id;
   useEffect(() => {
-    let active = true; setResult(null);
+    let active = true; setResult(null); setContributionSymbol("");
     if (resultId) void s.act(async () => { const next = await request<ExperimentDetails>("experiments.get", { projectId: p.id, experimentId: resultId }); if (active) setResult(next); });
     return () => { active = false; };
   }, [resultId, p.id, s.revision]);
@@ -47,7 +48,7 @@ export function SelectionPanel() {
     <div className="r-toolbar"><button className="r-primary" disabled={busy} onClick={() => void s.act(async () => { await s.save({ settings: { ...p.settings, selection: snapshot() } }); setChanged(false); setConfigurationOpen(false); s.setNotice("已明确启用所选策略与模型方案"); })}>启用这组方案</button><button onClick={() => s.setPage("strategy")}>编辑策略</button><button onClick={() => s.setPage("model")}>编辑模型</button>{configured.enabled === true && <button onClick={() => void s.act(() => s.save({ settings: { ...p.settings, selection: { ...configured, enabled: false } } }))}>停用方案</button>}</div>
     </details><PositionsEditor saveRef={savePositions} />
     <section><div className="r-toolbar"><h2>选股结果</h2><select aria-label="选股实验" value={resultId ?? ""} onChange={e => setChosen(e.target.value)}>{runs.map(e => <option key={e.id} value={e.id}>{e.name} · {new Date(e.createdAt).toLocaleString("zh-CN")}</option>)}</select>{result && <button onClick={() => { s.setSelectedExperiment(result.experiment.id); s.setPage("results"); }}>查看实验与导出 →</button>}</div>
-      {result ? <><p>{result.experiment.summary}</p>{result.details.executable === false && <div className="r-conflicts" role="status"><strong>当前清单不可执行</strong><p>{valueText(result.details.conflicts)}</p></div>}<nav className="r-subtabs" aria-label="选股结果视图">{[["candidates", "候选股票"], ["target_weights", "目标组合"], ["rebalance", "调仓清单"]].map(([id, label]) => <button key={id} className={view === id ? "active" : ""} onClick={() => setView(id)}>{label}</button>)}</nav><PagedExperimentTable key={`${result.experiment.id}-${view}`} experimentId={result.experiment.id} table={view} /><p className="r-note">数量与金额为估算，不能调整的原因保留在清单中。实际交易后请自行更新持仓。</p></> : <Empty title="还没有选股结果">启用方案、保存实际持仓和现金后，生成第一份清单。</Empty>}
+      {result ? <><p>{result.experiment.summary}</p>{result.details.executable === false && <div className="r-conflicts" role="status"><strong>当前清单不可执行</strong><p>{valueText(result.details.conflicts)}</p></div>}<nav className="r-subtabs" aria-label="选股结果视图">{[["candidates", "候选股票"], ["target_weights", "目标组合"], ["rebalance", "调仓清单"]].map(([id, label]) => <button key={id} className={view === id ? "active" : ""} onClick={() => setView(id)}>{label}</button>)}</nav><PagedExperimentTable key={`${result.experiment.id}-${view}`} experimentId={result.experiment.id} table={view} onRow={view === "candidates" ? row => { if (typeof row.symbol === "string") setContributionSymbol(row.symbol); } : undefined} />{view === "candidates" && <><p className="r-note">点击候选证券查看因子贡献。</p>{contributionSymbol && <section><div className="r-toolbar"><h3>{contributionSymbol} · 因子贡献</h3><button onClick={() => setContributionSymbol("")}>关闭详情</button></div>{result.experiment.artifacts.some(a => a.name === "factor_contributions") ? <PagedExperimentTable key={`${result.experiment.id}-${contributionSymbol}`} experimentId={result.experiment.id} table="factor_contributions" initialSymbol={contributionSymbol} /> : <p className="r-note">该实验未保存因子贡献表。</p>}</section>}</>}<p className="r-note">数量与金额为估算，不能调整的原因保留在清单中。实际交易后请自行更新持仓。</p></> : <Empty title="还没有选股结果">启用方案、保存实际持仓和现金后，生成第一份清单。</Empty>}
     </section></div>;
 }
 

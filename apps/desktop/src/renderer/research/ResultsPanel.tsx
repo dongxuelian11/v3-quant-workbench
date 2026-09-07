@@ -146,7 +146,7 @@ function ApplyBest({ detail }: { detail: ExperimentDetails }) {
 }
 function ExtendedResults({ detail }: { detail: ExperimentDetails }) {
   const tables = detail.tables.filter(t => /benchmark|excess|drawdown|monthly|industry|risk|contribution|trial|window|constraint|unfilled/i.test(t.name));
-  return <><ApplyBest detail={detail} />{detail.details.executable === false && <p role="status">当前组合不可执行：{valueText(detail.details.conflicts)}</p>}{tables.map(table => <CompleteAnalysis key={`${detail.experiment.id}-${table.name}`} detail={detail} name={table.name} />)}</>;
+  return <><ApplyBest detail={detail} />{detail.details.executable === false && <p role="status">当前组合不可执行：{valueText(detail.details.conflicts)}</p>}{tables.map(table => ["industry", "contribution", "risk", "factor_contributions"].includes(table.name) ? <PagedExperimentTable key={`${detail.experiment.id}-${table.name}`} experimentId={detail.experiment.id} table={artifactTableName(detail, table.name)} /> : <CompleteAnalysis key={`${detail.experiment.id}-${table.name}`} detail={detail} name={table.name} />)}</>;
 }
 function CompleteAnalysis({ detail, name }: { detail: ExperimentDetails; name: string }) {
   const [table, setTable] = useState<ResearchTable | null>(null); const [error, setError] = useState("");
