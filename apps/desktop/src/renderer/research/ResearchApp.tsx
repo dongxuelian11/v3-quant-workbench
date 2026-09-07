@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { DockviewReact, type DockviewApi, type DockviewReadyEvent, type IDockviewPanelProps } from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
 import type { ProjectConfig } from "../../../../../packages/contracts/src/research";
-import { ResearchContext, pages, request, useResearch, useResearchState, type Page } from "./state";
+import { ResearchContext, pages, request, useResearch, useResearchState, jobTitle, type Page } from "./state";
 import { DataPanel, FactorPanel, Overview, UniversePanel } from "./ResearchPanels";
 import { ModelPanel, StrategyPanel } from "./RunPanels";
 import { ResultsPanel } from "./ResultsPanel";
@@ -23,6 +23,7 @@ export function ResearchApp() { const state = useResearchState(); return <Resear
 function Shell() {
   const s = useResearch(); const [creating, setCreating] = useState(false); const [settings, setSettings] = useState(false);
   const [aiVisible, setAiVisible] = useState(true); const [jobsVisible, setJobsVisible] = useState(false);
+  useEffect(() => { if (s.submissionVersion > 0) setJobsVisible(true); }, [s.submissionVersion]);
   const [left, setLeft] = useState(208); const [right, setRight] = useState(310); const [bottom, setBottom] = useState(170);
   const api = useRef<DockviewApi | null>(null); const layoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dimensions = useRef({ left, right, bottom }); dimensions.current = { left, right, bottom };
@@ -78,5 +79,5 @@ function CreateProject({ close }: { close: () => void }) {
 }
 function Jobs() {
   const s = useResearch(); const labels = { queued: "排队中", running: "运行中", completed: "已完成", failed: "失败", cancelled: "已取消", interrupted: "已中断" };
-  return <div className="r-jobs">{s.jobs.length ? s.jobs.map(j => <div className="r-job" key={j.id}><strong>{j.name}</strong><span>{labels[j.status]}</span><progress max={1} value={Math.max(0, Math.min(1, j.progress))} aria-label={`${j.name}进度`} /><span title={j.message}>{j.message}</span>{["queued", "running"].includes(j.status) ? <button onClick={() => void s.act(async () => { await request("jobs.cancel", { jobId: j.id }); await s.refresh(); })}>取消</button> : <button onClick={() => void s.act(() => s.submit(j.spec.kind, j.spec.parameters, j.name))}>重跑</button>}{j.experimentId && <button onClick={() => { s.setSelectedExperiment(j.experimentId!); s.setPage("results"); }}>查看结果</button>}</div>) : <Empty title="还没有任务记录" />}</div>;
+  return <div className="r-jobs">{s.jobs.length ? s.jobs.map(j => <div className="r-job" key={j.id}><strong>{jobTitle(j.kind, j.name)}</strong><span>{labels[j.status]}</span><progress max={1} value={Math.max(0, Math.min(1, j.progress))} aria-label={`${jobTitle(j.kind, j.name)}进度`} /><span title={j.message}>{j.message}</span>{["queued", "running"].includes(j.status) ? <button onClick={() => void s.act(async () => { await request("jobs.cancel", { jobId: j.id }); await s.refresh(); })}>取消</button> : <button onClick={() => void s.act(() => s.submit(j.spec.kind, j.spec.parameters, j.name))}>重跑</button>}{j.experimentId && <button onClick={() => { s.setSelectedExperiment(j.experimentId!); s.setPage("results"); }}>查看结果</button>}</div>) : <Empty title="还没有任务记录" />}</div>;
 }

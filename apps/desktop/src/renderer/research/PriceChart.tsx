@@ -7,7 +7,7 @@ import type { TablePage } from "./PagedTable";
 registerOverlay({ name: "research_note", totalStep: 2, needDefaultPointFigure: true, createPointFigures: ({ coordinates, overlay }) => coordinates.length ? [{ type: "text", attrs: { x: coordinates[0].x, y: coordinates[0].y, text: String(overlay.extendData ?? "批注"), align: "left", baseline: "bottom" }, styles: { color: "#267774", size: 13, backgroundColor: "#fffdf9", paddingLeft: 5, paddingRight: 5, paddingTop: 4, paddingBottom: 4 } }] : [] });
 registerOverlay({ name: "research_rect", totalStep: 3, needDefaultPointFigure: true, createPointFigures: ({ coordinates }) => coordinates.length > 1 ? [{ type: "rect", attrs: { x: Math.min(coordinates[0].x, coordinates[1].x), y: Math.min(coordinates[0].y, coordinates[1].y), width: Math.abs(coordinates[1].x - coordinates[0].x), height: Math.abs(coordinates[1].y - coordinates[0].y) }, styles: { style: "stroke_fill", color: "rgba(38,119,116,.08)", borderColor: "#267774", borderSize: 1 } }] : [] });
 interface Bar { date: string; open: number; high: number; low: number; close: number; volume: number }
-export interface TradeMarker { date: string; price: number; side: string }
+export interface TradeMarker { date: string; price: number; adjustedPrice?: number; side: string }
 function dateAt(timestamp: number) { return new Date(timestamp + 8 * 3600000).toISOString().slice(0, 10); }
 export function PriceChart({ symbol: initial = "", focusDate, trades = [], experimentId, tradeTable }: { symbol?: string; focusDate?: string; trades?: TradeMarker[]; experimentId?: string; tradeTable?: string }) {
   const s = useResearch(); const projectId = s.project!.id;
@@ -57,7 +57,7 @@ export function PriceChart({ symbol: initial = "", focusDate, trades = [], exper
             if (!active) return;
             for (const row of result.rows) {
               const date = row.date ?? row.trade_date, price = row.price ?? row.execution_price ?? row.trade_price, side = tradeDirection(row.side ?? row.direction);
-              if (typeof date === "string" && typeof price === "number" && Number.isFinite(price) && side) loadedTrades.set(JSON.stringify(row), { date, price, side });
+              if (typeof date === "string" && typeof price === "number" && Number.isFinite(price) && side) loadedTrades.set(JSON.stringify(row), { date, price, ...(typeof row.adjustedPrice === "number" && Number.isFinite(row.adjustedPrice) ? { adjustedPrice: row.adjustedPrice } : {}), side });
             }
             offset += result.rows.length;
             if (offset >= result.total) break;
@@ -79,7 +79,7 @@ export function PriceChart({ symbol: initial = "", focusDate, trades = [], exper
   useEffect(() => {
     const instance = chart.current; if (!instance || !count) return;
     instance.removeOverlay({ groupId: "research-trade" });
-    markers.forEach((trade, index) => instance.createOverlay({ name: "research_note", id: `trade-${index}`, groupId: "research-trade", lock: true, points: [{ timestamp: Date.parse(`${trade.date.slice(0, 10)}T00:00:00+08:00`), value: trade.price }], extendData: `${trade.side} · ${trade.price}`, styles: { text: { color: trade.side === "买入" ? "#b35c4f" : "#287775" } } }));
+    markers.forEach((trade, index) => instance.createOverlay({ name: "research_note", id: `trade-${index}`, groupId: "research-trade", lock: true, points: [{ timestamp: Date.parse(`${trade.date.slice(0, 10)}T00:00:00+08:00`), value: trade.adjustedPrice ?? trade.price }], extendData: `${trade.side} · 成交价 ${trade.price}`, styles: { text: { color: trade.side === "买入" ? "#b35c4f" : "#287775" } } }));
   }, [JSON.stringify(markers), count, symbol]);
   useEffect(() => { if (focusDate) chart.current?.scrollToTimestamp(Date.parse(`${focusDate.slice(0, 10)}T00:00:00+08:00`)); }, [focusDate, count]);
   const draw = (name: string) => chart.current?.createOverlay({ name, ...(name === "research_note" ? { extendData: note } : {}), onDrawEnd: changed, onPressedMoveEnd: changed, onRemoved: changed });
