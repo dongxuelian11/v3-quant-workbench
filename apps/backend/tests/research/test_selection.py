@@ -9,6 +9,18 @@ from v3_backend.research.rules import limits, fees, affordable, COST_DEFAULTS
 
 
 class SelectionTest(unittest.TestCase):
+    def test_known_volume_and_historical_project_end(self):
+        from v3_backend.research.portfolio import DEFAULTS
+        market = pd.DataFrame([dict(symbol='SH600000',date=pd.Timestamp('2025-01-06'),rawClose=10.,volume=1000)]).set_index('symbol')
+        orders,_,_,_ = selection.estimate_orders(dict(cash=100000,rows=[]),pd.Series({'SH600000':.9}),market,COST_DEFAULTS,DEFAULTS,pd.Series(dtype=object))
+        self.assertEqual(orders.quantity.iloc[0],100)
+        self.assertIn('参与率',orders.reason.iloc[0])
+        project = dict(path='unused',startDate='2015-01-01',endDate='2020-01-01')
+        with patch('v3_backend.research.selection.data.update',side_effect=RuntimeError('captured')) as update:
+            with self.assertRaisesRegex(RuntimeError,'captured'):
+                selection.run(project,dict(enabled=True,model={'model':'ridge'},strategy={'template':'model_score'}),Path('unused'),lambda *_:None)
+            self.assertEqual(update.call_args.args[1]['endDate'],selection.update_end_date())
+
     def test_historical_rules_and_star_cash(self):
         self.assertEqual(limits('SH600000','2025-01-01',10.05)[1],11.06)
         self.assertEqual(limits('SZ300001','2025-01-01',10,True)[1],12)

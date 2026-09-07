@@ -74,6 +74,12 @@ def label_prices(prices, mode='next_open'):
     return market.shift(-1) if mode == 'next_open' else market
 
 
+def forward_returns(market, periods):
+    result = pd.concat({f'{h}D':(market.shift(-h)/market-1).stack(dropna=False) for h in periods},axis=1)
+    result.index.names = ['date','asset']
+    return result
+
+
 def windows(calendar, params):
     from qlib.workflow.task.utils import TimeAdjuster
     dates = pd.DatetimeIndex(calendar).sort_values().unique()

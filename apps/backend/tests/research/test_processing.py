@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from v3_backend.research.processing import windows,label_prices,process
+from v3_backend.research.processing import windows,label_prices,process,forward_returns
 from v3_backend.research.storage import Store,write_json
 
 
@@ -25,6 +25,13 @@ class ProcessingTest(unittest.TestCase):
                 windows(dates,{'validation':{'mode':'rolling','stepMonths':0}})
 
     def test_next_open_labels_and_missing_historical_industry(self):
+        dates = pd.bdate_range('2024-01-01',periods=5)
+        simple = pd.DataFrame({'date':dates,'symbol':'SH600000','open':[10.,11.,12.,13.,14.]})
+        forward = forward_returns(label_prices(simple),[1])
+        self.assertTrue(pd.isna(forward.loc[(dates[3],'SH600000'),'1D']))
+        self.assertAlmostEqual(forward.loc[(dates[0],'SH600000'),'1D'],12/11-1)
+        simple.loc[2,'open'] = np.nan
+        self.assertTrue(pd.isna(forward_returns(label_prices(simple),[1]).loc[(dates[0],'SH600000'),'1D']))
         prices = pd.DataFrame({'date':pd.bdate_range('2025-01-01',periods=4),'symbol':'SH600000','open':[10.,20.,30.,50.],'close':[9.,15.,25.,35.]})
         market = label_prices(prices)
         self.assertEqual((market.shift(-1)/market-1).iloc[0,0],.5)

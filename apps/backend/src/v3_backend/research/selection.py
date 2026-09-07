@@ -16,6 +16,12 @@ def completed_prices(prices):
     return prices[prices.date <= cutoff] if current.hour >= 15 else prices[prices.date < cutoff]
 
 
+def update_end_date():
+    current = pd.Timestamp.now(tz='Asia/Shanghai')
+    cutoff = current.normalize() if current.hour >= 15 else current.normalize()-pd.Timedelta(days=1)
+    return cutoff.strftime('%Y-%m-%d')
+
+
 def estimate_orders(snapshot, weights, market, costs, config, groups, executable=True):
     """Estimate at the last completed close, sellable shares and real cash only."""
     held = {row['symbol']: row for row in snapshot['rows']}
@@ -48,6 +54,11 @@ def estimate_orders(snapshot, weights, market, costs, config, groups, executable
             if pd.notna(row.get('tradestatus')) and float(row.tradestatus) != 1:
                 units = 0
                 reasons.append('最新交易日停牌，待复牌确认')
+            volume = pd.to_numeric(row.get('volume'),errors='coerce')
+            capacity = max(0,float(volume)*costs['volumeParticipation']) if pd.notna(volume) else 0
+            if units > capacity:
+                units = quantity(code,capacity,side,sellable)
+                reasons.append('最新已知成交量参与率限制' if pd.notna(volume) else '最新已知成交量缺失')
             if side == 'buy':
                 funded = affordable(code, units, price, cash, date, costs)
                 if funded < units:
@@ -94,6 +105,7 @@ def run(project, params, output, progress):
     if config.get('updateData', True):
         data.update(project, dict(source=config.get('dataSource','baostock'), financials=config.get('financials',True),
                                  startDate=project.get('startDate') or '2015-01-01',
+                                 endDate=update_end_date(),
                                  factorProcessing=model_params.get('factorProcessing', {}), portfolio=strategy.get('portfolio', {})),
                     lambda value, message: progress(value*.4, message))
     prices = completed_prices(engines.prepare(project, output, lambda value,message: progress(.4+value*.1,message)))

@@ -233,7 +233,7 @@ def save_table(output, name, frame):
 def analyze(project, params, output, progress, prices=None):
     import pandas as pd
     from alphalens import performance, utils
-    from .processing import label_prices, DEFAULTS as PROCESS_DEFAULTS
+    from .processing import label_prices, forward_returns, DEFAULTS as PROCESS_DEFAULTS
     prices = prepare(project, output, progress) if prices is None else prices
     values = features(project, params, prices)
     market = label_prices(prices, params.get('labelMode','next_open'))
@@ -250,7 +250,8 @@ def analyze(project, params, output, progress, prices=None):
                 if name == 'growth_revenue':
                     raise ValueError('收入同比不可用：当前BaoStock适配未提供YOYRevenue；可导入带公告日期的同口径收入同比，未从MBRevenue推算')
                 raise ValueError('因子没有非空数值，请检查所需数据字段')
-            clean = utils.get_clean_factor_and_forward_returns(series, market, periods=periods, quantiles=int(params.get('quantiles', 5)), max_loss=.5, filter_zscore=None)
+            forward = forward_returns(market,periods)
+            clean = utils.get_clean_factor(series, forward, quantiles=int(params.get('quantiles', 5)), max_loss=.5)
             if clean.empty:
                 raise ValueError('因子没有可分析样本')
         except (ValueError, utils.MaxLossExceededError) as exc:
@@ -356,13 +357,18 @@ def _train_single(project, params, output, progress, prices=None):
         table = part[['label']].assign(score=prediction)
         daily_ic = table.groupby(level=0).apply(lambda day: day.label.corr(day.score))
         metrics[name + ':ic'] = float(daily_ic.mean()) if daily_ic.notna().any() else None
-        artifacts.append(save_table(output, name + '_predictions', table))
+        feature_dates = x.index.get_level_values(0)
+        trading_x = x[(feature_dates>=pd.Timestamp(params[name+'Start'])) & (feature_dates<=pd.Timestamp(params[name+'End']))]
+        predictions = pd.DataFrame({'score':estimator.predict(trading_x)},index=trading_x.index)
+        predictions['label'] = part.label.reindex(trading_x.index)
+        artifacts.append(save_table(output, name + '_predictions', predictions))
     model_path = output / 'model.joblib'
     joblib.dump(estimator, model_path)
     artifacts.append(dict(name='model', path=str(model_path), type='joblib'))
     progress(.95, '训练及时间隔离评估完成')
     return dict(metrics=metrics, artifacts=artifacts, summary='按时间切分的模型实验',
-                details={'segments': {k: len(v) for k, v in segments.items()}, 'purgeSessions': horizon + (params.get('labelMode','next_open')=='next_open'), 'featureIds': columns})
+                details={'segments': {k: len(v) for k, v in segments.items()}, 'purgeSessions': horizon + (params.get('labelMode','next_open')=='next_open'), 'featureIds': columns,
+                         'predictionRanges':{name:dict(start=params[name+'Start'],end=params[name+'End']) for name in segments if name!='train'}})
 
 
 def train(project, params, output, progress, prices=None):
@@ -433,9 +439,29 @@ def backtest(project, params, output, progress, prices=None, store=None):
         experiment = store.experiment(project['id'], params['modelExperimentId'])
         if experiment['kind'] != 'model.train':
             raise ValueError('所选实验不是模型训练')
-        artifact = next((a for a in experiment['artifacts'] if a['name'] == 'test_predictions'), None)
+        partition = params.get('_predictionPartition','test')
+        if partition not in {'valid','test'}:
+            raise ValueError('模型预测区间必须为valid或test')
+        prefix = ''
+        if params.get('_predictionBounds'):
+            bounds = params['_predictionBounds']
+            model_bounds = experiment['parameters']
+            if model_bounds.get('validation',{}).get('mode','single')=='rolling':
+                window_artifact = next((a for a in experiment['artifacts'] if a['name']=='windows'),None)
+                if window_artifact is None:
+                    raise ValueError('模型缺少滚动窗口信息，请重新训练')
+                table = pd.read_parquet(store.artifact_path(project['id'],window_artifact))
+                matched = [row for row in table.to_dict('records') if all(pd.Timestamp(row[key])==pd.Timestamp(bounds[key]) for key in bounds)]
+                if len(matched)!=1:
+                    raise ValueError('模型与组合的滚动验证窗口不一致')
+                model_bounds = matched[0]
+                prefix = f'window_{int(model_bounds["window"])}_'
+            for key in ['trainStart','trainEnd','validStart','validEnd','testStart','testEnd']:
+                if not model_bounds.get(key) or pd.Timestamp(model_bounds[key])!=pd.Timestamp(bounds[key]):
+                    raise ValueError('所选模型时间窗口与组合验证窗口不一致：'+key)
+        artifact = next((a for a in experiment['artifacts'] if a['name'] == prefix+partition+'_predictions'), None)
         if artifact is None:
-            raise ValueError('模型实验没有样本外评分')
+            raise ValueError('模型实验没有对应的'+partition+'评分，请重新训练模型')
         predictions = pd.read_parquet(store.artifact_path(project['id'], artifact))
         score = predictions.set_index(['datetime', 'instrument']).score
     elif template in {'single_factor', 'multi_factor'}:
@@ -470,7 +496,7 @@ def backtest(project, params, output, progress, prices=None, store=None):
     if score.empty:
         raise ValueError('没有有效信号')
     start = max(score.index.get_level_values(0).min(), pd.Timestamp(params.get('startDate') or project.get('startDate') or dates[0]))
-    end = min(score.index.get_level_values(0).max(), pd.Timestamp(params.get('endDate') or project.get('endDate') or dates[-1]))
+    end = min(dates[-1], pd.Timestamp(params.get('endDate') or project.get('endDate') or dates[-1]))
     trading_dates = dates[(dates > start) & (dates <= end)]
     if len(trading_dates) < 2:
         raise ValueError('回测交易日不足')
@@ -673,7 +699,7 @@ def optimize(project, params, output, progress, store):
                 result = _train_single(project, {**parameters, **bounds, '_validationOnly': True}, window_dir, lambda *_: None, prices)
                 value = result['metrics'][objective_key]
             else:
-                result = backtest(project, {**parameters, 'startDate': bounds['validStart'], 'endDate': bounds['validEnd']}, window_dir, lambda *_: None, prices, store)
+                result = backtest(project, {**parameters, 'startDate': bounds['validStart'], 'endDate': bounds['validEnd'], '_predictionPartition':'valid','_predictionBounds':bounds}, window_dir, lambda *_: None, prices, store)
                 value = result['metrics'][objective_key.removeprefix('valid:')]
             if value is None or not __import__('math').isfinite(value):
                 raise ValueError('验证区间目标无有效数值')
@@ -696,7 +722,7 @@ def optimize(project, params, output, progress, store):
         holdout_dir = output/'holdout'
         holdout_dir.mkdir(exist_ok=True)
         bounds = ranges[-1]
-        holdout = _train_single(project, {**best, **bounds}, holdout_dir, lambda *_: None, prices) if target == 'model' else backtest(project, {**best, 'startDate': bounds['testStart'], 'endDate': bounds['testEnd']}, holdout_dir, lambda *_: None, prices, store)
+        holdout = _train_single(project, {**best, **bounds}, holdout_dir, lambda *_: None, prices) if target == 'model' else backtest(project, {**best, 'startDate': bounds['testStart'], 'endDate': bounds['testEnd'], '_predictionPartition':'test','_predictionBounds':bounds}, holdout_dir, lambda *_: None, prices, store)
         write_json(holdout_dir/'result.json', holdout)
         artifacts = [save_table(output, 'trials', study.trials_dataframe()), dict(name='optuna', path=str(output / 'optuna.sqlite'), type='sqlite')]
         artifacts += [{**item, 'name':'holdout_'+item['name']} for item in holdout['artifacts']]

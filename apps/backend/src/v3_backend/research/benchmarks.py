@@ -52,7 +52,7 @@ def analyze(report):
     metrics['tracking_error'] = float(excess.std(ddof=1)*252**.5)
     tables = {'benchmark': pd.DataFrame({'portfolio': nav, 'benchmark': benchmark_nav}),
               'excess': pd.DataFrame({'return': excess, 'cumulative': (1+excess).cumprod()-1}),
-              'drawdown': pd.DataFrame({'portfolio': nav/nav.cummax()-1, 'benchmark': benchmark_nav/benchmark_nav.cummax()-1}),
+              'drawdown': pd.DataFrame({'portfolio': nav/nav.cummax().clip(lower=1)-1, 'benchmark': benchmark_nav/benchmark_nav.cummax().clip(lower=1)-1}),
               'monthly': pd.DataFrame({'portfolio': net, 'benchmark': benchmark}).resample('ME').apply(lambda x: (1+x).prod()-1)}
     for frame in tables.values():
         frame.index.name = 'date'
