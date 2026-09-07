@@ -291,6 +291,7 @@ def update(project, params, progress):
     financial_rows = 0
     configuration = None
     reused = []
+    connection_guard = None
 
     def persist(status, error=None):
         checkpoint = dict(configuration=configuration, completedSymbols=completed, priceSymbols=price_saved,
@@ -315,6 +316,9 @@ def update(project, params, progress):
 
     try:
         if bs is not None:
+            from .baostock_connection import bounded_connection
+            connection_guard = bounded_connection()
+            connection_guard.__enter__()
             login = bs.login()
             if login.error_code != '0':
                 raise ValueError(login.error_msg)
@@ -398,6 +402,8 @@ def update(project, params, progress):
                 bs.logout()
             except Exception:
                 pass
+        if connection_guard is not None:
+            connection_guard.__exit__(None, None, None)
 
 
 def preview(project):
