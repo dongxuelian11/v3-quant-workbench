@@ -8,11 +8,16 @@ export function Empty({ title, children }: { title: string; children?: React.Rea
 export function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="r-field"><span>{label}</span>{children}</label>; }
 export function Heading({ title, description, children }: { title: string; description?: string; children?: React.ReactNode }) { return <header className="r-heading"><div><h1>{title}</h1>{description && <p>{description}</p>}</div>{children}</header>; }
 const fieldLabels: Record<string, string> = { name: "名称", rows: "行数", symbols: "股票数", startDate: "开始日期", endDate: "结束日期", missingValues: "缺失值", date: "日期", trade_date: "成交日期", symbol: "证券", instrument: "证券", code: "证券代码", open: "开盘", high: "最高", low: "最低", close: "收盘", volume: "成交量", amount: "成交额", side: "方向", direction: "方向", price: "成交价", execution_price: "成交价", trade_price: "成交价", quantity: "数量", shares: "股数", weight: "权重", cash: "现金", equity: "资产净值", net_value: "净值", nav: "净值", returns: "收益率", daily_return: "日收益率", benchmark: "基准", drawdown: "回撤", turnover: "换手率", commission: "佣金", fee: "费用", fees: "费用", slippage: "滑点", factor: "因子", factor_id: "因子", quantile: "分组", period: "周期", holding: "持仓", holdings: "持仓", type: "类型", path: "文件路径", createdAt: "创建日期", status: "状态", ic: "IC", rank_ic: "Rank IC", mean_ic: "平均 IC", ic_std: "IC 标准差", icir: "ICIR", total_return: "累计收益率", annual_return: "年化收益率", sharpe: "夏普比率", max_drawdown: "最大回撤" };
+const resultMetricLabels: Record<string, string> = {
+  mean: "日均收益", std: "日收益波动", annualized_return: "年化收益", information_ratio: "信息比率",
+  total_cost_ratio: "费用比例合计", "valid:mse": "验证 MSE", "valid:r2": "验证 R²",
+  "test:mse": "测试 MSE", "test:r2": "测试 R²", best_value: "最优目标值"
+};
 export function fieldLabel(key: string, tableName = "") {
   if (key === "amount" && /trade|holding|交易|持仓/i.test(tableName)) return "实际股数";
   if (key === "adjustedPrice") return "前复权价格";
   if (key === "adjustedAmount") return "复权数量";
-  return fieldLabels[key] ?? key;
+  return resultMetricLabels[key] ?? fieldLabels[key] ?? key;
 }
 export function tradeDirection(value: unknown): string | null {
   if (value === 1 || value === "1" || typeof value === "string" && /^(buy|买入)$/i.test(value)) return "买入";
