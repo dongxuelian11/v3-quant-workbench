@@ -107,6 +107,11 @@ def import_files(project, params, progress):
             frame = pd.read_csv(path, dtype={'symbol': str, 'code': str, '股票代码': str})
         else:
             raise ValueError('只支持 CSV/Parquet')
+        if 'industry' in frame and 'symbol' in frame and ('effectiveDate' in frame or 'startDate' in frame):
+            from .history import import_industry
+            count = import_industry(project,frame)
+            summaries.append({'file':str(path),'kind':'industry','importedRows':count,'totalRows':count})
+            continue
         if {'symbol', 'startDate', 'endDate'}.issubset(frame):
             from .history import import_membership
             count = import_membership(project, frame)
@@ -174,20 +179,43 @@ def _bs_prices(bs, remote, start, end):
     return frame
 
 
-def _bs_financials(bs, remote, start, end):
+def _bs_financials(bs, remote, start, end, quarters=None):
     import pandas as pd
     frames = []
-    for year in range(pd.Timestamp(start).year - 1, pd.Timestamp(end).year + 1):
-        for quarter in range(1, 5):
-            for query in [bs.query_profit_data, bs.query_growth_data, bs.query_balance_data, bs.query_cash_flow_data]:
-                frame = _bs_query(bs, query, code=remote, year=year, quarter=quarter)
-                if not frame.empty:
-                    frames.append(frame)
+    quarters = quarters if quarters is not None else [(year,quarter) for year in range(pd.Timestamp(start).year-1,pd.Timestamp(end).year+1) for quarter in range(1,5)]
+    for year, quarter in quarters:
+        for query in [bs.query_profit_data, bs.query_growth_data, bs.query_balance_data, bs.query_cash_flow_data]:
+            frame = _bs_query(bs, query, code=remote, year=year, quarter=quarter)
+            if not frame.empty:
+                frames.append(frame)
     if not frames:
         return pd.DataFrame()
     frame = pd.concat(frames, ignore_index=True).replace('', float('nan'))
     frame = frame.groupby(['code', 'pubDate', 'statDate'], as_index=False).first()
     return normalize(frame, 'financials')[0]
+
+
+def _financial_update(project, bs, remote, start, end):
+    import pandas as pd
+    path = Path(project['path'])/'data'/'financials'/f'{symbol(remote)}.json'
+    stamp = read_json(path,{})
+    if stamp.get('downloadDate') == now()[:10] and stamp.get('start','9999') <= start and stamp.get('end','') >= end:
+        return
+    quarters = None
+    if stamp:
+        recent = pd.period_range(pd.Timestamp(end)-pd.DateOffset(months=12),pd.Timestamp(end),freq='Q')
+        quarters = {(period.year,period.quarter) for period in recent}
+        if start < stamp.get('start','9999'):
+            quarters |= {(year,quarter) for year in range(pd.Timestamp(start).year-1,pd.Timestamp(stamp['start']).year+1) for quarter in range(1,5)}
+        if end > stamp.get('end',''):
+            added = pd.period_range(pd.Timestamp(stamp['end']),pd.Timestamp(end),freq='Q')
+            quarters |= {(period.year,period.quarter) for period in added}
+        quarters = sorted(quarters)
+    frame = _bs_financials(bs,remote,start,end,quarters)
+    if not frame.empty:
+        merge_table(project,frame,'financials')
+    write_json(path,dict(start=min(start,stamp.get('start',start)),end=max(end,stamp.get('end',end)),downloadDate=now()[:10],
+                         revisionPolicy='新日刷新最近约四季度；更早历史修订不保证追补'))
 
 
 def _incremental_prices(project, bs, remote, start, end):
@@ -263,8 +291,8 @@ def update(project, params, progress):
         checkpoint = dict(configuration=configuration, completedSymbols=completed, priceSymbols=price_saved,
                           financialRows=financial_rows, status=status, updatedAt=now())
         write_json(checkpoint_path, checkpoint)
-        warnings = ['免费源历史修订完整性未保证；当前指数名单不是历史成分股，回测存在幸存者偏差。',
-                    '前复权更新覆盖该股票全部已存日期；更新后应重新运行实验。']
+        warnings = ['成员/行业按快照记录日期生效；快照间变化及免费源历史修订完整性未保证。',
+                    '行情增量通过重叠区间校正复权基准，不一致时重新补历史；财务新日刷新最近约四季度，更早修订不保证追补。']
         if status != 'completed':
             warnings.append(f'采集未全部完成：已保存行情 {len(price_saved)}/{len(symbols)} 股，完整完成 {len(completed)}/{len(symbols)} 股。')
         if error:
@@ -286,7 +314,10 @@ def update(project, params, progress):
             if login.error_code != '0':
                 raise ValueError(login.error_msg)
             from . import history, benchmarks
-            history.collect(project, bs, start, end, _bs_query, lambda value, message: progress(value*.1, message))
+            universe_source = project['universe'].get('source')
+            if universe_source in {'csi300', 'csi500'}:
+                history.collect(project, bs, start, end, _bs_query,
+                                lambda value, message: progress(value*.1, message), names=[universe_source])
             benchmarks.collect(project, bs, start, end, _bs_query)
         if not symbols and source == 'baostock':
             universe_source = project['universe'].get('source')
@@ -335,13 +366,19 @@ def update(project, params, progress):
                 price_saved.append(code)
             persist('running')
             if needs_financials:
-                financial = _bs_financials(bs, remote, start, end)
-                if not financial.empty:
-                    merge_table(project, financial, 'financials')
-                    financial_rows += len(financial)
+                _financial_update(project, bs, remote, start, end)
+                financial_path = Path(project['path'])/'data'/'financials.parquet'
+                if financial_path.exists():
+                    financial_rows += int(pd.read_parquet(financial_path,columns=['symbol']).symbol.eq(code).sum())
             completed.append(code)
             persist('running')
             progress(.1 + (index + 1) / len(symbols) * .85, f'已落盘 {code}；完整完成 {len(completed)}/{len(symbols)} 股')
+        settings = project.get('settings', {})
+        processing = params.get('factorProcessing', settings.get('factorProcessing', {}))
+        portfolio = params.get('portfolio', settings.get('backtest', {}).get('portfolio', {}))
+        if bs is not None and (processing.get('neutralizeIndustry') or portfolio.get('industryCap') is not None):
+            history.collect(project, bs, start, end, _bs_query,
+                            lambda value, message: progress(.95 + value*.05, message), names=['industry'])
         return persist('completed')
     except Exception as exc:
         message = (f'{exc}；已保存行情 {len(price_saved)}/{len(symbols)} 股，完整完成 {len(completed)}/{len(symbols)} 股。重跑同日同区间任务可复用已完成部分。'
@@ -384,7 +421,8 @@ def preview(project):
             warnings.append('行情缺少 listingDate，最短上市天数筛选不可用。')
         if 'factor' not in price_dataset['columns']:
             warnings.append('行情未提供复权因子，回测按未复权单位解释价格和数量。')
-    return {'datasets': datasets, 'rows': rows, 'warnings': warnings}
+    from .history import coverage
+    return {'datasets': datasets, 'rows': rows, 'warnings': warnings, 'history':coverage(project)}
 
 
 def records(frame):

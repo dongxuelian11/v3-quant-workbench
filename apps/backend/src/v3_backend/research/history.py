@@ -8,12 +8,14 @@ def snapshot_dates(start, end):
     return sorted({pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize(), *pd.date_range(start, end, freq='MS')})
 
 
-def collect(project, bs, start, end, query, progress):
+def collect(project, bs, start, end, query, progress, names=None):
     import pandas as pd
     from .data import symbol
     root = Path(project['path']) / 'data' / 'history'
     root.mkdir(parents=True, exist_ok=True)
     sources = {'csi300': bs.query_hs300_stocks, 'csi500': bs.query_zz500_stocks, 'industry': bs.query_stock_industry}
+    if names is not None:
+        sources = {name: sources[name] for name in names}
     dates = snapshot_dates(start, end)
     for index, date in enumerate(dates):
         date_string = date.strftime('%Y-%m-%d')
@@ -89,3 +91,31 @@ def import_membership(project, frame):
     frame.to_parquet(temporary, index=False)
     temporary.replace(path)
     return len(frame)
+
+
+def import_industry(project, frame):
+    import pandas as pd
+    from .data import symbol
+    frame = frame.rename(columns={'startDate':'effectiveDate'})
+    if not {'symbol','industry','effectiveDate'}.issubset(frame):
+        raise ValueError('历史行业需要 symbol/industry/effectiveDate')
+    frame = frame[['symbol','industry','effectiveDate']].copy()
+    frame['symbol'] = frame.symbol.map(symbol)
+    frame['effectiveDate'] = pd.to_datetime(frame.effectiveDate,errors='raise').dt.strftime('%Y-%m-%d')
+    if frame.isna().any().any():
+        raise ValueError('行业或生效日期缺失')
+    path = Path(project['path'])/'data/history/industry_import.json'
+    existing = read_json(path,{}).get('rows',[])
+    rows = pd.concat([pd.DataFrame(existing),frame]).drop_duplicates(['symbol','effectiveDate'],keep='last').to_dict('records')
+    write_json(path,{'source':'import','rows':rows,'observedAt':now()})
+    return len(frame)
+
+
+def coverage(project):
+    result = []
+    for source in ['csi300','csi500','industry']:
+        frame = read(project,source)
+        result.append(dict(source=source,rows=len(frame),symbols=int(frame.symbol.nunique()),
+                           startDate=str(frame.effectiveDate.min())[:10] if len(frame) else None,
+                           endDate=str(frame.effectiveDate.max())[:10] if len(frame) else None))
+    return result
