@@ -36,6 +36,8 @@ class AdjustmentUpdateTest(unittest.TestCase):
 
     def _mock_source(self, stack, history_error=None, financial_error=None):
         calls = Counter()
+        stack.enter_context(patch('v3_backend.research.history.collect'))
+        stack.enter_context(patch('v3_backend.research.benchmarks.collect'))
 
         def history(code, fields, **kwargs):
             key = (code, kwargs['adjustflag'])
@@ -126,7 +128,8 @@ class AdjustmentUpdateTest(unittest.TestCase):
                     return pd.DataFrame({'date': dates, 'close': [20, 20, 20]})
                 return pd.DataFrame([dict(date=date, code=code, open=10, high=10, low=10, close=10, volume=100, amount=2000, tradestatus=1, isST=0) for date in dates])
 
-            with patch.object(baostock, 'login', return_value=SimpleNamespace(error_code='0')), patch.object(baostock, 'logout'), \
+            with patch('v3_backend.research.history.collect'), patch('v3_backend.research.benchmarks.collect'), \
+                 patch.object(baostock, 'login', return_value=SimpleNamespace(error_code='0')), patch.object(baostock, 'logout'), \
                  patch.object(baostock, 'query_history_k_data_plus', side_effect=history), \
                  patch.object(baostock, 'query_stock_basic', return_value=pd.DataFrame({'ipoDate': ['1999-01-01']})), \
                  patch.object(data, '_bs_rows', side_effect=lambda value: value):

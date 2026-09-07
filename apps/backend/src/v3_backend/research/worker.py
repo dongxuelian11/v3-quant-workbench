@@ -44,10 +44,13 @@ def run(directory):
         if job['kind'].startswith('data.'):
             # Preserve the exact imported/updated tables in the experiment, so later updates do not change its export.
             import shutil
-            for file in (Path(project['path']) / 'data').glob('*.parquet'):
-                target = directory / file.name
-                shutil.copyfile(file, target)
-                experiment['artifacts'].append({'name': file.stem, 'path': str(target), 'type': 'parquet'})
+            for kind in ['prices', 'financials']:
+                source = Path(project['path']) / 'data'
+                if not (source / kind).exists() and not (source / f'{kind}.parquet').exists():
+                    continue
+                target = directory / f'{kind}.parquet'
+                data.read_table(project, kind).to_parquet(target, index=False)
+                experiment['artifacts'].append({'name': kind, 'path': str(target), 'type': 'parquet'})
         write_json(directory / 'details.json', details)
         for artifact in experiment['artifacts']:
             artifact['path'] = Path(artifact['path']).resolve().relative_to(Path(project['path']).resolve()).as_posix()
