@@ -1,13 +1,15 @@
 # V3 开源量化内核与可视化研究桌面
 
 ## 当前状态
-- 目标：在已交付首版上完成第二轮全部范围：沪深 A 股 2015 年至今的研究补强、四种组合构建、每日目标组合和调仓清单，以及 Ling 真实联调。
-- 已完成：从main建立并推送codex/v3-rebuild，已创建[草稿PR #54](https://github.com/dongxuelian11/v3-quant-workbench/pull/54)。开工及9月8日收尾刷新均无旧开放PR。Python3.12.14及依赖、Electron39.8.10、桌面桥、B视觉前端和研究后端均已合入；CI/README/打包已精简。最终Windows安装包已生成并在本机安装启动，使用随包Python，无开发环境覆盖。最终已安装程序截图见artifacts/research-journey/final-desktop.png。
-- 实测完成：6股2024..2025行情和72条公告财务落盘；GUI五因子分析、多因子周调仓、Ridge、LightGBM TPE两次寻优、组合Grid两次试参、模型评分回测与实验比较。CSV464行、Excel四张完整表464/1383/285/2790行、18页PDF和PNG成功导出读取。自定义公式和Python评分反转完成单因子回测；任务取消后重跑、重命名/收藏/删除均通过。四种批注重开/拖动保存、双窗格恢复、侧栏尺寸恢复通过。回放空行情定位已修，实际第二页成交可打开65个标记；单因子查看读取475行IC/换手、5行分组收益。最终打包产物与已安装程序均包含回放修复及短标记。
-- 当前：第二轮代码已整合至980b651，后端43c4175含日期规则/因子处理/标签/滚动/寻优/归因/选股，前端结果及贡献表已对齐。组合14项、AI3项、后端19个不同定向用例通过。集中审查发现6个实际计算问题，正在原后端任务修复：每日更新截止日、选股量限制、模型组合寻优验证预测、回撤初始净值、交易预测尾部、Alphalens缺标签默认填零；另处理当前池外持仓估值。真实Ling仍待用户设置Key（已提问），上次hasKey=false。4份旧规则草稿仍未提交；PR54未合并。
-- 本轮实测：artifacts/round2-journey/research（id1a25d335a0264f3fa71bdfec5972abfd）导入6股2024..2026真实行情与已有公告财务；五因子604040b9dbe94e52b167a7771db0ca79、Ridge76e1de8dcfc74109a5a012f7a33c12b6、六窗口LightGBM4e46b2f0e9cd454f97b29cf1a301fd29、模型试参36470b9cf2f94e4ba476db80bb871097、组合试参82db54386ddf42d595e800a47d33a8ac完成。原记录保留，修复后只重跑受影响流程。实际Electron持仓CSV/Excel导入、移除持仓、保存并启用方案通过。
-- 下一步：修复差异收束后完成四组合/每日选股/导出/重开实际操作；300股下载与缓存计时继续；最后实际Ling和1.1.0安装包。300股正常取消续传已验证，后在73股遇到Windows进度文件短暂占用，980b651已修短退避；exec17242/job e9b1691519264b49842f035a9bd22e32正从73股继续。实际Electron exec13418已打开第二轮项目，.cache/desktop-check.cjs；旧exec68381/50250已关闭。不要另开BaoStock登录，也不要在当前项目后台任务运行时用另一Service打开同项目。
-- 任务：主任务 01a07ab5-7f36-73c2-8a58-5f6b8b3ae66e；前端 01a07c31-a51e-7901-a91d-b7a15669878c（worktree 63d0）；后端 01a07c32-49f0-75a3-847b-106b1cd50a68（worktree 3170）；审核 01a07c4a-b63d-7300-988b-1d393b4ca42d。三任务均 Astra low。
+- 目标：第二轮已批准的沪深 A 股日线研究补强、四组合、每日选股/调仓、Ling真实联调和Windows交付。
+- 已完成：功能代码已集成到codex/v3-rebuild。历史数据/缓存/基准/成交规则、因子处理、单次与滚动验证、验证集寻优、四组合、持仓/选股/调仓、GUI与导出都已实现；集中审查六项计算问题、单滚动窗和池外持仓修复已复核。
+- 交付：artifacts/package/v3-quant-workbench-1.1.0-x64.exe，352003363字节；实际安装至artifacts/installed-v3-round2并启动，版本1.1.0。服务确认使用安装目录中的Python，无开发Python或PYTHONPATH覆盖。截图artifacts/round2-journey/installed-final-desktop.png。不是另一台干净机器验证。
+- 实测：六股真实价格和公告财务完成五因子、两种模型、滚动、两类寻优和四组合；实际GUI完成持仓导入、选股、贡献、比较、历史图、导出及重开。安装版另外完成带BaoStock数据更新的选股，模型复用且持仓不变；新Ridge训练与97日评分回测完整覆盖至2026-09-07，最新6只股票的预测有值、未来标签为空。
+- 性能：300股193668行，同日增量46.749秒；三因子首次63.104秒、缓存复用10.830秒，峰值进程树586.11/534.84MiB，5106个缓存文件未重写。20逻辑核、31.8GiB内存；首次测量同时有安装解压负载。单股2015..2026共2839根行情及两基准下载74.840秒，2015年244根按窗口读取成功。
+- 待完成：用户在软件设置填写OpenRouter Key后进行Ling三类真实联调；此前已提问，目前无Key，不能称AI实际接通。四份旧P0规则草稿因自动审批要求P0_AUTHORITY_AMENDMENT而未提交，软件功能和安装不受影响。
+- GitHub：沿用[草稿PR #54](https://github.com/dongxuelian11/v3-quant-workbench/pull/54)，未合并。只维护本文件，不增加状态台账、例行SHA256或全量重跑。
+- 后续恢复：已安装Electron检查会话exec34342，.cache/installed-check.cjs，appData artifacts/round2-journey/installed-app；当前无计算/下载任务在运行。已完成的数据/计算/安装检查不要重跑；后续先确认设置是否有Key并继续真实AI联调。
+- 任务复用：主01a07ab5-7f36-73c2-8a58-5f6b8b3ae66e；前端01a07c31-a51e-7901-a91d-b7a15669878c（63d0）；后端01a07c32-49f0-75a3-847b-106b1cd50a68（3170）；审核01a07c4a-b63d-7300-988b-1d393b4ca42d（7932）。均Astra low，当前批次完成。
 
 ## 已确认的产品设计
 - A 股、日线、多因子选股优先，包含量价、估值、盈利、成长因子。
@@ -123,10 +125,12 @@ experiments.table {projectId,experimentId,table,offset?:0,limit?:200,symbol?,sta
 - Ling当前服务列出 tools/tool_choice，不支持 response_format；采用PydanticAI工具输出路径。Context7工具本会话不可调用，已查本地安装源码与官方文档，不重复尝试不存在的工具。
 
 ### 集中验证与完成状态
-- 本轮计算/持久化/前端已整合，集中审核六项及单滚动窗回归、候选外持仓已闭合。无需重跑已完成的组合14项、AI3项、后端19项及修复定向检查。真实Ling仍缺用户在设置填写的Key，未作真实请求。
-- 真实研究项目：artifacts/round2-journey/research，id1a25d335a0264f3fa71bdfec5972abfd。修正标签后五因子a449a22811da45a1a315f9ce68c54b52通过（21.827秒）；四组合equal366c19757d4e41cdbc5f15ab3d3deed0、score72fb8680db8d4b8bafcf45bbe3b9a676、risk_paritye8c9818fac724472a1af6884ce2ff071、mean_varianceb7c8b7a97e614736baebe981e24258d5均完成。252日年化/复利回撤在这四份实际portfolio表上核算通过，旧实验未改写。
-- 实际Electron exec24207（.cache/desktop-check.cjs，appData artifacts/research-journey/app）已导入CSV/Excel持仓并保存启用；选股5813d2df73cd4e3ca56abc9d85fde488和5e72c947bf224c769cae2952900ccb69均完成，第二次同月复用模型，持仓完全不变。项目刷新后重新打开成功。exports/每日选股.csv为3行调仓，xlsx五表3/6/3/3/1行，PDF3页，已读回字段/股数并渲染第一页。原exec68381/13418已结束，不继续使用。隐藏窗口截图会超时，必要时showInactive。
-- 300股下载：artifacts/round2-journey/performance300，id3fc3ea535556450daedac1f4b4197d38；2024-01-02..2026-09-07手工性能样本，不是历史策略成分池。15股正常取消后续传通过；73股遇到Windows临时占用，980b651短退避修复；其后254股遇到BaoStock无超时recv挂起，已明确终止worker5960，e9b1691519264b49842f035a9bd22e32保留failed，exec17242结束。254股文件/断点都保留。后端正在薄适配TCP超时/EOF及分页错误，修后从254继续，不另开并发BaoStock登录。
-- 300股后续：.cache/round2-data-check.py resume完成后，warm，再compute（已有cold/warm计算测量代码和cache文件是否复用核对）。随后独立做2015按需补历史。不要在下载或其他项目任务运行时构造另一Service接管同appData/项目。
-- 已优化行情按证券分区读取：读取500根由142股时1.686秒降至154股时0.377秒，150根更早历史/日期窗口/旧新文件重叠等值通过。因子相关性携带3250行DataFrame.attrs时8.813秒，清除传播后0.042秒且结果相同；d799222保留覆盖表并采用该处理，300股正式计时使用此版本。
-- 1.1.0初包artifacts/package/v3-quant-workbench-1.1.0-x64.exe已生成346293275字节，尚未安装本轮；需要包含最后TCP修复再打包。prepare及builder原exec88720/77571均已结束。最后一次renderer build已含选股CSV导出调仓清单和本地化模型时间。下一步：TCP修复续传、300股cache、2015、最终安装启动、Ling真实连接（待Key）、更新本记录和PR54。仅提交软件及本记录，四份旧P0草稿继续排除。
+- 集中审核六项、单滚动窗回归和池外持仓均已闭合。组合14项、AI工具3项、后端19项及修复的定向检查已经通过，不作为反复重跑门禁。真实Ling因缺Key尚未请求。
+- 真实研究项目artifacts/round2-journey/research，id1a25d335a0264f3fa71bdfec5972abfd。修正标签后的五因子a449a22811da45a1a315f9ce68c54b52（21.827秒）完成；四组合equal366c19757d4e41cdbc5f15ab3d3deed0、score72fb8680db8d4b8bafcf45bbe3b9a676、risk_paritye8c9818fac724472a1af6884ce2ff071、mean_varianceb7c8b7a97e614736baebe981e24258d5各402日完成。252日年化与复利回撤在实际portfolio表上核算，原实验未改写。
+- GUI选择5813d2df73cd4e3ca56abc9d85fde488和5e72c947bf224c769cae2952900ccb69完成，同月复用模型且持仓不变；CSV/Excel持仓导入、四实验比较、单股贡献、2024日期窗口、项目重开通过。exports/每日选股.csv为3行调仓，xlsx五表3/6/3/3/1行，PDF3页，均读回字段/股数并渲染检查。
+- 安装版selection011dd806f41243129745e63dfd21bdd9使用updateData:true、financials:false（已有公告财务保留），完成BaoStock更新、同月模型复用、评分/组合/清单；当前持仓完全不变。安装版Ridge b7aa2fa0783548daa1157955b7dda2f9有588行独立测试预测、552行有效评估样本，最新日6个预测的未来标签均为空；评分回测1b4f3aaf030a4b8e814e07b4520f1408共97日覆盖至2026-09-07，保存年化252/算术口径。证据installed-selection-check.json与installed-model-check.json。
+- 300股性能项目artifacts/round2-journey/performance300，id3fc3ea535556450daedac1f4b4197d38，2024-01-02..2026-09-07手工性能样本，不能作为历史成分策略池。15股正常取消续传通过；73股Windows临时占用已修短退避；254股BaoStock无超时recv已修45秒timeout/EOF和分页错误传播，失败任务保留，断点后50b010f5bd0b461eaf08839a40fd9c03完成剩余46股，用532.400秒。
+- 300股同日增量7f70b2ad007f438cbe66a78b01215ac3用46.749秒。三因子c49a723f50f34727976bfaaff45259fb首次63.104秒/586.11MiB，69c31b8ac56e4bb38fb347994351924a复用10.830秒/534.84MiB；Qlib与因子缓存5106文件的路径及修改时间完全不变，不计算哈希。测量文件data-measurements.json、cache-measurement.json保留，首次时并发安装负载已注明。
+- 长历史项目artifacts/round2-journey/history2015，id3bbb962fb7994b57a34c0f4a62afc2e7；任务7c4a8b0bd5f44253a0615b3148aadb4b成功获取2015-01-05..2026-09-07的SH600000共2839根及两基准，74.840秒/122.84MiB。2015年244根可读；rawTurn有32处来源缺失，未填造数据。
+- 行情按证券分区读取：500根由142股时1.686秒降至154股时0.377秒；150根更早历史、日期窗口与旧新文件重叠等值通过。去掉DataFrame.attrs的隐式大规模复制后，相关性局部样本8.813秒降至0.042秒且结果相同，覆盖说明仍单独保存。
+- 最终软件代码ef01eca（含a3ca2e4/cbdf8b0连接修复和中文指标），Windows1.1.0已生成并安装启动，安装器退出0，随包Python服务实际路径核对通过。原开发和下载会话均关闭，安装版会话exec34342供填写Key后继续联调。旧P0草稿排除提交，无main合并。
