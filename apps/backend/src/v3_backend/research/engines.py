@@ -172,12 +172,19 @@ def analyze(project, params, output, progress, prices=None):
         raise ValueError('分析周期必须在 1 到 252 天之间')
     if not 2 <= int(params.get('quantiles', 5)) <= 20:
         raise ValueError('分组数必须为2到20')
-    artifacts, metrics, summaries = [], {}, []
+    artifacts, metrics, summaries, unavailable = [], {}, [], []
     for index, name in enumerate(values.columns):
         series = values[name].dropna()
-        clean = utils.get_clean_factor_and_forward_returns(series, market, periods=periods, quantiles=int(params.get('quantiles', 5)), max_loss=.5, filter_zscore=None)
-        if clean.empty:
-            raise ValueError(f'{name} 没有可分析样本')
+        try:
+            if series.empty:
+                raise ValueError('因子没有非空数值，请检查所需数据字段')
+            clean = utils.get_clean_factor_and_forward_returns(series, market, periods=periods, quantiles=int(params.get('quantiles', 5)), max_loss=.5, filter_zscore=None)
+            if clean.empty:
+                raise ValueError('因子没有可分析样本')
+        except (ValueError, utils.MaxLossExceededError) as exc:
+            unavailable.append({'factor': name, 'reason': str(exc)})
+            progress(.3 + .6 * (index + 1) / len(values.columns), f'{name} 不可分析，继续其余因子')
+            continue
         ic = performance.factor_information_coefficient(clean)
         returns, error = performance.mean_return_by_quantile(clean)
         turnover = pd.concat({str(p): pd.concat({str(q): performance.quantile_turnover(clean.factor_quantile, q, p) for q in sorted(clean.factor_quantile.unique())}, axis=1) for p in periods}, axis=1)
@@ -188,8 +195,10 @@ def analyze(project, params, output, progress, prices=None):
                           save_table(output, f'{name}_turnover', turnover), save_table(output, f'{name}_samples', clean)])
         summaries.append({'factor': name, 'samples': len(clean)})
         progress(.3 + .6 * (index + 1) / len(values.columns), f'Alphalens 已分析 {name}')
+    if not summaries:
+        raise ValueError('所有因子均不可分析: ' + '; '.join(f'{item["factor"]}: {item["reason"]}' for item in unavailable))
     artifacts.append(save_table(output, 'factor_correlation', values.corr().rename_axis('factor')))
-    return dict(metrics=metrics, artifacts=artifacts, summary='Alphalens 因子分析', details={'factors': summaries, 'engine': 'alphalens-reloaded', 'forwardReturnConvention': 'close-to-close; analysis only, not execution returns'})
+    return dict(metrics=metrics, artifacts=artifacts, summary=f'Alphalens 分析 {len(summaries)} 项，{len(unavailable)} 项不可分析', details={'factors': summaries, 'unavailableFactors': unavailable, 'engine': 'alphalens-reloaded', 'forwardReturnConvention': 'close-to-close; analysis only, not execution returns'})
 
 
 def train(project, params, output, progress, prices=None):
@@ -333,7 +342,10 @@ def backtest(project, params, output, progress, prices=None, store=None):
             result, kwargs = super()._collect_data(trade_decision, level)
             for order, value, cost, price in result:
                 if order.deal_amount:
-                    trade_rows.append(dict(date=str(order.start_time), symbol=order.stock_id, direction=int(order.direction), amount=float(order.deal_amount), value=float(value), cost=float(cost), price=float(price)))
+                    factor = float(order.factor)
+                    trade_rows.append(dict(date=str(order.start_time), symbol=order.stock_id, direction=int(order.direction),
+                        amount=float(order.deal_amount) * factor, price=float(price) / factor,
+                        adjustedAmount=float(order.deal_amount), adjustedPrice=float(price), factor=factor, value=float(value), cost=float(cost)))
             return result, kwargs
 
     strategy = ResearchWeights(signal=score, risk_degree=.95)
@@ -350,9 +362,12 @@ def backtest(project, params, output, progress, prices=None, store=None):
     metrics['total_return'] = float((1 + net).prod() - 1)
     metrics['total_cost_ratio'] = float(report.cost.sum())
     holdings = []
+    factor_rows = prices.assign(factor=prices['factor'] if 'factor' in prices else 1.0).set_index(['date', 'symbol']).factor
     for date, position in positions.items():
         for code in position.get_stock_list():
-            holdings.append(dict(date=str(date), symbol=code, amount=position.get_stock_amount(code), price=position.get_stock_price(code)))
+            factor = factor_rows.get((pd.Timestamp(date).normalize(), code), float('nan'))
+            holdings.append(dict(date=str(date), symbol=code, amount=position.get_stock_amount(code) * factor,
+                                 price=position.get_stock_price(code) / factor, adjustedAmount=position.get_stock_amount(code), adjustedPrice=position.get_stock_price(code)))
     artifacts = [save_table(output, 'portfolio', report), save_table(output, 'holdings', pd.DataFrame(holdings)), save_table(output, 'trades', pd.DataFrame(trade_rows)), save_table(output, 'signals', score.rename('score').to_frame())]
     progress(.95, 'Qlib 组合回测完成')
     return dict(metrics=metrics, artifacts=artifacts, summary='Qlib 多头组合回测',

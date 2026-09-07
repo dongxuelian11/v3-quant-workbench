@@ -32,9 +32,10 @@ class EngineTest(unittest.TestCase):
             project, dates, store = sample_project(Path(directory))
             output = Path(directory) / 'analysis'
             output.mkdir()
-            result = engines.analyze(project, {'factorIds': ['momentum20'], 'periods': [1, 5], 'quantiles': 5}, output, lambda *_: None)
+            result = engines.analyze(project, {'factorIds': ['momentum20', 'volume_ratio'], 'periods': [1, 5], 'quantiles': 5}, output, lambda *_: None)
             self.assertIn('momentum20:IC:1D', result['metrics'])
             self.assertTrue((output / 'momentum20_samples.parquet').exists())
+            self.assertEqual(result['details']['unavailableFactors'][0]['factor'], 'volume_ratio')
 
     def test_pit_never_uses_same_day_announcement(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -59,6 +60,10 @@ class EngineTest(unittest.TestCase):
     def test_real_qlib_cost_and_next_session(self):
         with tempfile.TemporaryDirectory() as directory:
             project, dates, store = sample_project(Path(directory))
+            market_path = Path(project['path']) / 'data' / 'prices.parquet'
+            market = pd.read_parquet(market_path)
+            market['factor'] = .5
+            market.to_parquet(market_path, index=False)
             output = Path(directory) / 'backtest'
             output.mkdir()
             result = engines.backtest(project, {'template': 'single_factor', 'factorIds': ['momentum20'], 'topN': 3, 'rebalance': 'weekly', 'capital': 1000000}, output, lambda *_: None, store=store)
@@ -67,6 +72,8 @@ class EngineTest(unittest.TestCase):
             trades = pd.read_parquet(output / 'trades.parquet')
             signals = pd.read_parquet(output / 'signals.parquet')
             self.assertGreater(pd.Timestamp(trades.date.min()), signals.datetime.min())
+            np.testing.assert_allclose(trades.amount, trades.adjustedAmount * .5)
+            np.testing.assert_allclose(trades.amount * trades.price, trades.value)
 
     def test_custom_expression_rejects_future_and_python(self):
         for expression in ["__import__('os').system('whoami')", 'Ref($close,-1)', 'Ref($close,1-2)', '$close.__class__']:
