@@ -1,19 +1,26 @@
 # V3 开源量化内核与可视化研究桌面
 
 ## 当前状态
-- 当前目标：实施用户已批准的第三轮计划：全面重构研究工作台、双屏、多策略和独立 AI 会话，同时完成筛选、个股全景、市场概况、资金流、筹码、龙虎榜及多策略合并选股。
-- 第三轮进度：工作台、独立策略/实验/股票对象、原生多窗口、全局持仓、自选/筛选/共享数据、多策略选股和独立AI会话已整合。六股真实数据完成筛选→全景→持仓导入→双策略合并→独立回测→比较→导出→会话保存，结果在 artifacts/round3-journey/integration.json。1.2.0已交付；资金流/筹码真实源与Ling联调仍有下述外部缺口。
-- 第三轮数据连接：BaoStock名称资料成功；2026-09-07 SH603228实际取得1条龙虎榜、1条机构、3条买方/5条卖方营业部记录，位于 artifacts/round3-market-sample/listed。资金流/筹码接口及一次相同官方HTTPS地址排查均 RemoteDisconnected，仍未成功取得实时接口数据；适配与导入已完成，不能报告全部免费源已接通。
+- 当前状态：第三轮收尾与本次用户反馈修复已完成，交付1.2.1。研究入口、分屏可用性、全部股票买卖回放、训练边界与成交偏差已修复并做相关验证。定位为具备专业基础方法的研究版，不把功能完成或小样本通过等同于成熟专业软件的全面可信度。
+- 第三轮进度：工作台、独立策略/实验/股票对象、原生多窗口、全局持仓、自选/筛选/共享数据、多策略选股和独立AI会话已整合。六股真实数据完成筛选→全景→持仓导入→双策略合并→独立回测→比较→导出→会话保存，结果在 artifacts/round3-journey/integration.json。1.2.0已交付；后续已完成资金流/筹码真实取数和Ling服务联调，模型回答质量限制见下。
+- 第三轮数据连接：BaoStock名称资料与龙虎榜已成功；本次原AKShare接口实取SH600000资金流120行、筹码89行，截至2026-09-07。短时连接波动只增加一次同源重试，没有更换主机/代理/参数；临时ut参数假设被反证并撤回。金额/比例/不复权筹码核对通过，真实样本已合并实测共享目录并在全景/筛选读到相同数值；SH600009缺失保持null。证据在artifacts/round3-remaining/verified-sample.json与market-integration.json，后者是复用已下载样本，不是再次下载。
 - 第三轮审核修复：跨项目实验引用、策略模型缓存、资金合并约束、持仓估值、动态池601行完整性、历史名称及原始财务筛选字段均已修复。个股全景采用每表30行预览、完整分页/导出，实际响应从1,266,464降到97,306字节；研究进程传输上限16MiB。预算为0的策略不再进入计算；无有效预算时给出明确原因。只做相关检查，未重跑第二轮全量套件。
 - 交付后补充审核：审核任务基于0e5483c只读复核龙虎榜时间/未来字段、缺失累计、重复原因金额和共享数据缓存失效，未发现仍成立且具有明确反例的计算错误。仅阅读源码与现有测试，没有重跑测试；整合前8项准备清单不再作为待执行任务重复展开。
 - 第三轮桌面实测：应用内命名支持Enter/Escape；两个窗口分别修改同策略持仓数/资金，服务端settingsPatch保留两者及原active快照。实际第二屏(x=-1920)窗口、移回、双屏预设通过。GUI选股0932af2c8fd443ce88577fd840dd1c08完成且持仓不变、页面不跳转、任务区不自动展开。真实实验比较、历史日期查看、650行Excel、图表PNG及宽表PDF分组排版通过；已补策略摘要、内嵌调仓结果、红涨绿跌、市场中文及单位。
 - 已完成：功能代码已集成到codex/v3-rebuild。历史数据/缓存/基准/成交规则、因子处理、单次与滚动验证、验证集寻优、四组合、持仓/选股/调仓、GUI与导出都已实现；集中审查六项计算问题、单滚动窗和池外持仓修复已复核。
-- 交付：artifacts/package/v3-quant-workbench-1.2.0-x64.exe，335573691字节。本机NSIS安装退出0，目录artifacts/installed-v3-round3。最后的窗口尺寸修正使用最终包app.asar与exe更新该安装目录后验证，未再次解压整套Python。实际版本1.2.0、packaged=true；截图installed-final-desktop.png与installed-final-secondary.png、检查installed-final.json均在artifacts/round3-journey。未在另一台干净机器验证。
+- 上一版交付：artifacts/package/v3-quant-workbench-1.2.0-x64.exe，335573691字节。本机NSIS安装退出0，目录artifacts/installed-v3-round3。最后的窗口尺寸修正使用最终包app.asar与exe更新该安装目录后验证，未再次解压整套Python。实际版本1.2.0、packaged=true；截图installed-final-desktop.png与installed-final-secondary.png、检查installed-final.json均在artifacts/round3-journey。未在另一台干净机器验证。
 - 第二轮验证保留：六股真实价格/公告财务、五因子、两模型、滚动、两类寻优、四组合和97日评分回测已通过；最新预测不依赖未来标签。300股193668行首次三因子63.104秒、缓存10.830秒，峰值586.11/534.84MiB；同日增量46.749秒。单股2015..2026的2839根行情已按窗口读取。本轮未例行重跑这些检查。
-- 待完成：资金流/筹码真实接口恢复后联调；用户在软件设置填写OpenRouter Key后进行Ling三类真实验证，目前不能称AI实际接通。四份原有治理规则草稿保留未提交，本轮功能提交不包含它们。
+- 量化研究入口：已恢复因子研究、策略回测、模型训练、参数寻优、实验结果五个直达入口。专门QA完成真实因子64c32ad9445a42d58891692e88869f56、寻优729c0373b73e4c34b8980f0d80870b19、最佳参数应用、实验对象隔离/重开、比较和CSV。原始两策略未修改。随后用户截图指出三栏压缩、白底和重复工具栏，当前改为紧凑结果头部、按面板宽度重排、完整深色主题及“合并分屏”。
+- 买卖点：新增结果页“个股交易回放”，从完整成交/持仓/目标/未成交记录与运行股票池快照汇集股票，按股票分页读取全部成交，直接显示K线与红买绿卖，明细和标记联动。默认原始价格；前复权标记用当日factor重算，避免复权基准变化错位。现有真实实验6股/36笔成交已读回，其中3股无成交，不造买卖点。本次实际显示复核已完成，见下方记录。
+- 专业口径审核：确认T日信号/T+1开盘、信号日前可知成交量、公告时点、历史成员、隔离标签及验证集选参。修复Delta等时间算子负窗口泄漏、滚动末窗无成熟标签整项失败、涨停阻断允许卖出/跌停阻断允许买入、卖出费用造成负现金。新增定向测试通过；真实Qlib/Ridge末窗72条有效预测、标签全空且测试指标None。滑点原始价格按0.01元买入向上/卖出向下再钳制涨跌停，10.13±0.1%得到10.15/10.11，定向核算通过。旧实验不重写。
+- 本次真实回测复核：629日/191笔实验8147890bd2c940bcbec170f1dd99464f揭示原始价与Qlib因子精度不一致，已统一按实际执行factor换算。修正后16日/6笔实验9cb142fc9dc64244bb391679c13c7b8b的分价误差为0、费用分项相加一致、现金非负；随后发现首调仓日缺信号日行情导致目标静默无订单，已将Exchange行情提前一个已知交易日，执行起点不变。真实Qlib订单生成定向测试通过；1.2.1安装版短回测9fda80514a0a4a5b99e36aee6b00cbe1完成16交易日/7笔，Jan3信号在Jan6产生3笔买入。7笔原始开盘滑点/分价、佣金/最低佣金、卖出印花税、过户费独立核算一致；现金流水误差小于1e-6元、无负现金。证据artifacts/round3-remaining/final-installed-check.json。旧实验保留，不将发现问题的旧实验宣称为修复后结果。
+- 当前视觉QA：1540×984 CSS尺寸的单页图表完整可见，3栏315/315/316px均无整页横向溢出、深色白底已消除；合并5标签后保留全部对象。专门QA发现早期成交定位留白/明细状态不同步，修复后主任务实际复核首笔→下一笔→Feb26行及前复权切换，图文同步正确；名称搜索上海机场、无成交股票有行情且不造标记。临时复制页已关闭，恢复原来的两个对象与单栏。安装版16日短区间初始柱距已按可用宽度适配，并实看首笔定位，图表不再大片留白；未重跑成交。最终截图artifacts/round3-remaining/installed-1.2.1-replay.png。
+- 研究精度边界：免费历史成分/行业快照、财务修订有覆盖限制；日线开盘是成交近似，没有逐笔撮合排队；过户费沿用户固定配置，不冒称自动历史税率；自定义Python能读完整数据，必须审查代码是否引用未来。新结果展示实际成交/费用口径，不以开源库名称或绿测试声称机构级验证。
+- AI收尾：Key仅在Windows用户目录软件设置。Ling实际完成结构化参数建议并应用独立未启用草稿、真实回测解释、阶段因子任务aa1c5ccbbcce4480b04e2a716c2937e4及读取结果后讨论。中间遇到一次429，之后请求成功。真实回答曾错误改动未要求费用、把3只写成30只、对已应用负向处理的IC再翻转；UI参数保存和上下文已修，保留质量事实，不能宣称解释可靠或自动研究已验收。证据artifacts/round3-remaining/ling-live.json。阶段结果有直接打开入口。
+- 本次交付：artifacts/package/v3-quant-workbench-1.2.1-x64.exe已重新生成。本机既有安装目录artifacts/installed-v3-round3更新后确认packaged=true、version=1.2.1及随包Python实际进程；完成16日回测及最终图表局部复核。保留旧实验和用户策略/持仓，只提交本次产品改动，四份旧治理草稿保留。
 - GitHub：沿用[草稿PR #54](https://github.com/dongxuelian11/v3-quant-workbench/pull/54)，未合并。只维护本文件，不增加状态台账、例行SHA256或全量重跑。
 - 安装版实测：1.2.0实际进程使用installed-v3-round3/resources/backend-runtime/python/python.exe，无开发Python覆盖。主副窗口对象、AI会话和持仓恢复。选股2c77d309df2a47db85a5cdb800a84e93只计算预算25%与60%的两策略，0预算不计算；保存3行净调仓、5行策略贡献，持仓不变，任务区折叠。混合DPI修复已确认副屏928×720重开不缩小，跨屏预设仍保持尺寸。
-- 下一步：收集用户实际操作反馈；在外部接口或Key条件具备后继续对应联调。压缩后只读取本段和相关当前状态继续，不重启设计访谈或第二轮验证。
+- 下一步：用户可操作1.2.1查看回放与研究流程。本次修复没有待重跑检查；后续专业化优先补历史数据质量及相同数据/规则的独立对照验证，尚未启动新一轮功能。专门QA发现两项实际显示缺陷，主任务修正并在真实桌面复核；不宣称独立QA已复核最终修复版。压缩后读取当前段与相关当前代码继续，不重启已完成流程。
 - 任务复用：主01a07ab5-7f36-73c2-8a58-5f6b8b3ae66e；前端01a07c31-a51e-7901-a91d-b7a15669878c（63d0）；后端01a07c32-49f0-75a3-847b-106b1cd50a68（3170）；审核01a07c4a-b63d-7300-988b-1d393b4ca42d（7932）。第三轮旧任务停在各自权限提示，已通知暂停文件修改；主任务已准备其分支但未继续使用。当前实施使用主任务下 round3_frontend、round3_backend、round3_alternative_data 协作任务，均 Astra low，直接在本工作树按文件分工。Git 由主任务集中处理，不等待旧提示反复重试。
 
 ## 第三轮已批准设计与施工约定（2026-09-08）
@@ -88,7 +95,7 @@ C:/Users/Administrator/.codex/generated_images/01a07ab5-7f36-73c2-8a58-5f6b8b3ae
 - 单因子排序/多因子加权/模型评分三种组合模板；上一交易日信号在下一交易日执行，费用/滑点/调仓/持仓数可设置。
 - LightGBM 和 Ridge；时间顺序训练/验证/测试，寻优使用验证区间。
 - GUI 与 AI 共用研究方法。计算任务子进程运行，推送进度；取消和中断记录保留，允许重跑。
-- Ling-3.0-flash-Fin 作为兼容服务候选，在线质量未实测；约 255GB 权重不随安装包分发。
+- Ling-3.0-flash-Fin 通过OpenRouter连接，当前真实联调与回答质量见上方状态；约255GB权重不随安装包分发。
 
 ## 分工与顺序
 主任务负责接口、Electron 进程桥、运行环境、打包和整合。前端 Astra low 负责 renderer；后端 Astra low 负责 Python research 包及关键计算/持久化测试；审核 Astra low 做集中流程/计算审查。简单重复工作可用 Luna max。
@@ -118,7 +125,7 @@ stdio 复用现有 Content-Length / Content-Type 头 + UTF-8 JSON framing（runt
 
 JobEvent.progress=0..1；charts.load/save 返回 {annotations:[]}。Grid searchSpace 各项为候选数组；TPE 支持候选数组或 {type:int|float,low,high,step?,log?}。模型搜索键用 hyperparameters.learning_rate / hyperparameters.alpha 等路径。
 
-experiments.table {projectId,experimentId,table,offset?:0,limit?:200,symbol?,startDate?,endDate?} 返回 {name,columns,rows,total,offset,limit}，最多500行，用于完整回放翻页；图表按日期窗口再取该证券成交。trades price/amount为原始价/实际股数，图表前复权坐标用adjustedPrice；direction=1买/0卖。批量因子 details.unavailableFactors 记录个别失败，全失败仍报错。
+experiments.table {projectId,experimentId,table,offset?:0,limit?:200,symbol?,startDate?,endDate?} 返回 {name,columns,rows,total,offset,limit}，最多500行，用于完整回放翻页；图表按日期窗口再取该证券成交。trades price/amount为原始价/实际股数，图表前复权坐标按原始成交价×当前已载行情的当日factor换算，adjustedPrice仅保留旧记录；direction=1买/0卖。批量因子 details.unavailableFactors 记录个别失败，全失败仍报错。
 
 当前本机实测项目 artifacts/research-journey/project，id=6c6e6d0c1ed945dc8a81dd3626dd3464；成功数据job=06731d47d76e4f259c83c23e13e455bd，因子=f1db4c274a3847428885ea68bee67dfb，五因子回测=e12574ae76454664ab0d7d8a12963854，Ridge=fec3dcc7e20d46e7bff177fa2a4806af，模型评分回测=05fa4b398f3f40baae2a76794c5283d0，自定义公式/Python回测=0811aa78cb4b4a89a9d7f72266751c3b。旧失败更新f988f28639ab44cd8f3ba8ee7fe7e444保留；逐股保存94deba3已通过。导入项目 artifacts/research-journey/import-project，id=10d933051a1a4c51827f6ed17512b25f。安装目录artifacts/installed-v3，最终产物artifacts/package/v3-quant-workbench-1.0.0-x64.exe。实际检查脚本.cache/installed-check.cjs，验证会话均已关闭。正常Windows权限运行，无开发Python配置；截图见artifacts/research-journey/final-desktop.png、factor-detail.png。不要重复已通过的整套检查。
 

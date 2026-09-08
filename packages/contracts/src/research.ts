@@ -88,6 +88,7 @@ export interface ResearchObjectRef {
 export interface WorkspacePanel extends ResearchObjectRef {
   id: string;
   title: string;
+  view?: "backtest" | "optimize";
   experimentRefs?: ResearchObjectRef[];
   linkGroup?: string;
 }

@@ -110,6 +110,58 @@ class ResearchAiTest(unittest.TestCase):
         self.assertEqual(len(ai.get_state(self.service, {'projectId': self.project_id})['messages']), 3)
         self.assertEqual(self.service.store.list('job', self.project_id), [])
 
+    def test_linked_strategy_and_global_selection_proposals_keep_their_scope(self):
+        strategy = self.service.request('strategies.create', {'projectId':self.project_id,'name':'动量策略'})
+        self.service.request('strategies.activate',{'projectId':self.project_id,'strategyId':strategy['id'],'enabled':True,'allocation':.6})
+        conversation = self.service.request('ai.conversations.create', {'name':'组合研究','context':[
+            {'kind':'strategy','projectId':self.project_id,'strategyId':strategy['id']}]})
+        for spec in [
+            {'projectId':self.project_id,'kind':'backtest.run','parameters':{'template':'single_factor','factorIds':['momentum20']}},
+            {'kind':'selection.run','parameters':{'strategies':[{'projectId':self.project_id,'strategyId':strategy['id'],'allocation':.6}]}},
+            {'projectId':self.project_id,'kind':'selection.run','parameters':{}}
+        ]:
+            model = TestModel(call_tools=[], custom_output_args={
+                'message':'待用户运行','phase':'组合研究','proposals':[{'title':'运行方案','description':'仅提出方案','spec':spec}],'experimentIds':[]})
+            with patch('pydantic_ai.models.openai.OpenAIChatModel',return_value=model), patch.object(self.service.jobs,'submit') as submit:
+                result = ai.chat(self.service,{'conversationId':conversation['id'],'mode':'research','message':'准备下一次实验'})
+            submitted = result['proposals'][0]['spec']
+            if spec['kind']=='backtest.run':
+                self.assertEqual(submitted['strategyId'],strategy['id'])
+            else:
+                self.assertIsNone(submitted['projectId'])
+                self.assertEqual(submitted['parameters']['strategies'][0]['allocation'],.6)
+            submit.assert_not_called()
+
+    def test_conversation_can_read_its_new_global_stage_experiment(self):
+        strategy = self.service.request('strategies.create', {'projectId':self.project_id,'name':'阶段策略'})
+        conversation = self.service.request('ai.conversations.create', {'name':'阶段研究','context':[
+            {'kind':'strategy','projectId':self.project_id,'strategyId':strategy['id']}]})
+        directory = Path(self.service.store.project(None)['path'])/'.research'/'runs'/'global-result'
+        directory.mkdir(parents=True)
+        file=directory/'target_weights.parquet'
+        pd.DataFrame([{'symbol':'SH600000','targetWeight':.6}]).to_parquet(file)
+        self.service.store.save_experiment(None,dict(id='global-result',projectId=None,name='合并选股',kind='selection.run',
+            parameters={},metrics={'cashWeight':.4},artifacts=[{'name':'target_weights','path':str(file),'type':'parquet'}]))
+        self.service.store.put('job',dict(id='stage-job',projectId=None,status='completed',experimentId='global-result'))
+        ai.save_state(self.service,{'conversationId':conversation['id'],'state':{'phase':'合并选股','stageJobIds':['stage-job']}})
+        observed=[]
+        def respond(messages,info):
+            returned=[part for part in messages[-1].parts if isinstance(part,ToolReturnPart)]
+            observed.extend(returned)
+            if not returned:
+                return ModelResponse(parts=[ToolCallPart('get_current_stage',{}),ToolCallPart('read_experiment',{'experiment_id':'global-result'}),
+                    ToolCallPart('read_result_table',{'experiment_id':'global-result','table':'target_weights'})])
+            return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name,{'message':'合并实验已完成，目标权重60%，现金40%。','phase':'讨论下一步','proposals':[],
+                'experimentIds':['global-result'],'experimentRefs':[{'kind':'experiment','projectId':None,'experimentId':'global-result'}]})])
+        with patch('pydantic_ai.models.openai.OpenAIChatModel',return_value=FunctionModel(respond)), patch.object(self.service.jobs,'submit') as submit:
+            answer=ai.chat(self.service,{'conversationId':conversation['id'],'mode':'research','message':'读取本阶段实际结果'})
+        submit.assert_not_called()
+        returned={part.tool_name:part.content for part in observed}
+        self.assertEqual(returned['read_result_table']['rows'][0]['targetWeight'],.6)
+        self.assertEqual(returned['read_experiment']['experiment']['metrics']['cashWeight'],.4)
+        self.assertIsNone(returned['get_current_stage']['jobs'][0]['projectId'])
+        self.assertIsNone(answer['experimentRefs'][0]['projectId'])
+
 
 if __name__ == '__main__':
     unittest.main()

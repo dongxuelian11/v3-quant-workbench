@@ -133,7 +133,21 @@ def update(project, symbols, start_date, end_date, kinds=('fund_flow', 'chips', 
         raise ValueError('请选择股票和有效的起止日期')
     if set(kinds) - {'fund_flow', 'chips', 'lhb'}:
         raise ValueError('更新类型仅支持 fund_flow/chips/lhb')
-    result = {'rows': {}, 'errors': [], 'warnings': list(WARNINGS)}
+    result = {'rows': {}, 'errors': [], 'warnings': list(WARNINGS), 'attempts': {}}
+    def fetch_daily(code, kind):
+        import requests
+        import time
+        # One retry for observed same-source transport interruptions only. No new
+        # host, proxy, headers, authentication or API parameters are substituted.
+        for attempt in (1, 2):
+            result['attempts'][f'{kind}:{code}'] = attempt
+            try:
+                return ak.stock_individual_fund_flow(stock=code[2:], market=code[:2].lower()) if kind == 'fund_flow' else ak.stock_cyq_em(symbol=code[2:], adjust='')
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt == 2:
+                    raise
+                time.sleep(.5)
+                result['warnings'].append(f'{code} {kind} 连接中断，同一来源仅重试一次。')
     def tick(message):
         if progress:
             progress(min(.95, len(result['rows']) / max(1, len(codes) * len(kinds))), message)
@@ -149,7 +163,7 @@ def update(project, symbols, start_date, end_date, kinds=('fund_flow', 'chips', 
         for kind in (k for k in kinds if k != 'lhb'):
             tick(f'获取 {code} {kind}')
             try:
-                frame = ak.stock_individual_fund_flow(stock=code[2:], market=code[:2].lower()) if kind == 'fund_flow' else ak.stock_cyq_em(symbol=code[2:], adjust='')
+                frame = fetch_daily(code, kind)
                 if frame.empty:
                     raise ValueError('来源未返回记录')
                 save(kind, frame, code)

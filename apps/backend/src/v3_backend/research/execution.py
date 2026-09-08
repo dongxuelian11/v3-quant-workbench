@@ -1,5 +1,6 @@
 """Date-specific order constraints around Qlib's exchange and account execution."""
 import pandas as pd
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from .rules import COST_DEFAULTS, limits, quantity, affordable, fees
 
 
@@ -25,18 +26,30 @@ def exchange_class(prices, config, rejected):
     calendar = pd.DatetimeIndex(sorted(prices.date.unique()))
 
     class ResearchExchange(Exchange):
+        def is_stock_tradable(self, stock_id, start_time, end_time, direction=None):
+            # Qlib's order generators ask before the order direction is known.
+            # A one-sided price limit must not discard the permitted opposite side.
+            if direction is None:
+                return any(super(ResearchExchange, self).is_stock_tradable(
+                    stock_id, start_time, end_time, side) for side in (Order.BUY, Order.SELL))
+            return super().is_stock_tradable(stock_id, start_time, end_time, direction)
+
         def _row(self, code, date):
             return market.loc[(pd.Timestamp(date).normalize(), code)]
 
         def get_deal_price(self, stock_id, start_time, end_time, direction=None, method='ts_data_last'):
             row = self._row(stock_id, start_time)
-            factor = float(row.get('factor', 1))
-            raw_open = float(row.get('rawOpen', row.open/factor))
+            # Qlib stores factors at its own precision; amounts and account execution
+            # use this same factor, rather than the original frame's float64 value.
+            factor = float(self.get_factor(stock_id, start_time, end_time))
+            raw_open = float(row.get('rawOpen', row.open/float(row.get('factor', 1))))
             raw_preclose = row.get('rawPreclose')
             listed = pd.to_datetime(row.get('listingDate'), errors='coerce')
             session = int(calendar.searchsorted(pd.Timestamp(start_time).normalize())-calendar.searchsorted(listed)) if pd.notna(listed) and listed >= calendar[0] else None
             lower, upper, _ = limits(stock_id, start_time, raw_preclose, row.get('isST') in (1, '1'), listed, session) if pd.notna(raw_preclose) else (None, None, None)
-            raw = raw_open*(1+float(config['slippage']) if direction == Order.BUY else 1-float(config['slippage']))
+            slip = Decimal(str(config['slippage']))
+            raw = float((Decimal(str(raw_open)) * (1+slip if direction == Order.BUY else 1-slip)).quantize(
+                Decimal('.01'), rounding=ROUND_CEILING if direction == Order.BUY else ROUND_FLOOR))
             if upper is not None:
                 raw = min(raw, upper)
             if lower is not None:
@@ -65,6 +78,12 @@ def exchange_class(prices, config, rejected):
             order.deal_amount = clipped/factor
             value = order.deal_amount*trade_price
             breakdown = fees(value, side, order.start_time, config)
+            if side == 'sell' and position is not None and position.get_cash()+value < breakdown['total']:
+                rejected.append(dict(date=str(order.start_time), symbol=order.stock_id, side=side,
+                    requestedQuantity=clipped, allowedQuantity=0, reason='卖出所得及可用现金不足支付手续费'))
+                order.deal_amount = 0
+                value = 0.
+                breakdown = fees(0, side, order.start_time, config)
             order.research_fees = breakdown
             return trade_price, value, breakdown['total']
 

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -42,6 +43,28 @@ class AlternativeDataTest(unittest.TestCase):
             fund.loc[10, 'fund_net_amount'] = float('nan')
             alt.import_frame(root, 'fund_flow', fund.iloc[[10]])
             self.assertTrue(pd.isna(alt.features(root, bars).fund_net_amount5.iloc[14]))
+
+    def test_transport_retry_is_same_source_and_bounded(self):
+        import requests
+        sample = pd.DataFrame({'日期':['2026-09-07'],'主力净流入-净额':[-80335202.], '主力净流入-净占比':[-9.96]})
+        with tempfile.TemporaryDirectory() as root, patch('time.sleep'), patch('akshare.stock_individual_fund_flow',side_effect=[requests.ConnectionError('closed'),sample]) as source:
+            result = alt.update(root,['SH600000'],'2026-09-01','2026-09-07',kinds=('fund_flow',))
+            self.assertFalse(result['errors'])
+            self.assertEqual(result['attempts']['fund_flow:SH600000'],2)
+            self.assertEqual(source.call_args_list[0],source.call_args_list[1])
+            self.assertEqual(source.call_args.kwargs,{'stock':'600000','market':'sh'})
+            self.assertAlmostEqual(alt.read(root,'fund_flow').fund_net_ratio.iloc[0],-.0996)
+        with tempfile.TemporaryDirectory() as root, patch('time.sleep'), patch('akshare.stock_cyq_em',side_effect=requests.Timeout('read')) as source:
+            result = alt.update(root,['SH600000'],'2026-09-01','2026-09-07',kinds=('chips',))
+            self.assertEqual(source.call_count,2)
+            self.assertEqual(source.call_args.kwargs,{'symbol':'600000','adjust':''})
+            self.assertEqual(len(result['errors']),1)
+            self.assertTrue(alt.read(root,'chips').empty)
+        with tempfile.TemporaryDirectory() as root, patch('akshare.stock_cyq_em',side_effect=ValueError('source payload changed')) as source:
+            result = alt.update(root,['SH600000'],'2026-09-01','2026-09-07',kinds=('chips',))
+            self.assertEqual(source.call_count,1)
+            self.assertEqual(result['attempts']['chips:SH600000'],1)
+            self.assertEqual(len(result['errors']),1)
 
 
 if __name__ == '__main__':

@@ -27,6 +27,8 @@ export function fieldLabel(key: string, tableName = "") {
     monthly: { portfolio: "策略月收益", benchmark: "基准月收益" }
   };
   if (labels[tableName]?.[key]) return labels[tableName][key];
+  if (/trade|交易/i.test(tableName) && key === "value") return "成交金额（元）";
+  if (/trade|交易/i.test(tableName) && key === "cost") return "交易费用（元）";
   if (key === "amount" && /trade|holding|交易|持仓/i.test(tableName)) return "实际股数";
   if (key === "adjustedPrice") return "前复权价格";
   if (key === "adjustedAmount") return "复权数量";
@@ -58,6 +60,7 @@ export function tableNumber(value: unknown, key: string): number | null {
   return Number.isFinite(number) ? number : null;
 }
 export function tableValue(value: unknown, key: string, tableName = "") {
+  if (/trade|交易/i.test(tableName) && ["value", "cost"].includes(key) && typeof value === "number") return value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (["symbol","code","instrument"].includes(key)) return value == null ? "—" : String(value);
   if (/date|At$|time/i.test(key)) return valueText(value, key);
   const number = tableNumber(value,key); if (number === null) return valueText(value,key);

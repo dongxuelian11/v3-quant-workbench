@@ -1,28 +1,24 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { ExperimentDetails, JsonObject, ResearchTable } from "../../../../../packages/contracts/src/research";
-import { errorText, request, useResearch } from "./state";
-import { DataTable, Empty, Heading, Plot, valueText, fieldLabel, tableLabel, tradeDirection } from "./ui";
-import { PriceChart, type TradeMarker } from "./PriceChart";
+import { errorText, request, useResearch, jobTitle } from "./state";
+import { DataTable, Empty, Plot, valueText, fieldLabel, tableLabel } from "./ui";
+import { BacktestReplay, BacktestAssumptions } from "./BacktestReplay";
 import { PagedExperimentTable, type TablePage } from "./PagedTable";
 
 import { object } from "./configuration";
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-function tradeFromRow(row: JsonObject): TradeMarker | null {
-  const date = row.date ?? row.trade_date, price = row.price ?? row.execution_price ?? row.trade_price, side = tradeDirection(row.side ?? row.direction);
-  if (typeof date !== "string" || typeof price !== "number" || !Number.isFinite(price) || typeof side !== "string") return null;
-  return { date, price, ...(typeof row.adjustedPrice === "number" && Number.isFinite(row.adjustedPrice) ? { adjustedPrice: row.adjustedPrice } : {}), side };
-}
 function artifactTableName(detail: ExperimentDetails, name: string) {
   return detail.experiment.artifacts.find(a => a.name === name || a.name.replace(/\.[^.]+$/, "") === name)?.name ?? name;
 }
 export function ResultsPanel() {
   const s = useResearch(); const id = s.selectedExperiment || s.experiments[0]?.id || "";
+  useEffect(() => { if(id && !s.selectedExperiment) s.setSelectedExperiment(id); }, [id, s.selectedExperiment]);
   const [detail, setDetail] = useState<ExperimentDetails | null>(null); const [loading, setLoading] = useState(false);
   const [comparison, setComparison] = useState<ExperimentDetails[]>([]); const [selected, setSelected] = useState<string[]>([]);
   const [tab, setTab] = useState("overall"); const [name, setName] = useState("");
-  const [replay, setReplay] = useState<{ symbol: string; date?: string; trade?: TradeMarker } | null>(null);
-  useEffect(() => { let active = true; setDetail(null); setReplay(null); if (!id) return; setLoading(true); void s.act(async () => { const d = await request<ExperimentDetails>("experiments.get", { projectId: s.project?.id, experimentId: id }); if (active) { setDetail(d); setName(d.experiment.name); } }).finally(() => { if (active) setLoading(false); }); return () => { active = false; }; }, [id, s.project?.id, s.revision]);
+  const [replayRow, setReplayRow] = useState<JsonObject | undefined>();
+  useEffect(() => { let active = true; setDetail(null); setReplayRow(undefined); if (!id) return; setLoading(true); void s.act(async () => { const d = await request<ExperimentDetails>("experiments.get", { projectId: s.project?.id, experimentId: id }); if (active) { setDetail(d); setName(d.experiment.name); } }).finally(() => { if (active) setLoading(false); }); return () => { active = false; }; }, [id, s.project?.id, s.revision]);
   const exportResult = (format: "csv" | "xlsx" | "pdf") => void s.act(async () => {
     if (!detail) return;
     if (format !== "pdf") {
@@ -35,11 +31,11 @@ export function ResultsPanel() {
       const path = await window.v3Research!.exportFile({ format, html, suggestedName: `${detail.experiment.name}.pdf` }); if (path) s.setNotice(`已导出：${path}`);
     }
   });
-  const onRow = (row: JsonObject) => { const symbol = row.symbol ?? row.instrument ?? row.code; const date = row.date ?? row.trade_date; const trade = tradeFromRow(row); if (typeof symbol === "string") setReplay({ symbol, date: typeof date === "string" ? date : undefined, ...(trade ? { trade } : {}) }); };
-  const tradeMarkers = detail?.tables.filter(t => /trade|交易/i.test(t.name)).flatMap(t => t.rows.filter(r => (r.symbol ?? r.instrument ?? r.code) === replay?.symbol).flatMap(r => { const trade = tradeFromRow(r); return trade ? [trade] : []; })) ?? [];
-  return <div className="r-page"><Heading title="实验与结果" description="整体表现、横向比较，以及交易与持仓回放。结果仅来自已保存的实验。" /><div className="r-results-layout"><aside className="r-runs">{s.experiments.map(e => <div key={e.id} className={id === e.id ? "active" : ""}><input type="checkbox" aria-label={`比较 ${e.name}`} checked={selected.includes(e.id)} onChange={() => setSelected(ids => ids.includes(e.id) ? ids.filter(x => x !== e.id) : [...ids, e.id])} /><button onClick={() => { s.setSelectedExperiment(e.id); setTab("overall"); }}><strong>{e.starred ? "★ " : ""}{e.name}</strong><small>{new Date(e.createdAt).toLocaleDateString("zh-CN")}</small></button></div>)}<button disabled={selected.length < 2} onClick={() => void s.act(async () => { setComparison(await request<ExperimentDetails[]>("experiments.compare", { projectId: s.project?.id, experimentIds: selected })); setTab("compare"); })}>比较已选（{selected.length}）</button></aside><section className="r-result-content">{loading ? <Empty title="正在读取实验…" /> : !detail ? <Empty title="还没有实验结果">运行因子分析、回测或模型训练后，在这里查看真实结果。</Empty> : <><div className="r-toolbar"><input aria-label="实验名称" value={name} onChange={e => setName(e.target.value)} /><button disabled={!name.trim()} onClick={() => void s.act(async () => { await request("experiments.update", { projectId: s.project?.id, experimentId: id, name: name.trim() }); await s.refresh(); })}>重命名</button><button onClick={() => void s.act(async () => { await request("experiments.update", { projectId: s.project?.id, experimentId: id, starred: !detail.experiment.starred }); await s.refresh(); })}>{detail.experiment.starred ? "取消收藏" : "收藏"}</button><button className="r-danger" onClick={() => { if (window.confirm(`删除实验“${detail.experiment.name}”？`)) void s.act(async () => { await request("experiments.delete", { projectId: s.project?.id, experimentId: id }); s.setSelectedExperiment(""); setComparison([]); setSelected(ids => ids.filter(x => x !== id)); await s.refresh(); }); }}>删除</button></div><nav className="r-subtabs" aria-label="结果视图">{[["overall", "整体表现"], ["tables", "交易与持仓"], ["compare", "实验比较"], ["parameters", "参数与输出"]].map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{label}</button>)}</nav><p>{detail.experiment.summary}</p><UnavailableFactors details={detail.details} />
-      {tab === "overall" && (detail.experiment.kind === "factor.analyze" ? <FactorResults key={detail.experiment.id} detail={detail} /> : <><Metrics metrics={detail.experiment.metrics} /><SeriesPlot details={[detail]} /><ExtendedResults detail={detail} />{detail.tables.filter(t => /ic|quantile|group|correlation|turnover/i.test(t.name)).map(t => <AnalysisTable key={t.name} table={t} />)}</>)}
-      {tab === "tables" && <>{detail.tables.length ? detail.tables.map(t => <PagedExperimentTable key={`${id}-${t.name}`} experimentId={id} table={artifactTableName(detail, t.name)} onRow={onRow} />) : <Empty title="这个实验没有返回表格" />}{replay && <PriceChart symbol={replay.symbol} focusDate={replay.date} trades={tradeMarkers} experimentId={id} tradeTable={detail.tables.find(t => /trade|交易/i.test(t.name)) ? artifactTableName(detail, detail.tables.find(t => /trade|交易/i.test(t.name))!.name) : undefined} />}</>}
+  const onRow = (row: JsonObject) => { if(row.symbol ?? row.instrument ?? row.code) {setReplayRow(row);setTab("replay");} };
+  return <div className="r-page r-results-page"><div className="r-results-layout"><div className="r-result-selector"><label className="r-field"><select aria-label="选择实验结果" value={id} onChange={e=>{s.setSelectedExperiment(e.target.value);setTab("overall");}}>{s.experiments.map(e=><option key={e.id} value={e.id}>{e.starred?"★ ":""}{jobTitle(e.kind,e.name)} · {new Date(e.createdAt).toLocaleDateString("zh-CN")}</option>)}</select></label><details className="r-result-compare-picker"><summary>实验比较{selected.length ? `（${selected.length}）` : ""}</summary><div className="r-compare-choices">{s.experiments.map(e=><label key={e.id}><input type="checkbox" checked={selected.includes(e.id)} onChange={()=>setSelected(ids=>ids.includes(e.id)?ids.filter(x=>x!==e.id):[...ids,e.id])}/><span>{jobTitle(e.kind,e.name)}</span></label>)}</div><button disabled={selected.length<2} onClick={()=>void s.act(async()=>{setComparison(await request<ExperimentDetails[]>("experiments.compare",{projectId:s.project?.id,experimentIds:selected}));setTab("compare");})}>比较已选（{selected.length}）</button></details>{detail&&<details className="r-result-more"><summary>更多操作</summary><div className="r-toolbar"><input aria-label="实验名称" value={name} onChange={e => setName(e.target.value)} /><button disabled={!name.trim()} onClick={() => void s.act(async () => { await request("experiments.update", { projectId: s.project?.id, experimentId: id, name: name.trim() }); await s.refresh(); })}>重命名</button><button onClick={() => void s.act(async () => { await request("experiments.update", { projectId: s.project?.id, experimentId: id, starred: !detail.experiment.starred }); await s.refresh(); })}>{detail.experiment.starred ? "取消收藏" : "收藏"}</button><button className="r-danger" onClick={() => { if (window.confirm(`删除实验“${detail.experiment.name}”？`)) void s.act(async () => { await request("experiments.delete", { projectId: s.project?.id, experimentId: id }); s.setSelectedExperiment(""); setComparison([]); setSelected(ids => ids.filter(x => x !== id)); await s.refresh(); }); }}>删除</button></div></details>}</div><section className="r-result-content">{loading ? <Empty title="正在读取实验…" /> : !detail ? <Empty title="还没有实验结果">运行因子分析、回测或模型训练后，在这里查看真实结果。</Empty> : <><nav className="r-subtabs" aria-label="结果视图">{[["overall", "整体表现"], ...(detail.experiment.kind === "backtest.run" || detail.tables.some(t=>/trade|交易/i.test(t.name)) ? [["replay", "个股交易回放"]] : []), ["tables", "交易与持仓"], ["compare", "实验比较"], ["parameters", "参数与输出"]].map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{label}</button>)}</nav>{tab === "overall" && <><p>{detail.experiment.summary}</p><UnavailableFactors details={detail.details} /></>}
+      {tab === "overall" && (detail.experiment.kind === "factor.analyze" ? <FactorResults key={detail.experiment.id} detail={detail} /> : <><Metrics metrics={detail.experiment.metrics} /><SeriesPlot details={[detail]} /><BacktestAssumptions detail={detail} /><ExtendedResults detail={detail} />{detail.tables.filter(t => /ic|quantile|group|correlation|turnover/i.test(t.name)).map(t => <AnalysisTable key={t.name} table={t} />)}</>)}
+      {tab === "tables" && <>{detail.tables.length ? detail.tables.map(t => <PagedExperimentTable key={`${id}-${t.name}`} experimentId={id} table={artifactTableName(detail, t.name)} onRow={onRow} />) : <Empty title="这个实验没有返回表格" />}</>}
+      {tab === "replay" && <BacktestReplay key={detail.experiment.id} detail={detail} initialRow={replayRow}/>}
       {tab === "compare" && (comparison.length ? <><DataTable table={{ name: "实验指标比较", columns: ["实验", ...new Set(comparison.flatMap(d => Object.keys(d.experiment.metrics)))], rows: comparison.map(d => ({ 实验: d.experiment.name, ...d.experiment.metrics })) }} /><SeriesPlot details={comparison} /><p className="r-note">请核对数据日期、股票池和参数差异后解释比较结果。</p></> : <Empty title="选择两个或更多实验进行比较" />)}
       {tab === "parameters" && <><ApplyBest detail={detail} /><h3>输入参数</h3><pre>{JSON.stringify(detail.experiment.parameters, null, 2)}</pre><h3>详细信息</h3><pre>{JSON.stringify(detail.details, null, 2)}</pre><DataTable table={{ name: "输出文件", columns: ["name", "type", "path"], rows: detail.experiment.artifacts.map(a => ({ ...a })) }} /><button onClick={() => void s.act(() => s.submit(detail.experiment.kind, detail.experiment.parameters, `${detail.experiment.name} · 重跑`))}>使用这些参数重跑</button></>}
       <div className="r-toolbar"><button onClick={() => exportResult("csv")}>导出 CSV</button><button onClick={() => exportResult("xlsx")}>导出 Excel</button><button onClick={() => exportResult("pdf")}>导出 PDF 报告</button></div></>}</section></div></div>;
@@ -139,7 +135,17 @@ function ApplyBest({ detail }: { detail: ExperimentDetails }) {
       for (const key of keys.slice(0, -1)) { cursor[key] = { ...object(cursor[key]) }; cursor = cursor[key] as JsonObject; }
       cursor[keys[keys.length - 1]] = value;
     }
-    await s.save({ settings: { ...s.project!.settings, [target]: config } });
+    const settings: JsonObject = { ...s.project!.settings, [target]: config };
+    if (Array.isArray(config.factorIds)) settings.selectedFactors = config.factorIds.filter((v): v is string => typeof v === "string");
+    if (config.factorProcessing !== undefined) settings.factorProcessing = structuredClone(config.factorProcessing);
+    if (Array.isArray(config.customFactors)) {
+      const definitions = new Map<string, JsonObject>();
+      for (const entry of [...(Array.isArray(settings.customFactors) ? settings.customFactors : []), ...config.customFactors]) {
+        const factor = object(entry); if (typeof factor.id === "string") definitions.set(factor.id, factor);
+      }
+      settings.customFactors = [...definitions.values()];
+    }
+    await s.save({ settings });
     if (Array.isArray(config.factorIds)) s.setSelectedFactors(config.factorIds.filter((v): v is string => typeof v === "string"));
     s.setPage(target); s.setNotice("最佳参数已应用，请核对独立测试区间后运行。");
   })}>应用最佳参数到配置</button><p className="r-note">应用不会自动运行实验。验证集用于选参，测试集用于独立评价。</p></section>;

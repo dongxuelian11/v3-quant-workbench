@@ -20,17 +20,37 @@ class Service:
 
     def experiment_details(self, project_id, experiment_id):
         import pandas as pd
-        from .data import records
+        from .data import records, project_data
         experiment = self.store.experiment(project_id, experiment_id)
         tables, series = [], []
+        replay = {}
+        date_range = None
         count = max(1, sum(a['type'] == 'parquet' for a in experiment['artifacts']))
         row_limit = max(1, 500 // count)
         for artifact in experiment['artifacts']:
             if artifact['type'] != 'parquet':
                 continue
             frame = pd.read_parquet(self.store.artifact_path(project_id, artifact))
+            table_name = artifact['name'].removeprefix('holdout_')
+            if table_name in {'trades', 'holdings', 'target_weights', 'unfilled'} and 'symbol' in frame:
+                for symbol in frame.symbol.dropna().astype(str).unique():
+                    replay.setdefault(symbol, dict(symbol=symbol, tradeCount=0, buyCount=0, sellCount=0))
+                if table_name == 'trades':
+                    for symbol, group in frame.groupby('symbol'):
+                        item = replay[str(symbol)]
+                        item['tradeCount'] = len(group)
+                        if 'side' in group:
+                            item['buyCount'] = int(group.side.eq('buy').sum())
+                            item['sellCount'] = int(group.side.eq('sell').sum())
+                        elif 'direction' in group:
+                            item['buyCount'] = int(group.direction.eq(1).sum())
+                            item['sellCount'] = int(group.direction.eq(0).sum())
+            if table_name == 'portfolio' and 'date' in frame and not frame.empty:
+                dates = pd.to_datetime(frame.date).dropna()
+                if not dates.empty:
+                    date_range = dict(startDate=str(dates.min())[:10], endDate=str(dates.max())[:10])
             tables.append({'name': artifact['name'], 'columns': list(frame.columns), 'rows': records(frame.head(row_limit))})
-            if artifact['name'] == 'portfolio' and 'date' in frame and 'return' in frame:
+            if table_name == 'portfolio' and 'date' in frame and 'return' in frame:
                 net = (1 + frame['return'] - frame['cost']).cumprod()
                 points = [{'date': str(date)[:10], 'value': float(value)} for date, value in zip(frame.date, net)]
                 if len(points) > 500:
@@ -38,7 +58,31 @@ class Service:
                     points = points[::step][:499] + [points[-1]]
                 series.append({'name': '净值', 'points': points})
         directory = Path(self.store.project(project_id)['path']) / '.research' / 'runs' / experiment_id
-        return dict(experiment=experiment, tables=tables, series=series, details=read_json(directory / 'details.json', {}))
+        details = read_json(directory / 'details.json', {})
+        snapshot = read_json(directory / 'project.json', {})
+        if 'universe' in snapshot:
+            details['researchUniverse'] = snapshot['universe']
+            if snapshot['universe'].get('source') == 'manual':
+                for symbol in snapshot['universe'].get('symbols', []):
+                    replay.setdefault(symbol, dict(symbol=symbol, tradeCount=0, buyCount=0, sellCount=0))
+        for item in replay.values():
+            item['name'] = ''
+        # Display metadata only: use the run's data location, never today's project settings.
+        if snapshot.get('path') or snapshot.get('settings', {}).get('dataPath'):
+            metadata = Path(project_data(snapshot)['path']) / 'data' / 'securities.parquet'
+            if metadata.exists():
+                names = pd.read_parquet(metadata)
+                if {'symbol', 'name'}.issubset(names):
+                    if 'effectiveDate' in names:
+                        names = names.sort_values('effectiveDate')
+                    for row in records(names.drop_duplicates('symbol', keep='last')):
+                        if row['symbol'] in replay:
+                            replay[row['symbol']].update({key: row[key] for key in ('name', 'pinyin', 'initials')
+                                if row.get(key) is not None})
+        details['replayStocks'] = [replay[symbol] for symbol in sorted(replay)]
+        if date_range:
+            details['dateRange'] = date_range
+        return dict(experiment=experiment, tables=tables, series=series, details=details)
 
     def request(self, method, params):
         p = params or {}
@@ -103,14 +147,21 @@ class Service:
             from .data import project_data
             root = Path(project_data(store.project(p.get('projectId')))['path']) / 'data'
             code = symbol(p['symbol'])
-            columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+            columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'factor', 'rawOpen', 'rawHigh', 'rawLow', 'rawClose']
+            def read_bars(path, filters=None):
+                import pyarrow.parquet as pq
+                available = set(pq.ParquetFile(path).schema_arrow.names)
+                selected = [column for column in columns if column in available]
+                # Legacy imports may lack raw prices/factors. Nulls are explicit,
+                # never inferred from adjusted OHLC or an invented factor of one.
+                return pd.read_parquet(path,columns=selected,filters=filters).reindex(columns=columns)
             # Legacy tables can overlap newer partitions; the partition is the latest copy.
             frames = []
             if (root / 'prices.parquet').exists():
-                frames.append(pd.read_parquet(root / 'prices.parquet', columns=columns, filters=[('symbol', '==', code)]))
+                frames.append(read_bars(root / 'prices.parquet', filters=[('symbol', '==', code)]))
             partition = root / 'prices' / f'{code}.parquet'
             if partition.exists():
-                frames.append(pd.read_parquet(partition, columns=columns))
+                frames.append(read_bars(partition))
             if not frames:
                 return []
             frame = pd.concat(frames, ignore_index=True).drop_duplicates('date', keep='last').sort_values('date')

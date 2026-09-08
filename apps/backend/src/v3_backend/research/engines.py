@@ -45,6 +45,26 @@ def validate_expression(expression):
     nodes = (ast.Expression, ast.Call, ast.Name, ast.Load, ast.Constant, ast.BinOp, ast.UnaryOp,
              ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.USub, ast.UAdd, ast.Compare,
              ast.Gt, ast.Lt, ast.GtE, ast.LtE, ast.Eq, ast.NotEq)
+    rolling = {'Ref', 'Delta', 'Mean', 'Std', 'Sum', 'Max', 'Min', 'Med', 'Mad', 'Rank', 'Quantile', 'Count', 'Slope', 'Rsquare', 'Resi', 'Corr', 'Cov', 'WMA', 'EMA'}
+
+    def window_value(node):
+        # Window arithmetic is allowed, but fields/calls cannot hide a future offset.
+        import math
+        import operator
+        if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+            value = node.value
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            value = (-1 if isinstance(node.op, ast.USub) else 1) * window_value(node.operand)
+        elif isinstance(node, ast.BinOp) and type(node.op) in (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow):
+            left, right = window_value(node.left), window_value(node.right)
+            if isinstance(node.op, ast.Pow) and abs(right) > 100:
+                raise ValueError('窗口常量过大')
+            value = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv, ast.Pow: operator.pow}[type(node.op)](left, right)
+        else:
+            raise ValueError('时间窗口必须为固定数值，不能引用字段或函数')
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or abs(value) > 1e8:
+            raise ValueError('窗口常量无效')
+        return value
     for node in ast.walk(tree):
         if not isinstance(node, nodes):
             raise ValueError('表达式只允许 Qlib 数学运算和白名单函数')
@@ -57,6 +77,16 @@ def validate_expression(expression):
                 raise ValueError('未知算子')
             if node.func.id == 'Ref' and (len(node.args) != 2 or not isinstance(node.args[1], ast.Constant) or not isinstance(node.args[1].value, int) or node.args[1].value <= 0):
                 raise ValueError('自定义因子 Ref 只允许正整数历史窗口，禁止未来数据')
+            if node.func.id in rolling:
+                position = 2 if node.func.id in {'Corr', 'Cov'} else 1
+                if len(node.args) <= position:
+                    raise ValueError('时间算子缺少窗口')
+                try:
+                    window = window_value(node.args[position])
+                except (ArithmeticError, TypeError) as exc:
+                    raise ValueError('时间窗口无效') from exc
+                if window < 0:
+                    raise ValueError('时间窗口不能为负数，禁止未来数据')
     return expression
 
 
@@ -378,12 +408,15 @@ def _train_single(project, params, output, progress, prices=None):
     artifacts, metrics = [], {}
     for name in (['valid'] if params.get('_validationOnly') else ['valid', 'test']):
         part = segments[name]
-        prediction = estimator.predict(part[columns])
-        metrics[name + ':mse'] = float(mean_squared_error(part.label, prediction))
-        metrics[name + ':r2'] = float(r2_score(part.label, prediction)) if len(part) > 1 else None
-        table = part[['label']].assign(score=prediction)
-        daily_ic = table.groupby(level=0).apply(lambda day: day.label.corr(day.score))
-        metrics[name + ':ic'] = float(daily_ic.mean()) if daily_ic.notna().any() else None
+        if len(part) >= 2:
+            prediction = estimator.predict(part[columns])
+            metrics[name + ':mse'] = float(mean_squared_error(part.label, prediction))
+            metrics[name + ':r2'] = float(r2_score(part.label, prediction))
+            table = part[['label']].assign(score=prediction)
+            daily_ic = table.groupby(level=0).apply(lambda day: day.label.corr(day.score))
+            metrics[name + ':ic'] = float(daily_ic.mean()) if daily_ic.notna().any() else None
+        else:
+            metrics.update({name + ':' + metric: None for metric in ('mse', 'r2', 'ic')})
         feature_dates = x.index.get_level_values(0)
         trading_x = x[(feature_dates>=pd.Timestamp(params[name+'Start'])) & (feature_dates<=pd.Timestamp(params[name+'End']))]
         predictions = pd.DataFrame({'score':estimator.predict(trading_x)},index=trading_x.index)
@@ -395,6 +428,7 @@ def _train_single(project, params, output, progress, prices=None):
     progress(.95, '训练及时间隔离评估完成')
     return dict(metrics=metrics, artifacts=artifacts, summary='按时间切分的模型实验',
                 details={'segments': {k: len(v) for k, v in segments.items()}, 'purgeSessions': horizon + (params.get('labelMode','next_open')=='next_open'), 'featureIds': columns,
+                         'testEvaluation': 'available' if len(segments.get('test', [])) >= 2 else 'unavailable: 测试标签尚未成熟或有效样本不足，预测不依赖标签',
                          'predictionRanges':{name:dict(start=params[name+'Start'],end=params[name+'End']) for name in segments if name!='train'}})
 
 
@@ -415,7 +449,7 @@ def train(project, params, output, progress, prices=None):
     for index, bounds in enumerate(ranges):
         folder = output / f'window_{index}'
         folder.mkdir(parents=True, exist_ok=True)
-        result = _train_single(project, {**params, **bounds}, folder, lambda *_: None, prices)
+        result = _train_single(project, {**params, **bounds, '_allowUnmaturedTest': index == len(ranges)-1}, folder, lambda *_: None, prices)
         metrics.append({'window': index, **bounds, **result['metrics']})
         predictions.append(pd.read_parquet(folder/'test_predictions.parquet'))
         artifacts.extend([{**item, 'name': f'window_{index}_'+item['name']} for item in result['artifacts']])
@@ -423,9 +457,15 @@ def train(project, params, output, progress, prices=None):
     merged = pd.concat(predictions).drop_duplicates(['datetime','instrument'], keep='first').sort_values(['datetime','instrument'])
     artifacts.extend([save_table(output, 'test_predictions', merged), save_table(output,'windows',pd.DataFrame(metrics)),
                       dict(name='model',path=str(output/f'window_{len(ranges)-1}'/'model.joblib'),type='joblib')])
-    numeric = pd.DataFrame(metrics).select_dtypes('number').drop(columns='window').mean().to_dict()
+    numeric = {}
+    for key in ('valid:mse', 'valid:r2', 'valid:ic', 'test:mse', 'test:r2', 'test:ic'):
+        available = [row[key] for row in metrics if row.get(key) is not None and pd.notna(row[key])]
+        numeric[key] = float(sum(available)/len(available)) if available else None
     return dict(metrics=numeric, artifacts=artifacts, summary=f'自然月滚动验证 {len(ranges)} 窗口', parameters=params,
-                details={'windows': ranges, 'featureIds': params['factorIds'], 'labelMode': params['labelMode']})
+                details={'windows': ranges, 'featureIds': params['factorIds'], 'labelMode': params['labelMode'],
+                         'testEvaluationWindows': sum(row.get('test:mse') is not None for row in metrics),
+                         'testEvaluationUnavailableWindows': [row['window'] for row in metrics if row.get('test:mse') is None],
+                         'metricAggregation': '可评估窗口指标的等权均值；未成熟窗口不计入评估，预测仍保留'})
 
 
 def time_segments(frame, calendar, params, horizon):
@@ -441,7 +481,7 @@ def time_segments(frame, calendar, params, horizon):
         if name == 'test' and params.get('_validationOnly'):
             continue
         part = frame[(date >= start) & (date <= end) & (ends <= end)]
-        if len(part) < 2:
+        if len(part) < 2 and not (name == 'test' and params.get('_allowUnmaturedTest') and not params.get('_validationOnly')):
             raise ValueError(f'{name} 在清除跨区间标签后样本不足')
         result[name] = part
     return result
@@ -533,7 +573,10 @@ def backtest(project, params, output, progress, prices=None, store=None):
     historical_returns = prices.pivot(index='date',columns='symbol',values='close').sort_index().pct_change(fill_method=None)
     benchmark_name = params.get('benchmark') or ('csi500' if project['universe']['source']=='csi500' else 'csi300')
     benchmark_returns = benchmarks.returns(project, benchmark_name, trading_dates)
-    exchange = exchange_class(prices, costs, rejected)(freq='day',start_time=trading_dates[0],end_time=trading_dates[-1],codes=sorted(prices.symbol.unique()),
+    # Qlib sizes the first orders using the preceding signal session's close.
+    # Include it in quotes without moving the first execution session earlier.
+    quote_start = dates[dates.searchsorted(trading_dates[0])-1]
+    exchange = exchange_class(prices, costs, rejected)(freq='day',start_time=quote_start,end_time=trading_dates[-1],codes=sorted(prices.symbol.unique()),
         deal_price='$open',open_cost=0,close_cost=0,min_cost=0,trade_unit=1,limit_threshold=('$buyblocked','$sellblocked'),
         volume_threshold=('cum',f'$knownvolume*{costs["volumeParticipation"]}'))
 
@@ -660,8 +703,11 @@ def backtest(project, params, output, progress, prices=None, store=None):
     progress(.95, 'Qlib 组合回测完成')
     return dict(metrics=metrics, artifacts=artifacts, summary='Qlib 日期规则组合回测',parameters={**params,'costs':costs,'portfolio':portfolio_config,'benchmark':benchmark_name,'topN':top_n},
                 details={'engine': 'pyqlib', 'annualizationDays':252, 'annualizedReturnMethod':'arithmetic', 'benchmark': benchmark_name, 'signalTiming': 'previous trading session -> next session open', 'rebalance': frequency,
+                         'pricePrecision': .01, 'slippageRounding': 'buy_up_sell_down',
+                         'transferFeeMode': 'fixed_configured_rate',
                          'executable':not conflicts,'conflicts':list(dict.fromkeys(conflicts)),
-                         'warnings': list(dict.fromkeys(portfolio_warnings))+['日线开盘价近似开盘成交，非逐笔9:25集合报价；旧制IPO缺发行价时不成交。', '原始参考昨收、历史ST/上市日期不足的边界不会自动补齐。']})
+                         'warnings': list(dict.fromkeys(portfolio_warnings))+['日线开盘价近似开盘成交，非逐笔9:25集合报价；旧制IPO缺发行价时不成交。', '原始参考昨收、历史ST/上市日期不足的边界不会自动补齐。'] +
+                                     (['自定义 Python 策略可访问完整行情；其是否使用未来数据须由代码作者审查，本次结果不保证无未来信息。'] if params.get('code') else [])})
 
 
 def optimize(project, params, output, progress, store):
@@ -750,7 +796,7 @@ def optimize(project, params, output, progress, store):
         holdout_dir = output/'holdout'
         holdout_dir.mkdir(exist_ok=True)
         bounds = ranges[-1]
-        holdout = _train_single(project, {**best, **bounds}, holdout_dir, lambda *_: None, prices) if target == 'model' else backtest(project, {**best, 'startDate': bounds['testStart'], 'endDate': bounds['testEnd'], '_predictionPartition':'test','_predictionBounds':bounds}, holdout_dir, lambda *_: None, prices, store)
+        holdout = _train_single(project, {**best, **bounds, '_allowUnmaturedTest': best.get('validation', {}).get('mode') == 'rolling'}, holdout_dir, lambda *_: None, prices) if target == 'model' else backtest(project, {**best, 'startDate': bounds['testStart'], 'endDate': bounds['testEnd'], '_predictionPartition':'test','_predictionBounds':bounds}, holdout_dir, lambda *_: None, prices, store)
         write_json(holdout_dir/'result.json', holdout)
         artifacts = [save_table(output, 'trials', study.trials_dataframe()), dict(name='optuna', path=str(output / 'optuna.sqlite'), type='sqlite')]
         artifacts += [{**item, 'name':'holdout_'+item['name']} for item in holdout['artifacts']]
