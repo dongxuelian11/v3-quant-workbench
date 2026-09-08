@@ -43,7 +43,11 @@ export class WorkspaceWindows {
   }
 
   private async open(state: WorkspaceWindow): Promise<BrowserWindow> {
-    const window = this.factory({ ...state, bounds: this.fitBounds(state.bounds, !!state.main) });
+    const bounds = this.fitBounds(state.bounds, !!state.main);
+    const window = this.factory({ ...state, bounds });
+    // Windows can scale constructor dimensions using the primary monitor DPI.
+    // The native window now belongs to its target monitor, so restore its DIP size.
+    window.setBounds(bounds);
     const record: Record = { window, state: { ...state, bounds: window.getBounds() } };
     this.records.set(state.id, record);
     const geometry = () => { if (!window.isDestroyed()) record.state.bounds = window.getNormalBounds(); this.scheduleSave(); };
@@ -137,7 +141,11 @@ export class WorkspaceWindows {
       const record = this.records.get(state.id);
       if (record) {
         record.state = { ...state, main: record.state.main };
-        if (state.bounds) record.window.setBounds(this.fitBounds(state.bounds, !!record.state.main));
+        if (state.bounds) {
+          const bounds = this.fitBounds(state.bounds, !!record.state.main);
+          record.window.setPosition(bounds.x, bounds.y);
+          record.window.setBounds(bounds);
+        }
         if (state.maximized && !record.window.isMaximized()) record.window.maximize();
         else if (!state.maximized && record.window.isMaximized()) record.window.unmaximize();
         record.window.webContents.send("research:workspace-changed", { method: "workspace.layout", params: { windowId: state.id } });
