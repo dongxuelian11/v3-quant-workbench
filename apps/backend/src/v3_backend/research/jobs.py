@@ -65,21 +65,28 @@ class Jobs:
         if spec['kind'] == 'selection.run':
             from .positions import get
             spec['positionsSnapshot'] = get(self.store.project(None) if spec['parameters'].get('strategies') else project)
-            frozen = []
-            for reference in spec['parameters'].get('strategies', []):
-                strategy = get_strategy(self.store, reference['projectId'], reference['strategyId'])
-                if not strategy.get('enabled') or not strategy.get('active'):
-                    raise ValueError('所选策略尚未启用')
-                scoped = strategy_project(self.store, reference['projectId'], reference['strategyId'], active=True)
-                self._freeze_universe(scoped)
-                frozen.append({**reference, 'project': scoped})
-            if frozen:
-                allocations = [item.get('allocation', 0) for item in frozen]
+            references = spec['parameters'].get('strategies', [])
+            if 'strategies' in spec['parameters']:
                 import math
-                if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or x < 0 for x in allocations) or sum(allocations) > 1 + 1e-9:
-                    raise ValueError('策略资金占比必须非负且合计不超过100%')
-                if len({(x['projectId'], x['strategyId']) for x in frozen}) != len(frozen):
+                if not isinstance(references,list) or any(not isinstance(item,dict) for item in references):
+                    raise ValueError('策略引用必须为数组')
+                allocations = [item.get('allocation', 0) for item in references]
+                if any(isinstance(x,bool) or not isinstance(x,(int,float)) or not math.isfinite(x) or x < 0 for x in allocations):
+                    raise ValueError('策略资金占比必须为有限非负数')
+                if not 0 < sum(allocations) <= 1 + 1e-9:
+                    raise ValueError('策略资金占比合计必须大于0且不超过100%')
+                if len({(item.get('projectId'),item.get('strategyId')) for item in references}) != len(references):
                     raise ValueError('不可重复分配同一策略')
+                frozen = []
+                for reference,allocation in zip(references,allocations):
+                    if allocation == 0:
+                        continue
+                    strategy = get_strategy(self.store,reference['projectId'],reference['strategyId'])
+                    if not strategy.get('enabled') or not strategy.get('active'):
+                        raise ValueError('所选策略尚未启用')
+                    scoped = strategy_project(self.store,reference['projectId'],reference['strategyId'],active=True)
+                    self._freeze_universe(scoped)
+                    frozen.append({**reference,'project':scoped})
                 spec['strategySnapshots'] = frozen
         with self.lock:
             if self.closed:

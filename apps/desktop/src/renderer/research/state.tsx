@@ -33,8 +33,7 @@ export function useResearchState() {
   }
   async function refreshProjects() { setProjects(await request<ProjectConfig[]>("projects.list")); }
   async function refresh(id = current.current?.id) {
-    if (!id) return;
-    const [exps, tasks] = await Promise.all([request<Experiment[]>("experiments.list", { projectId: id }), request<JobEvent[]>("jobs.list", { projectId: id })]);
+    const [exps, tasks] = await Promise.all([request<Experiment[]>("experiments.list", { all: true }), request<JobEvent[]>("jobs.list")]);
     if (current.current?.id === id) { setExperiments(exps); setJobs(tasks); setRevision(v => v + 1); }
   }
   async function open(path: string) {
@@ -46,7 +45,6 @@ export function useResearchState() {
   }
   async function save(patch: Partial<ProjectConfig>) {
     const id = current.current?.id;
-    if (!id) return;
     const next = saveQueue.current.catch(() => {}).then(async () => {
       if (current.current?.id !== id) return;
       const saved = await request<ProjectConfig>("projects.save", { project: { ...current.current, ...patch } });
@@ -67,9 +65,8 @@ export function useResearchState() {
     return event;
   }
   useEffect(() => {
-    void act(async () => { await refreshProjects(); setFactors(await request<FactorDefinition[]>("factors.list")); });
+    void act(async () => { await refreshProjects(); await refresh(); setFactors(await request<FactorDefinition[]>("factors.list")); });
     return window.v3Research?.onEvent(event => {
-      if (event.projectId !== current.current?.id) return;
       setJobs(list => [event, ...list.filter(j => j.id !== event.id)]);
       if (["completed", "failed", "cancelled", "interrupted"].includes(event.status)) void act(() => refresh());
     });

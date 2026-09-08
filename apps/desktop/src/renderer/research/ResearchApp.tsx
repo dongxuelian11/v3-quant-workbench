@@ -1,85 +1,108 @@
 import React, { useEffect, useRef, useState } from "react";
 import { DockviewReact, type DockviewApi, type DockviewReadyEvent, type IDockviewPanelProps } from "dockview-react";
-import "dockview-react/dist/styles/dockview.css";
-import type { ProjectConfig } from "../../../../../packages/contracts/src/research";
-import { ResearchContext, pages, request, useResearch, useResearchState, jobTitle, type Page } from "./state";
-import { DataPanel, FactorPanel, Overview, UniversePanel } from "./ResearchPanels";
-import { ModelPanel, StrategyPanel } from "./RunPanels";
+import type { ProjectConfig, StrategyConfig, WorkspacePanel, WorkspaceState, WorkspaceWindow } from "../../../../../packages/contracts/src/research";
+import { ResearchContext, request, useResearch, useResearchState, jobTitle } from "./state";
+import { DataPanel, FactorPanel, UniversePanel } from "./ResearchPanels";
+import { ModelPanel, StrategyHome } from "./RunPanels";
 import { ResultsPanel } from "./ResultsPanel";
-import { PriceChart } from "./PriceChart";
-import { SelectionPanel } from "./SelectionPanel";
-import { AiPanel } from "./AiPanel";
-import { Empty, Field } from "./ui";
+import { TodayPanel, MarketPanel, StockPanel, GlobalSelection, DataCenter, ComparePanel } from "./WorkspacePanels";
+import { PositionsEditor } from "./SelectionPanel";
+import { ConversationPanel } from "./ConversationPanel";
+import { Empty, Field, requestText, TextPromptHost } from "./ui";
+import { ObjectScope, WorkspaceContext, useWorkspace, flushDrafts } from "./workspace";
 import { WindowControls } from "../components/WindowControls";
-
-const panels = { research: ({ params }: IDockviewPanelProps<{ page: Page }>) => {
-  const s = useResearch();
-  switch (params.page) {
-    case "overview": return <Overview />; case "selection": return <SelectionPanel key={s.configurationVersions.selection ?? 0} />; case "data": return <DataPanel />; case "universe": return <UniversePanel />;
-    case "factors": return <FactorPanel key={s.configurationVersions.factors ?? 0} />; case "strategy": return <StrategyPanel key={JSON.stringify(s.project?.settings.backtest)} />; case "model": return <ModelPanel key={JSON.stringify(s.project?.settings.model)} />;
-    case "backtest": return <StrategyPanel run key={JSON.stringify(s.project?.settings.backtest)} />; case "results": return <ResultsPanel />; case "chart": return <div className="r-page"><PriceChart /></div>;
+const defaults: WorkspaceState = { theme: "light", density: "comfortable", sidebarWidth: 210, aiWidth: 330, windows: [], presets: {} };
+const panels = { research: ({ params }: IDockviewPanelProps<WorkspacePanel>) => <ObjectScope panel={params}><Panel panel={params} /></ObjectScope> };
+function Panel({ panel }: { panel: WorkspacePanel }) {
+  const w = useWorkspace(); const s = useResearch(); const saveRef = useRef<(() => Promise<void>) | null>(null);
+  let content: React.ReactNode;
+  switch (panel.kind) {
+    case "today": content = <TodayPanel />; break;
+    case "market": case "screener": content = <MarketPanel screening={panel.kind === "screener"} />; break;
+    case "stock": content = <StockPanel panel={panel} />; break;
+    case "selection": content = <GlobalSelection />; break;
+    case "positions": content = <div className="r-page"><h1>实际持仓</h1><p className="r-note">全局实际账户。选股清单不会修改这里的持仓。</p><PositionsEditor saveRef={saveRef} defaultExpanded /></div>; break;
+    case "data": content = panel.projectId ? <DataPanel /> : <DataCenter />; break;
+    case "compare": content = <ComparePanel refs={panel.experimentRefs ?? []} panelId={panel.id} />; break;
+    case "experiment": content = <ResultsPanel />; break;
+    case "universe": content = <UniversePanel key={s.configurationVersions.universe ?? 0} />; break;
+    case "factors": content = <FactorPanel key={s.configurationVersions.factors ?? 0} />; break;
+    case "model": content = <ModelPanel key={s.configurationVersions.model ?? 0} />; break;
+    case "strategy": content = <StrategyHome panel={panel} />; break;
   }
-} };
+  const strategy = w.strategies.find(x => x.id === panel.strategyId && x.projectId === panel.projectId);
+  return <div className="r-object-panel">{strategy && <div className="r-objectbar"><strong>{strategy.name}</strong><span>草稿自动保存</span><span>{strategy.enabled ? "已启用快照" : "未启用"}</span><button onClick={() => void s.act(async () => { await flushDrafts(); await request("strategies.activate", { projectId: strategy.projectId, strategyId: strategy.id, enabled: true, allocation: strategy.allocation }); await w.reload(); s.setNotice("当前已保存草稿已应用到每日选股"); })}>应用到每日选股</button><button onClick={() => void s.act(async () => { const name = await requestText("策略名称", strategy.name); if (name?.trim()) { await flushDrafts(); await request("strategies.save", { projectId: strategy.projectId, strategy: { id: strategy.id, name: name.trim() } }); await w.reload(); } })}>重命名</button>{strategy.enabled && <button onClick={() => void s.act(async () => { await request("strategies.activate", { projectId: strategy.projectId, strategyId: strategy.id, enabled: false }); await w.reload(); })}>停用</button>}{([['strategy','策略'],['factors','因子'],['model','模型'],['universe','股票池']] as const).filter(([kind]) => kind !== panel.kind).map(([kind,title]) => <button key={kind} onClick={() => w.open({ kind, title: `${strategy.name} · ${title}`, projectId: strategy.projectId, strategyId: strategy.id })}>{title}</button>)}</div>}{content}</div>;
+}
 export function ResearchApp() { const state = useResearchState(); return <ResearchContext.Provider value={state}><Shell /></ResearchContext.Provider>; }
 function Shell() {
-  const s = useResearch(); const [creating, setCreating] = useState(false); const [settings, setSettings] = useState(false);
-  const [aiVisible, setAiVisible] = useState(true); const [jobsVisible, setJobsVisible] = useState(false);
-  useEffect(() => { if (s.submissionVersion > 0) setJobsVisible(true); }, [s.submissionVersion]);
-  const [left, setLeft] = useState(208); const [right, setRight] = useState(310); const [bottom, setBottom] = useState(170);
-  const api = useRef<DockviewApi | null>(null); const layoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dimensions = useRef({ left, right, bottom }); dimensions.current = { left, right, bottom };
-  const stateRef = useRef(s); stateRef.current = s;
-  useEffect(() => { const l = s.project?.layout; if (l) { setLeft(Number(l.sidebarWidth) || 208); setRight(Number(l.aiWidth) || 310); setBottom(Number(l.taskHeight) || 170); } return () => { if (layoutTimer.current) clearTimeout(layoutTimer.current); }; }, [s.project?.id]);
-  function persistLayout() {
-    if (layoutTimer.current) clearTimeout(layoutTimer.current);
-    const projectId = stateRef.current.project?.id;
-    layoutTimer.current = setTimeout(() => { const current = stateRef.current; if (!projectId || current.project?.id !== projectId || !api.current) return; const d = dimensions.current;
-      void current.act(() => current.save({ layout: { dock: JSON.parse(JSON.stringify(api.current!.toJSON())), sidebarWidth: d.left, aiWidth: d.right, taskHeight: d.bottom } }));
-    }, 650);
+  const s = useResearch(); const latest = useRef(s); latest.current = s;
+  const [creating, setCreating] = useState(false); const [settings, setSettings] = useState(false); const [jobsVisible, setJobsVisible] = useState(false);
+  const [preferences, setPreferences] = useState(defaults); const prefRef = useRef(preferences); prefRef.current = preferences;
+  const [windowInfo, setWindowInfo] = useState<{ id: string; main: boolean; state?: WorkspaceWindow } | null>(null);
+  const infoRef = useRef(windowInfo); infoRef.current = windowInfo;
+  const [strategies, setStrategies] = useState<StrategyConfig[]>([]); const [active, setActive] = useState<WorkspacePanel>(); const [bottom, setBottom] = useState(180);
+  const api = useRef<DockviewApi | null>(null); const timer = useRef<ReturnType<typeof setTimeout> | null>(null); const restoring = useRef(false); const dockReady = useRef(false);
+  const cancelSave = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
+  const reload = async () => { setStrategies(await request<StrategyConfig[]>("strategies.list")); await latest.current.refreshProjects(); };
+  async function savePreferences(patch: Partial<WorkspaceState>) { const next = { ...prefRef.current, ...patch }; prefRef.current = next; setPreferences(next); await request("workspace.save", { state: patch }); window.v3Research?.workspace?.broadcast({ method: "workspace.preferences" }); }
+  function snapshot(): WorkspaceWindow { const info = infoRef.current!; return { ...info.state, id: info.id, main: info.main, dock: JSON.parse(JSON.stringify(api.current!.toJSON())), panels: api.current!.panels.map(p => p.params as WorkspacePanel), activePanelId: api.current!.activePanel?.id }; }
+  async function persistNow() { if (!api.current || !infoRef.current || restoring.current) return; cancelSave(); const state = snapshot(); if (window.v3Research?.workspace) await window.v3Research.workspace.update(state); else await request("workspace.save", { state: { windows: [state] } }); }
+  function persist() { if (restoring.current) return; cancelSave(); timer.current = setTimeout(() => void latest.current.act(persistNow), 450); }
+  function open(panel: Omit<WorkspacePanel, "id"> & { id?: string }, split?: "right" | "below") {
+    const dock = api.current; if (!dock) return;
+    const id = panel.id ?? [panel.kind, panel.projectId, panel.strategyId, panel.experimentId, panel.symbol, panel.kind === "compare" ? crypto.randomUUID() : ""].filter(Boolean).join(":");
+    const existing = dock.getPanel(id); if (existing) { existing.api.setActive(); return; }
+    dock.addPanel({ id, component: "research", title: panel.title, params: { ...panel, id }, ...(split && dock.activePanel ? { position: { referencePanel: dock.activePanel.id, direction: split } } : {}) });
   }
-  function openPanel(page: Page, dock = api.current) { if (!dock) return; const panel = dock.getPanel(page); if (panel) panel.api.setActive(); else dock.addPanel({ id: page, component: "research", title: pages[page], params: { page } }); }
-  async function switchProject(path: string) {
-    if (s.project && api.current) {
-      if (layoutTimer.current) clearTimeout(layoutTimer.current);
-      const d = dimensions.current;
-      await s.save({ layout: { dock: JSON.parse(JSON.stringify(api.current.toJSON())), sidebarWidth: d.left, aiWidth: d.right, taskHeight: d.bottom } });
-    }
-    await s.open(path);
+  function restore(state?: WorkspaceWindow) {
+    if (!api.current) return; restoring.current = true; cancelSave(); api.current.clear();
+    let restored = false;
+    if (state?.dock) try { api.current.fromJSON(state.dock as unknown as ReturnType<DockviewApi["toJSON"]>); restored = true; } catch { latest.current.setNotice("保存的分屏布局无法读取，已按工作对象恢复。"); }
+    if (!restored) for (const panel of state?.panels ?? []) open(panel);
+    if (!api.current.panels.length && infoRef.current?.main) open({ kind: "today", title: "今日工作台" });
+    if (state?.activePanelId) api.current.getPanel(state.activePanelId)?.api.setActive(); restoring.current = false;
   }
-  const ready = (event: DockviewReadyEvent) => {
-    api.current = event.api; const saved = s.project?.layout?.dock;
-    if (saved) { try { event.api.fromJSON(saved as unknown as ReturnType<DockviewApi["toJSON"]>); } catch { s.setNotice("保存的窗格布局无法恢复，已打开默认概览。"); } }
-    openPanel("overview", event.api); event.api.onDidLayoutChange(persistLayout);
-    event.api.onDidActivePanelChange(event => { const page = event.panel?.params?.page as Page | undefined; if (page && page in pages) stateRef.current.setPage(page); });
-  };
-  useEffect(() => { if (s.project) openPanel(s.page); }, [s.page, s.project?.id]);
-  const resize = (kind: "left" | "right" | "bottom", e: React.PointerEvent<HTMLDivElement>) => {
-    const element = e.currentTarget;
-    element.setPointerCapture(e.pointerId); const startX = e.clientX, startY = e.clientY, start = dimensions.current;
-    element.onpointermove = event => {
-      if (kind === "left") setLeft(Math.max(160, Math.min(320, start.left + event.clientX - startX)));
-      if (kind === "right") setRight(Math.max(250, Math.min(500, start.right - event.clientX + startX)));
-      if (kind === "bottom") setBottom(Math.max(100, Math.min(360, start.bottom - event.clientY + startY)));
-    };
-    element.onpointerup = () => { element.onpointermove = null; element.onpointerup = null; persistLayout(); };
-  };
+  useEffect(() => { let alive = true; void s.act(async () => {
+    const [saved, info] = await Promise.all([request<WorkspaceState>("workspace.get"), window.v3Research?.workspace?.current() ?? Promise.resolve<{ id: string; main: boolean; state?: WorkspaceWindow }>({ id: "main", main: true })]);
+    if (!alive) return; const next = { ...defaults, ...saved }; prefRef.current = next; setPreferences(next); const current = { ...info, state: info.state ?? next.windows.find(w => w.id === info.id) }; infoRef.current = current; setWindowInfo(current); await reload();
+  }); return () => { alive = false; cancelSave(); }; }, []);
+  useEffect(() => { document.documentElement.dataset.theme = preferences.theme; document.documentElement.dataset.density = preferences.density; }, [preferences.theme, preferences.density]);
+  useEffect(() => { const bridge = window.v3Research?.workspace; if (!bridge) return;
+    const offPanels = bridge.onPanels(incoming => { cancelSave(); for (const panel of incoming) open(panel); void latest.current.act(persistNow); });
+    const offChanged = bridge.onChanged(change => { if (change.method === "workspace.layout") void latest.current.act(async () => { const info = await bridge.current(); infoRef.current = info; setWindowInfo(info); restore(info.state); }); else if (change.method === "workspace.preferences") void latest.current.act(async () => { const next = await request<WorkspaceState>("workspace.get"); prefRef.current = { ...defaults, ...next }; setPreferences(prefRef.current); }); else if (change.method === "stock.link") { const symbol = String(change.params?.symbol ?? ""); if (symbol) window.dispatchEvent(new CustomEvent("v3-stock-link", { detail: symbol })); } else if (change.method.startsWith("strategies")) void latest.current.act(reload); });
+    return () => { offPanels(); offChanged(); };
+  }, []);
+  function ready(event: DockviewReadyEvent) { api.current = event.api; dockReady.current = true; restore(infoRef.current?.state); event.api.onDidLayoutChange(persist); event.api.onDidActivePanelChange(e => setActive(e.panel?.params as WorkspacePanel | undefined));
+    event.api.onWillDragPanel(event => { const id = event.panel.id; const target = event.nativeEvent.target; if (!(event.nativeEvent instanceof DragEvent) || !(target instanceof HTMLElement)) return; target.addEventListener("dragend", event => { const drag = event as DragEvent; if (drag.dataTransfer?.dropEffect === "none" && (drag.clientX < 0 || drag.clientY < 0 || drag.clientX > window.innerWidth || drag.clientY > window.innerHeight)) void latest.current.act(() => detach(id, { x: drag.screenX - 120, y: drag.screenY - 30, width: 1200, height: 850 })); }, { once: true }); }); }
+
+  async function detach(id?: string, bounds?: WorkspaceWindow["bounds"]) { const panel = id ? api.current?.getPanel(id) : api.current?.activePanel; if (!panel || !window.v3Research?.workspace) return; cancelSave(); await flushDrafts(); await window.v3Research.workspace.detach(panel.params as WorkspacePanel, bounds ?? { width: 1200, height: 850 }); panel.api.close(); cancelSave(); await persistNow(); }
+  async function attach() { if (!api.current || !window.v3Research?.workspace) return; cancelSave(); await flushDrafts(); const moved = api.current.panels.map(p => p.params as WorkspacePanel); restoring.current = true; try { await window.v3Research.workspace.attach(moved); } catch (error) { restoring.current = false; throw error; } }
+  function linkStock(symbol: string) { window.dispatchEvent(new CustomEvent("v3-stock-link", { detail: symbol })); window.v3Research?.workspace?.broadcast({ method: "stock.link", params: { symbol } }); }
+  async function preset(name: string) { cancelSave(); if (prefRef.current.presets[name]) { const windows = prefRef.current.presets[name]; await window.v3Research?.workspace?.restore(windows); restore(windows.find(w => w.id === infoRef.current?.id)); return; }
+    restoring.current = true; api.current?.clear();
+    if (name === "市场") { open({ kind: "market", title: "市场概况" }); open({ kind: "stock", title: "联动个股", id: "stock:linked" }, "right"); }
+    else if (name === "选股") { open({ kind: "selection", title: "每日选股" }); open({ kind: "positions", title: "实际持仓" }, "below"); }
+    else if (name === "比较") open({ kind: "compare", title: "实验比较" });
+    else { const st = strategies[0]; open(st ? { kind: "strategy", title: st.name, projectId: st.projectId, strategyId: st.id } : { kind: "today", title: "今日工作台" }); }
+    restoring.current = false; await persistNow();
+  }
+  const resize = (kind: "sidebarWidth" | "aiWidth" | "bottom", e: React.PointerEvent<HTMLDivElement>) => { const element = e.currentTarget; element.setPointerCapture(e.pointerId); const x = e.clientX, y = e.clientY, initial = kind === "bottom" ? bottom : prefRef.current[kind]; element.onpointermove = v => { const value = Math.max(kind === "bottom" ? 100 : kind === "aiWidth" ? 280 : 170, Math.min(kind === "bottom" ? 420 : kind === "aiWidth" ? 700 : 380, initial + (kind === "bottom" ? y - v.clientY : kind === "aiWidth" ? x - v.clientX : v.clientX - x))); if (kind === "bottom") setBottom(value); else { prefRef.current = { ...prefRef.current, [kind]: value }; setPreferences(prefRef.current); } }; element.onpointerup = () => { element.onpointermove = null; element.onpointerup = null; if (kind !== "bottom") void s.act(() => savePreferences({ [kind]: prefRef.current[kind] })); }; };
   const activeJobs = s.jobs.filter(j => ["queued", "running"].includes(j.status));
-  return <div className="r-app" data-testid="research-app" style={{ "--r-sidebar": `${left}px`, "--r-ai": `${right}px`, "--r-tasks": `${bottom}px` } as React.CSSProperties}>
-    <header className="r-titlebar"><div className="r-brand"><strong>V3</strong><span>研究工作台</span></div><span className="r-project-title">{s.project?.name ?? "你的下一次研究，从这里开始"}</span><div className="r-title-actions"><button onClick={() => setAiVisible(v => !v)}>{aiVisible ? "收起助手" : "打开助手"}</button>{window.v3Desktop && <WindowControls />}</div></header>
-    {s.error && <div className="r-banner error" role="alert"><span>{s.error}</span><button onClick={() => s.setError("")} aria-label="关闭错误消息">×</button></div>}{s.notice && <div className="r-banner" role="status"><span>{s.notice}</span><button onClick={() => s.setNotice("")} aria-label="关闭提示">×</button></div>}
-    <div className="r-body"><aside className="r-sidebar"><h2>研究项目</h2><div className="r-project-list">{s.projects.map(p => <button className={p.id === s.project?.id ? "active" : ""} key={p.id} onClick={() => void s.act(() => switchProject(p.path))}><Folder /><span>{p.name}</span></button>)}</div><button className="r-sidebar-action" disabled={!window.v3Research} onClick={() => setCreating(true)}><span>＋</span> 新建项目</button><button className="r-sidebar-action" disabled={!window.v3Research} onClick={() => void s.act(async () => { const path = await window.v3Research!.chooseDirectory(); if (path) await switchProject(path); })}><Folder /> 打开项目</button><hr /><h2>个人库</h2><button disabled={!s.project} onClick={() => s.setPage("universe")}>股票池模板</button><button disabled={!s.project} onClick={() => s.setPage("strategy")}>策略模板</button><div className="r-sidebar-foot"><button onClick={() => { setSettings(true); setAiVisible(true); }}>设置</button><small>本地研究 · 日线</small></div></aside><div className="r-resize" role="separator" aria-label="调整项目栏宽度" aria-orientation="vertical" onPointerDown={e => resize("left", e)} />
-      <main className="r-main">{s.project ? <><nav className="r-pages" aria-label="研究导航">{Object.entries(pages).map(([page, label]) => <button key={page} className={s.page === page ? "active" : ""} onClick={() => { s.setPage(page as Page); openPanel(page as Page); }}>{label}</button>)}<button className="r-layout-reset" title="恢复默认窗格" onClick={() => { api.current?.clear(); openPanel("overview"); s.setPage("overview"); }}>重置布局</button></nav><div className="r-dock"><DockviewReact key={s.project.id} className="dockview-theme-light" components={panels} onReady={ready} /></div></> : <div className="r-welcome"><span className="r-eyebrow">V3 · QUANTITATIVE RESEARCH</span><h1>把一个想法，<br />变成可复盘的研究。</h1><p>数据、因子、模型与实验，<br />在自己的项目中有序展开。</p><div className="r-toolbar"><button className="r-primary" disabled={!window.v3Research} onClick={() => setCreating(true)}>创建第一个项目 →</button><button disabled={!window.v3Research} onClick={() => void s.act(async () => { const path = await window.v3Research!.chooseDirectory(); if (path) await switchProject(path); })}>打开已有项目</button></div>{!window.v3Research && <p className="r-note">研究服务未连接<br />请从桌面应用打开，连接本地研究服务。</p>}<div className="r-welcome-steps"><span>01 数据准备</span><span>02 因子与模型</span><span>03 实验与复盘</span></div></div>}</main>
-      {<><div style={aiVisible ? undefined : { display: "none" }} className="r-resize" role="separator" aria-label="调整助手宽度" aria-orientation="vertical" onPointerDown={e => resize("right", e)} /><AiPanel hidden={!aiVisible} key={s.project?.id ?? "empty"} settingsOpen={settings} closeSettings={() => setSettings(false)} /></>}
-    </div><footer className="r-taskbar"><button onClick={() => setJobsVisible(v => !v)} aria-expanded={jobsVisible}>任务 <span>{activeJobs.length ? `${activeJobs.length} 项进行中` : "暂无运行中的任务"}</span><span>{jobsVisible ? "⌄" : "⌃"}</span></button>{jobsVisible && <><div className="r-resize horizontal" role="separator" aria-label="调整任务区高度" onPointerDown={e => resize("bottom", e)} /><Jobs /></>}</footer>{creating && <CreateProject close={() => setCreating(false)} />}
-  </div>;
+  return <WorkspaceContext.Provider value={{ open, updatePanel: (id, patch) => { const panel = api.current?.getPanel(id); if (panel) { panel.api.updateParameters({ ...panel.params, ...patch }); if (patch.title) panel.api.setTitle(patch.title); if (api.current?.activePanel?.id === id) setActive(panel.params as WorkspacePanel); persist(); } }, strategies, reload, active, preferences, savePreferences, linkStock }}><div className="r-app" data-testid="research-app" style={{ "--r-sidebar": `${preferences.sidebarWidth}px`, "--r-ai": `${preferences.aiWidth}px`, "--r-tasks": `${bottom}px` } as React.CSSProperties}>
+    <header className="r-titlebar"><div className="r-brand"><strong>V3</strong><span>研究工作台</span></div><span className="r-project-title">{windowInfo?.main ? "本地研究 · A 股日线" : "独立工作窗口"}</span><div className="r-title-actions"><button onClick={() => void s.act(() => savePreferences({ theme: preferences.theme === "light" ? "dark" : "light" }))}>{preferences.theme === "light" ? "深色" : "浅色"}</button><button onClick={() => void s.act(() => savePreferences({ density: preferences.density === "compact" ? "comfortable" : "compact" }))}>{preferences.density === "compact" ? "标准行高" : "密集行高"}</button>{window.v3Desktop && <WindowControls />}</div></header>
+    {s.error && <div className="r-banner error" role="alert"><span>{s.error}</span><button onClick={() => s.setError("")} aria-label="关闭错误">×</button></div>}{s.notice && <div className="r-banner" role="status"><span>{s.notice}</span><button onClick={() => s.setNotice("")} aria-label="关闭提示">×</button></div>}
+    <div className="r-body">{windowInfo?.main && <><aside className="r-sidebar"><nav aria-label="全局导航">{([["today","今日工作台"],["market","市场概况"],["screener","筛选与自选"],["selection","每日选股"],["positions","实际持仓"],["data","数据中心"]] as const).map(([kind,title]) => <button key={kind} className={active?.kind === kind ? "active" : ""} onClick={() => open({ kind, title })}>{title}</button>)}</nav><hr /><div className="r-toolbar"><h2>研究项目</h2><button aria-label="新建项目" onClick={() => setCreating(true)}>＋</button></div><div className="r-project-tree">{s.projects.map(p => <details key={p.id} open><summary>{p.name}</summary>{strategies.filter(st => st.projectId === p.id).map(st => <button className={active?.strategyId === st.id ? "active" : ""} key={st.id} onClick={() => open({ kind: "strategy", title: st.name, projectId: p.id, strategyId: st.id })}><span className={`r-status-dot ${st.enabled ? "enabled" : ""}`} />{st.name}</button>)}<button className="r-muted" onClick={() => void s.act(async () => { const name = await requestText("新策略名称"); if (!name?.trim()) return; const st = await request<StrategyConfig>("strategies.create", { projectId: p.id, name: name.trim() }); await reload(); open({ kind: "strategy", title: st.name, projectId: p.id, strategyId: st.id }); })}>＋ 新策略</button><button onClick={() => open({ kind: "data", projectId: p.id, title: `${p.name} · 数据` })}>项目数据</button></details>)}</div><button className="r-sidebar-action" onClick={() => void s.act(async () => { const path = await window.v3Research!.chooseDirectory(); if (path) { await s.open(path); await reload(); } })}>打开项目文件夹</button><div className="r-sidebar-foot"><button onClick={() => setSettings(true)}>设置</button><small>数据与实验保存在本地</small></div></aside><div className="r-resize" role="separator" aria-label="调整导航宽度" onPointerDown={e => resize("sidebarWidth", e)} /></>}
+    <main className="r-main"><div className="r-workspace-toolbar"><select aria-label="切换工作区预设" value="" onChange={e => void s.act(() => preset(e.target.value))}><option value="" disabled>工作区布局</option>{[...new Set(["研究","比较","市场","选股",...Object.keys(preferences.presets)])].map(name => <option key={name}>{name}</option>)}</select><button onClick={() => void s.act(async () => { const name = await requestText("保存工作区名称"); if (!name?.trim()) return; await persistNow(); const state = await request<WorkspaceState>("workspace.get"); await savePreferences({ presets: { ...state.presets, [name.trim()]: state.windows } }); })}>保存布局</button><span className="r-spacer" /><button disabled={!active} title="复制当前对象并在右侧分屏" onClick={() => active && open({ ...active, id: crypto.randomUUID() }, "right")}>右侧分屏</button><button disabled={!active || !window.v3Research?.workspace} title="将当前标签拖出为独立 Windows 窗口，可移至第二屏" onClick={() => void s.act(() => detach())}>拖出到窗口 ↗</button>{windowInfo && !windowInfo.main && <button onClick={() => void s.act(attach)}>全部移回主窗口</button>}</div><div className="r-dock">{windowInfo ? <DockviewReact className="dockview-theme-light" components={panels} onReady={ready} /> : <Empty title="正在恢复工作区…" />}</div></main>
+    {windowInfo?.main && <><div className="r-resize" role="separator" aria-label="调整 AI 宽度" onPointerDown={e => resize("aiWidth", e)} /><ConversationPanel settingsOpen={settings} closeSettings={() => setSettings(false)} /></>}</div>
+    <footer className="r-taskbar"><button onClick={() => setJobsVisible(v => !v)} aria-expanded={jobsVisible}>任务 <span>{activeJobs.length ? `${activeJobs.length} 项进行中` : "无运行任务"}</span><span>{jobsVisible ? "收起" : "展开"}</span></button>{jobsVisible && <><div className="r-resize horizontal" onPointerDown={e => resize("bottom", e)} /><Jobs /></>}</footer>{creating && <CreateProject close={() => { setCreating(false); void s.act(reload); }} />}</div><TextPromptHost /></WorkspaceContext.Provider>;
 }
-function Folder() { return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>; }
+
 function CreateProject({ close }: { close: () => void }) {
   const s = useResearch(); const [name, setName] = useState(""); const [path, setPath] = useState(""); const [objective, setObjective] = useState(""); const [busy, setBusy] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null); useEffect(() => { dialog.current?.showModal(); }, []);
   return <dialog ref={dialog} className="r-dialog" onCancel={close}><form onSubmit={e => { e.preventDefault(); setBusy(true); void s.act(async () => { const p = await request<ProjectConfig>("projects.create", { path, name: name.trim(), objective: objective.trim() }); await s.open(p.path); close(); }).finally(() => setBusy(false)); }}><h2>新建研究项目</h2><p>项目文件、数据与实验保存在你选择的文件夹。</p><Field label="项目名称"><input required autoFocus value={name} onChange={e => setName(e.target.value)} /></Field><Field label="项目文件夹"><div className="r-toolbar"><input required value={path} onChange={e => setPath(e.target.value)} /><button type="button" onClick={() => void s.act(async () => { const chosen = await window.v3Research!.chooseDirectory(); if (chosen) setPath(chosen); })}>选择文件夹</button></div></Field><Field label="研究目标"><textarea rows={4} value={objective} onChange={e => setObjective(e.target.value)} placeholder="想验证怎样的投资假设？" /></Field><div className="r-toolbar"><button type="button" onClick={close}>取消</button><button className="r-primary" disabled={busy || !name.trim() || !path.trim()} type="submit">{busy ? "创建中…" : "创建项目"}</button></div></form></dialog>;
 }
 function Jobs() {
-  const s = useResearch(); const labels = { queued: "排队中", running: "运行中", completed: "已完成", failed: "失败", cancelled: "已取消", interrupted: "已中断" };
-  return <div className="r-jobs">{s.jobs.length ? s.jobs.map(j => <div className="r-job" key={j.id}><strong>{jobTitle(j.kind, j.name)}</strong><span>{labels[j.status]}</span><progress max={1} value={Math.max(0, Math.min(1, j.progress))} aria-label={`${jobTitle(j.kind, j.name)}进度`} /><span title={j.message}>{j.message}</span>{["queued", "running"].includes(j.status) ? <button onClick={() => void s.act(async () => { await request("jobs.cancel", { jobId: j.id }); await s.refresh(); })}>取消</button> : <button onClick={() => void s.act(() => s.submit(j.spec.kind, j.spec.parameters, j.name))}>重跑</button>}{j.experimentId && <button onClick={() => { s.setSelectedExperiment(j.experimentId!); s.setPage("results"); }}>查看结果</button>}</div>) : <Empty title="还没有任务记录" />}</div>;
+  const s = useResearch(); const w = useWorkspace(); const labels = { queued: "排队中", running: "运行中", completed: "已完成", failed: "失败", cancelled: "已取消", interrupted: "已中断" };
+  return <div className="r-jobs">{s.jobs.length ? s.jobs.map(j => <div className="r-job" key={j.id}><strong>{jobTitle(j.kind, j.name)}</strong><span>{labels[j.status]}</span><progress max={1} value={Math.max(0, Math.min(1, j.progress))} aria-label={`${jobTitle(j.kind, j.name)}进度`} /><span title={j.message}>{j.message}</span>{["queued", "running"].includes(j.status) ? <button onClick={() => void s.act(async () => { await request("jobs.cancel", { jobId: j.id }); await s.refresh(); })}>取消</button> : <button onClick={() => void s.act(() => request("jobs.submit", { spec: j.spec }))}>重跑</button>}{j.experimentId && <button onClick={() => { w.open({ kind: "experiment", title: j.name, projectId: j.projectId, strategyId: j.strategyId, experimentId: j.experimentId }); }}>查看结果</button>}</div>) : <Empty title="还没有任务记录" />}</div>;
 }

@@ -9,13 +9,30 @@ registerOverlay({ name: "research_rect", totalStep: 3, needDefaultPointFigure: t
 interface Bar { date: string; open: number; high: number; low: number; close: number; volume: number }
 export interface TradeMarker { date: string; price: number; adjustedPrice?: number; side: string }
 function dateAt(timestamp: number) { return new Date(timestamp + 8 * 3600000).toISOString().slice(0, 10); }
-export function PriceChart({ symbol: initial = "", focusDate, trades = [], experimentId, tradeTable }: { symbol?: string; focusDate?: string; trades?: TradeMarker[]; experimentId?: string; tradeTable?: string }) {
-  const s = useResearch(); const projectId = s.project!.id;
-  const [symbol, setSymbol] = useState(initial || s.project!.universe.symbols[0] || ""); const [input, setInput] = useState(symbol);
+function applyChartTheme(instance: Chart, container: HTMLDivElement) {
+  const dark = document.documentElement.dataset.theme === "dark";
+  const css = getComputedStyle(document.documentElement); const paper = css.getPropertyValue("--paper").trim() || (dark ? "#242830" : "#ffffff");
+  const text = dark ? "#cbd2df" : "#525d6b", grid = dark ? "#363d49" : "#e5e8ee", muted = dark ? "#929dab" : "#82909e";
+  const colors = { upColor: dark ? "#f07178" : "#d04a45", downColor: dark ? "#4bbf91" : "#21845c", noChangeColor: muted };
+  const axis = { axisLine: { color: grid }, tickLine: { color: grid }, tickText: { color: text } };
+  const cross = { line: { color: muted }, text: { color: dark ? "#eef1f6" : "#ffffff", backgroundColor: dark ? "#4c586a" : "#64748b", borderColor: grid } };
+  container.style.backgroundColor = paper;
+  instance.setStyles({ grid: { horizontal: { color: grid }, vertical: { color: grid } },
+    candle: { bar: { ...colors, compareRule: "current_open", upBorderColor: colors.upColor, downBorderColor: colors.downColor, noChangeBorderColor: muted, upWickColor: colors.upColor, downWickColor: colors.downColor, noChangeWickColor: muted }, priceMark: { high: { color: text }, low: { color: text }, last: { ...colors, compareRule: "current_open" } }, tooltip: { title: { color: text }, legend: { color: text }, rect: { color: paper, borderColor: grid } } },
+    indicator: { ohlc: { ...colors, compareRule: "current_open" }, bars: [{ ...instance.getStyles().indicator.bars[0], ...colors }], tooltip: { title: { color: text }, legend: { color: text } } },
+    xAxis: axis, yAxis: axis, separator: { color: grid, activeBackgroundColor: dark ? "#486080" : "#bfd2ed" }, crosshair: { horizontal: cross, vertical: cross }, overlay: { text: { color: text, backgroundColor: paper } }
+  });
+}
+export function chartDateRange(range: { startDate?: string; endDate?: string; beforeDate?: string }, asOfDate?: string) {
+  return asOfDate ? { ...range, endDate: !range.endDate || range.endDate > asOfDate ? asOfDate : range.endDate } : range;
+}
+export function PriceChart({ symbol: initial = "", focusDate, trades = [], experimentId, tradeTable, embedded = false, asOfDate }: { symbol?: string; focusDate?: string; trades?: TradeMarker[]; experimentId?: string; tradeTable?: string; embedded?: boolean; asOfDate?: string }) {
+  const s = useResearch(); const projectId = s.project?.id;
+  const [editableSymbol, setSymbol] = useState(initial || s.project?.universe.symbols[0] || ""); const symbol = embedded ? initial : editableSymbol; const [input, setInput] = useState(symbol);
   const [start, setStart] = useState(""); const [end, setEnd] = useState(""); const [rangeWindow, setRangeWindow] = useState<{ startDate?: string; endDate?: string }>({});
   const [note, setNote] = useState(""); const [status, setStatus] = useState(""); const [count, setCount] = useState(0);
   const node = useRef<HTMLDivElement>(null); const chart = useRef<Chart | null>(null);
-  const [dirty, setDirty] = useState(false);
+  const [dirty, setDirty] = useState(false); const [loadFailed, setLoadFailed] = useState(false); const [reload, setReload] = useState(0);
   const [windowTrades, setWindowTrades] = useState<TradeMarker[]>([]);
   const [tradeStatus, setTradeStatus] = useState("");
   const saveQueue = useRef(Promise.resolve());
@@ -34,23 +51,25 @@ export function PriceChart({ symbol: initial = "", focusDate, trades = [], exper
     setWindowTrades([]); setTradeStatus("");
     const instance = init(node.current, { locale: "zh-CN", timezone: "Asia/Shanghai" });
     if (!instance) return;
-    chart.current = instance; setCount(0); setDirty(false); setStatus("正在读取日线…");
+    chart.current = instance; applyChartTheme(instance, node.current); const themeObserver = new MutationObserver(() => { if (active && node.current) applyChartTheme(instance, node.current); }); themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] }); setCount(0); setDirty(false); setLoadFailed(false); setStatus("正在读取日线…");
     instance.setDataLoader({ getBars: async ({ type, timestamp, callback }) => {
       if (type === "update") { callback([], false); return; }
       let delivered = false;
       try {
         const day = 86400000;
         const anchor = focusDate ? Date.parse(`${focusDate.slice(0, 10)}T00:00:00+08:00`) : null;
-        const range = type === "forward" && timestamp != null ? { beforeDate: dateAt(timestamp) }
+        const range: { startDate?: string; endDate?: string; beforeDate?: string } = type === "forward" && timestamp != null ? { beforeDate: dateAt(timestamp) }
           : type === "backward" && timestamp != null ? { startDate: dateAt(timestamp + day), endDate: dateAt(timestamp + 365 * day) }
           : rangeWindow.startDate ? rangeWindow : anchor != null ? { startDate: dateAt(anchor - 90 * day), endDate: dateAt(anchor + 90 * day) } : {};
-        const bars = await request<Bar[]>("data.bars", { projectId, symbol, ...range, limit: 500 });
+        const bounded = chartDateRange(range, asOfDate);
+        if (bounded.startDate && bounded.endDate && bounded.startDate > bounded.endDate) { callback([], false); if (type === "init") setStatus("所选区间晚于个股资料截止日期"); return; }
+        const bars = await request<Bar[]>("data.bars", { projectId, symbol, ...bounded, limit: 500 });
         if (type === "init" && rangeWindow.startDate) {
           let page = bars;
           while (active && page.length === 500) {
             const earliest = page.reduce((a, b) => a < b.date ? a : b.date, page[0].date).slice(0, 10);
             if (earliest <= rangeWindow.startDate) break;
-            page = await request<Bar[]>("data.bars", { projectId, symbol, ...rangeWindow, beforeDate: earliest, limit: 500 });
+            page = await request<Bar[]>("data.bars", { projectId, symbol, ...chartDateRange(rangeWindow, asOfDate), beforeDate: earliest, limit: 500 });
             if (page.some(b => b.date.slice(0, 10) >= earliest)) throw new Error("历史行情分页未前进。");
             bars.push(...page);
           }
@@ -77,15 +96,15 @@ export function PriceChart({ symbol: initial = "", focusDate, trades = [], exper
           setWindowTrades([...loadedTrades.values()]);
           setTradeStatus(`已载入行情区间内 ${loadedTrades.size} 个成交标记`);
         }
-      } catch (e) { if (active) { if (!delivered) { callback([], false); setStatus(errorText(e)); } else { setTradeStatus("成交标记读取未完成"); s.setError(errorText(e)); } } }
+      } catch (e) { if (active) { if (!delivered) { callback([], false); setStatus(errorText(e)); setLoadFailed(true); } else { setTradeStatus("成交标记读取未完成"); s.setError(errorText(e)); } } }
     } });
     instance.setSymbol({ ticker: symbol, pricePrecision: 2, volumePrecision: 0 }); instance.setPeriod({ type: "day", span: 1 });
     instance.createIndicator("VOL");
     void request<{ annotations: OverlayCreate[] }>("charts.load", { projectId, symbol }).then(({ annotations }) => { if (active && annotations.length) instance.createOverlay(annotations.map(o => ({ ...o, onPressedMoveEnd: () => { if (active) changed(); }, onRemoved: () => { if (active) changed(); } }))); }).catch(e => { if (active) s.setError(errorText(e)); });
     const observer = new ResizeObserver(() => instance.resize()); observer.observe(node.current);
     const container = node.current;
-    return () => { active = false; observer.disconnect(); dispose(container); chart.current = null; };
-  }, [symbol, projectId, focusDate, experimentId, tradeTable, rangeWindow]);
+    return () => { active = false; themeObserver.disconnect(); observer.disconnect(); dispose(container); chart.current = null; };
+  }, [symbol, projectId, focusDate, experimentId, tradeTable, rangeWindow, asOfDate, reload]);
   const markers = experimentId && tradeTable ? windowTrades : trades;
   useEffect(() => {
     const instance = chart.current; if (!instance || !count) return;
@@ -99,5 +118,5 @@ export function PriceChart({ symbol: initial = "", focusDate, trades = [], exper
     if (Number.isFinite(timestamp)) instance.scrollToTimestamp(timestamp);
   }, [focusDate, count]);
   const draw = (name: string) => chart.current?.createOverlay({ name, ...(name === "research_note" ? { extendData: note } : {}), onDrawEnd: changed, onPressedMoveEnd: changed, onRemoved: changed });
-  return <div className="r-chart-panel"><Heading title="行情与批注" description="拖动、缩放日线；添加趋势线、区间和研究笔记。" /><div className="r-toolbar"><form onSubmit={e => { e.preventDefault(); if (input.trim() && (!dirty || window.confirm("当前批注尚未保存，切换证券？"))) setSymbol(input.trim()); }}><input aria-label="证券代码" placeholder="输入证券代码" value={input} onChange={e => setInput(e.target.value)} /><button type="submit">加载</button></form><label>开始 <input type="date" value={start} onChange={e => setStart(e.target.value)} /></label><label>结束 <input type="date" value={end} onChange={e => setEnd(e.target.value)} /></label><button disabled={!start || !end || start > end} onClick={() => setRangeWindow({ startDate: start, endDate: end })}>加载日期区间</button><button onClick={() => { setStart(""); setEnd(""); setRangeWindow({}); }}>最近行情</button><button disabled={!count} onClick={() => chart.current?.scrollToDataIndex(0)}>向前查看历史</button><span>{status}</span><span>{tradeStatus}</span></div><div className="r-toolbar"><button disabled={!count} onClick={() => draw("segment")}>趋势线</button><button disabled={!count} onClick={() => draw("horizontalStraightLine")}>水平线</button><button disabled={!count} onClick={() => draw("research_rect")}>区间框</button><input aria-label="批注文字" placeholder="写下批注，再点击图表定位" value={note} onChange={e => setNote(e.target.value)} /><button disabled={!count || !note.trim()} onClick={() => draw("research_note")}>文字批注</button><button disabled={!count} onClick={() => chart.current?.createIndicator({ name: "MA", paneId: "candle_pane" }, true)}>均线</button><button disabled={!count} onClick={() => { chart.current?.removeOverlay(); setDirty(true); }}>清除批注</button></div>{!symbol && <Empty title="选择一只证券开始查看">从交易或持仓表点击证券也可打开回放。</Empty>}<div ref={node} className="r-kline" style={{ height: 400 }} /><div className="r-toolbar"><button disabled={!symbol || !chart.current} onClick={() => void s.act(async () => { const annotations = chart.current!.getOverlays().filter(o => o.groupId !== "research-trade").map(o => ({ id: o.id, name: o.name, points: o.points, extendData: o.extendData ?? null, lock: o.lock, visible: o.visible })); await request("charts.save", { projectId, symbol, annotations }); setDirty(false); s.setNotice("批注已保存到项目"); })}>{dirty ? "保存批注 · 未保存" : "保存批注"}</button><button disabled={!count} onClick={() => void s.act(async () => { const dataUrl = chart.current!.getConvertPictureUrl(true, "png", "#fffefa"); const path = await window.v3Research!.exportFile({ format: "png", dataUrl, suggestedName: `${symbol}-日线.png` }); if (path) s.setNotice(`已导出：${path}`); })}>导出图片</button></div></div>;
+  return <div className={`r-chart-panel${embedded ? " r-chart-embedded" : ""}`}>{!embedded && <Heading title="行情与批注" description="拖动、缩放日线；添加趋势线、区间和研究笔记。" />}<div className="r-toolbar">{!embedded && <form onSubmit={e => { e.preventDefault(); if (input.trim() && (!dirty || window.confirm("当前批注尚未保存，切换证券？"))) setSymbol(input.trim()); }}><input aria-label="证券代码" placeholder="输入证券代码" value={input} onChange={e => setInput(e.target.value)} /><button type="submit">加载</button></form>}<label>开始 <input type="date" value={start} onChange={e => setStart(e.target.value)} /></label><label>结束 <input type="date" max={asOfDate} value={end} onChange={e => setEnd(e.target.value)} /></label><button disabled={!start || !end || start > end} onClick={() => setRangeWindow({ startDate: start, endDate: end })}>加载日期区间</button><button onClick={() => { setStart(""); setEnd(""); setRangeWindow({}); }}>{asOfDate ? "截至所选日期" : "最近行情"}</button><button disabled={!count} onClick={() => chart.current?.scrollToDataIndex(0)}>向前查看历史</button><span role={loadFailed ? "alert" : "status"}>{status}</span>{loadFailed && <button onClick={() => setReload(v => v + 1)}>重试日线</button>}<span>{tradeStatus}</span></div><div className="r-toolbar"><button disabled={!count} onClick={() => draw("segment")}>趋势线</button><button disabled={!count} onClick={() => draw("horizontalStraightLine")}>水平线</button><button disabled={!count} onClick={() => draw("research_rect")}>区间框</button><input aria-label="批注文字" placeholder="写下批注，再点击图表定位" value={note} onChange={e => setNote(e.target.value)} /><button disabled={!count || !note.trim()} onClick={() => draw("research_note")}>文字批注</button><button disabled={!count} onClick={() => chart.current?.createIndicator({ name: "MA", paneId: "candle_pane" }, true)}>均线</button><button disabled={!count} onClick={() => { chart.current?.removeOverlay(); setDirty(true); }}>清除批注</button></div>{!symbol && <Empty title="选择一只证券开始查看">从交易或持仓表点击证券也可打开回放。</Empty>}<div ref={node} className="r-kline" style={{ height: 400 }} /><div className="r-toolbar"><button disabled={!symbol || !chart.current} onClick={() => void s.act(async () => { const annotations = chart.current!.getOverlays().filter(o => o.groupId !== "research-trade").map(o => ({ id: o.id, name: o.name, points: o.points, extendData: o.extendData ?? null, lock: o.lock, visible: o.visible })); await request("charts.save", { projectId, symbol, annotations }); setDirty(false); s.setNotice("批注已保存到项目"); })}>{dirty ? "保存批注 · 未保存" : "保存批注"}</button><button disabled={!count} onClick={() => void s.act(async () => { const dataUrl = chart.current!.getConvertPictureUrl(true, "png", getComputedStyle(node.current!).backgroundColor); const path = await window.v3Research!.exportFile({ format: "png", dataUrl, suggestedName: `${symbol}-日线.png` }); if (path) s.setNotice(`已导出：${path}`); })}>导出图片</button></div></div>;
 }
