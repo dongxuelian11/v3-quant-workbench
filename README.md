@@ -1,90 +1,65 @@
-# V3 Quantitative Research IDE / Workbench
+# V3 量化研究工作台
 
-V3 is a local-first, A-share-first, AI-native, reproducible and auditable professional Quant Research IDE / Workbench. It is organized around an Agent-first flow and five professional Labs: Research, Strategy, Model, Backtest, and Result.
+面向 Windows 的 A 股日线量化研究软件。项目内可建立多份策略，共享数据，分别保存草稿、启用方案与实验；通过中文 GUI 操作 Qlib、Alphalens、Optuna 等开源模块。
 
-> **Current line: V3 V1.1 Usable Research Product local candidate**
->
-> **Package version: `1.0.0` until the complete C4 release gate passes**
->
-> The current candidate connects a real packaged Product Home to local user-supplied data import, canonical Factor study, research Strategy publication, research Backtest, and VALID Result/Analytics readback. Its ceiling is `PRODUCT_CONNECTED / PRE_ALPHA / RESEARCH_ONLY / NOT_FORMAL`. The exact local package journey passes on the same machine, but the candidate is still unpushed and has a DIRTY BuildManifest. Hosted Jobs A-F, a distinct clean-machine run, live-provider acceptance, physical Windows scaling, user visual acceptance, independent review, and the `1.1.0` version bump remain `NOT_RUN` or `PENDING`.
+功能范围、进度和下一步统一记录在 [重构计划](docs/V3_REBUILD.md)。旧项目继续打开并映射为默认策略，旧实验保持原样。新项目默认引用软件共享数据，也可继续使用已有项目的数据目录。
 
-The intended market scope is China A-share daily/end-of-day research. Live trading, broker connectivity, and paper trading are not included. Research results remain `PRE_ALPHA / RESEARCH_ONLY / APPROXIMATE`; the current free-source path does not prove complete PIT, available-time, revision, suspension, ST, price-limit, or corporate-action truth.
+## 本地启动
 
-Project doctrine and mandatory maturity language are defined by:
+需要 Node.js 24 和 Python 3.12。首次准备：
 
-- [`V3_PROJECT_CONSTITUTION.md`](V3_PROJECT_CONSTITUTION.md) — product identity and non-negotiable authority invariants.
-- [`docs/architecture/V3_CANONICAL_ARCHITECTURE.md`](docs/architecture/V3_CANONICAL_ARCHITECTURE.md) — target owner/resolver/runtime/product architecture, not a claim of full current wiring.
-- [`docs/status/V3_CAPABILITY_LEVELS.md`](docs/status/V3_CAPABILITY_LEVELS.md) — evidence-based capability vocabulary.
-- [`docs/status/V3_SYSTEMIC_REAUDIT_BASELINE.md`](docs/status/V3_SYSTEMIC_REAUDIT_BASELINE.md) — conservative unresolved finding register.
+    npm ci
+    npm run setup:research
+    npm start
 
-## What exists today
+如果 Python 3.12 不在默认路径：
 
-- Electron 39 desktop shell with a React 19/Vite presentation system, Dockview workspaces, ECharts, React Flow, Monaco, and persisted local layout/state.
-- A typed Canonical Backend Foundation: contracts, Control Catalog/repositories, artifact plane, task/worker control plane, resource governor, and supervised local transport.
-- Domain modules and bounded accepted slices across Data Truth, Factor/Dataset/Experiment, Model, Strategy/Signal, Portfolio/Risk, Backtest, Result Analytics, Reviewer, and L0/L1 Agent support. Exact maturity varies by owner and remains intentionally conservative pending systemic re-audit.
-- A supervised Electron `backendRuntime` bridge and closed Product bridge. Product Home, local Data, Factor Research, research Strategy/Backtest, and Result pages become available only when their exact backend-owned prerequisites and bridge operations are present.
-- A packaged Product Entry path over canonical Project, ProjectContext, Task, Run, Snapshot, Universe, Factor, Strategy, Backtest publication, Result/Analytics, Artifact, and provenance owners. Restart recovery rediscovers the same canonical chain without known-ID injection.
-- CSV and Parquet local import through a native chooser and one-use main-process transfer. The renderer supplies neither authoritative paths/bytes nor canonical owner IDs. Imported observations remain `LOCAL_USER_SUPPLIED / PIT_UNPROVABLE / NOT_FORMAL`.
-- Factor evaluation through the sole canonical evaluator, including honest single-symbol `INSUFFICIENT_SAMPLE` states and a 20-symbol cross-sectional acceptance case with independently checked IC, Rank IC, quantiles, and spread.
-- A research-only Strategy → Portfolio/Risk decision chain → Backtest → VALID Result/Analytics path. The legacy Formal `BacktestService` remains fail-closed as `UNAVAILABLE / FORMAL_EXECUTION_CONTRACT_NOT_CLOSED`; VALID publication does not mean Formal market truth.
-- Provider acquisition failure is explicit and fail-closed: it cannot mint market bytes or a successful canonical chain and performs no silent provider/fixture fallback.
-- A Windows x64 NSIS installer and unpacked delivery with embedded CPython 3.14.5 and exact AKShare 1.18.84. First launch performs no Python dependency installation.
-- Foundation and domain tests covering catalog/contracts, artifact/task boundaries, runtime framing, deterministic owner behavior, and selected integration paths.
-- Clearly marked Demo/development providers for non-formal workflows; they cannot mint formal financial truth or silently stand in for unavailable production handlers.
+    npm run setup:research -- --python "C:/Python312/python.exe"
 
-Not every domain module has a production runtime handler, desktop bridge, or product surface. In particular, the broad ASL service catalog is not implied by the additive V1.1 Product Entry path. Production Agent execution remains `NOT_AVAILABLE / NOT_RUN` until shared canonical user-action authority exists. Real free-provider availability is external and the V1.1 exact-package provider acceptance has not run; an exact `PROVIDER_ACQUISITION_UNAVAILABLE` result may be recorded as blocked, never converted into PASS.
+npm run dev 开启前端热更新。Python 运行时位于 runtime/research-python，与系统环境分开；桌面安装包包含解释器与依赖，使用者无需安装 Python。
 
-## Prerequisites
+## 使用流程
 
-- Node.js 24 (the current baseline was verified with 24.16.0) and npm 11.
-- CPython 3.14.7 for repository validation where configured. The current Windows package contains exact CPython 3.14.5 win_amd64, whose executable and license hashes are bound in the runtime/package manifests. No optional Qlib/RQData/RQAlpha/GPU environment is required for the V1.1 local-data Golden Journeys.
+从“今日工作台”继续研究，或直接打开市场概况、筛选、自选、实际持仓和数据中心。研究流程为：创建项目与策略 → 获取或导入数据 → 配置股票池 → 分析因子 → 编辑策略 → 回测 → 比较实验。
 
-## Build and verify
+策略首先展示配置摘要和近期实验；“编辑参数”展开控件，修改自动保存为草稿。运行产生独立实验，“应用到每日选股”才更新启用方案。股票、策略和实验各自作为标签打开，可拖动分屏或移到独立 Windows 窗口；自定义布局、窗口位置及打开的对象可恢复。右侧 AI 使用独立研究会话，切换标签不会更换会话关联内容。
 
-```text
-npm ci
-npm run validate:public
-```
+财务因子按公告日期进入研究。免费数据源的覆盖和历史修订能力以实际数据为准。模型按时间区间训练、验证和测试，寻优在验证区间进行。AI 的服务地址、模型和 API Key 在设置中填写；Ling-3.0-flash-Fin 可作为兼容服务候选，模型权重不随应用交付。
 
-For the full local Electron smoke route, run `npm run validate` from a desktop session. Build output is generated under `dist/` and is not committed.
+组合支持等权、评分加权、风险平价和均值方差；仓位、单股、行业和换手限制在策略页配置。结果分别展示策略与基准表现，并可查看行业权重、风险贡献、交易和持仓收益贡献。因子方向、MAD 去极值、标准化和可选中性化在因子页设置。
 
-The Windows packaging gates require an exact CPython 3.14.5 build input through `V3_PACKAGED_PYTHON_ROOT`:
+日常使用进入“每日选股”：为已启用策略分配资金占比，在“实际持仓”填写或导入全局持仓、可卖数量与现金，点击“生成合并调仓清单”。软件按需更新数据与模型，合并同一证券的策略权重，保存候选股票、目标组合、策略贡献和一份净调仓清单。未分配资金留作现金，清单金额按最新完成交易日价格估算。生成清单不会改变实际持仓，操作后由用户更新；不包含券商下单。
 
-```text
-npm run sbom:check
-npm run package:win:release
-npm run verify:package
-npm run verify:release
-npm run smoke:product-release
-```
+持仓 CSV / Excel 列为 `证券代码,持仓数量,可卖数量,成本价,可用资金,日期`，成本价可省略。数量以股为单位，日期为 `YYYY-MM-DD`。研究行情及财务文件仍使用 CSV / Parquet。
 
-`smoke:product-release` is the V1.1 packaged local-data Journey A/B driver, not a live-provider or distinct-clean-machine test. `verify:release` is expected to reject a DIRTY BuildManifest; only a clean exact head may pass it. The hosted packaging workflow owns Jobs D-F: exact-package production, a no-checkout transferred-artifact clean-machine journey, and real AKShare acceptance with no deterministic/fallback provider inheritance.
+首次使用免费数据源，先在“股票池”保存证券代码，再到“数据”选择日期并手动更新。数据逐股保存，后台可取消；同一天重新运行相同的未完成批次，会复用已完成的股票。导入已有文件后，可单独点击“保存研究区间”，无需联网更新。
 
-For source-shaped product verification without claiming package or hosted evidence:
+CSV / Parquet 的行情列为 `symbol,date,open,high,low,close,volume`；证券代码支持 `SH600000`、`sh.600000`、`600000.SH` 或六位代码，成交量单位为股。估值因子使用 `peTTM,pbMRQ`。若输入前复权价格，应一并提供 `factor=前复权价/原始价`，用于还原实际成交价和股数；缺少的字段会在数据说明中列出。
 
-```text
-npm run smoke:product-data
-npm run smoke:product-factor
-npm run smoke:product-backtest
-npm run smoke:product-result
-```
+财务文件包含 `symbol,announcementDate,reportDate`，其中公告日期不可省略；对应因子字段为 `roeAvg,YOYNI,YOYRevenue,npMargin,liabilityToAsset`。净利率也兼容旧列 `netProfitMargin`；当前 BaoStock 适配未提供收入同比 `YOYRevenue`，使用该因子需导入有明确口径的数据。BaoStock 的 `code,pubDate,statDate` 列名也可直接导入。
 
-## Repository map
+历史指数成员可导入 `symbol,startDate,endDate`，历史行业可导入 `symbol,effectiveDate,industry`。免费来源快照按记录日期生效，界面列出覆盖范围；今天的成分或行业不会倒填到较早日期。沪深300和中证500基准行情随免费数据更新保存。
 
-- `apps/desktop/` — Electron main/preload and React renderer.
-- `apps/backend/src/v3_backend/` — Canonical Backend Foundation source.
-- `apps/backend/tests/` — Foundation conformance and integration tests.
-- `packages/contracts/` — current typed frontend boundary contracts.
-- `docs/architecture/` — canonical target ownership plus implemented/future boundary documentation.
-- `docs/status/` — mandatory capability vocabulary, authority manifest, systemic baseline, and status records.
-- `docs/runtime/` — Core Python authority and optional-environment policy.
-- `docs/oss/` and `sbom/` — publication readiness, license inventory, and SBOM.
-- `docs/release/` — V1 scope, release identity, acceptance semantics, and known limitations.
+“数据中心”还可下载或导入资金流、筹码与龙虎榜，用于个股全景、条件筛选和因子研究。资金流金额统一为元、占比为比例；筹码是算法估算，成本偏离使用原始股价。免费资金流与筹码历史通常较短，实际覆盖和来源错误会显示在界面；更长历史可通过文件补充。个股资料可按截止日期查看，完整表格分页读取，CSV / Excel 导出保留全部记录。
 
-## License and publication status
+因子页支持 Qlib 公式，例如 `$close/Ref($close,10)-1`。策略的 Python 编辑器提供 `pd`、行情表 `prices` 和按日期、证券索引的评分 `scores`；修改 `scores` 并保留索引即可，例如 `scores = -scores` 将排序方向反转。撮合、费用和持仓仍由 Qlib 处理。
 
-V3 is licensed under the **Apache License 2.0** (`Apache-2.0`). See the root `LICENSE` file. Dependency licenses remain separately recorded in `docs/oss/THIRD_PARTY_LICENSE_MATRIX.csv`.
+结果页先看整体表现；因子实验可从汇总进入单因子的 Pearson IC、Rank IC、分组表现、衰减和稳定性。交易与持仓表支持分页和证券/日期筛选，点击一行打开对应行情，可继续加载更早日线。选股实验的 CSV 导出调仓清单，其他实验导出第一张完整结果表；Excel 包含全部表，PDF 为指标、参数和表格预览报告，图表图片单独导出。
 
-The released V1.0 history is recorded in [`docs/release/V1_0_RELEASE_CANDIDATE.md`](docs/release/V1_0_RELEASE_CANDIDATE.md). The current V1.1 candidate evidence and non-promoted gates are recorded in [`docs/release/V1_1_RELEASE_CANDIDATE.md`](docs/release/V1_1_RELEASE_CANDIDATE.md) and the task [`State Ledger`](docs/release/V1_1_USABLE_RESEARCH_PRODUCT_STATE_LEDGER.md). Unfinished scale, hermeticity, provider, physical-visual, clean-machine, and release work remains literal in [`docs/status/V3_DEFERRED_GAPS.md`](docs/status/V3_DEFERRED_GAPS.md).
+## 开发与交付
 
-The public repository is `https://github.com/dongxuelian11/v3-quant-workbench`. V1.0 has the historical public prerelease linked above; no V1.1 tag or release exists. Recovery provenance is documented in `docs/recovery/PROVENANCE_AND_DISASTER_REBUILD.md`.
+    npm run typecheck
+    npm test
+    npm run package:win
+
+npm test 只运行新版研究功能的计算和持久化检查。普通修改选择相关检查，界面修改查看实际页面；整合和交付时再操作完整流程。CI 做一次编译和研究检查，安装包任务手动运行。
+
+Windows 安装包输出在 artifacts/package。项目目录由用户选择，实验索引使用 SQLite，表格数据使用 Parquet。全局保存实际持仓、自选、会话索引、共享数据与工作区布局；项目保存策略、实验和项目内批注。
+
+开发入口：apps/desktop/src/researchMain.ts、apps/desktop/src/renderer、apps/backend/src/v3_backend/research。GUI 和 AI 共用接口，定义见 packages/contracts/src/research.ts。
+
+## 开源模块
+
+Electron、React、Dockview、TanStack Table、Monaco、ECharts、KLineChart；Python 3.12、Qlib 0.9.7、alphalens-reloaded 0.4.6、BaoStock、AKShare、LightGBM、Ridge、Optuna、PydanticAI Slim。上游许可证随相应依赖保留。
+
+本仓库使用 Apache-2.0 许可证。软件用于研究，不包含券商交易连接。

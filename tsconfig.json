@@ -16,8 +16,9 @@
     "types": ["node"]
   },
   "include": [
-    "apps/**/*.ts",
-    "packages/**/*.ts"
+    "apps/desktop/src/researchMain.ts",
+    "apps/desktop/src/researchPreload.ts",
+    "packages/contracts/src/research.ts"
   ],
   "exclude": [
     "node_modules",

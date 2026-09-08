@@ -1,0 +1,188 @@
+"""Portable JSON projects and transactional local records."""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import uuid
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def identifier():
+    return uuid.uuid4().hex
+
+
+def write_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + '.' + identifier() + '.tmp')
+    try:
+        temporary.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2), encoding='utf-8')
+        for attempt in range(5):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as exc:
+                if getattr(exc, 'winerror', None) not in {5, 32} or attempt == 4:
+                    raise
+                time.sleep(.02 * (attempt + 1))
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_json(path, default=None):
+    return json.loads(Path(path).read_text(encoding='utf-8')) if Path(path).exists() else default
+
+
+class Store:
+    def __init__(self, app_data):
+        self.root = Path(app_data).resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.db = self.root / 'research.sqlite'
+        with self.connect() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS records (kind TEXT, id TEXT, project TEXT, body TEXT, PRIMARY KEY(kind,id))')
+
+    @contextmanager
+    def connect(self):
+        db = sqlite3.connect(self.db, timeout=30)
+        try:
+            db.execute('PRAGMA journal_mode=WAL')
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    def put(self, kind, value, project=''):
+        with self.connect() as db:
+            db.execute('INSERT OR REPLACE INTO records VALUES (?,?,?,?)',
+                       (kind, value['id'], project, json.dumps(value, ensure_ascii=False, allow_nan=False)))
+        return value
+
+    def get(self, kind, key):
+        with self.connect() as db:
+            row = db.execute('SELECT body FROM records WHERE kind=? AND id=?', (kind, key)).fetchone()
+        if row is None:
+            raise ValueError(f'{kind} 不存在: {key}')
+        return json.loads(row[0])
+
+    def list(self, kind, project=None):
+        with self.connect() as db:
+            rows = db.execute('SELECT body FROM records WHERE kind=?' + (' AND project=?' if project is not None else ''),
+                              (kind, project) if project is not None else (kind,)).fetchall()
+        return sorted((json.loads(row[0]) for row in rows), key=lambda x: x.get('createdAt', ''), reverse=True)
+
+    def delete(self, kind, key):
+        with self.connect() as db:
+            db.execute('DELETE FROM records WHERE kind=? AND id=?', (kind, key))
+
+    def create_project(self, path, name, objective=''):
+        folder = Path(path).resolve()
+        if (folder / 'project.json').exists():
+            raise ValueError('此目录已有项目，请打开项目')
+        folder.mkdir(parents=True, exist_ok=True)
+        project = dict(id=identifier(), name=name, objective=objective, path=str(folder),
+                       createdAt=now(), updatedAt=now(), startDate='', endDate='', settings={'dataPath': str(self.root / 'shared' / 'data')},
+                       universe=dict(name='我的股票池', symbols=[], source='manual', excludeST=True, minListingDays=60))
+        return self.save_project(project, new=True)
+
+    def open_project(self, path):
+        folder = Path(path).resolve()
+        project = read_json(folder / 'project.json')
+        if not isinstance(project, dict) or not project.get('id'):
+            raise ValueError('不是有效的研究项目目录')
+        project['path'] = str(folder)
+        self.put('project', project)
+        portable = self.project_store(project['id'])
+        for job in portable.list('job', project['id']):
+            if job['status'] in {'running', 'queued'}:
+                try:
+                    # The service startup handles lost workers. Opening a project inside
+                    # that service must preserve its currently owned running/queued record.
+                    job = self.get('job', job['id'])
+                except ValueError:
+                    job.update(status='interrupted', message='此应用没有该任务的工作进程，可重跑', updatedAt=now())
+                    portable.put('job', job, project['id'])
+            self.put('job', job, project['id'])
+        return project
+
+    def project(self, key):
+        if not key:
+            folder = self.root / 'shared'
+            folder.mkdir(parents=True, exist_ok=True)
+            return dict(id=None, name='共享研究', objective='', path=str(folder), settings={}, startDate='', endDate='', universe=dict(name='共享行情', source='manual', symbols=[], excludeST=False, minListingDays=0))
+        registered = self.get('project', key)
+        project = read_json(Path(registered['path']) / 'project.json')
+        if not project or project.get('id') != key:
+            raise ValueError('项目目录不可用或项目身份已改变')
+        project['path'] = registered['path']
+        return project
+
+    def save_project(self, project, new=False):
+        project = dict(project)
+        if not new:
+            old = self.project(project['id'])
+            project['path'] = old['path']
+            project['createdAt'] = old['createdAt']
+        if not project.get('name') or not isinstance(project.get('universe', {}).get('symbols'), list):
+            raise ValueError('项目名称和股票池格式无效')
+        project['updatedAt'] = now()
+        write_json(Path(project['path']) / 'project.json', project)
+        self.put('project', project)
+        return project
+
+    def project_store(self, project_id):
+        return Store(Path(self.project(project_id)['path']) / '.research')
+
+    def experiments(self, project_id):
+        return [{**item, **({'strategyId': 'default'} if project_id and not item.get('strategyId') else {})} for item in self.project_store(project_id).list('experiment', project_id or '')]
+
+    def experiment(self, project_id, experiment_id):
+        value = self.project_store(project_id).get('experiment', experiment_id)
+        if project_id and not value.get('strategyId'):
+            value = {**value, 'strategyId': 'default'}
+        return value
+
+    def save_experiment(self, project_id, value):
+        value = {**value, 'artifacts': [dict(artifact) for artifact in value['artifacts']]}
+        project_root = Path(self.project(project_id)['path']).resolve()
+        for artifact in value['artifacts']:
+            artifact['path'] = self.artifact_path(project_id, artifact).relative_to(project_root).as_posix()
+        return self.project_store(project_id).put('experiment', value, project_id or '')
+
+    def artifact_path(self, project_id, artifact):
+        root = Path(self.project(project_id)['path']).resolve()
+        path = Path(artifact['path'])
+        if path.is_absolute():
+            marker = '/.research/runs/'
+            normalized = path.as_posix()
+            if marker in normalized:
+                path = root / '.research' / 'runs' / normalized.split(marker, 1)[1]
+        else:
+            path = root / path
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError('实验工件必须位于项目目录内')
+        return resolved
+
+    def settings(self, value=None):
+        path = self.root / 'settings.json'
+        if value is not None:
+            old = read_json(path, {})
+            old.update(value)
+            write_json(path, old)
+        result = {'ai': {'baseUrl': 'https://openrouter.ai/api/v1', 'model': 'inclusionai/ling-3.0-flash-fin:free', 'apiKey': '', 'temperature': 0.2}, 'defaultDataSource': 'baostock'}
+        saved = read_json(path, {})
+        defaults = dict(result['ai'])
+        result.update(saved)
+        result['ai'] = {**defaults, **saved.get('ai', {})}
+        for key in ['baseUrl', 'model']:
+            if not result['ai'].get(key):
+                result['ai'][key] = defaults[key]
+        return result
