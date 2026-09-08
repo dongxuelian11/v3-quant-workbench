@@ -94,6 +94,7 @@ export interface WorkspacePanel extends ResearchObjectRef {
 export interface WorkspaceWindow {
   id: string;
   main?: boolean;
+  maximized?: boolean;
   bounds?: { x?: number; y?: number; width: number; height: number };
   dock?: JsonObject;
   panels: WorkspacePanel[];
