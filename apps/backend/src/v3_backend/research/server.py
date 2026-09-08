@@ -43,6 +43,15 @@ class Service:
     def request(self, method, params):
         p = params or {}
         store = self.store
+        from .workbench import dispatch
+        handled, result = dispatch(self, method, p)
+        if handled:
+            return result
+        if method.startswith('market.') or method == 'data.catalog':
+            from .market import dispatch as market_dispatch
+            handled, result = market_dispatch(self, method, p)
+            if handled:
+                return result
         if method == 'projects.list':
             return store.list('project')
         if method == 'projects.create':
@@ -53,7 +62,7 @@ class Service:
             return store.save_project(p['project'])
         if method == 'projects.summary':
             from .data import preview
-            project = store.project(p['projectId'])
+            project = store.project(p.get('projectId'))
             return dict(project=project, data=preview(project), experiments=store.experiments(project['id']), jobs=store.list('job', project['id']))
         if method == 'universe.templates':
             return store.list('template')
@@ -69,7 +78,7 @@ class Service:
             return store.settings(p['settings'])
         if method in {'positions.get', 'positions.save', 'positions.import'}:
             from . import positions
-            project = store.project(p['projectId'])
+            project = store.project(p.get('projectId'))
             if method == 'positions.get':
                 return positions.get(project)
             return positions.save(project, p['positions']) if method == 'positions.save' else positions.import_file(project, p['path'])
@@ -87,11 +96,12 @@ class Service:
             return factor_catalog()
         if method == 'data.preview':
             from .data import preview
-            return preview(store.project(p['projectId']))
+            return preview(store.project(p.get('projectId')))
         if method == 'data.bars':
             import pandas as pd
             from .data import records, symbol
-            root = Path(store.project(p['projectId'])['path']) / 'data'
+            from .data import project_data
+            root = Path(project_data(store.project(p.get('projectId')))['path']) / 'data'
             code = symbol(p['symbol'])
             columns = ['date', 'open', 'high', 'low', 'close', 'volume']
             # Legacy tables can overlap newer partitions; the partition is the latest copy.
@@ -113,23 +123,25 @@ class Service:
             return records(frame.tail(max(1, min(500, int(p.get('limit', 500))))))
         if method in {'charts.load', 'charts.save'}:
             from .data import symbol
-            project = store.project(p['projectId'])
+            project = store.project(p.get('projectId'))
             path = Path(project['path']) / 'annotations' / f'{symbol(p["symbol"])}.json'
             if method == 'charts.save':
                 write_json(path, p['annotations'])
             return {'annotations': read_json(path, [])}
         if method == 'experiments.list':
-            return store.experiments(p['projectId'])
+            scopes = [None] + [x['id'] for x in store.list('project')] if p.get('all') else [p.get('projectId')]
+            values = [item for scope in scopes for item in store.experiments(scope)]
+            return sorted([item for item in values if not p.get('strategyId') or item.get('strategyId') == p['strategyId']], key=lambda x:x['createdAt'], reverse=True)
         if method == 'experiments.get':
-            return self.experiment_details(p['projectId'], p['experimentId'])
+            return self.experiment_details(p.get('projectId'), p['experimentId'])
         if method == 'experiments.table':
             import pandas as pd
             from .data import records, symbol
-            experiment = store.experiment(p['projectId'], p['experimentId'])
+            experiment = store.experiment(p.get('projectId'), p['experimentId'])
             artifact = next((item for item in experiment['artifacts'] if item['name'] == p['table'] and item['type'] == 'parquet'), None)
             if artifact is None:
                 raise ValueError('实验中没有此数据表')
-            frame = pd.read_parquet(store.artifact_path(p['projectId'], artifact))
+            frame = pd.read_parquet(store.artifact_path(p.get('projectId'), artifact))
             instrument = next((name for name in ('symbol', 'instrument', 'asset') if name in frame), None)
             date_column = 'date' if 'date' in frame else 'datetime' if 'datetime' in frame else None
             if p.get('symbol'):
@@ -148,32 +160,34 @@ class Service:
             offset, limit = max(0, int(p.get('offset', 0))), max(1, min(500, int(p.get('limit', 200))))
             return dict(name=artifact['name'], columns=list(frame.columns), rows=records(frame.iloc[offset:offset + limit]), total=len(frame), offset=offset, limit=limit)
         if method == 'experiments.compare':
-            ids = p['experimentIds']
-            if len(ids) > 10:
+            refs = p.get('experiments') or [{'projectId':p.get('projectId'),'experimentId':key} for key in p.get('experimentIds',[])]
+            if len(refs) > 10:
                 raise ValueError('一次最多比较10个实验')
-            results = [self.experiment_details(p['projectId'], key) for key in ids]
+            results = [self.experiment_details(ref.get('projectId'), ref['experimentId']) for ref in refs]
             contexts = {json.dumps(result['details'].get('dataContext'), sort_keys=True) for result in results}
             if len(contexts) > 1:
                 for result in results:
                     result['details']['comparisonWarning'] = '实验数据日期或覆盖不同，不能视为相同条件下的优劣比较。'
             return results
         if method == 'experiments.update':
-            value = store.experiment(p['projectId'], p['experimentId'])
+            value = store.experiment(p.get('projectId'), p['experimentId'])
             for key in ['name', 'starred']:
                 if key in p:
                     value[key] = p[key]
-            return store.save_experiment(p['projectId'], value)
+            return store.save_experiment(p.get('projectId'), value)
         if method == 'experiments.delete':
-            store.experiment(p['projectId'], p['experimentId'])
+            store.experiment(p.get('projectId'), p['experimentId'])
             import shutil
-            root = (Path(store.project(p['projectId'])['path']) / '.research' / 'runs').resolve()
+            root = (Path(store.project(p.get('projectId'))['path']) / '.research' / 'runs').resolve()
             target = (root / p['experimentId']).resolve()
             if target.parent != root:
                 raise ValueError('实验路径无效')
             if target.exists():
                 shutil.rmtree(target)
-            store.project_store(p['projectId']).delete('experiment', p['experimentId'])
+            store.project_store(p.get('projectId')).delete('experiment', p['experimentId'])
             return {'deleted': True}
+        if method == 'exports.table':
+            return self.export_table(p)
         if method == 'exports.create':
             return self.export(p)
         if method == 'ai.chat':
@@ -181,13 +195,33 @@ class Service:
             return chat(self, p)
         raise ValueError(f'未知研究方法: {method}')
 
+    def export_table(self, p):
+        import pandas as pd
+        import re
+        table = p['table']
+        frame = pd.DataFrame(table['rows'], columns=table['columns'])
+        folder = self.store.root / 'shared' / 'exports'
+        folder.mkdir(parents=True, exist_ok=True)
+        name = re.sub(r'[<>:"/\\|?*]', '_', str(p.get('name') or table['name'])).strip('. ') or 'table'
+        if p['format'] == 'csv':
+            path = folder / (name + '.csv')
+            frame.to_csv(path, index=False, encoding='utf-8-sig')
+        elif p['format'] == 'xlsx':
+            path = folder / (name + '.xlsx')
+            with pd.ExcelWriter(path, engine='openpyxl') as writer:
+                for chunk, offset in enumerate(range(0, max(1,len(frame)),1048575)):
+                    frame.iloc[offset:offset+1048575].to_excel(writer,sheet_name=f'table_{chunk}',index=False)
+        else:
+            raise ValueError('只支持CSV/XLSX')
+        return {'path':str(path)}
+
     def export(self, p):
         import pandas as pd
         import re
-        experiment = self.store.experiment(p['projectId'], p['experimentId'])
-        output = Path(self.store.project(p['projectId'])['path']) / 'exports'
+        experiment = self.store.experiment(p.get('projectId'), p['experimentId'])
+        output = Path(self.store.project(p.get('projectId'))['path']) / 'exports'
         output.mkdir(exist_ok=True)
-        tables = [(artifact['name'], pd.read_parquet(self.store.artifact_path(p['projectId'], artifact))) for artifact in experiment['artifacts'] if artifact['type'] == 'parquet']
+        tables = [(artifact['name'], pd.read_parquet(self.store.artifact_path(p.get('projectId'), artifact))) for artifact in experiment['artifacts'] if artifact['type'] == 'parquet']
         if not tables:
             tables = [('metrics', pd.DataFrame(list(experiment['metrics'].items()), columns=['metric', 'value']))]
         if p['format'] == 'xlsx':

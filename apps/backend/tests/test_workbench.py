@@ -61,6 +61,24 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual(self.call('ai.conversations.list'), [])
         self.assertEqual(history.read_bytes(), original_history)
 
+    def test_independent_window_patches_keep_both_changes_and_active_snapshot(self):
+        key = self.project['id']
+        strategy = self.call('strategies.create', projectId=key, name='双窗口策略')
+        ref = {'id': strategy['id']}
+        self.call('strategies.save', projectId=key, strategy=ref,
+                  settingsPatch={'backtest': {'topN': 10, 'rebalance': 'weekly', 'portfolio': {'maxWeight': .2}}, 'model': {'hyperparameters': {'alpha': 1.}}})
+        self.call('strategies.activate', projectId=key, strategyId=strategy['id'])
+        # Both editors began with the same old record; only changed fields cross IPC.
+        self.call('strategies.save', projectId=key, strategy=ref,
+                  settingsPatch={'backtest': {'topN': 20}, 'model': {'hyperparameters': {'alpha': 2.}}})
+        saved = self.call('strategies.save', projectId=key, strategy=ref,
+                          settingsPatch={'backtest': {'rebalance': 'monthly', 'portfolio': {'maxWeight': None}}})
+        self.assertEqual(saved['settings']['backtest'], {'topN': 20, 'rebalance': 'monthly', 'portfolio': {'maxWeight': None}})
+        self.assertEqual(saved['settings']['model']['hyperparameters']['alpha'], 2.)
+        self.assertEqual(saved['active']['settings']['backtest']['topN'], 10)
+        self.call('strategies.save', projectId=key, strategy={'id': strategy['id'], 'name': '新名称'})
+        self.assertEqual(workbench.get_strategy(self.store, key, strategy['id'])['settings'], saved['settings'])
+
     def test_global_conversations_and_workspace_preserve_other_objects(self):
         a = self.call('ai.conversations.create', name='趋势', context=[{'kind': 'stock', 'symbol': 'SH600000'}])
         b = self.call('ai.conversations.create', name='估值', context=[])

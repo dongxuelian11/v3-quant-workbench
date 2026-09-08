@@ -5,6 +5,12 @@ import re
 from .storage import now, write_json, read_json
 
 
+def project_data(project):
+    """Resolve shared data while preserving project-owned outputs and configuration."""
+    path = project.get('settings', {}).get('dataPath')
+    return {**project, 'path': str(Path(path).parent)} if path else project
+
+
 def symbol(value):
     value = str(value).strip().upper().replace('.', '')
     if re.fullmatch(r'(SH|SZ|BJ)\d{6}', value):
@@ -58,7 +64,7 @@ def normalize(frame, kind):
 
 def read_table(project, kind='prices'):
     import pandas as pd
-    path = Path(project['path']) / 'data' / f'{kind}.parquet'
+    path = Path(project_data(project)['path']) / 'data' / f'{kind}.parquet'
     partitions = list((path.parent / kind).glob('*.parquet'))
     if partitions:
         frames = ([pd.read_parquet(path)] if path.exists() else []) + [pd.read_parquet(part) for part in partitions]
@@ -70,7 +76,7 @@ def read_table(project, kind='prices'):
 
 def merge_table(project, frame, kind, return_all=True):
     import pandas as pd
-    path = Path(project['path']) / 'data' / f'{kind}.parquet'
+    path = Path(project_data(project)['path']) / 'data' / f'{kind}.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
     if kind == 'prices':
         folder = path.parent / 'prices'
@@ -112,6 +118,13 @@ def import_files(project, params, progress):
             frame = pd.read_csv(path, dtype={'symbol': str, 'code': str, '股票代码': str})
         else:
             raise ValueError('只支持 CSV/Parquet')
+        frame = frame.rename(columns=params.get('mapping', params.get('fieldMapping', {})))
+        dataset = params.get('dataset', params.get('kind', 'auto'))
+        if dataset in {'flow', 'fund_flow', 'chips', 'lhb'}:
+            from .alternative_data import import_frame
+            count = import_frame(project, 'fund_flow' if dataset == 'flow' else dataset, frame)
+            summaries.append({'file': str(path), 'kind': dataset, 'result': count})
+            continue
         if 'industry' in frame and 'symbol' in frame and ('effectiveDate' in frame or 'startDate' in frame):
             from .history import import_industry
             count = import_industry(project,frame)
@@ -122,13 +135,13 @@ def import_files(project, params, progress):
             count = import_membership(project, frame)
             summaries.append({'file': str(path), 'kind': 'membership', 'importedRows': count, 'totalRows': count})
             continue
-        frame, kind = normalize(frame, params.get('kind', 'auto'))
+        frame, kind = normalize(frame, dataset)
         saved = merge_table(project, frame, kind)
         summaries.append({'file': str(path), 'kind': kind, 'importedRows': len(frame), 'totalRows': len(saved)})
         progress((index + 1) / len(files) * 0.9, f'已导入 {path.name}')
     warnings = ['导入数据的复权口径和历史修订完整性由来源决定。财务按公告日之后交易日生效。']
-    old_source = read_json(Path(project['path']) / 'data' / 'source.json', {})
-    write_json(Path(project['path']) / 'data' / 'source.json', {'source': 'import', 'updatedAt': now(), 'imports': summaries,
+    old_source = read_json(Path(project_data(project)['path']) / 'data' / 'source.json', {})
+    write_json(Path(project_data(project)['path']) / 'data' / 'source.json', {'source': 'import', 'updatedAt': now(), 'imports': summaries,
         'warnings': list(dict.fromkeys(old_source.get('warnings', []) + warnings))})
     return {'imports': summaries, 'warnings': warnings}
 
@@ -179,6 +192,8 @@ def _bs_prices(bs, remote, start, end):
             frame['raw' + field.capitalize()] = frame.date.map(pd.to_numeric(raw.set_index('date')[field], errors='coerce'))
     basic = _bs_query(bs, bs.query_stock_basic, code=remote)
     if not basic.empty:
+        frame['observedName'] = basic.iloc[0].get('code_name', '')
+        frame['nameObservedAt'] = now()[:10]
         frame['listingDate'] = basic.iloc[0]['ipoDate']
         frame['delistingDate'] = basic.iloc[0].get('outDate', '')
     return frame
@@ -202,7 +217,7 @@ def _bs_financials(bs, remote, start, end, quarters=None):
 
 def _financial_update(project, bs, remote, start, end):
     import pandas as pd
-    path = Path(project['path'])/'data'/'financials'/f'{symbol(remote)}.json'
+    path = Path(project_data(project)['path'])/'data'/'financials'/f'{symbol(remote)}.json'
     stamp = read_json(path,{})
     if stamp.get('downloadDate') == now()[:10] and stamp.get('start','9999') <= start and stamp.get('end','') >= end:
         return
@@ -227,7 +242,7 @@ def _incremental_prices(project, bs, remote, start, end):
     import pandas as pd
     import numpy as np
     code = symbol(remote)
-    path = Path(project['path']) / 'data' / 'prices' / f'{code}.parquet'
+    path = Path(project_data(project)['path']) / 'data' / 'prices' / f'{code}.parquet'
     stamp = read_json(path.with_suffix('.json'), {})
     if path.exists():
         old = pd.read_parquet(path)
@@ -246,13 +261,54 @@ def _incremental_prices(project, bs, remote, start, end):
     return _bs_prices(bs, remote, start, end)
 
 
+def save_security_names(project, names):
+    """Append observed basic metadata; observation dates never backfill history."""
+    import pandas as pd
+    target = Path(project_data(project)['path'])/'data/securities.parquet'
+    target.parent.mkdir(parents=True,exist_ok=True)
+    old = pd.read_parquet(target) if target.exists() else pd.DataFrame()
+    saved = pd.concat([old,names],ignore_index=True)
+    saved['effectiveDate'] = pd.to_datetime(saved.effectiveDate).dt.strftime('%Y-%m-%d')
+    saved = saved.drop_duplicates(['symbol','effectiveDate'],keep='last')
+    temporary = target.with_name(target.stem + '.' + __import__('uuid').uuid4().hex + '.tmp.parquet')
+    try:
+        saved.to_parquet(temporary,index=False)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return saved
+
+
+def ensure_security_name(project, bs, remote):
+    """Fill missing display metadata even when daily price data is reused."""
+    import pandas as pd
+    code = symbol(remote)
+    target = Path(project_data(project)['path'])/'data/securities.parquet'
+    if target.exists():
+        existing = pd.read_parquet(target)
+        if ((existing.symbol == code) & existing.name.notna() & existing.name.astype(str).str.strip().ne('')).any():
+            return
+    basic = _bs_query(bs, bs.query_stock_basic, code=remote)
+    if basic.empty or not str(basic.iloc[0].get('code_name','')).strip():
+        raise ValueError('股票基本资料没有名称：'+code)
+    save_security_names(project,pd.DataFrame([dict(symbol=code,name=basic.iloc[0]['code_name'],effectiveDate=now()[:10],source='BaoStock/query_stock_basic')]))
+
+
 def _save_updated_prices(project, frame, code):
+    if 'observedName' in frame and 'nameObservedAt' in frame:
+        names = frame[['observedName','nameObservedAt']].dropna().drop_duplicates().rename(columns={'observedName':'name','nameObservedAt':'effectiveDate'})
+        names = names[names.name.ne('')]
+        names['symbol'] = code
+        names['source'] = 'BaoStock/query_stock_basic'
+        if not names.empty:
+            save_security_names(project,names)
+        frame = frame.drop(columns=['observedName','nameObservedAt'])
     """Never concatenate a new forward-adjustment basis with this stock's old dates."""
     import pandas as pd
     prices, _ = normalize(frame, 'prices')
     if prices.empty:
         raise ValueError(f'{code} 来源未返回有效行情')
-    path = Path(project['path']) / 'data' / 'prices.parquet'
+    path = Path(project_data(project)['path']) / 'data' / 'prices.parquet'
     if path.exists() or (path.parent / 'prices').exists():
         part = path.parent / 'prices' / f'{code}.parquet'
         existing = pd.read_parquet(part) if part.exists() else pd.read_parquet(path) if path.exists() else pd.DataFrame(columns=['symbol', 'date'])
@@ -262,7 +318,7 @@ def _save_updated_prices(project, frame, code):
     merge_table(project, prices, 'prices', return_all=False)
 
 
-def update(project, params, progress):
+def _update_prices(project, params, progress):
     import pandas as pd
     start = params.get('startDate') or project.get('startDate')
     end = params.get('endDate') or project.get('endDate') or now()[:10]
@@ -274,7 +330,7 @@ def update(project, params, progress):
     symbols = list(dict.fromkeys(symbol(s) for s in project['universe']['symbols']))
     if project['universe']['source'] in {'csi300', 'csi500', 'all'}:
         symbols = []
-    existing_path = Path(project['path']) / 'data' / 'prices.parquet'
+    existing_path = Path(project_data(project)['path']) / 'data' / 'prices.parquet'
     existing = read_table(project) if existing_path.exists() or (existing_path.parent / 'prices').exists() else pd.DataFrame()
     if not existing.empty:
         relevant = existing[existing.symbol.isin(symbols)] if symbols else existing
@@ -285,13 +341,21 @@ def update(project, params, progress):
     bs = None
     if source == 'baostock' or needs_financials:
         import baostock as bs
-    checkpoint_path = Path(project['path']) / 'data' / 'update-progress.json'
+    checkpoint_path = Path(project_data(project)['path']) / 'data' / 'update-progress.json'
     previous = read_json(checkpoint_path, {})
     completed, price_saved = [], []
     financial_rows = 0
     configuration = None
     reused = []
     connection_guard = None
+    name_warnings = []
+
+    def fill_name(code):
+        if bs is not None:
+            try:
+                ensure_security_name(project,bs,code[:2].lower()+'.'+code[2:])
+            except Exception as exc:
+                name_warnings.append(f'{code} 名称资料未补齐：{exc}')
 
     def persist(status, error=None):
         checkpoint = dict(configuration=configuration, completedSymbols=completed, priceSymbols=price_saved,
@@ -299,6 +363,7 @@ def update(project, params, progress):
         write_json(checkpoint_path, checkpoint)
         warnings = ['成员/行业按快照记录日期生效；快照间变化及免费源历史修订完整性未保证。',
                     '行情增量通过重叠区间校正复权基准，不一致时重新补历史；财务新日刷新最近约四季度，更早修订不保证追补。']
+        warnings.extend(name_warnings)
         if status != 'completed':
             warnings.append(f'采集未全部完成：已保存行情 {len(price_saved)}/{len(symbols)} 股，完整完成 {len(completed)}/{len(symbols)} 股。')
         if error:
@@ -311,7 +376,7 @@ def update(project, params, progress):
                         completedSymbols=completed, reusedSymbols=reused, status=status,
                         adjustment='forward-adjusted', financialSource='baostock' if needs_financials else None,
                         financialRows=financial_rows, warnings=warnings)
-        write_json(Path(project['path']) / 'data' / 'source.json', metadata)
+        write_json(Path(project_data(project)['path']) / 'data' / 'source.json', metadata)
         return metadata
 
     try:
@@ -350,12 +415,13 @@ def update(project, params, progress):
             completed = [code for code in previous.get('completedSymbols', []) if code in set(existing.symbol)]
             price_saved = [code for code in previous.get('priceSymbols', []) if code in set(existing.symbol)]
             financial_rows = previous.get('financialRows', 0)
-            if financial_rows and not (Path(project['path']) / 'data' / 'financials.parquet').exists():
+            if financial_rows and not (Path(project_data(project)['path']) / 'data' / 'financials.parquet').exists():
                 completed, financial_rows = [], 0
             reused = list(completed)
         persist('running')
         for index, code in enumerate(symbols):
             if code in completed:
+                fill_name(code)
                 progress(.1 + (index + 1) / len(symbols) * .85, f'复用已保存 {code}；完整完成 {len(completed)}/{len(symbols)} 股')
                 continue
             remote = code[:2].lower() + '.' + code[2:]
@@ -370,13 +436,14 @@ def update(project, params, progress):
                 frame['symbol'] = code
                 frame['成交量'] = frame['成交量'] * 100
             _save_updated_prices(project, frame, code)
-            write_json(Path(project['path']) / 'data' / 'prices' / f'{code}.json', dict(startDate=start, endDate=end, downloadDate=now()[:10]))
+            fill_name(code)
+            write_json(Path(project_data(project)['path']) / 'data' / 'prices' / f'{code}.json', dict(startDate=start, endDate=end, downloadDate=now()[:10]))
             if code not in price_saved:
                 price_saved.append(code)
             persist('running')
             if needs_financials:
                 _financial_update(project, bs, remote, start, end)
-                financial_path = Path(project['path'])/'data'/'financials.parquet'
+                financial_path = Path(project_data(project)['path'])/'data'/'financials.parquet'
                 if financial_path.exists():
                     financial_rows += int(pd.read_parquet(financial_path,columns=['symbol']).symbol.eq(code).sum())
             completed.append(code)
@@ -410,7 +477,7 @@ def preview(project):
     import pandas as pd
     datasets, rows = [], []
     for kind in ['prices', 'financials']:
-        path = Path(project['path']) / 'data' / f'{kind}.parquet'
+        path = Path(project_data(project)['path']) / 'data' / f'{kind}.parquet'
         if not path.exists() and not (path.parent / kind).exists():
             continue
         frame = read_table(project, kind)
@@ -420,7 +487,7 @@ def preview(project):
                              missingValues=int(frame.drop(columns=['symbol', 'date', 'announcementDate', 'reportDate'], errors='ignore').isna().sum().sum())))
         if path.stem == 'prices':
             rows = records(frame.tail(500))
-    source = read_json(Path(project['path']) / 'data' / 'source.json', {})
+    source = read_json(Path(project_data(project)['path']) / 'data' / 'source.json', {})
     warnings = source.get('warnings', [])
     if datasets and not source:
         warnings = ['导入数据的复权口径和历史修订完整性未验证。']
@@ -439,3 +506,17 @@ def preview(project):
 def records(frame):
     import json
     return json.loads(frame.to_json(orient='records', date_format='iso'))
+
+
+def update(project, params, progress):
+    if params.get('symbols'):
+        project = {**project, 'universe': {**project['universe'], 'source': 'manual', 'symbols': params['symbols']}}
+    result = _update_prices(project, params, progress)
+    kinds = params.get('alternativeData', [])
+    if kinds:
+        from .alternative_data import update as update_alternative
+        prices = read_table(project)
+        codes = params.get('symbols') or sorted(prices.symbol.unique())
+        result['alternativeData'] = update_alternative(project, codes, params['startDate'], params.get('endDate') or now()[:10],
+            kinds=tuple('fund_flow' if kind == 'flow' else kind for kind in kinds), progress=progress, include_institutions='lhb' in kinds, include_seats='lhb' in kinds)
+    return result

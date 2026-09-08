@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from v3_backend.research.storage import Store
-from v3_backend.research.data import merge_table, read_table
+from v3_backend.research.data import merge_table, read_table, project_data
 from v3_backend.research import engines
 
 
@@ -24,7 +24,7 @@ def sample_project(root):
                              low=value * .99, close=value, volume=1000000, amount=value * 1000000, isST=0))
     merge_table(project, pd.DataFrame(rows), 'prices')
     # Explicit synthetic benchmark for local integration, never production fallback.
-    benchmark = Path(project['path']) / 'data/benchmarks'
+    benchmark = Path(project_data(project)['path']) / 'data/benchmarks'
     benchmark.mkdir()
     pd.DataFrame({'date':dates,'close':np.arange(len(dates))+1000.,'preclose':np.arange(len(dates))+999.}).to_parquet(benchmark/'SH000300.parquet',index=False)
     return project, dates, store

@@ -74,8 +74,8 @@ class Store:
 
     def list(self, kind, project=None):
         with self.connect() as db:
-            rows = db.execute('SELECT body FROM records WHERE kind=?' + (' AND project=?' if project else ''),
-                              (kind, project) if project else (kind,)).fetchall()
+            rows = db.execute('SELECT body FROM records WHERE kind=?' + (' AND project=?' if project is not None else ''),
+                              (kind, project) if project is not None else (kind,)).fetchall()
         return sorted((json.loads(row[0]) for row in rows), key=lambda x: x.get('createdAt', ''), reverse=True)
 
     def delete(self, kind, key):
@@ -88,7 +88,7 @@ class Store:
             raise ValueError('此目录已有项目，请打开项目')
         folder.mkdir(parents=True, exist_ok=True)
         project = dict(id=identifier(), name=name, objective=objective, path=str(folder),
-                       createdAt=now(), updatedAt=now(), startDate='', endDate='', settings={},
+                       createdAt=now(), updatedAt=now(), startDate='', endDate='', settings={'dataPath': str(self.root / 'shared' / 'data')},
                        universe=dict(name='我的股票池', symbols=[], source='manual', excludeST=True, minListingDays=60))
         return self.save_project(project, new=True)
 
@@ -113,6 +113,10 @@ class Store:
         return project
 
     def project(self, key):
+        if not key:
+            folder = self.root / 'shared'
+            folder.mkdir(parents=True, exist_ok=True)
+            return dict(id=None, name='共享研究', objective='', path=str(folder), settings={}, startDate='', endDate='', universe=dict(name='共享行情', source='manual', symbols=[], excludeST=False, minListingDays=0))
         registered = self.get('project', key)
         project = read_json(Path(registered['path']) / 'project.json')
         if not project or project.get('id') != key:
@@ -137,17 +141,20 @@ class Store:
         return Store(Path(self.project(project_id)['path']) / '.research')
 
     def experiments(self, project_id):
-        return self.project_store(project_id).list('experiment', project_id)
+        return [{**item, **({'strategyId': 'default'} if project_id and not item.get('strategyId') else {})} for item in self.project_store(project_id).list('experiment', project_id or '')]
 
     def experiment(self, project_id, experiment_id):
-        return self.project_store(project_id).get('experiment', experiment_id)
+        value = self.project_store(project_id).get('experiment', experiment_id)
+        if project_id and not value.get('strategyId'):
+            value = {**value, 'strategyId': 'default'}
+        return value
 
     def save_experiment(self, project_id, value):
         value = {**value, 'artifacts': [dict(artifact) for artifact in value['artifacts']]}
         project_root = Path(self.project(project_id)['path']).resolve()
         for artifact in value['artifacts']:
             artifact['path'] = self.artifact_path(project_id, artifact).relative_to(project_root).as_posix()
-        return self.project_store(project_id).put('experiment', value, project_id)
+        return self.project_store(project_id).put('experiment', value, project_id or '')
 
     def artifact_path(self, project_id, artifact):
         root = Path(self.project(project_id)['path']).resolve()

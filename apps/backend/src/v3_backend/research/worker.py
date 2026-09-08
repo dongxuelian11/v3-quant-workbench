@@ -10,7 +10,7 @@ def run(directory):
     request = read_json(directory / 'request.json')
     store = Store(request['appData'])
     job = request['job']
-    project = store.project(job['projectId'])
+    project = job['spec'].get('projectSnapshot') or store.project(job.get('projectId'))
     params = job['spec']['parameters']
     write_json(directory / 'project.json', project)
 
@@ -35,25 +35,31 @@ def run(directory):
             result = engines.optimize(project, params, directory, progress, store)
         elif job['kind'] == 'selection.run':
             from .selection import run as select
-            result = select(project, params, directory, progress)
+            result = select(project, params, directory, progress, snapshot=job['spec'].get('positionsSnapshot'), strategy_snapshots=job['spec'].get('strategySnapshots'))
         else:
             raise ValueError('未知任务')
-        experiment = dict(id=job['id'], projectId=job['projectId'], kind=job['kind'], name=job['name'], starred=False,
+        experiment = dict(id=job['id'], projectId=job.get('projectId'), strategyId=job.get('strategyId'), kind=job['kind'], name=job['name'], starred=False,
                           createdAt=now(), parameters=result.get('parameters', params), metrics=result['metrics'], artifacts=result['artifacts'], summary=result['summary'])
         details = result.get('details', {})
         details['dataContext'] = data.preview(project)['datasets']
-        details['source'] = read_json(Path(project['path']) / 'data' / 'source.json', {'source': 'import', 'warnings': ['导入文件的复权与历史修订完整性未验证']})
+        details['source'] = read_json(Path(data.project_data(project)['path']) / 'data' / 'source.json', {'source': 'import', 'warnings': ['导入文件的复权与历史修订完整性未验证']})
         details['universe'] = project['universe']
         if job['kind'].startswith('data.'):
             # Preserve the exact imported/updated tables in the experiment, so later updates do not change its export.
             import shutil
             for kind in ['prices', 'financials']:
-                source = Path(project['path']) / 'data'
+                source = Path(data.project_data(project)['path']) / 'data'
                 if not (source / kind).exists() and not (source / f'{kind}.parquet').exists():
                     continue
                 target = directory / f'{kind}.parquet'
                 data.read_table(project, kind).to_parquet(target, index=False)
                 experiment['artifacts'].append({'name': kind, 'path': str(target), 'type': 'parquet'})
+        if job['kind'].startswith('data.'):
+            from .alternative_data import read as read_alternative
+            for kind in ('fund_flow','chips','lhb','institutions','seats'):
+                frame = read_alternative(project,kind)
+                if not frame.empty:
+                    experiment['artifacts'].append(engines.save_table(directory,kind,frame))
         write_json(directory / 'details.json', details)
         for artifact in experiment['artifacts']:
             artifact['path'] = Path(artifact['path']).resolve().relative_to(Path(project['path']).resolve()).as_posix()

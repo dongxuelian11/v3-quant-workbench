@@ -100,6 +100,18 @@ def _save_strategy(store, params):
     for key in ('name', 'universe', 'settings'):
         if key in supplied:
             old[key] = deepcopy(supplied[key])
+    if 'settingsPatch' in params:
+        patch = params['settingsPatch']
+        if not isinstance(patch, dict):
+            raise ValueError('策略参数修改应为对象')
+        def merge(target, changes):
+            result = deepcopy(target) if isinstance(target, dict) else {}
+            for key, value in changes.items():
+                result[key] = merge(result.get(key), value) if isinstance(value, dict) else deepcopy(value)
+            return result
+        # All desktop windows share this service; merge against the current record
+        # instead of replacing a second window's changes with a stale full snapshot.
+        old['settings'] = merge(old['settings'], patch)
     old['name'] = _name(old['name'])
     old['universe'] = _universe(old['universe'])
     if not isinstance(old['settings'], dict):

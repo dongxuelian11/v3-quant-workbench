@@ -34,6 +34,7 @@ venv/
 /data/
 /artifacts/
 /screenshots-local/
+/.playwright-cli/
 /crash-dumps/
 
 # Private/user state

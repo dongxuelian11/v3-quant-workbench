@@ -12,7 +12,11 @@ def _state_path(service, project_id):
 
 def get_state(service, params):
     state = dict(messages=[], phase='', proposals=[], stageJobIds=[], mode='assist')
-    state.update(read_json(_state_path(service, params['projectId']), {}))
+    if params.get('conversationId'):
+        from .workbench import get_conversation
+        state.update(get_conversation(service.store,params['conversationId'])['state'])
+    else:
+        state.update(read_json(_state_path(service, params.get('projectId')), {}))
     return state
 
 
@@ -23,7 +27,13 @@ def save_state(service, params):
         if key in patch:
             state[key] = patch[key]
     state['updatedAt'] = now()
-    write_json(_state_path(service, params['projectId']), state)
+    if params.get('conversationId'):
+        from .workbench import get_conversation, save_conversation
+        conversation = get_conversation(service.store,params['conversationId'])
+        conversation['state'] = state
+        save_conversation(service.store,conversation)
+    else:
+        write_json(_state_path(service, params.get('projectId')), state)
     return state
 
 
@@ -80,12 +90,13 @@ selection.run {} 使用用户已启用的settings.selection。它依次更新、
 proposal.spec.projectId为当前项目ID。引用的实际实验ID放在experimentIds以便界面打开。研究建议保持一个小而完整阶段，等待用户运行，不连续自动推进。'''
 
 
-def _create_agent(service, project_id, model):
+def _create_agent(service, project_id, model, attached=None, conversation_id=None):
     from pydantic import BaseModel, Field
     from pydantic_ai import Agent, ToolOutput
 
     class Spec(BaseModel):
-        projectId: str
+        projectId: str | None = None
+        strategyId: str | None = None
         kind: str
         parameters: dict
         name: str = ''
@@ -100,6 +111,7 @@ def _create_agent(service, project_id, model):
         phase: str
         proposals: list[Proposal] = Field(default_factory=list)
         experimentIds: list[str] = Field(default_factory=list)
+        experimentRefs: list[dict] = Field(default_factory=list)
 
     # Ling exposes tools/tool_choice, but not native response_format.
     agent = Agent(model, output_type=ToolOutput(Answer, strict=False), instructions=INSTRUCTIONS)
@@ -107,30 +119,40 @@ def _create_agent(service, project_id, model):
     @agent.tool_plain
     def get_project_context() -> dict:
         """读取本项目的数据概况、历史覆盖和已保存研究设置。"""
-        return _project_context(service, project_id)
+        return attached_context(service, attached) if attached is not None else _project_context(service, project_id)
 
     @agent.tool_plain
     def list_experiments(limit: int = 20) -> list[dict]:
         """列出本项目真实实验的ID、指标及结果表名；配置通过read_experiment读取。"""
-        return [_experiment_summary(item) for item in service.store.experiments(project_id)[:max(1, min(limit, 100))]]
+        return [_experiment_summary(item) for item in attached_experiments(service,attached,project_id)[:max(1, min(limit, 100))]]
 
     @agent.tool_plain
-    def read_experiment(experiment_id: str) -> dict:
+    def read_experiment(experiment_id: str, project_id_ref: str | None = None) -> dict:
         """读取某个真实实验的参数、指标、覆盖说明、约束冲突和结果表名。"""
         try:
-            experiment = service.store.experiment(project_id, experiment_id)
-            directory = Path(service.store.project(project_id)['path']) / '.research' / 'runs' / experiment_id
+            matches = [item for item in attached_experiments(service,attached,project_id) if item['id']==experiment_id and (project_id_ref is None or item.get('projectId')==project_id_ref)]
+            if len(matches)>1:
+                raise ValueError('多个项目存在此实验ID，请明确project_id_ref')
+            if not matches:
+                raise ValueError('实验未关联此会话或不存在')
+            experiment = matches[0]
+            directory = Path(service.store.project(experiment.get('projectId'))['path']) / '.research' / 'runs' / experiment_id
             return {'experiment': _experiment_summary(experiment, include_parameters=True), 'details': read_json(directory / 'details.json', {})}
         except ValueError as exc:
             return {'error': str(exc)}
 
     @agent.tool_plain
     def read_result_table(experiment_id: str, table: str, offset: int = 0, limit: int = 50,
-                          symbol: str = '', start_date: str = '', end_date: str = '') -> dict:
+                          symbol: str = '', start_date: str = '', end_date: str = '', project_id_ref: str | None = None) -> dict:
         """按表名分页读取实验的实际持仓、调仓、因子、验证窗口或试参记录，可筛选股票和日期。"""
         try:
+            matches = [item for item in attached_experiments(service,attached,project_id) if item['id']==experiment_id and (project_id_ref is None or item.get('projectId')==project_id_ref)]
+            if len(matches)>1:
+                raise ValueError('多个项目存在此实验ID，请明确project_id_ref')
+            if not matches:
+                raise ValueError('实验未关联此会话或不存在')
             return service.request('experiments.table', dict(
-                projectId=project_id, experimentId=experiment_id, table=table, offset=offset,
+                projectId=matches[0].get('projectId'), experimentId=experiment_id, table=table, offset=offset,
                 limit=min(200, max(1, limit)), symbol=symbol, startDate=start_date, endDate=end_date))
         except ValueError as exc:
             return {'error': str(exc)}
@@ -138,6 +160,10 @@ def _create_agent(service, project_id, model):
     @agent.tool_plain
     def get_current_stage() -> dict:
         """读取用户启动的研究阶段及每项任务的真实进度、失败原因和实验ID。"""
+        if conversation_id:
+            state = get_state(service,{'conversationId':conversation_id})
+            jobs = {job['id']:job for job in service.store.list('job')}
+            return {'phase':state['phase'],'jobs':[{k:jobs[key].get(k) for k in ('id','status','message','experimentId')} for key in state.get('stageJobIds',[]) if key in jobs]}
         return _stage_status(service, project_id)
 
     return agent
@@ -154,19 +180,26 @@ def chat(service, params):
     mode = params.get('mode', 'assist')
     if mode not in {'ask', 'assist', 'research'}:
         raise ValueError('未知 AI 模式')
-    project_id = params['projectId']
+    project_id = params.get('projectId')
+    attached = None
+    state_params = {'projectId':project_id}
+    if params.get('conversationId'):
+        from .workbench import get_conversation
+        attached = get_conversation(service.store,params['conversationId'])['context']
+        project_id = None
+        state_params = {'conversationId':params['conversationId']}
     state = get_state(service, params)
     history = state['messages'] or params.get('history', [])
     user_message = {'role': 'user', 'content': params['message']}
-    save_state(service, {'projectId': project_id, 'state': {'mode': mode, 'messages': history + [user_message]}})
+    save_state(service, {**state_params, 'state': {'mode': mode, 'messages': history + [user_message]}})
     provider = OpenAIProvider(base_url=config['baseUrl'], api_key=config.get('apiKey') or 'local-no-key')
     model = OpenAIChatModel(config['model'], provider=provider)
-    agent = _create_agent(service, project_id, model)
-    experiments = service.store.experiments(project_id)
+    agent = _create_agent(service, project_id, model, attached, params.get('conversationId'))
+    experiments = attached_experiments(service,attached,project_id)
     prompt = json.dumps({
-        'mode': mode, 'context': _project_context(service, project_id),
+        'mode': mode, 'context': attached_context(service,attached) if attached is not None else _project_context(service,project_id),
         'experiments': [_experiment_summary(item) for item in experiments[:20]],
-        'stage': _stage_status(service, project_id), 'history': history[-20:], 'message': params['message'],
+        'stage': {'phase':state['phase'],'stageJobIds':state.get('stageJobIds',[])} if attached is not None else _stage_status(service, project_id), 'history': history[-20:], 'message': params['message'],
     }, ensure_ascii=False, default=str)
     try:
         response = agent.run_sync(prompt, model_settings={'temperature': float(config.get('temperature', .2)), 'timeout': 120})
@@ -184,16 +217,67 @@ def chat(service, params):
         answer['proposals'] = []
     for proposal in answer['proposals']:
         spec = validate_spec(proposal['spec'])
-        if spec['projectId'] != project_id or spec['kind'] == 'data.import':
+        if (spec.get('projectId') not in {ref.get('projectId') for ref in attached} if attached is not None else spec.get('projectId') != project_id) or spec['kind'] == 'data.import':
             raise ValueError('AI 建议引用了其他项目或未经选择的导入文件')
+        if attached is not None and spec.get('strategyId') and (spec.get('projectId'),spec['strategyId']) not in {(ref.get('projectId'),ref.get('strategyId')) for ref in attached}:
+            raise ValueError('AI建议引用了未关联的策略')
         if spec['parameters'].get('code'):
             raise ValueError('请在策略代码编辑器确认 Python 代码后运行')
-    known = {experiment['id'] for experiment in service.store.experiments(project_id)}
+    known = {experiment['id'] for experiment in experiments}
     if any(key not in known for key in answer['experimentIds']):
         raise ValueError('AI 返回了不存在的实验引用')
-    assistant_message = dict(role='assistant', content=answer['message'], phase=answer['phase'], experimentIds=answer['experimentIds'])
-    save_state(service, {'projectId': project_id, 'state': {
+    known_refs = {(item.get('projectId'),item['id']) for item in experiments}
+    for ref in answer.get('experimentRefs',[]):
+        if (ref.get('projectId'),ref.get('experimentId')) not in known_refs:
+            raise ValueError('AI返回了不存在或未关联的实验引用')
+    for key in answer['experimentIds']:
+        matches = [item for item in experiments if item['id']==key]
+        if len(matches)>1 and not any(ref.get('experimentId')==key for ref in answer.get('experimentRefs',[])):
+            raise ValueError('跨项目实验ID有歧义，请使用明确实验引用')
+        if len(matches)==1 and not any(ref.get('experimentId')==key for ref in answer.get('experimentRefs',[])):
+            answer.setdefault('experimentRefs',[]).append({'kind':'experiment','projectId':matches[0].get('projectId'),'experimentId':key})
+    assistant_message = dict(role='assistant', content=answer['message'], phase=answer['phase'], experimentIds=answer['experimentIds'],experimentRefs=answer.get('experimentRefs',[]))
+    save_state(service, {**state_params, 'state': {
         'messages': history + [user_message, assistant_message], 'mode': mode,
         'phase': answer['phase'], 'proposals': answer['proposals'],
     }})
     return answer
+
+
+def attached_experiments(service, attached, project_id=None):
+    if attached is None:
+        return service.store.experiments(project_id)
+    result = {}
+    for ref in attached:
+        if ref.get('experimentId'):
+            item = service.store.experiment(ref.get('projectId'),ref['experimentId'])
+            result[(item.get('projectId'),item['id'])] = item
+        elif ref.get('strategyId'):
+            for item in service.store.experiments(ref.get('projectId')):
+                if item.get('strategyId') == ref['strategyId']:
+                    result[(item.get('projectId'),item['id'])] = item
+    return list(result.values())
+
+
+def attached_context(service, attached):
+    from .workbench import get_strategy
+    result = []
+    for ref in attached:
+        item = {'reference':ref}
+        if ref.get('strategyId'):
+            strategy = get_strategy(service.store,ref['projectId'],ref['strategyId'])
+            item['strategy'] = {key:strategy[key] for key in ('id','name','universe','settings','enabled','allocation','active') if key in strategy}
+        if ref.get('symbol'):
+            item['stock'] = service.request('market.stock',{'projectId':ref.get('projectId'),'symbol':ref['symbol']})
+            item['bars'] = service.request('data.bars',{'projectId':ref.get('projectId'),'symbol':ref['symbol'],'limit':60})
+        if ref.get('experimentId'):
+            detail = service.experiment_details(ref.get('projectId'),ref['experimentId'])
+            item['experiment'] = _experiment_summary(detail['experiment'],True)
+            item['details'] = detail['details']
+            item['tables'] = detail['tables']
+        if ref['kind'] == 'data':
+            item['data'] = service.request('data.preview',{'projectId':ref.get('projectId')})
+        if ref['kind'] == 'positions':
+            item['positions'] = service.request('positions.get',{})
+        result.append(item)
+    return {'attachedObjects':result,'instruction':'仅这些明确关联对象是会话上下文，当前界面标签不改变关联。'}

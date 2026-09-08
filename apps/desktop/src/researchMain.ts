@@ -21,6 +21,7 @@ function registerIpc(): void {
     ownWindow(event);
     if (!runtime) throw new Error("研究服务尚未启动");
     const result = await runtime.request(method, params);
+    if (method === "workspace.get" && workspaces) return { ...(result as object), windows: workspaces.snapshots() };
     if (/(?:\.save|\.create|\.delete|\.activate|\.import|\.update)$/.test(method)) {
       const context: JsonObject = {};
       for (const key of ["projectId", "strategyId", "experimentId", "conversationId", "symbol", "id"]) {

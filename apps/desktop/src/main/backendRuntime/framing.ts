@@ -41,8 +41,8 @@ export class FrameDecoder {
   private expectedLength: number | undefined;
 
   constructor(private readonly maximum = MAX_FRAME_BYTES) {
-    if (!Number.isInteger(maximum) || maximum < 1 || maximum > MAX_FRAME_BYTES) {
-      throw new RangeError("maximum frame size must be between 1 and 1 MiB");
+    if (!Number.isSafeInteger(maximum) || maximum < 1) {
+      throw new RangeError("maximum frame size must be a positive safe integer");
     }
   }
 

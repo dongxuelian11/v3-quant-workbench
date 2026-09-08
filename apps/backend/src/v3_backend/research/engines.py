@@ -3,7 +3,7 @@ from pathlib import Path
 import ast
 import re
 
-from .data import read_table, records
+from .data import read_table, records, project_data
 from .storage import write_json, read_json
 
 FINANCIAL = {'roe': 'roeAvg', 'growth_profit': 'YOYNI', 'growth_revenue': 'YOYRevenue', 'profit_margin': 'npMargin', 'leverage': 'liabilityToAsset'}
@@ -25,6 +25,14 @@ def factor_catalog():
             item['description'] = '需要导入带公告日期的YOYRevenue；当前BaoStock适配未提供收入同比，未从MBRevenue推算'
         elif item['id'] == 'profit_margin':
             item['description'] = '公告后交易日生效的季度净利率；BaoStock npMargin，兼容导入netProfitMargin'
+    from .alternative_data import FIELDS
+    alternative = {value: key for group in ('fund_flow', 'chips') for key, value in FIELDS[group].items()}
+    alternative.update({'fund_net_amount5':'5日主力净流入','fund_net_amount20':'20日主力净流入','fund_net_ratio5':'5日主力净占比均值','fund_net_ratio20':'20日主力净占比均值','chip_cost_deviation':'筹码成本偏离','lhb_flag':'龙虎榜事件','lhb_count':'龙虎榜原因数','lhb_net_amount':'龙虎榜净买额','lhb_count5':'5日龙虎榜事件数','lhb_count20':'20日龙虎榜事件数'})
+    for size,label in [('small','小单'),('medium','中单'),('large','大单'),('superlarge','超大单')]:
+        for window in (5,20):
+            alternative[f'fund_{size}_net_amount{window}']=f'{window}日{label}净流入'
+            alternative[f'fund_{size}_net_ratio{window}']=f'{window}日{label}净占比均值'
+    result.extend(dict(id=key,name=name,family='资金流/筹码/龙虎榜',description='当日收盘后可知；仅实际覆盖；下交易日执行',expression='alternative:'+key) for key,name in alternative.items())
     return result
 
 
@@ -59,13 +67,13 @@ def prepare(project, output, progress):
     from .vendor.dump_pit import DumpPitData
     prices = read_table(project)
     chosen = project['universe']['symbols']
-    if chosen and project['universe']['source'] == 'manual':
+    if chosen and project['universe']['source'] == 'manual' and not project['universe'].get('query'):
         from .data import symbol
         prices = prices[prices.symbol.isin([symbol(x) for x in chosen])].copy()
     if prices.empty:
         raise ValueError('股票池没有行情数据')
     import time
-    data_root = Path(project['path']) / 'data'
+    data_root = Path(project_data(project)['path']) / 'data'
     cache_root = Path(project['path']) / '.research' / 'cache'
     signature = {'version': 3, 'files': [(str(path.relative_to(data_root)), path.stat().st_mtime_ns, path.stat().st_size) for path in sorted(data_root.rglob('*.parquet'))], 'symbols': sorted(prices.symbol.unique())}
     signature = __import__('json').loads(__import__('json').dumps(signature))
@@ -122,7 +130,7 @@ def prepare(project, output, progress):
     for file in dumper.df_files:
         dumper._dump_bin(file, calendar)
     qlib.init(provider_uri=str(cache), region='cn', expression_cache=None, dataset_cache=None, kernels=1)
-    financial_path = Path(project['path']) / 'data' / 'financials.parquet'
+    financial_path = Path(project_data(project)['path']) / 'data' / 'financials.parquet'
     if financial_path.exists():
         financial = read_table(project, 'financials')
         pit_dir = build / 'pit_input'
@@ -174,8 +182,8 @@ def features(project, params, prices):
     cache = root/'.research/cache/factors'
     stamp = dict(version=1, universe=project['universe'], ids=ids, expressions=[catalog[item] for item in ids],
                  start=str(start),end=str(end),processing=params.get('factorProcessing'),
-                 data=[(path.relative_to(root).as_posix(),path.stat().st_mtime_ns,path.stat().st_size)
-                       for path in sorted((root/'data').rglob('*')) if path.suffix=='.parquet' or path.suffix=='.json' and path.parent.name=='history'])
+                 data=[(path.as_posix(),path.stat().st_mtime_ns,path.stat().st_size)
+                       for path in sorted((Path(project_data(project)['path'])/'data').rglob('*')) if path.suffix=='.parquet' or path.suffix=='.json' and path.parent.name=='history'])
     stamp = json.loads(json.dumps(stamp))
     entries = read_json(cache/'index.json',[])
     for entry in entries:
@@ -183,15 +191,32 @@ def features(project, params, prices):
             cached = pd.read_parquet(cache/entry['file'])
             cached.attrs['processingCoverage'] = entry['coverage']
             return cached
-    frame = D.features(sorted(prices.symbol.unique()), [catalog[item] for item in ids], start_time=start, end_time=end)
-    frame.columns = ids
-    frame = frame.swaplevel().sort_index()
-    frame.index.names = ['datetime', 'instrument']
+    ordinary = [item for item in ids if not catalog[item].startswith('alternative:')]
+    if ordinary:
+        frame = D.features(sorted(prices.symbol.unique()), [catalog[item] for item in ordinary], start_time=start, end_time=end)
+        frame.columns = ordinary
+        frame = frame.swaplevel().sort_index()
+        frame.index.names = ['datetime', 'instrument']
+    else:
+        frame = prices[['date','symbol']].drop_duplicates().set_index(['date','symbol']).sort_index()
+        frame.index.names = ['datetime','instrument']
+        frame = frame[(frame.index.get_level_values(0)>=pd.Timestamp(start)) & (frame.index.get_level_values(0)<=pd.Timestamp(end))]
+    alternative = [item for item in ids if catalog[item].startswith('alternative:')]
+    if alternative:
+        from .alternative_data import features as alternative_features
+        extra = alternative_features(project, prices).set_index(['date','symbol'])
+        extra.index.names = frame.index.names
+        frame = frame.join(extra[alternative])
+    frame = frame[ids]
     from .history import members
-    if project['universe']['source'] != 'manual' or project['universe']['symbols']:
+    query_panel = None
+    if project['universe'].get('query'):
+        from .market import dated_panel
+        query_panel = dated_panel(project,prices)
+    if project['universe'].get('query') or project['universe']['source'] != 'manual' or project['universe']['symbols']:
         keep = []
         for date, panel in frame.groupby(level=0):
-            allowed = members(project, date)
+            allowed = members(project, date, query_panel)
             keep.append(panel if allowed is None else panel[panel.index.get_level_values('instrument').isin(allowed)])
         frame = pd.concat(keep) if keep else frame.iloc[:0]
     market = prices.set_index(['date', 'symbol'])

@@ -11,4 +11,6 @@ optuna>=4,<6
 pydantic-ai-slim[openai]==2.27.0
 pyarrow>=23,<24
 openpyxl>=3,<4
+pypinyin==0.55.0
+cvxpy>=1.6,<2
 tzdata

@@ -1,12 +1,13 @@
 """Observed index series and aligned Qlib performance analysis."""
 from pathlib import Path
+from .data import project_data
 from .storage import now, read_json, write_json
 
 
 def collect(project, bs, start, end, query):
     import pandas as pd
     from .data import normalize
-    root = Path(project['path']) / 'data' / 'benchmarks'
+    root = Path(project_data(project)['path']) / 'data' / 'benchmarks'
     root.mkdir(parents=True, exist_ok=True)
     for code in ['SH000300', 'SH000905']:
         path = root / f'{code}.parquet'
@@ -29,7 +30,7 @@ def collect(project, bs, start, end, query):
 def returns(project, name, dates):
     import pandas as pd
     code = 'SH000905' if name == 'csi500' else 'SH000300'
-    path = Path(project['path']) / 'data' / 'benchmarks' / f'{code}.parquet'
+    path = Path(project_data(project)['path']) / 'data' / 'benchmarks' / f'{code}.parquet'
     if not path.exists():
         raise ValueError('缺少真实基准行情，请先更新指数数据')
     frame = pd.read_parquet(path).set_index('date').sort_index()

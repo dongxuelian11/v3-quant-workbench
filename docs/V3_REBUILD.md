@@ -2,7 +2,10 @@
 
 ## 当前状态
 - 当前目标：实施用户已批准的第三轮计划：全面重构研究工作台、双屏、多策略和独立 AI 会话，同时完成筛选、个股全景、市场概况、资金流、筹码、龙虎榜及多策略合并选股。
-- 第三轮进度：共享合同、Electron 原生多窗口和工作对象存储首版已完成。多窗口定向检查8项通过（双屏位置、移出/移回、关闭归还、重开恢复、屏幕断开恢复、预设、事件）；策略草稿/启用快照、旧数据保留、独立会话与布局持久化3项检查通过。新界面、全局队列/合并选股及市场查询正在并行实施；尚未完成串联与安装交付。此前四份视觉概念均被拒绝；第三轮以以下新设计为准。
+- 第三轮进度：共享合同、Electron 原生多窗口、工作对象存储、前后端整合首版已完成。多窗口定向检查8项、存储3项及新增计算/市场/实际worker相关检查通过；六股真实数据流程已完成筛选/全景/全局持仓导入/双策略合并/两份独立回测/比较/CSV和Excel导出/独立会话持久化。结果在 artifacts/round3-journey/integration.json。当前进行真实桌面交互和双屏串联；1.2.0 尚未打包交付。此前四份视觉概念均被拒绝；第三轮以以下新设计为准。
+- 第三轮数据连接：BaoStock名称资料成功；2026-09-07 SH603228实际取得1条龙虎榜、1条机构、3条买方/5条卖方营业部记录，位于 artifacts/round3-market-sample/listed。资金流/筹码接口及一次相同官方HTTPS地址排查均 RemoteDisconnected，仍未成功取得实时接口数据；适配与导入已完成，不能报告全部免费源已接通。
+- 第三轮审核修复：跨项目实验引用、策略模型缓存、资金合并约束、当前持仓与上一收盘价估值、动态池601行完整性、历史名称及原始财务筛选字段。真实桌面发现个股全景响应过大，已改为每表30行预览与完整分页/导出，实际响应从1,266,464降到97,306字节；研究进程传输上限改为16MiB。正在接入前端分页、统一个股上下文并收尾桌面检查。只针对发现的问题检查，不重复第二轮全量套件。
+- 第三轮桌面实测：新策略/布局/会话命名已改为应用内输入框并通过Enter/Escape检查；主副窗口同策略分别修改持仓数/资金，服务端递归settingsPatch保存保留两者，active快照不受影响。实际第二屏(x=-1920)窗口与双屏预设保存通过。GUI全局选股0932af2c8fd443ce88577fd840dd1c08完成且持仓不变、页面不跳转、任务区不自动展开。个股650行完整Excel与PNG通过；宽表PDF发现横向裁切，正在修列组排版。当前研究窗口检查会话23408（开发版），最终策略摘要/中国涨跌颜色与宽表报告收尾后再打包1.2.0。
 - 已完成：功能代码已集成到codex/v3-rebuild。历史数据/缓存/基准/成交规则、因子处理、单次与滚动验证、验证集寻优、四组合、持仓/选股/调仓、GUI与导出都已实现；集中审查六项计算问题、单滚动窗和池外持仓修复已复核。
 - 交付：artifacts/package/v3-quant-workbench-1.1.0-x64.exe，352003363字节；实际安装至artifacts/installed-v3-round2并启动，版本1.1.0。服务确认使用安装目录中的Python，无开发Python或PYTHONPATH覆盖。截图artifacts/round2-journey/installed-final-desktop.png。不是另一台干净机器验证。
 - 实测：六股真实价格和公告财务完成五因子、两种模型、滚动、两类寻优和四组合；实际GUI完成持仓导入、选股、贡献、比较、历史图、导出及重开。安装版另外完成带BaoStock数据更新的选股，模型复用且持仓不变；新Ridge训练与97日评分回测完整覆盖至2026-09-07，最新6只股票的预测有值、未来标签为空。
@@ -37,8 +40,10 @@
 ### 第三轮共享接口（主任务负责 TypeScript 合同，前后端按此对接）
 保留四类核心对象；JobSpec/JobEvent/Experiment 的projectId可省略表示全局，增加可选strategyId。全局任务仍用同一队列/worker/实验格式，不新增执行平台。辅助记录类型见 packages/contracts/src/research.ts。
 - strategies.list {projectId?}→StrategyConfig[]（省略列所有已注册项目）；create {projectId,name}、save {projectId,strategy}、activate {projectId,strategyId,enabled?,allocation?}→StrategyConfig；delete {projectId,strategyId}。activate保存当前settings/universe到active快照；单策略任务通过spec.strategyId选择相应草稿/启用快照。
+- strategies.save另接受顶层settingsPatch，递归合并到实时设置，数组/null为替换值；编辑器只发送发生变化的字段，重命名/股票池不附带旧完整设置。避免两个窗口先读后写造成互相覆盖，旧完整settings写入仍兼容。
 - workspace.get/save {state?}→WorkspaceState，保存软件级主题/密度/布局/表格设置/会话选择。Electron原生窗口接口位于window.v3Research.workspace，类型已定义，主任务实现；renderer按current()选择主/副窗口，onPanels接收移入，update保存当前对象与dock布局，detach/attach/restore及onChanged广播变化。Dockview7.0.4自带popout只允许同源http(s)，安装版loadFile，故使用原生BrowserWindow适配，不改node_modules。
 - watchlists.list/save/delete {watchlist?,id?}；screeners.list/save/delete {screener?,id?}。market.screen接受MarketQuery（date/projectId/symbols/watchlistId/filters/match/search/sortBy/descending/offset/limit），返回MarketTable；market.securities使用相同分页表结构；market.overview {date?,projectId?}→MarketOverview；market.stock {symbol,date?,projectId?}→StockPanorama；market.notes.save {symbol,notes}。
+- market.stock 各表默认最多30行预览并返回total/offset/limit；market.stock.table {symbol,projectId?,date?,table,offset?,limit?} 提供全历史分页，table取financials/factors/flow/chips/events/seats，默认200行、最多500行，按时间升序。market.stock.export 采用同样条件及format，导出完整表并返回path。fieldLabels供中文表头；不把预览当全量导出。
 - positions.get/save/import省略projectId操作全局，带projectId保留旧项目读/导入。selection.run全局参数 {strategies:[{projectId,strategyId,allocation}],portfolio:{...},updateData:boolean}；沿用候选/权重/调仓/持仓表，增加策略贡献表。各策略采用active快照，全局最终对实际持仓出一份清单。
 - data.preview/bars/charts.load/save支持省略projectId的全局数据/批注；data.catalog→DataCoverage[]。data.update增加alternativeData:["flow","chips","lhb"]及可选symbols，沿用startDate/endDate/source/financials。data.import可带dataset:"auto"|"prices"|"financials"|"flow"|"chips"|"lhb"和字段映射；缺省兼容。
 - experiments.list {projectId?,strategyId?,all?}：省略项目默认全局，all:true汇总全局与已注册项目；get/table/update/delete支持全局；compare额外接受experiments:[{projectId?,experimentId}]用于跨对象比较，旧experimentIds兼容。

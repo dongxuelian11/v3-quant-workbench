@@ -5,6 +5,8 @@ import { join } from "node:path";
 import type { JobEvent } from "../../../../packages/contracts/src/research";
 import { encodeFrame, FrameDecoder } from "./backendRuntime/framing";
 
+const RESEARCH_FRAME_BYTES = 16 * 1024 * 1024;
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -40,7 +42,7 @@ export class ResearchRuntime {
     });
     this.child = child;
     this.stderr = "";
-    const decoder = new FrameDecoder();
+    const decoder = new FrameDecoder(RESEARCH_FRAME_BYTES);
     child.stderr.on("data", (chunk: Buffer) => { this.stderr = (this.stderr + chunk.toString("utf8")).slice(-6000); });
     child.stdout.on("data", (chunk: Buffer) => {
       try {
@@ -72,7 +74,7 @@ export class ResearchRuntime {
       try {
         const child = this.start();
         const id = randomUUID();
-        const frame = encodeFrame(JSON.parse(JSON.stringify({ id, method, params })) as Record<string, unknown>);
+        const frame = encodeFrame(JSON.parse(JSON.stringify({ id, method, params })) as Record<string, unknown>, RESEARCH_FRAME_BYTES);
         const timer = setTimeout(() => {
           this.pending.delete(id);
           reject(new Error("研究服务响应超时，请查看底部任务状态"));

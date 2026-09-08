@@ -53,7 +53,7 @@ export interface Experiment {
   artifacts: { name: string; path: string; type: string }[];
   summary: string;
 }
-export interface ResearchTable { name: string; columns: string[]; rows: JsonObject[]; }
+export interface ResearchTable { name: string; columns: string[]; rows: JsonObject[]; fieldLabels?: Record<string, string>; }
 export interface ExperimentDetails {
   experiment: Experiment;
   tables: ResearchTable[];

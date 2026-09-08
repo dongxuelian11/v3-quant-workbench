@@ -9,7 +9,7 @@ const pythonRoot = dirname(python);
 if (existsSync(resolve(pythonRoot, "pyvenv.cfg")) || basename(pythonRoot).toLowerCase() === "scripts") {
   throw new Error("打包需要独立 Python 运行时；请运行 npm run setup:research 创建 runtime/research-python。");
 }
-runPython(python, ["-c", "import sys,qlib,alphalens,baostock,optuna,pydantic_ai,lightgbm,pyarrow,cvxpy,scipy; from sklearn.covariance import LedoitWolf; assert sys.version_info[:2] == (3,12); print('Python 3.12 research libraries ready')"]);
+runPython(python, ["-c", "import sys,qlib,alphalens,baostock,optuna,pydantic_ai,lightgbm,pyarrow,cvxpy,scipy,pypinyin; from sklearn.covariance import LedoitWolf; assert sys.version_info[:2] == (3,12); print('Python 3.12 research libraries ready')"]);
 const staging = resolve(root, "artifacts/package-staging/backend-runtime");
 if (relative(root, staging).replaceAll("\\", "/") !== "artifacts/package-staging/backend-runtime") throw new Error("Invalid package staging directory");
 await rm(staging, { recursive: true, force: true });

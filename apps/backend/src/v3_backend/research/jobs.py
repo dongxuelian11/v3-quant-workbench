@@ -1,5 +1,6 @@
 """Persisted subprocess jobs. One writer job per project prevents dataset races."""
 from __future__ import annotations
+import copy
 import os
 import subprocess
 import sys
@@ -12,7 +13,7 @@ KINDS = {'data.import', 'data.update', 'factor.analyze', 'backtest.run', 'model.
 
 
 def validate_spec(spec):
-    if not isinstance(spec, dict) or spec.get('kind') not in KINDS or not isinstance(spec.get('parameters'), dict) or not isinstance(spec.get('projectId'), str):
+    if not isinstance(spec, dict) or spec.get('kind') not in KINDS or not isinstance(spec.get('parameters'), dict) or (spec.get('projectId') is not None and not isinstance(spec.get('projectId'), str)):
         raise ValueError('任务参数无效')
     p, kind = spec['parameters'], spec['kind']
     required = {'data.import': ['files'], 'data.update': ['startDate'], 'factor.analyze': ['factorIds'],
@@ -44,30 +45,69 @@ class Jobs:
 
     def _save(self, job, **changes):
         job = {**job, **changes, 'updatedAt': now()}
-        self.store.put('job', job, job['projectId'])
-        self.store.project_store(job['projectId']).put('job', job, job['projectId'])
+        self.store.put('job', job, job.get('projectId') or '')
+        self.store.project_store(job.get('projectId')).put('job', job, job.get('projectId') or '')
         self.emit(job)
         return job
 
     def submit(self, spec):
+        spec = copy.deepcopy(spec)
         validate_spec(spec)
-        self.store.project(spec['projectId'])
+        for key in ('projectSnapshot','positionsSnapshot','strategySnapshots'):
+            spec.pop(key,None)
+        from .workbench import strategy_project, get_strategy
+        project_id = spec.get('projectId')
+        project = strategy_project(self.store, project_id, spec.get('strategyId'), active=spec['kind']=='selection.run' and bool(spec.get('strategyId'))) if project_id else self.store.project(None)
+        self._freeze_universe(project)
+        spec['projectSnapshot'] = project
+        if project_id:
+            spec['strategyId'] = project.get('strategyId', 'default')
+        if spec['kind'] == 'selection.run':
+            from .positions import get
+            spec['positionsSnapshot'] = get(self.store.project(None) if spec['parameters'].get('strategies') else project)
+            frozen = []
+            for reference in spec['parameters'].get('strategies', []):
+                strategy = get_strategy(self.store, reference['projectId'], reference['strategyId'])
+                if not strategy.get('enabled') or not strategy.get('active'):
+                    raise ValueError('所选策略尚未启用')
+                scoped = strategy_project(self.store, reference['projectId'], reference['strategyId'], active=True)
+                self._freeze_universe(scoped)
+                frozen.append({**reference, 'project': scoped})
+            if frozen:
+                allocations = [item.get('allocation', 0) for item in frozen]
+                import math
+                if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or x < 0 for x in allocations) or sum(allocations) > 1 + 1e-9:
+                    raise ValueError('策略资金占比必须非负且合计不超过100%')
+                if len({(x['projectId'], x['strategyId']) for x in frozen}) != len(frozen):
+                    raise ValueError('不可重复分配同一策略')
+                spec['strategySnapshots'] = frozen
         with self.lock:
             if self.closed:
                 raise ValueError('任务服务已关闭')
-            job = dict(id=identifier(), projectId=spec['projectId'], kind=spec['kind'], name=spec.get('name') or spec['kind'],
-                       status='queued', progress=0, message='等待执行', createdAt=now(), updatedAt=now(), spec=spec)
+            job = dict(id=identifier(), projectId=spec.get('projectId'), kind=spec['kind'], name=spec.get('name') or spec['kind'],
+                       strategyId=spec.get('strategyId'), status='queued', progress=0, message='等待执行', createdAt=now(), updatedAt=now(), spec=spec)
             job = self._save(job)
-            self._start_next(spec['projectId'])
+            self._start_next(spec.get('projectId'))
             return self.store.get('job', job['id'])
 
+    def _freeze_universe(self, project):
+        query = project.get('universe', {}).get('query')
+        if query and query.get('watchlistId'):
+            watchlist = self.store.get('watchlist', query['watchlistId'])
+            symbols = set(watchlist['symbols'])
+            if query.get('symbols') is not None:
+                symbols &= set(query['symbols'])
+            query['symbols'] = sorted(symbols)
+            query.pop('watchlistId')
+
     def _start_next(self, project_id):
-        if self.closed or any(self.store.get('job', key)['projectId'] == project_id for key in self.processes):
+        if self.closed or self.processes:
             return
-        queued = [job for job in self.store.list('job', project_id) if job['status'] == 'queued']
+        queued = [job for job in self.store.list('job') if job['status'] == 'queued']
         if not queued:
             return
         job = queued[-1]
+        project_id = job.get('projectId')
         directory = Path(self.store.project(project_id)['path']) / '.research' / 'runs' / job['id']
         directory.mkdir(parents=True, exist_ok=True)
         write_json(directory / 'request.json', {'appData': str(self.store.root), 'job': job})
@@ -109,12 +149,12 @@ class Jobs:
             if job['status'] == 'running':
                 if process.returncode == 0 and result and result.get('experiment'):
                     experiment = result['experiment']
-                    self.store.save_experiment(job['projectId'], experiment)
+                    self.store.save_experiment(job.get('projectId'), experiment)
                     self._save(job, status='completed', progress=1, message='已完成', experimentId=experiment['id'])
                 else:
                     self._save(job, status='failed', message=(result or {}).get('error', f'子进程退出 {process.returncode}，请查看 {directory / "worker.log"}'))
             self.processes.pop(key, None)
-            self._start_next(job['projectId'])
+            self._start_next(job.get('projectId'))
 
     def cancel(self, key):
         with self.lock:

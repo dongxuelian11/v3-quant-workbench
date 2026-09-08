@@ -1,5 +1,6 @@
 """Dated membership and industry observations, never backfilled from current state."""
 from pathlib import Path
+from .data import project_data
 from .storage import write_json, read_json, now
 
 
@@ -11,7 +12,7 @@ def snapshot_dates(start, end):
 def collect(project, bs, start, end, query, progress, names=None):
     import pandas as pd
     from .data import symbol
-    root = Path(project['path']) / 'data' / 'history'
+    root = Path(project_data(project)['path']) / 'data' / 'history'
     root.mkdir(parents=True, exist_ok=True)
     sources = {'csi300': bs.query_hs300_stocks, 'csi500': bs.query_zz500_stocks, 'industry': bs.query_stock_industry}
     if names is not None:
@@ -36,7 +37,7 @@ def collect(project, bs, start, end, query, progress, names=None):
 
 def read(project, source):
     import pandas as pd
-    root = Path(project['path']) / 'data' / 'history'
+    root = Path(project_data(project)['path']) / 'data' / 'history'
     records = []
     for path in root.glob(f'{source}_*.json'):
         for row in read_json(path, {}).get('rows', []):
@@ -44,13 +45,18 @@ def read(project, source):
     return pd.DataFrame(records).drop_duplicates() if records else pd.DataFrame(columns=['symbol', 'effectiveDate', 'industry'])
 
 
-def members(project, date):
+def members(project, date, query_panel=None):
     import pandas as pd
     from .data import symbol
+    query = project['universe'].get('query')
+    if query:
+        from .market import dated_panel, filter_frame
+        panel = dated_panel(project) if query_panel is None else query_panel
+        return set(filter_frame(panel[panel.date.eq(pd.Timestamp(date))],query).symbol)
     source = project['universe']['source']
     if source == 'manual':
         return set(map(symbol, project['universe']['symbols']))
-    imported = Path(project['path']) / 'data' / 'membership.parquet'
+    imported = Path(project_data(project)['path']) / 'data' / 'membership.parquet'
     if imported.exists():
         frame = pd.read_parquet(imported)
         return set(frame.loc[(pd.to_datetime(frame.startDate) <= pd.Timestamp(date)) &
@@ -85,7 +91,7 @@ def import_membership(project, frame):
     frame['endDate'] = pd.to_datetime(frame.endDate, errors='raise')
     if frame.startDate.isna().any() or (frame.endDate < frame.startDate).any():
         raise ValueError('成员生效区间无效')
-    path = Path(project['path']) / 'data' / 'membership.parquet'
+    path = Path(project_data(project)['path']) / 'data' / 'membership.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix('.tmp.parquet')
     frame.to_parquet(temporary, index=False)
@@ -104,7 +110,7 @@ def import_industry(project, frame):
     frame['effectiveDate'] = pd.to_datetime(frame.effectiveDate,errors='raise').dt.strftime('%Y-%m-%d')
     if frame.isna().any().any():
         raise ValueError('行业或生效日期缺失')
-    path = Path(project['path'])/'data/history/industry_import.json'
+    path = Path(project_data(project)['path'])/'data/history/industry_import.json'
     existing = read_json(path,{}).get('rows',[])
     rows = pd.concat([pd.DataFrame(existing),frame]).drop_duplicates(['symbol','effectiveDate'],keep='last').to_dict('records')
     write_json(path,{'source':'import','rows':rows,'observedAt':now()})

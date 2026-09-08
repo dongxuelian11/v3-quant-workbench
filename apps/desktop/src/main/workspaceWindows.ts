@@ -81,6 +81,10 @@ export class WorkspaceWindows {
     return { id: record.state.id, main: !!record.state.main, state: record.state };
   }
 
+  snapshots(): WorkspaceWindow[] {
+    return structuredClone([...this.records.values()].map(record => record.state));
+  }
+
   async detach(contents: WebContents, panel: WorkspacePanel, bounds?: WorkspaceWindow["bounds"]) {
     const source = this.own(contents);
     if (!panel || typeof panel.id !== "string" || typeof panel.kind !== "string") throw new Error("工作对象无效");

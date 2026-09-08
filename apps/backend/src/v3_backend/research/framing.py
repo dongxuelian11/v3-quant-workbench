@@ -6,7 +6,7 @@ import json
 from collections.abc import Iterator, Mapping
 from typing import Any, BinaryIO
 
-MAX_FRAME_BYTES = 1048576
+MAX_FRAME_BYTES = 16 * 1024 * 1024
 
 MAX_HEADER_BYTES = 4096
 _SEPARATOR = b"\r\n\r\n"
@@ -47,7 +47,7 @@ class FrameDecoder:
 
     def __init__(self, max_frame_bytes: int = MAX_FRAME_BYTES) -> None:
         if not 1 <= max_frame_bytes <= MAX_FRAME_BYTES:
-            raise ValueError("max_frame_bytes must be between 1 and 1 MiB")
+            raise ValueError("max_frame_bytes must be between 1 and 16 MiB")
         self.max_frame_bytes = max_frame_bytes
         self._buffer = bytearray()
         self._expected_length: int | None = None
@@ -125,4 +125,3 @@ def read_frames(stream: BinaryIO, chunk_size: int = 65536) -> Iterator[dict[str,
 def write_frame(stream: BinaryIO, message: Mapping[str, Any]) -> None:
     stream.write(encode_frame(message))
     stream.flush()
-
