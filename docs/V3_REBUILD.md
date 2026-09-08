@@ -1,17 +1,62 @@
 # V3 开源量化内核与可视化研究桌面
 
 ## 当前状态
-- 目标：第二轮已批准的沪深 A 股日线研究补强、四组合、每日选股/调仓、Ling真实联调和Windows交付。
+- 当前目标：实施用户已批准的第三轮计划：全面重构研究工作台、双屏、多策略和独立 AI 会话，同时完成筛选、个股全景、市场概况、资金流、筹码、龙虎榜及多策略合并选股。
+- 第三轮进度：已确认完整设计与范围，开始接口、前后端和 Electron 多窗口实施。此前四份视觉概念均被拒绝；第三轮以以下新设计为准。尚未完成第三轮功能或验证。
 - 已完成：功能代码已集成到codex/v3-rebuild。历史数据/缓存/基准/成交规则、因子处理、单次与滚动验证、验证集寻优、四组合、持仓/选股/调仓、GUI与导出都已实现；集中审查六项计算问题、单滚动窗和池外持仓修复已复核。
 - 交付：artifacts/package/v3-quant-workbench-1.1.0-x64.exe，352003363字节；实际安装至artifacts/installed-v3-round2并启动，版本1.1.0。服务确认使用安装目录中的Python，无开发Python或PYTHONPATH覆盖。截图artifacts/round2-journey/installed-final-desktop.png。不是另一台干净机器验证。
 - 实测：六股真实价格和公告财务完成五因子、两种模型、滚动、两类寻优和四组合；实际GUI完成持仓导入、选股、贡献、比较、历史图、导出及重开。安装版另外完成带BaoStock数据更新的选股，模型复用且持仓不变；新Ridge训练与97日评分回测完整覆盖至2026-09-07，最新6只股票的预测有值、未来标签为空。
 - 性能：300股193668行，同日增量46.749秒；三因子首次63.104秒、缓存复用10.830秒，峰值进程树586.11/534.84MiB，5106个缓存文件未重写。20逻辑核、31.8GiB内存；首次测量同时有安装解压负载。单股2015..2026共2839根行情及两基准下载74.840秒，2015年244根按窗口读取成功。
 - 待完成：用户在软件设置填写OpenRouter Key后进行Ling三类真实联调；此前已提问，目前无Key，不能称AI实际接通。四份旧P0规则草稿因自动审批要求P0_AUTHORITY_AMENDMENT而未提交，软件功能和安装不受影响。
 - GitHub：沿用[草稿PR #54](https://github.com/dongxuelian11/v3-quant-workbench/pull/54)，未合并。只维护本文件，不增加状态台账、例行SHA256或全量重跑。
-- 后续恢复：已安装Electron检查会话exec34342，.cache/installed-check.cjs，appData artifacts/round2-journey/installed-app；当前无计算/下载任务在运行。已完成的数据/计算/安装检查不要重跑；后续先确认设置是否有Key并继续真实AI联调。
+- 后续恢复：读取第三轮进度和接口约定，继续尚未完成的具体工作；不重新开始设计访谈或第二轮已通过的验证。Ling 真实联调仍需用户配置 Key，不阻塞其余开发。旧安装检查会话exec34342未刷新；不要据此认定应用仍运行。
 - 任务复用：主01a07ab5-7f36-73c2-8a58-5f6b8b3ae66e；前端01a07c31-a51e-7901-a91d-b7a15669878c（63d0）；后端01a07c32-49f0-75a3-847b-106b1cd50a68（3170）；审核01a07c4a-b63d-7300-988b-1d393b4ca42d（7932）。均Astra low，当前批次完成。
 
-## 已确认的产品设计
+## 第三轮已批准设计与施工约定（2026-09-08）
+
+用户已明确要求实施完整计划。沿用 codex/v3-rebuild 和前端/后端/审核任务，均 Astra low；主任务负责接口、Electron、多窗口、整合和交付。普通修改只检查相关行为；串联时集中验证。不计算 SHA256，不建额外台账，不处理四份旧治理草稿。
+
+### 产品与界面
+- 盘后研究与每日选股并重，市场观察也需要；本轮不扩展盘中分时、分钟研究或券商下单。
+- 借鉴 Codex 项目/会话、Photoshop 工作区/属性、VS Code/JupyterLab 对象标签/分屏、通达信股票键盘操作。浅色主主题，中性浅灰、白色内容、克制蓝色；提供深色。默认正文14px、表格32px，密集26px。中文股票名称、单位和数字对齐，红涨绿跌。
+- 左侧全局导航和项目→策略，中间独立工作对象，右侧常驻可调宽AI，底部折叠任务；去掉重复整排页面导航。首次今日工作台，之后恢复对象/窗口/布局。提供研究、比较、市场、选股预设及自定义布局。
+- 同类面板可同时打开不同策略/实验/股票。窗内自由分屏、拖动标签，支持独立Windows窗口、双屏、移回和位置恢复；AI默认留主窗口。当前屏幕2048×1152、1920×1080。
+- 今日工作台提供继续研究、启用策略状态、待处理任务和近期实验。策略参数在当前工作区展开，模板/表格/数值为主，高级入口保留公式/Python/JSON；运行结果与配置可并排，比较参数差异、净值/基准/回撤/持仓/交易。
+- 项目多策略独立草稿、实验及启用快照；编辑自动保存，运行固定快照，“应用到每日选股”才更新启用配置。模型缓存按策略区分。
+- 市场、全局自选、筛选、实际持仓无需打开项目。筛选保存方案、列顺序/宽度/排序/固定列，支持跨页代码/名称/拼音搜索、键盘上下选中、动态图条件股票池及静态名单。列表与行情可联动或固定股票。
+- 个股全景：日线、财务、因子、资金流、筹码、龙虎榜、机构/营业部、笔记，显示日期和覆盖。接通查看→筛选→股票池→因子/策略，支持表格/图片/PDF导出。
+- 每日选股：选择启用策略和资金占比，使用全局实际持仓/现金；保留各策略结果，合并相同股票、对买卖净额做整体约束与成交数量计算，未分配预算留现金，保存贡献、目标组合与原因。清单不改变实际持仓。
+- AI按研究任务创建/命名/搜索/继续会话，关联策略、股票或多个实验；关联对象可见，切换标签不静默更换会话。沿用阶段提出→用户运行→读实际结果→讨论；真实服务状态不伪装。
+
+### 数据与兼容
+- BaoStock/AKShare/Qlib/Alphalens/Optuna和四组合继续复用；参考 henrylin99/quantitative_analysis 的功能与上游接入，不直接搬入未验证的评分/新闻占位实现。
+- AKShare stock_individual_fund_flow 近期约100交易日，stock_cyq_em 近90日（本地上游使用210根行情计算再取90根，属于估算），stock_lhb_detail_em 按日期查询历史；营业部/机构接口同属stock_lhb_em。初次接入要实际取小样本，不凭文档称已接通。
+- 资金流净额/占比/累计变化、筹码成本/集中度/获利比例/偏离、龙虎榜事件和净买入注册研究字段；龙虎榜上榜后收益仅作事后分析。财务公告日期和新增数据适用日期正确，缺失不填0，不用最新名单倒填历史。免费新字段不宣称覆盖2015至今。
+- 数据中心管理共享数据目录、源、日期、覆盖、导入/增量/取消续传。新项目可引用共享数据，旧目录继续可读；每次研究使用明确数据口径。旧项目映射默认策略，旧实验/批注不重写，旧持仓提供选择导入入口，旧对话保留。
+
+### 第三轮共享接口（主任务负责 TypeScript 合同，前后端按此对接）
+保留四类核心对象；JobSpec/JobEvent/Experiment 的projectId可省略表示全局，增加可选strategyId。全局任务仍用同一队列/worker/实验格式，不新增执行平台。辅助记录类型见 packages/contracts/src/research.ts。
+- strategies.list {projectId?}→StrategyConfig[]（省略列所有已注册项目）；create {projectId,name}、save {projectId,strategy}、activate {projectId,strategyId,enabled?,allocation?}→StrategyConfig；delete {projectId,strategyId}。activate保存当前settings/universe到active快照；单策略任务通过spec.strategyId选择相应草稿/启用快照。
+- workspace.get/save {state?}→WorkspaceState，保存软件级主题/密度/布局/表格设置/会话选择。Electron原生窗口接口位于window.v3Research.workspace，类型已定义，主任务实现；renderer按current()选择主/副窗口，onPanels接收移入，update保存当前对象与dock布局，detach/attach/restore及onChanged广播变化。Dockview7.0.4自带popout只允许同源http(s)，安装版loadFile，故使用原生BrowserWindow适配，不改node_modules。
+- watchlists.list/save/delete {watchlist?,id?}；screeners.list/save/delete {screener?,id?}。market.screen接受MarketQuery（date/projectId/symbols/watchlistId/filters/match/search/sortBy/descending/offset/limit），返回MarketTable；market.securities使用相同分页表结构；market.overview {date?,projectId?}→MarketOverview；market.stock {symbol,date?,projectId?}→StockPanorama；market.notes.save {symbol,notes}。
+- positions.get/save/import省略projectId操作全局，带projectId保留旧项目读/导入。selection.run全局参数 {strategies:[{projectId,strategyId,allocation}],portfolio:{...},updateData:boolean}；沿用候选/权重/调仓/持仓表，增加策略贡献表。各策略采用active快照，全局最终对实际持仓出一份清单。
+- data.preview/bars/charts.load/save支持省略projectId的全局数据/批注；data.catalog→DataCoverage[]。data.update增加alternativeData:["flow","chips","lhb"]及可选symbols，沿用startDate/endDate/source/financials。data.import可带dataset:"auto"|"prices"|"financials"|"flow"|"chips"|"lhb"和字段映射；缺省兼容。
+- experiments.list {projectId?,strategyId?,all?}：省略项目默认全局，all:true汇总全局与已注册项目；get/table/update/delete支持全局；compare额外接受experiments:[{projectId?,experimentId}]用于跨对象比较，旧experimentIds兼容。
+- ai.conversations.list/create/get/save/delete：create {name,context:ResearchObjectRef[]}，get/delete {conversationId}，save {conversation:ResearchConversation}，返回相应记录/数组。ai.chat可带conversationId，保留旧返回，使用明确关联上下文；旧state接口继续兼容。
+- exports.create扩展全局实验；新增exports.table {table:ResearchTable,name,format:"csv"|"xlsx"}→{path}用于通用表格。全量筛选导出支持market.screen的export请求或后台分页收集，不把当前页冒充全量。PNG/PDF继续现有Electron导出。
+- 实际字段名和实现若需调整，由拥有任务及时通知主任务，不各自猜测接口。仅主任务更新本状态文件和共享合同；各领域提交自身文件，主任务整合。
+
+### 交付检查
+先完成策略研究、个股全景、每日选股与工作区，后串联双屏/共享状态和新增数据。集中跑一次真实完整流程；小样本核对新增字段/日期/合并权重/现金/约束；双屏检查拖出移回、联动、重开与会话；数据取消续传和安装启动。普通样式仅局部查看，不重跑第二轮已验证计算。
+
+## 界面重设计历史（2026-09-08，已由上方批准计划取代）
+- 用户要求：大范围调整信息架构、操作交互和整体美学；先研究与设计，再确定开发方案。原 B 视觉和布局重新评估，不视为本轮已确认方案。
+- 已确认：研究、每日选股、市场观察都需要；优先 A「研究与每日选股并重，用今日工作台衔接」。这是工作方式选择，不是旧版 A 视觉方案。
+- 待对齐：研究工作区的组织与操作方式，随后确定页面结构、视觉方向及核心流程原型。
+- 功能参考：已只读核查 henrylin99/quantitative_analysis；资金流、筹码、市场广度/板块、个股全景等为候选，尚未批准移植范围。部分能力依赖额外数据权限，当前未发现明确代码许可证；新闻/文本情绪未发现完整可用链路。
+- 设计过程只在本文件记录确认事项；未回答的建议不作既定设计，不启动开发任务或重复验证。
+
+## 现有版本的产品设计（界面与视觉正在重设计）
 - A 股、日线、多因子选股优先，包含量价、估值、盈利、成长因子。
 - B 视觉（2026-09-07 用户在前端任务明确纠正）：暖白、柔和层次、青绿强调、适中密度、中文。左项目列表，中间概览/数据/股票池/因子/策略/模型/回测/结果，右 AI，底部任务。窗格拖动、分屏、调整和记忆。
 - 概览突出目标、数据、继续研究和近期实验，打开项目默认概览。
@@ -26,7 +71,7 @@
 - AI 在线与本地兼容服务都支持。问答/辅助配置/研究推进三模式；研究每阶段结束后与用户讨论再继续，阶段内完成已确定实验。
 - 默认结果为整体表现，AI 为辅助配置；组合为多头等权、周调仓，均可修改。
 
-视觉参考（用户最新选 B；图中为概念示例）：
+旧版 B 视觉参考（历史概念示例，本轮重新评估）：
 C:/Users/Administrator/.codex/generated_images/01a07ab5-7f36-73c2-8a58-5f6b8b3ae66e/exec-f71f16ab-c0a5-4ce9-924e-41b6bf4dcbf9.png
 
 ## 实现选择
