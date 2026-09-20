@@ -1,0 +1,66 @@
+# Dependencies and build output
+node_modules/
+dist/
+apps/backend/src/v3_backend/runtime/build_manifest.generated.json
+coverage/
+.cache/
+.vite/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime state and private research data
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+*.duckdb
+*.parquet
+*.feather
+*.h5
+*.onnx
+*.safetensors
+*.bin
+*.pt
+*.pth
+.venv/
+venv/
+/runtime/
+/data/
+/artifacts/
+/.tmp/
+/apps/desktop/src/renderer/.tmp/
+/log/
+/output/
+/apps/backend/.dependency-probe/
+/screenshots-local/
+/.playwright-cli/
+/crash-dumps/
+
+# Private/user state
+/projects-local/
+/results-local/
+/strategies-local/
+/models-local/
+
+# Task packages and delivery bundles
+/.task_package/
+/.codex-task/
+/.codex/context/
+/.agents/
+/deliverables/
+*.zip
+*.sha256
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.log

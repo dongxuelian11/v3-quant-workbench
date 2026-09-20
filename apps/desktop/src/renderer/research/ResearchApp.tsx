@@ -1,0 +1,211 @@
+import React, { useEffect, useRef, useState } from "react";
+import { DockviewReact, type DockviewApi, type DockviewReadyEvent, type IDockviewPanelProps } from "dockview-react";
+import type { ExperimentDetails, JobEvent, ProjectConfig, StrategyConfig, WorkspacePanel, WorkspaceState, WorkspaceWindow } from "../../../../../packages/contracts/src/research";
+import { ResearchContext, request, useResearch, useResearchState, jobTitle } from "./state";
+import { DataPanel, FactorPanel, UniversePanel } from "./ResearchPanels";
+import { ModelPanel, StrategyHome, StrategyPanel } from "./RunPanels";
+import { ResultsPanel } from "./ResultsPanel";
+import { TodayPanel, MarketPanel, StockPanel, GlobalSelection, DataCenter, ComparePanel } from "./WorkspacePanels";
+import { PositionsEditor } from "./SelectionPanel";
+import { SimulationPanel } from "./SimulationPanel";
+import { ReportsPanel, ReportReader } from "./ReportsPanel";
+import { ReproductionPanel } from "./ReproductionPanel";
+import { QuotePanel } from "./QuotePanel";
+import { PreparationRecords } from "./ExperimentContext";
+import { CandidatePanel } from "./CandidatePanel";
+import { ConversationPanel } from "./ConversationPanel";
+import { Empty, Field, requestText, TextPromptHost } from "./ui";
+import { ObjectScope, WorkspaceContext, useWorkspace, flushDrafts } from "./workspace";
+import { WindowControls } from "../components/WindowControls";
+const defaults: WorkspaceState = { sidebarVisible: true, aiVisible: true, rightPanel: "ai", theme: "light", density: "comfortable", sidebarWidth: 210, aiWidth: 330, windows: [], presets: {} };
+const panels = { research: ({ params }: IDockviewPanelProps<WorkspacePanel>) => <ObjectScope panel={params}><Panel panel={params} /></ObjectScope> };
+function Panel({ panel }: { panel: WorkspacePanel }) {
+  const w = useWorkspace(); const s = useResearch(); const saveRef = useRef<(() => Promise<void>) | null>(null);
+  let content: React.ReactNode;
+  switch (panel.kind) {
+    case "reports": content=<ReportsPanel/>;break;
+    case "report": content=<ReportReader panel={panel}/>;break;
+    case "reproduction": content=<ReproductionPanel panel={panel}/>;break;
+    case "quote": content=<QuotePanel panel={panel}/>;break;
+    case "candidate": content=<CandidatePanel panel={panel}/>;break;
+    case "simulation": content=<SimulationPanel panel={panel}/>;break;
+    case "today": content = <ResearchStart projectId={panel.projectId} />; break;
+    case "market": case "screener": content = <MarketPanel screening={panel.kind === "screener"} />; break;
+    case "stock": content = <StockPanel panel={panel} />; break;
+    case "selection": content = <GlobalSelection />; break;
+    case "positions": content = <div className="r-page"><h1>实际持仓</h1><p className="r-note">全局实际账户。选股清单不会修改这里的持仓。</p><PositionsEditor saveRef={saveRef} defaultExpanded /></div>; break;
+    case "data": content = panel.projectId ? <DataPanel key={s.configurationVersions.data ?? 0} /> : <DataCenter />; break;
+    case "compare": content = <ComparePanel refs={panel.experimentRefs ?? []} panelId={panel.id} />; break;
+    case "experiment": content = <ResultsPanel />; break;
+    case "universe": content = <UniversePanel key={s.configurationVersions.universe ?? 0} />; break;
+    case "factors": content = <FactorPanel key={s.configurationVersions.factors ?? 0} />; break;
+    case "model": content = <ModelPanel key={s.configurationVersions.model ?? 0} />; break;
+    case "strategy": content = panel.view === "backtest" || panel.view === "optimize" ? <StrategyPanel key={s.configurationVersions.strategy ?? 0} run optimize={panel.view === "optimize"} /> : <StrategyHome panel={panel} />; break;
+  }
+  const strategy = w.strategies.find(x => x.id === panel.strategyId && x.projectId === panel.projectId);
+  return <div className="r-object-panel" style={{ containerType: "inline-size", containerName: "object" }}>{strategy && !["experiment","candidate","simulation"].includes(panel.kind) && <div className="r-objectbar r-objectbar-compact">
+    <strong title={strategy.name}>{strategy.name}</strong><span className="r-draft-status">草稿自动保存</span>
+    <details className="r-object-menu"><summary>策略操作</summary><div>
+      <button onClick={() => void s.act(async () => { await flushDrafts(); await request("strategies.activate", { projectId: strategy.projectId, strategyId: strategy.id, enabled: true, allocation: strategy.allocation }); await w.reload(); s.setNotice("当前已保存草稿已应用到每日选股"); })}>应用到每日选股</button>
+      <button onClick={() => w.open({ kind: "universe", title: `${strategy.name} · 股票池`, projectId: strategy.projectId, strategyId: strategy.id })}>编辑股票池</button>
+      <button onClick={() => void s.act(async () => { const name = await requestText("策略名称", strategy.name); if (name?.trim()) { await flushDrafts(); await request("strategies.save", { projectId: strategy.projectId, strategy: { id: strategy.id, name: name.trim() } }); await w.reload(); } })}>重命名策略</button>
+      <button className="r-danger" onClick={()=>void s.act(async()=>{if(!window.confirm(`删除策略“${strategy.name}”？实验记录仍保留。`))return;await flushDrafts();await request("strategies.delete",{projectId:strategy.projectId,strategyId:strategy.id});await w.reload();})}>删除策略</button>
+      {strategy.enabled && <button onClick={() => void s.act(async () => { await request("strategies.activate", { projectId: strategy.projectId, strategyId: strategy.id, enabled: false }); await w.reload(); })}>停用每日选股</button>}
+    </div></details>
+  </div>}{panel.projectId&&!["today","simulation","candidate"].includes(panel.kind)&&<nav className="r-module-nav" aria-label="研究模块"><details className="r-module-picker"><summary>研究入口</summary><div>{([['data','数据'],['universe','股票池'],['factors','因子'],['model','模型'],['strategy','策略'],['experiment','实验'],['quote','行情']] as const).map(([kind,title])=><button key={kind} className={panel.kind===kind?'active':''} onClick={()=>void s.act(async()=>{await flushDrafts();w.open({kind,title,projectId:panel.projectId,strategyId:panel.strategyId,experimentId:panel.experimentId,date:panel.date,symbol:panel.symbol,factorId:panel.factorId,modelWindowId:panel.modelWindowId,...(kind==='quote'&&panel.symbol?{instrument:panel.instrument??{kind:'stock' as const,symbol:panel.symbol}}:{})});})}>{title}</button>)}</div></details><span>{s.project?.name}{panel.strategyId?` · ${strategy?.name??"策略"}`:" · 项目"}</span><small>{s.project?.startDate||"开始日期未设置"} — {s.project?.endDate||"结束日期未设置"}</small></nav>}{content}</div>;
+}
+function StrategyTree({strategy}:{strategy:StrategyConfig;defaultExpanded:boolean}) {
+ const w=useWorkspace();
+ const active=w.active?.projectId===strategy.projectId&&w.active?.strategyId===strategy.id;
+ return <button className={`r-strategy-item ${active?'active':''}`} title={strategy.enabled?'已启用每日选股':'研究草稿'} onClick={()=>w.open({kind:'strategy',title:strategy.name,projectId:strategy.projectId,strategyId:strategy.id})}><span className={`r-status-dot ${strategy.enabled?'enabled':''}`}/><span>{strategy.name}</span></button>;
+}
+export function ResearchApp() { const state = useResearchState(); return <ResearchContext.Provider value={state}><Shell /></ResearchContext.Provider>; }
+function Shell() {
+  const s = useResearch(); const latest = useRef(s); latest.current = s;
+  useEffect(() => {
+    const timers = new Map<HTMLElement, ReturnType<typeof setTimeout>>();
+    const revealScroll = (event: Event) => {
+      const node = event.target;
+      if (!(node instanceof HTMLElement) || !node.closest(".r-app")) return;
+      clearTimeout(timers.get(node)); node.dataset.scrollActive = "true";
+      timers.set(node, setTimeout(() => { delete node.dataset.scrollActive; timers.delete(node); }, 900));
+    };
+    document.addEventListener("scroll", revealScroll, true);
+    const closeMenus = (event: Event) => {
+      document.querySelectorAll<HTMLDetailsElement>(".r-conversation-menu[open], .r-project-actions[open], .r-replay-menu[open], .r-chart-menu[open]").forEach(menu => {
+        if (event instanceof KeyboardEvent ? event.key === "Escape" : event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+      });
+    };
+    document.addEventListener("pointerdown", closeMenus);
+    document.addEventListener("keydown", closeMenus);
+    return () => { document.removeEventListener("scroll", revealScroll, true); document.removeEventListener("pointerdown", closeMenus); document.removeEventListener("keydown", closeMenus); for (const [node, timer] of timers) { clearTimeout(timer); delete node.dataset.scrollActive; } };
+  }, []);
+  const [toolSearch, setToolSearch] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false); const [settings, setSettings] = useState(false); const [jobsVisible, setJobsVisible] = useState(false);
+  const [preferences, setPreferences] = useState(defaults); const prefRef = useRef(preferences); prefRef.current = preferences;
+  const [windowInfo, setWindowInfo] = useState<{ id: string; main: boolean; state?: WorkspaceWindow } | null>(null);
+  const infoRef = useRef(windowInfo); infoRef.current = windowInfo;
+  const [strategies, setStrategies] = useState<StrategyConfig[]>([]); const [active, setActive] = useState<WorkspacePanel>(); const [bottom, setBottom] = useState(180); const [groupCount, setGroupCount] = useState(1);
+  const api = useRef<DockviewApi | null>(null); const timer = useRef<ReturnType<typeof setTimeout> | null>(null); const restoring = useRef(false); const dockReady = useRef(false);
+  const cancelSave = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
+  const reload = async () => { setStrategies(await request<StrategyConfig[]>("strategies.list")); await latest.current.refreshProjects(); };
+  async function savePreferences(patch: Partial<WorkspaceState>) { const next = { ...prefRef.current, ...patch }; prefRef.current = next; setPreferences(next); await request("workspace.save", { state: patch }); window.v3Research?.workspace?.broadcast({ method: "workspace.preferences" }); }
+  async function openProjectDirectory() {
+    const path = await window.v3Research?.chooseDirectory();
+    if (!path) return;
+    await s.open(path);
+    const projects = await request<ProjectConfig[]>("projects.list");
+    const reopened = projects.find(p => p.path.replace(/\\/g,"/").toLowerCase() === path.replace(/\\/g,"/").toLowerCase());
+    if (reopened) { await savePreferences({ closedProjectIds: (prefRef.current.closedProjectIds ?? []).filter(id => id !== reopened.id) }); open({ kind: "today", projectId: reopened.id, title: reopened.name }); }
+    await reload();
+  }
+  function snapshot(): WorkspaceWindow { const info = infoRef.current!; return { ...info.state, id: info.id, main: info.main, dock: JSON.parse(JSON.stringify(api.current!.toJSON())), panels: api.current!.panels.map(p => p.params as WorkspacePanel), activePanelId: api.current!.activePanel?.id }; }
+  async function persistNow() { if (!api.current || !infoRef.current || restoring.current) return; cancelSave(); const state = snapshot(); if (window.v3Research?.workspace) await window.v3Research.workspace.update(state); else await request("workspace.save", { state: { windows: [state] } }); }
+  function persist() { if (restoring.current) return; cancelSave(); timer.current = setTimeout(() => void latest.current.act(persistNow), 450); }
+  function open(panel: Omit<WorkspacePanel, "id"> & { id?: string }, split?: "right" | "below") {
+    const dock = api.current; if (!dock) return;
+    let id = panel.id ?? [panel.kind, panel.projectId, panel.strategyId, panel.view, panel.experimentId, panel.candidateId, panel.accountId, panel.reportId, panel.reproductionId, panel.symbol, panel.instrument?.kind, panel.instrument?.symbol, panel.kind === "compare" ? crypto.randomUUID() : ""].filter(Boolean).join(":");
+    const existing = dock.getPanel(id);
+    if(existing && panel.kind === "quote" && !panel.instrument && !panel.id) { existing.api.setActive(); return; }
+    if (!panel.id && panel.kind === "experiment") {
+      const matching = dock.panels.find(p => p.params?.kind === "experiment" && p.params.projectId === panel.projectId && p.params.strategyId === panel.strategyId && p.params.experimentId === panel.experimentId);
+      if (matching) { matching.api.updateParameters({ ...matching.params, ...panel, id: matching.id }); matching.api.setActive(); return; }
+      if (existing) id = `${id}:${crypto.randomUUID()}`;
+    } else if (existing) { existing.api.updateParameters({ ...existing.params, ...panel, id }); existing.api.setActive(); return; }
+    dock.addPanel({ id, component: "research", title: panel.title, params: { ...panel, id }, ...(split && dock.activePanel ? { position: { referencePanel: dock.activePanel.id, direction: split } } : {}) });
+  }
+  function restore(state?: WorkspaceWindow) {
+    if (!api.current) return; restoring.current = true; cancelSave(); api.current.clear();
+    let restored = false;
+    if (state?.dock) try { api.current.fromJSON(state.dock as unknown as ReturnType<DockviewApi["toJSON"]>); restored = true; } catch { latest.current.setNotice("保存的分屏布局无法读取，已按工作对象恢复。"); }
+    if (!restored) for (const panel of state?.panels ?? []) open(panel);
+    if (!api.current.panels.length && infoRef.current?.main) open({ kind: "today", title: "研究首页" });
+    if (state?.activePanelId) api.current.getPanel(state.activePanelId)?.api.setActive(); restoring.current = false;
+  }
+  useEffect(() => { let alive = true; void s.act(async () => {
+    const [saved, info] = await Promise.all([request<WorkspaceState>("workspace.get"), window.v3Research?.workspace?.current() ?? Promise.resolve<{ id: string; main: boolean; state?: WorkspaceWindow }>({ id: "main", main: true })]);
+    if (!alive) return; const next: WorkspaceState = { ...defaults, ...saved, windows: [] }; prefRef.current = next; setPreferences(next); const current = { ...info, state: info.state }; infoRef.current = current; setWindowInfo(current); await reload();
+  }); return () => { alive = false; cancelSave(); }; }, []);
+  useEffect(() => { document.documentElement.dataset.theme = preferences.theme; document.documentElement.dataset.density = preferences.density; }, [preferences.theme, preferences.density]);
+  useEffect(() => { const bridge = window.v3Research?.workspace; if (!bridge) return;
+    const offPanels = bridge.onPanels(incoming => { cancelSave(); for (const panel of incoming) open(panel); void latest.current.act(persistNow); });
+    const offChanged = bridge.onChanged(change => { if (change.method === "workspace.layout") void latest.current.act(async () => { const info = await bridge.current(); infoRef.current = info; setWindowInfo(info); restore(info.state); }); else if (change.method === "workspace.preferences") void latest.current.act(async () => { const next = await request<WorkspaceState>("workspace.get"); prefRef.current = { ...defaults, ...next, activeConversationId: prefRef.current.activeConversationId }; setPreferences(prefRef.current); }); else if (change.method === "stock.link") { const symbol = String(change.params?.symbol ?? ""); if (symbol) window.dispatchEvent(new CustomEvent("v3-stock-link", { detail: symbol })); } else if (/^(strategies|projects|candidates)/.test(change.method)) void latest.current.act(reload); });
+    return () => { offPanels(); offChanged(); };
+  }, []);
+  function ready(event: DockviewReadyEvent) { api.current = event.api; dockReady.current = true; restore(infoRef.current?.state); setActive(event.api.activePanel?.params as WorkspacePanel | undefined); setGroupCount(event.api.groups.length); event.api.onDidLayoutChange(() => { setGroupCount(event.api.groups.length); persist(); }); event.api.onDidActivePanelChange(e => setActive(e.panel?.params as WorkspacePanel | undefined));
+    event.api.onWillDragPanel(event => { const id = event.panel.id; const target = event.nativeEvent.target; if (!(event.nativeEvent instanceof DragEvent) || !(target instanceof HTMLElement)) return; target.addEventListener("dragend", event => { const drag = event as DragEvent; if (drag.dataTransfer?.dropEffect === "none" && (drag.clientX < 0 || drag.clientY < 0 || drag.clientX > window.innerWidth || drag.clientY > window.innerHeight)) void latest.current.act(() => detach(id, { x: drag.screenX - 120, y: drag.screenY - 30, width: 1200, height: 850 })); }, { once: true }); }); }
+
+  async function detach(id?: string, bounds?: WorkspaceWindow["bounds"]) { const panel = id ? api.current?.getPanel(id) : api.current?.activePanel; if (!panel || !window.v3Research?.workspace) return; cancelSave(); await flushDrafts(); await window.v3Research.workspace.detach(panel.params as WorkspacePanel, bounds ?? { width: 1200, height: 850 }); panel.api.close(); cancelSave(); await persistNow(); }
+  async function singleWorkspace() {
+    const dock = api.current; const activePanel = dock?.activePanel; if (!dock || !activePanel) return;
+    await flushDrafts();
+    if (dock.hasMaximizedGroup()) dock.exitMaximizedGroup();
+    const group = activePanel.group;
+    for (const panel of [...dock.panels]) if (panel.group !== group) panel.api.moveTo({ group });
+    activePanel.api.setActive(); await persistNow();
+  }
+  async function attach() { if (!api.current || !window.v3Research?.workspace) return; cancelSave(); await flushDrafts(); const moved = api.current.panels.map(p => p.params as WorkspacePanel); restoring.current = true; try { await window.v3Research.workspace.attach(moved); } catch (error) { restoring.current = false; throw error; } }
+  function linkStock(symbol: string) { window.dispatchEvent(new CustomEvent("v3-stock-link", { detail: symbol })); window.v3Research?.workspace?.broadcast({ method: "stock.link", params: { symbol } }); }
+  async function preset(name: string) { cancelSave(); if (prefRef.current.presets[name]) { const windows = prefRef.current.presets[name]; await window.v3Research?.workspace?.restore(windows); restore(windows.find(w => w.id === infoRef.current?.id)); return; }
+    restoring.current = true; api.current?.clear();
+    if (name === "市场") { open({ kind: "market", title: "市场概况" }); open({ kind: "stock", title: "联动个股", id: "stock:linked" }, "right"); }
+    else if (name === "选股") { open({ kind: "selection", title: "每日选股" }); open({ kind: "positions", title: "实际持仓" }, "below"); }
+    else if (name === "比较") open({ kind: "compare", title: "实验比较" });
+    else { open({ kind: "today", title: "研究首页" }); }
+    restoring.current = false; await persistNow();
+  }
+  const resize = (kind: "sidebarWidth" | "aiWidth" | "bottom", e: React.PointerEvent<HTMLDivElement>) => { const element = e.currentTarget; element.setPointerCapture(e.pointerId); const x = e.clientX, y = e.clientY, initial = kind === "bottom" ? bottom : prefRef.current[kind]; element.onpointermove = v => { const value = Math.max(kind === "bottom" ? 100 : kind === "aiWidth" ? 280 : 170, Math.min(kind === "bottom" ? 420 : kind === "aiWidth" ? 700 : 380, initial + (kind === "bottom" ? y - v.clientY : kind === "aiWidth" ? x - v.clientX : v.clientX - x))); if (kind === "bottom") setBottom(value); else { prefRef.current = { ...prefRef.current, [kind]: value }; setPreferences(prefRef.current); } }; element.onpointerup = () => { element.onpointermove = null; element.onpointerup = null; if (kind !== "bottom") void s.act(() => savePreferences({ [kind]: prefRef.current[kind] })); }; };
+
+  const activeJobs = s.jobs.filter(j => ["queued", "running"].includes(j.status));
+  return <WorkspaceContext.Provider value={{ createProject: () => setCreating(true), openProjectDirectory, open, updatePanel: (id, patch) => { const panel = api.current?.getPanel(id); if (panel) { panel.api.updateParameters({ ...panel.params, ...patch }); if (patch.title) panel.api.setTitle(patch.title); if (api.current?.activePanel?.id === id) setActive(panel.params as WorkspacePanel); persist(); } }, strategies, reload, active, preferences, savePreferences, linkStock }}><div className="r-app" data-testid="research-app" style={{ "--r-sidebar": `${preferences.sidebarWidth}px`, "--r-ai": `${preferences.aiWidth}px`, "--r-tasks": `${bottom}px` } as React.CSSProperties}>
+    <header className="r-titlebar"><div className="r-brand"><strong>V3</strong><span>研究工作台</span></div><span className="r-project-title">{windowInfo?.main ? "本地研究 · A 股日线" : "独立工作窗口"}</span><div className="r-title-actions"><button onClick={() => void s.act(() => savePreferences({ theme: preferences.theme === "light" ? "dark" : "light" }))}>{preferences.theme === "light" ? "深色" : "浅色"}</button><button onClick={() => void s.act(() => savePreferences({ density: preferences.density === "compact" ? "comfortable" : "compact" }))}>{preferences.density === "compact" ? "标准行高" : "密集行高"}</button>{window.v3Research?.desktop && <WindowControls />}</div></header>
+    {s.error && <div className="r-banner error" role="alert"><span>{s.error}</span><button onClick={() => s.setError("")} aria-label="关闭错误">×</button></div>}{s.notice && <div className="r-banner" role="status"><span>{s.notice}</span><button onClick={() => s.setNotice("")} aria-label="关闭提示">×</button></div>}
+    <div className="r-body">{windowInfo?.main && preferences.sidebarVisible !== false && <><aside className="r-sidebar"><nav aria-label="全局导航">{([["today","研究首页"],["quote","查看行情"],["market","市场概况"],["screener","筛选与自选"],["selection","每日选股"],["positions","实际持仓"],["data","数据中心"],["reports","研报库"]] as const).map(([kind,title]) => <button key={kind} className={active?.kind === kind ? "active" : ""} onClick={() => open({ kind, title })}>{title}</button>)}</nav><hr /><div className="r-toolbar"><h2>研究项目</h2><button aria-label="新建项目" onClick={() => setCreating(true)}>＋</button></div><div className="r-project-tree">{!s.projects.length&&<div className="r-research-empty"><p>因子研究、策略回测、模型训练与参数寻优保存在研究项目中。</p><button onClick={()=>setCreating(true)}>创建研究项目</button><p>已有项目？使用下方“打开项目文件夹”继续研究和查看实验。</p></div>}{s.projects.filter(p => !preferences.closedProjectIds?.includes(p.id)).map(p => <details key={p.id} className="r-project-group" open><summary onClick={e=>{e.preventDefault();open({kind:"today",projectId:p.id,title:p.name});}}>{p.name}</summary><details className="r-project-actions" onClick={e=>{if((e.target as HTMLElement).closest("button"))e.currentTarget.open=false;}}><summary aria-label={`${p.name} 项目管理`} title="项目管理">⋯</summary><div><button onClick={() => void s.act(async () => { const name = await requestText("项目名称", p.name); if (name) { await request("projects.save", {project:{...p,name}}); await reload(); } })}>重命名</button><button onClick={() => void s.act(() => savePreferences({closedProjectIds:[...(preferences.closedProjectIds??[]),p.id]}))}>关闭项目</button></div></details>{strategies.filter(st => st.projectId === p.id).map(st => <StrategyTree key={`${st.projectId}:${st.id}`} strategy={st} defaultExpanded={active?.strategyId?active.strategyId===st.id&&active.projectId===st.projectId:strategies[0]?.id===st.id&&strategies[0]?.projectId===st.projectId}/>)}{!strategies.some(st=>st.projectId===p.id)&&<button onClick={()=>open({kind:"strategy",projectId:p.id,title:`${p.name} · 研究`})}>打开研究</button>}<button className="r-muted" onClick={() => void s.act(async () => { const name = await requestText("新策略名称"); if (!name?.trim()) return; const st = await request<StrategyConfig>("strategies.create", { projectId: p.id, name: name.trim() }); await reload(); open({ kind: "strategy", title: st.name, projectId: p.id, strategyId: st.id }); })}>＋ 新策略</button><button onClick={() => open({ kind: "data", projectId: p.id, title: `${p.name} · 数据` })}>项目数据</button></details>)}</div><button className="r-sidebar-action" onClick={() => void s.act(openProjectDirectory)}>打开项目文件夹</button><div className="r-sidebar-foot"><button onClick={() => { setSettings(true); void s.act(() => savePreferences({aiVisible:true,rightPanel:"ai"})); }}>设置</button><small>数据与实验保存在本地</small></div></aside><div className="r-resize" role="separator" aria-label="调整导航宽度" onPointerDown={e => resize("sidebarWidth", e)} /></>}
+    <main className="r-main"><div className="r-workspace-toolbar">{windowInfo?.main && <button aria-label={preferences.sidebarVisible === false ? "展开研究目录" : "收起研究目录"} aria-expanded={preferences.sidebarVisible !== false} onClick={() => void s.act(() => savePreferences({sidebarVisible: preferences.sidebarVisible === false}))}>☷ 目录</button>}<button onClick={() => setToolSearch("")}>⌕ 打开工具</button>{groupCount > 1 && <button className="r-primary" title="保留所有标签，合并为一个宽工作区" onClick={() => void s.act(singleWorkspace)}>合并分屏</button>}<details className="r-layout-menu"><summary>布局</summary><div className="r-toolbar"><select aria-label="切换工作区预设" value="" onChange={e => void s.act(() => preset(e.target.value))}><option value="" disabled>工作区布局</option>{[...new Set(["研究","比较","市场","选股",...Object.keys(preferences.presets)])].map(name => <option key={name}>{name}</option>)}</select><button onClick={() => void s.act(async () => { const name = await requestText("保存工作区名称"); if (!name?.trim()) return; await persistNow(); const state = await request<WorkspaceState>("workspace.get"); await savePreferences({ presets: { ...state.presets, [name.trim()]: state.windows } }); })}>保存布局</button></div></details><span className="r-spacer" /><button disabled={!active} title="复制当前对象并在右侧分屏" onClick={() => active && open({ ...active, id: crypto.randomUUID() }, "right")}>分屏</button><button disabled={!active || !window.v3Research?.workspace} title="将当前标签拖出为独立 Windows 窗口，可移至第二屏" onClick={() => void s.act(() => detach())}>新窗口 ↗</button>{windowInfo && !windowInfo.main && <button onClick={() => void s.act(attach)}>全部移回主窗口</button>}{windowInfo?.main && <button aria-expanded={preferences.aiVisible !== false} onClick={() => void s.act(() => savePreferences({aiVisible: preferences.aiVisible === false}))}>{preferences.aiVisible === false ? "展开助手" : "收起右栏"}</button>}</div><div className="r-dock">{windowInfo ? <DockviewReact className={`dockview-theme-${preferences.theme}`} components={panels} onReady={ready} /> : <Empty title="正在打开研究首页…" />}</div></main>
+    {windowInfo?.main && <div className="r-right-region" hidden={preferences.aiVisible === false}><div className="r-resize" role="separator" aria-label="调整右栏宽度" onPointerDown={e => resize("aiWidth", e)} /><div className="r-right-content"><nav className="r-right-tabs"><button className={preferences.rightPanel !== "parameters" ? "active" : ""} onClick={() => void s.act(() => savePreferences({rightPanel:"ai"}))}>研究助手</button><button className={preferences.rightPanel === "parameters" ? "active" : ""} disabled={!active?.projectId} onClick={() => void s.act(() => savePreferences({rightPanel:"parameters"}))}>完整参数</button></nav><div className="r-right-pane" hidden={preferences.rightPanel === "parameters"}><ConversationPanel settingsOpen={settings} closeSettings={() => setSettings(false)} /></div>{preferences.rightPanel === "parameters" && <div className="r-right-pane">{active?.projectId ? <ObjectScope key={`${active.projectId}:${active.strategyId}:${active.kind}`} panel={active}><ParameterPane panel={active}/></ObjectScope> : <Empty title="先选择一个研究对象" />}</div>}</div></div>}</div>
+    <footer className="r-taskbar"><button onClick={() => setJobsVisible(v => !v)} aria-expanded={jobsVisible}>任务 <span>{activeJobs.length ? `${activeJobs.length} 项进行中` : "无运行任务"}</span><span>{jobsVisible ? "收起" : "展开"}</span></button>{jobsVisible && <><div className="r-resize horizontal" onPointerDown={e => resize("bottom", e)} /><Jobs /></>}</footer>{creating && <CreateProject close={() => { setCreating(false); void s.act(reload); }} />}</div>{toolSearch !== null && <ToolPicker search={toolSearch} setSearch={setToolSearch} close={() => setToolSearch(null)} />}<TextPromptHost /></WorkspaceContext.Provider>;
+}
+
+function ResearchStart({ projectId }: { projectId?: string }) {
+  const s = useResearch(), w = useWorkspace();
+  const project = s.projects.find(p => p.id === projectId);
+  const [continuing, setContinuing] = useState(false);
+  const [copying,setCopying]=useState(false);
+  if (projectId) return <div className="r-page r-project-start"><p className="r-eyebrow">研究项目</p><h1>{project?.name ?? "项目研究"}</h1><p className="r-note">{project?.objective || "从研究假设开始，选择研究起点。"}</p><div className="r-start-actions"><button onClick={()=>w.open({kind:"factors",projectId,title:"因子探索"})}><strong>因子探索</strong><span>直接研究因子与分组表现</span></button><button onClick={() => void s.act(async () => { const name = await requestText("策略验证名称"); if (!name?.trim()) return; const strategy = await request<StrategyConfig>("strategies.create", { projectId, name: name.trim() }); await w.reload(); w.open({ kind: "strategy", projectId, strategyId: strategy.id, title: strategy.name }); })}><strong>策略验证</strong><span>建立策略草稿并验证</span></button><button onClick={()=>w.open({kind:"model",projectId,title:"模型训练"})}><strong>模型训练</strong><span>配置特征与时间切分</span></button><button aria-expanded={copying} onClick={()=>setCopying(v=>!v)}><strong>复制研究</strong><span>沿用已有策略配置和原区间</span></button></div>{copying&&<section><h2>选择已有项目或策略作为起点</h2><div className="r-start-projects">{s.projects.flatMap(source=>[{projectId:source.id,id:"",name:`${source.name} · 项目配置`,startDate:source.startDate,endDate:source.endDate},...w.strategies.filter(st=>st.projectId===source.id).map(st=>({projectId:source.id,id:st.id,name:`${source.name} · ${st.name}`,startDate:String(st.settings.startDate??source.startDate??""),endDate:String(st.settings.endDate??source.endDate??"")}))]).map(source=><button key={`${source.projectId}:${source.id}`} onClick={()=>void s.act(async()=>{const name=await requestText("复制后的研究名称",`${source.name} · 副本`);if(!name?.trim())return;await flushDrafts();const copied=await request<StrategyConfig>("strategies.create",{projectId,fromProjectId:source.projectId,fromStrategyId:source.id||undefined,name:name.trim()});await w.reload();w.open({kind:"strategy",projectId,strategyId:copied.id,title:copied.name});})}><strong>{source.name}</strong><span>原区间：{source.startDate||"未设置"} — {source.endDate||"未设置"}</span></button>)}</div><p className="r-note">复制配置与原研究区间，副本未启用；原项目和实验保留。</p></section>}<div className="r-toolbar"><button onClick={() => w.open({ kind: "data", projectId, title: "项目数据" })}>项目数据与研究区间</button><button onClick={()=>w.open({kind:"universe",projectId,title:"项目股票池"})}>股票池</button><button onClick={() => w.open({ kind: "experiment", projectId, title: "项目实验" })}>查看实验</button></div><h2>继续研究策略</h2><div className="r-start-projects">{w.strategies.filter(st => st.projectId === projectId).map(st => <button key={st.id} onClick={() => w.open({ kind: "strategy", projectId, strategyId: st.id, title: st.name })}><strong>{st.name}</strong><span>{st.enabled ? "每日选股已启用" : "研究草稿"}</span></button>)}</div></div>;
+  return <div className="r-page r-research-start"><p className="r-eyebrow">V3 · A 股日线研究</p><h1>今天，从哪里开始？</h1><p className="r-note">查看行情，或带着一个问题进入研究。</p><div className="r-start-actions"><button className="r-primary" onClick={() => w.open({ kind: "quote", title: "查看行情" })}><strong>查看行情</strong><span>股票、指数与板块</span></button><button onClick={() => setContinuing(v => !v)}><strong>继续项目</strong><span>选择已有研究</span></button><button onClick={w.createProject}><strong>新建研究</strong><span>建立新的研究项目</span></button><button onClick={() => void s.act(w.openProjectDirectory)}><strong>打开项目</strong><span>从本地文件夹打开</span></button></div>{continuing && <section><h2>历史项目</h2><div className="r-start-projects">{s.projects.map(p => <button key={p.id} onClick={() => w.open({ kind: "today", projectId: p.id, title: p.name })}><strong>{p.name}</strong><span>{p.objective || p.path}</span></button>)}</div>{!s.projects.length && <p className="r-note">还没有历史项目。可以新建研究，或打开已有项目文件夹。</p>}</section>}</div>;
+}
+function CreateProject({ close }: { close: () => void }) {
+  const w = useWorkspace(); const s = useResearch(); const [name, setName] = useState(""); const [path, setPath] = useState(""); const [objective, setObjective] = useState(""); const [busy, setBusy] = useState(false);
+  const dialog = useRef<HTMLDialogElement>(null); useEffect(() => { dialog.current?.showModal(); }, []);
+  return <dialog ref={dialog} className="r-dialog" onCancel={close}><form onSubmit={e => { e.preventDefault(); setBusy(true); void s.act(async () => { const p = await request<ProjectConfig>("projects.create", { path, name: name.trim(), objective: objective.trim() }); await s.open(p.path); w.open({kind:"today",projectId:p.id,title:p.name}); close(); }).finally(() => setBusy(false)); }}><h2>新建研究项目</h2><p>项目文件、数据与实验保存在你选择的文件夹。</p><Field label="项目名称"><input required autoFocus value={name} onChange={e => setName(e.target.value)} /></Field><Field label="项目文件夹"><div className="r-toolbar"><input required value={path} onChange={e => setPath(e.target.value)} /><button type="button" onClick={() => void s.act(async () => { const chosen = await window.v3Research!.chooseDirectory(); if (chosen) setPath(chosen); })}>选择文件夹</button></div></Field><Field label="研究目标"><textarea rows={4} value={objective} onChange={e => setObjective(e.target.value)} placeholder="想验证怎样的投资假设？" /></Field><div className="r-toolbar"><button type="button" onClick={close}>取消</button><button className="r-primary" disabled={busy || !name.trim() || !path.trim()} type="submit">{busy ? "创建中…" : "创建项目"}</button></div></form></dialog>;
+}
+function Jobs() {
+ const s=useResearch(),w=useWorkspace();const [status,setStatus]=useState(""),[projectId,setProjectId]=useState("");const [offset,setOffset]=useState(0),[history,setHistory]=useState<JobEvent[]>([]),[selected,setSelected]=useState<string[]>([]),[busy,setBusy]=useState(false);const limit=30;const [historyOpen,setHistoryOpen]=useState(false);
+ const labels:Record<string,string>={queued:"排队中",running:"运行中",completed:"已完成",failed:"失败",cancelled:"已取消",interrupted:"已中断"};
+ const ended=["completed","failed","cancelled","interrupted"];
+ const reload=async()=>{const rows=await request<JobEvent[]>("jobs.list",{...(status?{status}:{statuses:ended}),...(projectId?{projectId}:{}),offset,limit});setHistory(rows);setSelected([]);if(!rows.length&&offset>0)setOffset(Math.max(0,offset-limit));};
+ useEffect(()=>{void s.act(reload);},[status,projectId,offset,s.revision]);
+ async function clear(all=false){setBusy(true);await s.act(async()=>{const result=await request<{removedIds:string[];skippedIds:string[]}>("jobs.clear",all?{statuses:status?[status]:ended,...(projectId?{projectId}:{})}:{jobIds:selected});await s.refresh();await reload();s.setNotice(`已清理 ${result.removedIds.length} 条任务记录${result.skippedIds.length?`，跳过 ${result.skippedIds.length} 条`:""}；实验结果保留。`);});setBusy(false);}
+ const render=(j:JobEvent)=><div className="r-job" key={j.id}>{ended.includes(j.status)&&<input type="checkbox" aria-label={`选择任务${j.name}`} checked={selected.includes(j.id)} onChange={()=>setSelected(v=>v.includes(j.id)?v.filter(id=>id!==j.id):[...v,j.id])}/>}<strong>{jobTitle(j.kind,j.name)}</strong><span>{labels[j.status]}</span><progress max={1} value={Math.max(0,Math.min(1,j.progress))}/><span title={j.message}>{j.message}</span>{!ended.includes(j.status)?<button onClick={()=>void s.act(async()=>{await request("jobs.cancel",{jobId:j.id});await s.refresh();})}>取消</button>:<button onClick={()=>void s.act(()=>request("jobs.submit",{spec:j.spec}))}>重跑</button>}{j.experimentId&&(j.resultAvailable===false?<span className="r-muted">实验已删除</span>:<button onClick={()=>w.open({kind:"experiment",title:jobTitle(j.kind,j.name),projectId:j.projectId,strategyId:j.strategyId,experimentId:j.experimentId})}>查看结果</button>)}{ended.includes(j.status)&&<button disabled={busy} onClick={()=>void s.act(async()=>{await request("jobs.clear",{jobIds:[j.id]});await s.refresh();await reload();})}>清理</button>}{j.preparation&&<PreparationRecords preparation={j.preparation} projectId={j.projectId} strategyId={j.strategyId}/>}</div>;
+ const active=s.jobs.filter(j=>!ended.includes(j.status)&&(!projectId||j.projectId===projectId));
+ return <div className="r-jobs"><div className="r-toolbar"><select aria-label="任务状态" value={status} onChange={e=>{setStatus(e.target.value);setOffset(0);}}><option value="">全部已结束</option>{ended.map(k=><option key={k} value={k}>{labels[k]}</option>)}</select><select aria-label="任务项目" value={projectId} onChange={e=>{setProjectId(e.target.value);setOffset(0);}}><option value="">所有项目</option>{s.projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select><button disabled={busy||!selected.length} onClick={()=>void clear()}>清理所选（{selected.length}）</button><button disabled={busy||!history.length} onClick={()=>void clear(true)}>清理筛选内全部已结束</button><span className="r-spacer"/><button disabled={!offset} onClick={()=>setOffset(Math.max(0,offset-limit))}>上一页</button><span>第 {Math.floor(offset/limit)+1} 页</span><button disabled={history.length<limit} onClick={()=>setOffset(offset+limit)}>下一页</button></div>{active.length>0&&<><h3>进行中</h3>{active.map(render)}</>}<details open={historyOpen} onToggle={event=>setHistoryOpen(event.currentTarget.open)}><summary>历史记录 · {history.length} 条当前页</summary>{history.length?history.map(render):<Empty title="此筛选下没有历史任务" />}</details></div>;
+}
+
+function ToolPicker({search,setSearch,close}:{search:string;setSearch:(value:string)=>void;close:()=>void}) {
+ const s=useResearch(),w=useWorkspace();const dialog=useRef<HTMLDialogElement>(null);
+ const [target,setTarget]=useState(w.active?.projectId ? `${w.active.projectId}:${w.active.strategyId??""}` : "");
+ useEffect(()=>{dialog.current?.showModal();},[]);
+ const [projectId,strategyId]=target.split(":");
+ const entries=[{kind:"reports",title:"研报库"},{kind:"reproduction",title:"研报复现",scoped:true},{kind:"quote",title:"查看行情"},{kind:"data",title:"项目数据",scoped:true},{kind:"universe",title:"股票池",scoped:true},{kind:"factors",title:"因子研究",scoped:true},{kind:"model",title:"模型训练",scoped:true},{kind:"strategy",title:"策略配置",scoped:true},{kind:"strategy",view:"backtest",title:"策略回测",scoped:true},{kind:"strategy",view:"optimize",title:"参数寻优",scoped:true},{kind:"experiment",title:"实验结果",scoped:true},{kind:"candidate",title:"研究候选",scoped:true},{kind:"simulation",title:"日线模拟账户",scoped:true},{kind:"compare",title:"实验比较"},{kind:"market",title:"市场概况"},{kind:"screener",title:"筛选与自选"},{kind:"selection",title:"每日选股"},{kind:"positions",title:"实际持仓"}] as const;
+ return <dialog ref={dialog} className="r-dialog r-tool-picker" onCancel={close}><div className="r-toolbar"><h2>打开工具</h2><button onClick={close}>关闭</button></div><input autoFocus aria-label="搜索工具" placeholder="搜索因子、模型、回测、持仓…" value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label="工具的研究对象" value={target} onChange={e=>setTarget(e.target.value)}><option value="">选择研究对象</option>{s.projects.map(p=><optgroup key={p.id} label={p.name}><option value={`${p.id}:`}>{p.name} · 项目默认配置</option>{w.strategies.filter(st=>st.projectId===p.id).map(st=><option key={st.id} value={`${p.id}:${st.id}`}>{p.name} · {st.name}</option>)}</optgroup>)}</select><div className="r-tool-list">{entries.filter(e=>e.title.includes(search.trim())).map(e=><button disabled={"scoped" in e&&!projectId} key={e.title} onClick={()=>{w.open({kind:e.kind,title:e.title,...("view" in e?{view:e.view}:{}),...("scoped" in e?{projectId,strategyId:strategyId||undefined}:{})});close();}}>{e.title}<span>打开 →</span></button>)}</div></dialog>;
+}
+
+function ParameterPane({panel}:{panel:WorkspacePanel}) {
+ const s=useResearch();const [detail,setDetail]=useState<ExperimentDetails|null>(null);
+ useEffect(()=>{if(panel.kind==='experiment'&&panel.experimentId)void s.act(async()=>setDetail(await request<ExperimentDetails>('experiments.get',{projectId:panel.projectId,experimentId:panel.experimentId})));},[panel.experimentId,panel.projectId]);
+ if(['reports','report','reproduction'].includes(panel.kind))return <div className="r-page"><h2>研报研究</h2><p>原文条件、引用和复现参数在中间页面核对与保存。</p></div>;
+ if(panel.kind==='simulation')return <div className="r-page"><h2>模拟账户</h2><p>推进参数和账户状态在中间账户页查看。后续策略参数从对应策略草稿读取。</p></div>;
+ if(panel.kind==='candidate')return <div className="r-page"><h2>独立候选参数</h2><p>在中间候选页编辑与保存参数，并检查版本实验。点击采用后才更新策略草稿。</p></div>;
+ if(panel.kind==='experiment')return <div className="r-page"><h2>本次实验参数</h2><p className="r-note">保存的运行快照。要调整下一次研究，请打开对应策略草稿。</p>{detail?<pre>{JSON.stringify(detail.experiment.parameters,null,2)}</pre>:<p>正在读取实验…</p>}</div>;
+ return panel.kind==='factors'?<FactorPanel/>:panel.kind==='model'?<ModelPanel/>:panel.kind==='universe'?<UniversePanel/>:<StrategyPanel/>;
+}

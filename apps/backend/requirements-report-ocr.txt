@@ -1,0 +1,4 @@
+# Optional offline OCR companion; the explicit OCR Job installs into app data/shared/report-ocr-site.
+rapidocr-onnxruntime==1.4.4
+numpy>=1.26,<2
+opencv-python<4.12

@@ -1,0 +1,4 @@
+# Install into the companion tdx-site directory, NOT the research/AI environment.
+mootdx==0.11.7
+numpy>=1.26,<2
+pandas>=2.2,<3

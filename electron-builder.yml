@@ -1,0 +1,34 @@
+appId: com.v3.quant.workbench
+productName: V3 Quant Workbench
+executableName: v3-quant-workbench
+directories:
+  output: artifacts/package
+  buildResources: packaging/resources
+asar: true
+npmRebuild: false
+files:
+  - dist/**
+  - package.json
+  - LICENSE
+  - '!node_modules/**'
+extraResources:
+  - from: artifacts/package-staging/backend-runtime
+    to: backend-runtime
+    filter:
+      - '**/*'
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: dir
+      arch:
+        - x64
+  artifactName: v3-quant-workbench-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
