@@ -6,6 +6,7 @@ import type { ResearchServiceEvent } from "../../../../packages/contracts/src/re
 import { encodeFrame, FrameDecoder } from "./backendRuntime/framing";
 
 const RESEARCH_FRAME_BYTES = 16 * 1024 * 1024;
+const CANCELLABLE_READS = new Set(["experiments.get", "experiments.table", "experiments.analysis", "experiments.calendar", "experiments.compare", "exports.create"]);
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -78,10 +79,15 @@ export class ResearchRuntime {
       try {
         const child = this.start();
         const id = randomUUID();
-        const frame = encodeFrame(JSON.parse(JSON.stringify({ id, method, params })) as Record<string, unknown>, RESEARCH_FRAME_BYTES);
+        const readId = CANCELLABLE_READS.has(method) ? ((params as { readId?: string }).readId ?? id) : undefined;
+        const payload = readId ? { ...params, readId } : params;
+        const frame = encodeFrame(JSON.parse(JSON.stringify({ id, method, params: payload })) as Record<string, unknown>, RESEARCH_FRAME_BYTES);
         const timer = setTimeout(() => {
           this.pending.delete(id);
-          reject(new Error("研究服务响应超时，请查看底部任务状态"));
+          if (readId && child.exitCode === null && !child.stdin.destroyed) {
+            child.stdin.write(encodeFrame({ id: randomUUID(), method: "reads.cancel", params: { readId } }, RESEARCH_FRAME_BYTES));
+          }
+          reject(new Error(readId ? "读取响应超时，已请求停止；已完成的导出可能仍保留在导出目录。" : "研究服务响应超时，请查看底部任务状态"));
         }, 180_000);
         this.pending.set(id, { resolve: (value) => resolve(value as T), reject, timer });
         child.stdin.write(frame);

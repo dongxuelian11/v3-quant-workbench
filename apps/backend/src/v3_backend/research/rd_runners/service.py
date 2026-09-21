@@ -48,6 +48,10 @@ def _post(settings, endpoint, payload):
         headers['Authorization'] = 'Bearer ' + settings['apiKey']
     request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
     for attempt in range(3):
+        from .protocol import reserve, event, bridge
+        if (bridge()/'cancel.json').exists():raise InterruptedError('研究任务已取消')
+        reserve('modelRequests')
+        event('model_http_attempt',endpoint=endpoint,attempt=attempt+1)
         delay=1.
         try:
             with urllib.request.urlopen(request, timeout=180) as response:
@@ -68,7 +72,10 @@ def _post(settings, endpoint, payload):
         except Exception as exc:raise ProviderError('模型服务请求失败: '+type(exc).__name__) from None
         from .protocol import event
         event('model_request_retry',attempt=attempt+1,delaySeconds=delay)
-        time.sleep(delay)
+        deadline=time.monotonic()+min(delay,60.)
+        while time.monotonic()<deadline:
+            if (bridge()/'cancel.json').exists():raise InterruptedError('研究任务已取消')
+            time.sleep(min(.2,max(0,deadline-time.monotonic())))
 
 
 class V3APIBackend(APIBackend):

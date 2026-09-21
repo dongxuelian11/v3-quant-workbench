@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from v3_backend.research.jobs import Jobs
 from v3_backend.research.storage import Store
@@ -10,6 +11,46 @@ from v3_backend.research.ai import _stage_status, attached_experiments
 
 
 class JobHistoryTest(unittest.TestCase):
+    def test_recent_list_keeps_old_pending_before_paging_but_clear_is_full(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'app')
+            project = store.create_project(Path(directory) / 'project', '历史')
+            jobs = Jobs(store, lambda _: None)
+            rows = [('old', 'completed', '2026-07-01', {}), ('recent', 'completed', '2026-09-20', {}),
+                    ('running', 'running', '2026-07-02', {}), ('queued', 'queued', '2026-07-03', {}),
+                    ('register', 'failed', '2026-07-04', {'registrationPending':True}),
+                    ('cleanup', 'failed', '2026-07-05', {'cleanupPending':True})]
+            for key, status, created, flags in rows:
+                jobs._save(dict(id=key, projectId=project['id'], status=status, createdAt=created, kind='factor.analyze', **flags))
+            with patch('v3_backend.research.jobs.now', return_value='2026-09-21T00:00:00+00:00'):
+                expected = ['recent','cleanup','register','queued','running']
+                self.assertEqual([j['id'] for j in jobs.list()], expected)
+                self.assertEqual([j['id'] for j in jobs.list({'offset':2,'limit':2})], expected[2:4])
+                self.assertEqual(len(jobs.list({'allHistory':True})), 6)
+                result=jobs.clear()
+                self.assertEqual(set(result['removedIds']), {'old','recent'})
+                self.assertEqual(set(result['skippedIds']), {'cleanup','register'})
+
+    def test_single_and_bulk_clear_preserve_pending_recovery_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'app')
+            project = store.create_project(Path(directory) / 'project', '恢复保护')
+            jobs = Jobs(store, lambda _: None)
+            protected = {'register': {'registrationPending': True}, 'cleanup': {'cleanupPending': True}, 'exiting': {}}
+            for key, flags in {**protected, 'ordinary': {}}.items():
+                jobs._save(dict(id=key, projectId=project['id'], kind='factor.analyze', status='failed',
+                                createdAt='2026-09-21', **flags))
+            jobs.processes['exiting'] = object()
+            for key in protected:
+                self.assertEqual(jobs.clear({'jobIds': [key]}), {'removedIds': [], 'skippedIds': [key]})
+            cleared = jobs.clear({'projectId': project['id']})
+            self.assertEqual(cleared['removedIds'], ['ordinary'])
+            self.assertEqual(set(cleared['skippedIds']), set(protected))
+            for key in protected:
+                self.assertEqual(store.get('job', key)['id'], key)
+                self.assertEqual(store.project_store(project['id']).get('job', key)['id'], key)
+            jobs.processes.clear()
+
     def test_clear_preserves_experiments_and_does_not_restore_on_reopen(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / 'app')

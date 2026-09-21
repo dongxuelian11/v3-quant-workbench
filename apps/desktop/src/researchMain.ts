@@ -5,12 +5,14 @@ import type { JsonObject, ResearchBridge, WorkspacePanel, WorkspaceWindow } from
 import { ResearchRuntime } from "./main/researchRuntime";
 import { WorkspaceWindows } from "./main/workspaceWindows";
 import { ResearchBackground } from "./main/researchBackground";
+import { ResearchUpdates } from "./main/researchUpdates";
 
 let window: BrowserWindow | null = null;
 let runtime: ResearchRuntime | null = null;
 let workspaces: WorkspaceWindows | null = null;
 let shuttingDown = false;
 let background: ResearchBackground | null = null;
+let updates: ResearchUpdates | null = null;
 if (process.env.V3_RESEARCH_APP_DATA) app.setPath("userData", process.env.V3_RESEARCH_APP_DATA);
 const primaryInstance = app.requestSingleInstanceLock();
 if (!primaryInstance) app.quit();
@@ -24,13 +26,23 @@ function ownWindow(event: IpcMainInvokeEvent): BrowserWindow {
 function registerIpc(): void {
   ipcMain.handle("research:request", async (event, method: string, params: object) => {
     ownWindow(event);
+    if (method === "updates.check") {
+      if (!updates) throw new Error("更新服务尚未初始化");
+      return updates.check(true);
+    }
+    if (method === "display.setZoom") {
+      const factor = (params as { factor?: number }).factor;
+      if (typeof factor !== "number" || !Number.isFinite(factor) || factor < .8 || factor > 1.5) throw new Error("界面缩放须在80%至150%之间");
+      event.sender.setZoomFactor(factor);
+      return { factor: event.sender.getZoomFactor() };
+    }
     if (!runtime) throw new Error("研究服务尚未启动");
     const finish = background?.beginRequest(method);
     let result: unknown;
     try { result = await runtime.request(method, params); }
     finally { finish?.(); }
     if (method === "workspace.get" && workspaces) return { ...(result as object), windows: workspaces.snapshots() };
-    if (/(?:\.save|\.create|\.delete|\.activate|\.import|\.update|\.adopt|\.clear)$/.test(method)) {
+    if (/(?:\.save|\.create|\.delete|\.activate|\.import|\.update|\.adopt|\.clear)$/.test(method) || method === "history.memberships.apply") {
       const context: JsonObject = {};
       for (const key of ["projectId", "strategyId", "experimentId", "conversationId", "candidateId", "accountId", "symbol", "id"]) {
         const value = (params as Record<string, unknown>)[key];
@@ -42,7 +54,9 @@ function registerIpc(): void {
   });
   ipcMain.handle("research:choose-directory", async (event, options: Parameters<ResearchBridge["chooseDirectory"]>[0] = {}) => {
     const owner = ownWindow(event);
-    const result = await dialog.showOpenDialog(owner, { title: options.purpose === "tdx" ? "选择通达信安装目录（含 vipdoc）" : "选择研究项目文件夹", properties: options.purpose === "tdx" ? ["openDirectory"] : ["openDirectory", "createDirectory"] });
+    const settings = options.purpose !== "tdx" && runtime ? await runtime.request<{ effectiveStorage?: { newProjectDirectory?: string; dataDirectory?: string } }>("settings.get", {}) : undefined;
+    const title = options.purpose === "tdx" ? "选择通达信安装目录（含 vipdoc）" : options.purpose === "data" ? "选择数据主目录" : options.purpose === "projectDefault" ? "选择新项目默认目录" : "选择研究项目文件夹";
+    const result = await dialog.showOpenDialog(owner, { title, defaultPath: options.purpose === "data" ? settings?.effectiveStorage?.dataDirectory : settings?.effectiveStorage?.newProjectDirectory, properties: options.purpose === "tdx" ? ["openDirectory"] : ["openDirectory", "createDirectory"] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   ipcMain.handle("research:open-external", async (event, value: string) => {
@@ -64,6 +78,10 @@ function registerIpc(): void {
     const membership = options.purpose === "membership";
     const report = options.purpose === "report";
     const quote = options.purpose === "quote";
+    if (options.purpose === "settings") {
+      const result = await dialog.showOpenDialog(owner, { title: "导入设置包", properties: ["openFile"], filters: [{ name: "V3 设置", extensions: ["json"] }] });
+      return result.canceled ? [] : result.filePaths;
+    }
     const result = await dialog.showOpenDialog(owner, {
       title: report ? "导入研报 PDF" : quote ? "导入标的行情" : positions ? "导入当前持仓" : membership ? "导入历史股票池或行业" : "导入行情或财务数据",
       properties: positions ? ["openFile"] : ["openFile", "multiSelections"],
@@ -164,6 +182,12 @@ if (primaryInstance) app.whenReady().then(async () => {
     else await created.loadFile(join(__dirname, "renderer", "index.html"));
   }, () => !shuttingDown && !!background?.hideIfBusy());
   window = await workspaces.start();
+  updates = new ResearchUpdates(join(appData, "update-check.json"), app.getVersion());
+  if (app.isPackaged) void runtime.request<{ general?: { checkUpdates?: boolean } }>("settings.get").then(async settings => {
+    if (settings.general?.checkUpdates === false) return;
+    const status = await updates!.check();
+    if (status.available) workspaces?.broadcast({ method: "app.updateAvailable", params: { ...status } });
+  }).catch(error => console.warn("版本检查未完成", String(error)));
 }).catch((error: unknown) => {
   dialog.showErrorBox("V3 启动失败", error instanceof Error ? error.message : String(error));
   app.exit(1);

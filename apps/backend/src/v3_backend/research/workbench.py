@@ -103,6 +103,7 @@ def _save_strategy(store, params):
     supplied = params['strategy']
     project_id = params.get('projectId') or supplied['projectId']
     old = get_strategy(store, project_id, supplied['id'])
+    membership_ref = deepcopy(old['universe'].get('membershipRef'))
     # Autosaving a stale editor must not overwrite the independently activated plan.
     for key in ('name', 'universe', 'settings'):
         if key in supplied:
@@ -126,6 +127,10 @@ def _save_strategy(store, params):
         old['settings'] = merge(old['settings'], patch)
     old['name'] = _name(old['name'])
     old['universe'] = _universe(old['universe'])
+    if params.get('preserveMembershipRef'):
+        old['universe'].pop('membershipRef', None)
+        if membership_ref is not None:
+            old['universe']['membershipRef'] = membership_ref
     if not isinstance(old['settings'], dict):
         raise ValueError('策略设置格式无效')
     old['updatedAt'] = now()
@@ -151,10 +156,11 @@ def _activate_strategy(store, params):
     return store.project_store(project_id).put('strategy', value, project_id)
 
 
-def workspace(store, patch=None):
+def workspace(store, patch=None, persist=True):
     defaults = dict(theme='light', density='comfortable', sidebarWidth=224, aiWidth=360,
                     windows=[], presets={}, tablePreferences={}, sidebarVisible=True, aiVisible=True,
-                    rightPanel='ai', closedProjectIds=[], conversationViews={})
+                    rightPanel='ai', closedProjectIds=[], conversationViews={}, zoomFactor=1., readingFontSize=14,
+                    shortcuts={},layoutPresets={},navigation={})
     try:
         saved = store.get('workspace', 'current')
     except ValueError:
@@ -162,21 +168,54 @@ def workspace(store, patch=None):
     value = {**defaults, **saved}
     if patch is not None:
         for key in ('theme', 'density', 'sidebarWidth', 'aiWidth', 'windows', 'activeConversationId',
-                    'sidebarVisible', 'aiVisible', 'rightPanel', 'closedProjectIds', 'chartDefaults'):
+                    'sidebarVisible', 'aiVisible', 'rightPanel', 'closedProjectIds', 'chartDefaults', 'zoomFactor', 'readingFontSize', 'navigation'):
             if key in patch:
                 value[key] = deepcopy(patch[key])
-        for key in ('presets', 'tablePreferences', 'conversationViews'):
+        for key in ('presets', 'tablePreferences', 'conversationViews', 'shortcuts', 'layoutPresets'):
             if key in patch:
                 value[key] = {**value.get(key, {}), **deepcopy(patch[key])}
-        if value['theme'] not in {'light', 'dark'} or value['density'] not in {'comfortable', 'compact'}:
+        if value['theme'] not in {'light', 'dark', 'system'} or value['density'] not in {'comfortable', 'compact'}:
             raise ValueError('未知主题或表格密度')
-        store.put('workspace', {**value, 'id': 'current'})
+        for key,low,high in (('zoomFactor',.8,1.5),('readingFontSize',12,20)):
+            number=value[key]
+            if isinstance(number,bool) or not isinstance(number,(int,float)) or not math.isfinite(number) or not low<=number<=high:
+                raise ValueError('界面缩放或阅读字号超出支持范围')
+        allowed={'sidebarVisible','aiVisible','sidebarWidth','aiWidth','density','rightPanel','layout'}
+        navigation=value.get('navigation',{})
+        if not isinstance(navigation,dict):raise ValueError('导航偏好格式无效')
+        known={'today','quote','market','screener','selection','positions','data','reports'}
+        if any(not isinstance(navigation.get(key,[]),list) or any(item not in known for item in navigation.get(key,[])) for key in ('order','hidden','pinned')):
+            raise ValueError('导航包含未知入口')
+        value['navigation']={key:list(dict.fromkeys(navigation.get(key,[]))) for key in ('order','hidden','pinned')}
+        value['layoutPresets']={name:{k:v for k,v in item.items() if k in allowed} for name,item in value['layoutPresets'].items() if isinstance(item,dict)}
+        if persist:store.put('workspace', {**value, 'id': 'current'})
     value.pop('id', None)
     return value
 
 
 def _state(value=None):
     return dict(messages=[], phase='', proposals=[], stageJobIds=[], stageEvents=[], mode='assist') | deepcopy(value or {})
+
+
+def project_display(store, params, save=False):
+    """Project-only presentation preferences; never service, paths, or objects."""
+    project_id=params['projectId'];portable=store.project_store(project_id)
+    allowed={'density','readingFontSize','sidebarWidth','aiWidth','sidebarVisible','aiVisible','rightPanel'}
+    try:overrides=portable.get('display_preferences','current')['overrides']
+    except ValueError:overrides={}
+    if save:
+        incoming=params.get('overrides',{})
+        if not isinstance(incoming,dict) or set(incoming)-allowed:raise ValueError('项目仅支持显示偏好覆盖')
+        candidate=deepcopy(incoming)
+        workspace(store,candidate,persist=False)
+        for key in ('sidebarVisible','aiVisible'):
+            if key in candidate and not isinstance(candidate[key],bool):raise ValueError('侧栏显示应为开关')
+        for key in ('sidebarWidth','aiWidth'):
+            if key in candidate and (isinstance(candidate[key],bool) or not isinstance(candidate[key],(int,float)) or not 160<=candidate[key]<=800):raise ValueError('侧栏宽度应为160到800')
+        if 'rightPanel' in candidate and candidate['rightPanel'] not in {'ai','parameters'}:raise ValueError('未知右侧面板')
+        overrides=candidate
+        portable.put('display_preferences',dict(id='current',overrides=overrides))
+    return dict(projectId=project_id,overrides=overrides,effective={**workspace(store),**overrides})
 
 
 def _legacy_conversations(store):

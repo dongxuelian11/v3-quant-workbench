@@ -128,6 +128,23 @@ def validate_price_basis(expression):
         raise ValueError('自定义因子含依赖复权基准的绝对价格/成交量；绝对价请用 $rawclose/$rawopen/$rawhigh/$rawlow，原始量用 $rawvolume；复权行情仅接受尺度不变的比例/排名等表达式')
 
 
+
+def input_file_state(root):
+    """Ordinary file update metadata; no content reads or hashes."""
+    root=Path(root)
+    return [[p.relative_to(root).as_posix(),p.stat().st_mtime_ns,p.stat().st_size]
+        for p in sorted(root.rglob('*')) if p.is_file() and p.suffix in {'.parquet','.json'}]
+
+
+def input_cache_stamp(project):
+    root=Path(project_data(project)['path'])/'data'
+    state=input_file_state(root)
+    identity=project.get('inputCacheIdentity')
+    if identity is not None and state==project.get('inputCacheFiles'):
+        return {'snapshot':identity}
+    return {'sourceRoot':str(root.resolve()),'files':state}
+
+
 def prepare(project, output, progress):
     import pandas as pd
     import qlib
@@ -145,7 +162,7 @@ def prepare(project, output, progress):
     import time
     data_root = Path(project_data(project)['path']) / 'data'
     cache_root = Path(project['path']) / '.research' / 'cache'
-    signature = {'version': 5, 'completedDailyCutoff':update_end_date(), 'files': [(str(path.relative_to(data_root)), path.stat().st_mtime_ns, path.stat().st_size) for path in sorted(data_root.rglob('*.parquet'))], 'symbols': sorted(prices.symbol.unique())}
+    signature = {'version': 7, 'completedDailyCutoff':update_end_date(), 'files': input_cache_stamp(project), 'symbols': sorted(prices.symbol.unique())}
     signature = __import__('json').loads(__import__('json').dumps(signature))
     cache_state = read_json(cache_root / 'qlib.json', {})
     if cache_state.get('signature') == signature:
@@ -283,19 +300,21 @@ def features(project, params, prices):
     from .storage import read_json, write_json
     root = Path(project['path'])
     cache = root/'.research/cache/factors'
-    stamp = dict(version=3, universe=project['universe'], ids=ids, expressions=[catalog[item] for item in ids],
+    stamp = dict(version=5, universe=project['universe'], ids=ids, expressions=[catalog[item] for item in ids],
                  start=str(start),end=str(end),processing=params.get('factorProcessing'),
                  generated=[(key,str(path),path.stat().st_mtime_ns,path.stat().st_size) for key,path in generated.items() if key in ids],
                  generatedCode=[(custom['id'],generated_path(project,custom['codePath']).read_text(encoding='utf-8'))
                                 for custom in params.get('customFactors',[]) if custom['id'] in ids and custom.get('source')=='parquet' and custom.get('codePath')],
-                 data=[(path.as_posix(),path.stat().st_mtime_ns,path.stat().st_size)
-                       for path in sorted((Path(project_data(project)['path'])/'data').rglob('*')) if path.suffix=='.parquet' or path.suffix=='.json' and path.parent.name=='history'])
+                 data=input_cache_stamp(project))
     stamp = json.loads(json.dumps(stamp))
     entries = read_json(cache/'index.json',[])
     for entry in entries:
         if entry['stamp']==stamp and (cache/entry['file']).is_file():
             cached = pd.read_parquet(cache/entry['file'])
-            cached.attrs['processingCoverage'] = entry['coverage']
+            coverage = pd.DataFrame(entry['coverage'])
+            if 'date' in coverage:
+                coverage['date'] = pd.to_datetime(coverage['date'])
+            cached.attrs['processingCoverage'] = coverage.to_dict('records')
             return cached
     ordinary = [item for item in ids if not catalog[item].startswith(('alternative:','generated:'))]
     if ordinary:
@@ -458,6 +477,7 @@ def analyze(project, params, output, progress, prices=None):
                 details={'factors': summaries, 'unavailableFactors': unavailable, 'engine': 'alphalens-reloaded',
                          'customPriceBasis':'absolute yuan: rawopen/rawhigh/rawlow/rawclose; adjusted OHLC expressions must be scale invariant',
                          'forwardReturnConvention': 'T+1 open -> T+H+1 open' if params.get('labelMode','next_open')=='next_open' else 'T close -> T+H close',
+                         'coverageConvention':'仅实际非空因子进入分析；上市初期预热不足保留为空，来源停牌事实不补造行情，详见准备与数据覆盖。',
                          'IC':'Pearson','RankIC':'Spearman','ICIR':'每日Pearson IC均值/样本标准差','correlation':'每日截面相关系数均值'})
 
 
@@ -475,7 +495,8 @@ def model_estimator(params):
         from lightgbm import LGBMRegressor
         if set(hyper) - {'n_estimators', 'learning_rate', 'num_leaves', 'max_depth', 'min_child_samples', 'subsample', 'colsample_bytree', 'reg_alpha', 'reg_lambda'}:
             raise ValueError('未知 LightGBM 超参数')
-        return LGBMRegressor(random_state=42, n_jobs=1, verbosity=-1, **hyper)
+        from .resources import thread_count
+        return LGBMRegressor(random_state=42, n_jobs=thread_count(), verbosity=-1, **hyper)
     raise ValueError('未知模型')
 
 
@@ -502,6 +523,8 @@ def _train_single(project, params, output, progress, prices=None):
     estimator = model_estimator(params)
     columns = list(x.columns)
     from . import diagnostics
+    from .ai_budget import observe_computation
+    observe_computation('trainingTasks')
     training_tables = diagnostics.fit(estimator,segments['train'],segments['valid'],columns,params)
     artifacts = [save_table(output,name,table) for name,table in training_tables.items()]
     metrics = {}
@@ -551,6 +574,8 @@ def train(project, params, output, progress, prices=None):
         return result
     artifacts, metrics, predictions = [], [], []
     for index, bounds in enumerate(ranges):
+        from .ai_budget import observe_computation
+        observe_computation('rollingWindows')
         folder = output / f'window_{index}'
         folder.mkdir(parents=True, exist_ok=True)
         result = _train_single(project, {**params, **bounds, '_allowUnmaturedTest': index == len(ranges)-1}, folder, lambda *_: None, prices)
@@ -674,6 +699,8 @@ def time_segments(frame, calendar, params, horizon):
 
 
 def backtest(project, params, output, progress, prices=None, store=None):
+    from .ai_budget import observe_computation
+    observe_computation('backtestTasks')
     import pandas as pd
     from qlib.backtest import backtest as qlib_backtest
     from qlib.contrib.strategy.signal_strategy import WeightStrategyBase
@@ -689,7 +716,7 @@ def backtest(project, params, output, progress, prices=None, store=None):
     if template == 'model_score':
         if store is None or not params.get('modelExperimentId'):
             raise ValueError('模型评分模板需要模型实验')
-        experiment = store.experiment(project['id'], params['modelExperimentId'])
+        experiment = project.get('inputPrerequisites', {}).get(params['modelExperimentId']) or store.experiment(project['id'], params['modelExperimentId'])
         if experiment['kind'] != 'model.train':
             raise ValueError('所选实验不是模型训练')
         partition = params.get('_predictionPartition','test')
@@ -766,6 +793,7 @@ def backtest(project, params, output, progress, prices=None, store=None):
     report, positions = daily['report'], daily['positions']
     trade_rows, rejected, targets = daily['trades'], daily['unfilled'], daily['targets']
     conflicts, portfolio_warnings = daily['conflicts'], daily['warnings']
+    risk_rows = daily['risk']
     display_factors=prices.set_index(['date','symbol']).factor
     for row in trade_rows:
         factor=float(display_factors.loc[(pd.Timestamp(row['date']),row['symbol'])])
@@ -822,23 +850,6 @@ def backtest(project, params, output, progress, prices=None, store=None):
         for group, weight in weights.groupby(groups).sum().items():
             industry_rows.append(dict(date=day,industry=group,actualWeight=weight))
         prior_amounts = amounts
-    for date in {pd.Timestamp(row['date']) for row in risk_rows}:
-        actual = holding_frame[pd.to_datetime(holding_frame.date).eq(date)].set_index('symbol').actualWeight if not holding_frame.empty else pd.Series(dtype=float)
-        nonzero = actual[actual>1e-8]
-        prior_date = dates[dates.searchsorted(date)-1]
-        sample = historical_returns.loc[:prior_date].tail(portfolio_config['lookback']).reindex(columns=nonzero.index).dropna()
-        rc = pd.Series(dtype=float)
-        if len(nonzero) and len(sample)>=portfolio_config['minObservations']:
-            from sklearn.covariance import LedoitWolf
-            cov = LedoitWolf().fit(sample.to_numpy()).covariance_*252
-            raw_rc = nonzero.to_numpy()*(cov@nonzero.to_numpy())
-            if raw_rc.sum()>1e-30:
-                rc = pd.Series(raw_rc/raw_rc.sum(),index=nonzero.index)
-        for row in risk_rows:
-            if pd.Timestamp(row['date'])==date:
-                row['actualRiskContribution'] = rc.get(row['symbol'],float('nan'))
-                row['actualWeight'] = actual.get(row['symbol'],0.)
-                row['contributionDeviation'] = row['actualRiskContribution']-row['targetRiskContribution']
     artifacts += [save_table(output,'target_weights',pd.DataFrame(targets)),save_table(output,'risk',pd.DataFrame(risk_rows)),save_table(output,'unfilled',pd.DataFrame(rejected)),
                   save_table(output,'industry',pd.DataFrame(industry_rows)),save_table(output,'contribution',pd.DataFrame(contribution_rows))]
     artifacts += [save_table(output,name,pd.DataFrame(daily[key])) for name,key in

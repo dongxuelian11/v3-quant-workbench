@@ -282,8 +282,17 @@ def filter_frame(frame, query=None, watchlists=None):
 
 
 def screen(project, query=None, watchlists=None):
+    import pandas as pd
     query = query or {}
     frame, asof, _ = _snapshot(project, query.get('date'))
+    if query.get('watchlistId'):
+        selected=next((w for w in watchlists or [] if w['id']==query['watchlistId']),None)
+        if selected is None:raise ValueError('自选列表不存在')
+        frame=frame.reindex(columns=list(dict.fromkeys([*frame.columns,'symbol','name','date','close','changeRatio','amount'])))
+        frame=frame.copy();frame['dataStatus']='已有行情'
+        missing=set(map(symbol,selected.get('symbols',[])))-set(frame.symbol)
+        if missing:
+            frame=pd.concat([frame,pd.DataFrame([dict(symbol=code,name='',dataStatus='暂无该日行情') for code in sorted(missing)])],ignore_index=True)
     frame = filter_frame(frame, query, watchlists)
     total, offset, limit = len(frame), max(0, int(query.get('offset', 0))), max(1, min(500, int(query.get('limit', 100))))
     if query.get('export'):
@@ -464,7 +473,10 @@ def dispatch(service, method, params):
         return True, screen(project, p, store.list('watchlist'))
     if method == 'market.overview':
         from .market_snapshot import overview as observed_overview
-        return True, observed_overview(store.project(None), p)
+        from .app_settings import source_settings
+        target=store.project(None)
+        target.setdefault('settings',{})['dataSources']=source_settings(store.settings())
+        return True, observed_overview(target, p)
     if method == 'data.catalog':
         return True, catalog(project)
     note = next((item for item in store.list('stock-note') if item['id'] == symbol(p['symbol'])), {})

@@ -111,6 +111,7 @@ EXPLAIN_INSTRUCTIONS = '''你是中文量化研究助手。本次只回答用户
 
 
 def _create_agent(service, project_id, model, attached=None, conversation_id=None, mode='assist', execution=False, frozen_context=None):
+    from .ai_settings import instructions as user_instructions
     from pydantic import BaseModel, Field
     from pydantic_ai import Agent, ToolOutput
 
@@ -147,7 +148,7 @@ def _create_agent(service, project_id, model, attached=None, conversation_id=Non
     execution_instructions += '\n' + TASK_GUIDANCE + '\n探索因子、探索模型和比较候选默认使用原生rdagent.run；指定已有因子分析、训练或回测使用对应普通任务。阶段内按依赖顺序执行，阶段结束讨论，不自动进入下一阶段。显式执行指令可直接调用run_research，不要只返回待运行建议。日期缺失先询问。'
     finish_instructions = '\n工具结果已经作为工具消息返回。信息足够时直接用中文回答并结束；也可调用final_answer返回引用、方案按钮等结构化回答。不要为结束回答再次读取相同资料。'
     agent = Agent(model, output_type=[ToolOutput(Answer, name='final_answer', strict=False), str],
-                  instructions=(EXPLAIN_INSTRUCTIONS if mode=='ask' else execution_instructions if execution else INSTRUCTIONS) + formula_instructions + finish_instructions)
+                  instructions=(EXPLAIN_INSTRUCTIONS if mode=='ask' else execution_instructions if execution else INSTRUCTIONS) + formula_instructions + finish_instructions + user_instructions(service.store,project_id))
 
     @agent.output_validator
     def normalize_answer(output: Answer | str) -> Answer:
@@ -278,7 +279,8 @@ def chat(service, params):
     params=deepcopy(params)
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
-    config = service.store.settings().get('ai', {})
+    from .ai_settings import resolve
+    config = resolve(service.store,'research' if params.get('mode')=='research' else 'reports' if any(ref.get('kind')=='report' for ref in params.get('context',[])) else 'conversation')
     if not config.get('model') or not config.get('baseUrl'):
         raise ValueError('请先在模型设置填写服务地址与模型')
     if 'openrouter.ai' in config['baseUrl'] and not config.get('apiKey'):

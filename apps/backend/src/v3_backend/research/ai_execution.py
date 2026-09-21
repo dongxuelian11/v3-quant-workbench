@@ -6,6 +6,7 @@ from pathlib import Path
 from threading import Thread, RLock
 from .storage import identifier, now
 from . import ai
+from .ai_budget import model_budget, budget_failure, ensure_budget, reserve, read_budget
 
 
 class CompletedStepRepeated(Exception):
@@ -17,6 +18,7 @@ class RepairStepPaused(Exception):
 
 
 def temporary_failure(exc):
+    if budget_failure(exc):return False
     code=getattr(exc,'status_code',None)
     return (isinstance(code,int) and (code in {408,429} or 500<=code<600)) or isinstance(exc,(ConnectionError,TimeoutError)) or type(exc).__name__ in {'APIConnectionError','APITimeoutError','ConnectError','ReadTimeout','WriteTimeout','PoolTimeout','ReadError','WriteError','RemoteProtocolError'}
 
@@ -83,6 +85,7 @@ class Executions:
         prior=conversation.get('state',{}).get('executionRequests',{}).get(request)
         if prior:return prior
         eid=identifier()
+        budget_db=self.service.store.project_store(pid).db
         def begin(state,current):
             if current.get('status')=='running':raise ValueError('当前会话正在执行，请发送补充消息或停止')
             if request in state.get('executionRequests',{}):raise ValueError('请求已接收，请读取执行状态')
@@ -92,10 +95,21 @@ class Executions:
             for item in pending:
                 if current.get('status')=='cancelled':item['requiresConfirmation']=True
                 if resume_all or item['id'] in selected:item.pop('requiresConfirmation',None)
-            submitted=deepcopy(current.get('submitted',{})) if pending else {}
+            continuing=(current.get('status')=='paused' or pending) and current.get('mode')==mode and current.get('projectId')==pid
+            submitted=deepcopy(current.get('submitted',{})) if continuing else {}
+            budget=model_budget(current.get('modelBudget') if continuing else None)
+            budget_id=current.get('budgetId') if continuing else None
+            if budget_id:
+                shared=read_budget(budget_db,budget_id)
+            else:
+                budget_id='ai-'+eid
+                shared=ensure_budget(budget_db,budget_id)
+                if continuing and budget.get('used',0):
+                    shared=reserve(budget_db,budget_id,'modelRequests',budget['used'],operation_id='legacy-execution-'+current['id'])
+            budget.update(limit=shared['limits']['modelRequests'],used=shared['used']['modelRequests'],scope='research_plan')
             state['execution']={'id':eid,'requestId':request,'conversationId':cid,'projectId':pid,'status':'running',
                 'startedAt':now(),'updatedAt':now(),'message':'正在理解请求','steps':[],'activeJobIds':[],
-                'pendingMessages':pending,'deliveredMessageIds':[],'consumedMessageIds':[],'cancelRequested':False,'submitted':submitted,'context':refs,'mode':mode,'projectSnapshots':snapshots}
+                'pendingMessages':pending,'deliveredMessageIds':[],'consumedMessageIds':[],'cancelRequested':False,'submitted':submitted,'context':refs,'mode':mode,'projectSnapshots':snapshots,'modelBudget':budget,'budgetId':budget_id}
             state.setdefault('messages',[]).append({'id':request,'role':'user','content':message,'experimentRefs':refs})
         value=self.mutate(cid,None,begin)
         with self.lock:self.futures[eid]=asyncio.run_coroutine_threadsafe(self.run(cid,eid,message),self.loop)
@@ -161,6 +175,14 @@ class Executions:
             scope_key=(spec.get('projectId') or '')+':'+(spec.get('strategyId') or '')
             frozen=current.get('projectSnapshots',{}).get(scope_key)
             if spec.get('projectId') and frozen is None:raise ValueError('请先明确关联要执行的策略或项目')
+            if not job_id and current.get('budgetId'):
+                budget_db=self.service.store.project_store(current.get('projectId')).db
+                spec.setdefault('parameters',{}).update(budgetId=current['budgetId'],budgetProjectId=current.get('projectId'))
+                if spec['kind']=='rdagent.run':
+                    spec.setdefault('parameters',{}).update(budgetId=current['budgetId'],budgetProjectId=current.get('projectId'))
+                elif spec['kind']=='optimize.run':
+                    from .research_costs import work_counts
+                    reserve(budget_db,current['budgetId'],'trials',work_counts([spec])['trials'],operation_id='submit-'+key)
             job=self.service.store.get('job',job_id) if job_id else self.service.jobs.submit(spec,frozen_project=frozen)
             def submitted(state,execution):
                 execution['submitted'][token]=job['id']
@@ -224,13 +246,16 @@ class Executions:
     def record_tools(self,cid,eid,messages):
         from pathlib import Path
         from .storage import read_json,write_json
-        secret=self.service.store.settings().get('ai',{}).get('apiKey')
+        settings=self.service.store.settings()
+        secrets=[v.get('apiKey') for v in [settings.get('ai',{}),*(x for x in settings.get('aiPurposes',{}).values() if isinstance(x,dict))] if v.get('apiKey')]
         def clean(value):
             if isinstance(value,dict):return {k:clean(v) for k,v in value.items() if str(k).lower().replace('_','') not in {'apikey','authorization','password','secret','token'}}
             if isinstance(value,list):return [clean(v) for v in value]
             if isinstance(value,str):
                 try:return clean(json.loads(value))
-                except (ValueError,TypeError):return value.replace(secret,'[redacted]') if secret else value
+                except (ValueError,TypeError):
+                    for secret in secrets:value=value.replace(secret,'[redacted]')
+                    return value
             return value
         rows=[];report_failures=[]
         from .report_ai import REPORT_TOOLS, validation_message
@@ -319,7 +344,7 @@ class Executions:
         additions = self.supplements(cid, eid)
         if additions:
             return {'supplementalMessages': additions, 'submitted': False}
-        params = {'projectId': pid, 'planId': plan_id}
+        params = {'projectId': pid, 'planId': plan_id,'budgetId':value.get('budgetId'),'budgetProjectId':value.get('projectId')}
         if run_id:
             params['runId'] = run_id
         run = await asyncio.to_thread(self.service.report_tasks.dispatch, 'reproductions.run', params)
@@ -355,9 +380,18 @@ class Executions:
         try:
             value=self.status({'conversationId':cid,'executionId':eid});pid=value.get('projectId')
             if value.get('cancelRequested'):raise asyncio.CancelledError()
-            config=self.service.store.settings().get('ai',{})
+            from .ai_settings import resolve
+            purpose='research' if value['mode']=='research' else 'reports' if any(ref.get('kind')=='report' for ref in value['context']) else 'conversation'
+            config=resolve(self.service.store,purpose)
             if not config.get('baseUrl') or not config.get('model'):raise ValueError('请先配置模型服务地址与模型')
-            client=AsyncOpenAI(base_url=config['baseUrl'],api_key=config.get('apiKey') or 'local-no-key',max_retries=0)
+            import httpx
+            async def count_request(request):
+                current=self.status({'conversationId':cid,'executionId':eid})
+                if current.get('cancelRequested'):raise asyncio.CancelledError()
+                shared=reserve(self.service.store.project_store(current.get('projectId')).db,current['budgetId'],'modelRequests')
+                self.mutate(cid,eid,lambda state,current:current.update(modelBudget=dict(limit=shared['limits']['modelRequests'],used=shared['used']['modelRequests'],scope='research_plan')))
+            client=AsyncOpenAI(base_url=config['baseUrl'],api_key=config.get('apiKey') or 'local-no-key',max_retries=0,
+                http_client=httpx.AsyncClient(event_hooks={'request':[count_request]}))
             model=OpenAIChatModel(config['model'],provider=OpenAIProvider(openai_client=client))
             context=ai.attached_context(self.service,value['context']) if value['context'] else ai._project_context(self.service,pid,value['projectSnapshots'].get((pid or '')+':')) if pid else {}
             for item in context.get('attachedObjects',[]):
@@ -429,7 +463,9 @@ class Executions:
             frames = [{'file': Path(frame.filename).name, 'line': frame.lineno, 'function': frame.name} for frame in traceback.extract_tb(exc.__traceback__)]
             self.mutate(cid, eid, lambda state, value: value.update(errorDetails={'type': type(exc).__name__, 'frames': frames}))
             code=getattr(exc,'status_code',None)
-            if temporary_failure(exc):
+            if budget_failure(exc):
+                terminal='paused';failure=str(budget_failure(exc))
+            elif temporary_failure(exc):
                 terminal='paused';failure='模型服务暂不可用，有限重试已用尽；已暂停并保留结果，可继续或更换模型。'
             else:failure=('模型服务未授权，请检查配置' if code in {401,403} else str(exc) if isinstance(exc,ValueError) else '执行失败：'+type(exc).__name__)
         finally:

@@ -61,12 +61,17 @@ class RDBridgeTests(unittest.TestCase):
             again=rd_agent.evaluate_request(store,job,frozen,request,config,prices,folder,lambda *_:None)
             self.assertEqual(again['candidateId'],response['candidateId'])
             self.assertEqual(again['experimentIds'],response['experimentIds'])
+            from v3_backend.research.ai_budget import read_budget
+            budget=read_budget(store.project_store(project['id']).db,config['budgetId'])
+            self.assertEqual(budget['used']['backtestTasks'],2)
+            self.assertEqual(budget['used']['trainingTasks'],0)
             prediction=folder/'prediction.parquet'
             dataset[dataset.partition.eq('valid')].rename(columns={'momentum20':'prediction'})[['date','symbol','label','partition','prediction']].to_parquet(prediction,index=False)
             model=folder/'model.py';model.write_text('import torch\nclass Tiny(torch.nn.Module):\n    pass\nmodel_cls=Tiny\n')
             request=dict(id='model_fixture',action='model',name='authored retained fixture',description='no training claim',
                          predictionPath=rd_agent.linux_path(prediction),codePath=rd_agent.linux_path(model))
             response=rd_agent.evaluate_request(store,job,frozen,request,config,prices,folder,lambda *_:None)
+            self.assertEqual(read_budget(store.project_store(project['id']).db,config['budgetId'])['used']['backtestTasks'],3)
             from v3_backend.research.candidates import get
             candidate=get(store,project['id'],response['candidateId'])
             rejob={'kind':'model.train','spec':{'parameters':candidate['spec']['parameters'],'candidateSnapshot':candidate}}
@@ -108,6 +113,26 @@ class RDBridgeTests(unittest.TestCase):
                 start.assert_not_called()
                 self.assertIn(job['id'],jobs.processes)
                 self.assertTrue(store.get('job',job['id'])['cleanupPending'])
+
+    def test_resume_retains_global_budget_and_rejects_missing_record(self):
+        from v3_backend.research.ai_budget import ensure_budget,reserve,read_budget
+        with tempfile.TemporaryDirectory() as temp:
+            store,project,params,folder,job=self.fixture(Path(temp))
+            global_db=store.project_store(None).db
+            ensure_budget(global_db,'global-plan');reserve(global_db,'global-plan','modelRequests',29)
+            params.update(budgetId='global-plan',budgetProjectId=None)
+            frozen,config,prices=rd_agent._snapshot_inputs(project,params,folder,lambda *_:None,budget_db=global_db,budget_owner=None)
+            store.save_experiment(project['id'],dict(id=folder.name,kind='rdagent.run',strategyId=project['strategyId'],parameters=params,artifacts=[],name='paused'))
+            write_json(folder/'rd_state.json',dict(status='failed',requiresConfirmation=True,checkpointPath='/opt/v3-rdagent/runs/test/checkpoint',inputDirectory=str(folder/'rd_inputs')))
+            destination=folder.parent/'resume';destination.mkdir()
+            resumed={**params,'resumeExperimentId':folder.name}
+            with self.assertRaisesRegex(ValueError,'明确确认'):rd_agent._resume_inputs(store,project,resumed,destination,lambda *_:None)
+            resumed['confirmRepair']=True
+            _,fixed,_,_=rd_agent._resume_inputs(store,project,resumed,destination,lambda *_:None)
+            self.assertEqual(fixed['budgetDbPath'],rd_agent.linux_path(global_db));self.assertIsNone(fixed['budgetProjectId'])
+            self.assertEqual(read_budget(global_db,'global-plan')['used']['modelRequests'],29)
+            store.project_store(None).delete('research_budget','global-plan')
+            with self.assertRaisesRegex(ValueError,'预算记录缺失'):rd_agent._resume_inputs(store,project,resumed,destination,lambda *_:None)
 
     def test_task_parameters_reject_credentials_and_unbounded_rounds(self):
         with tempfile.TemporaryDirectory() as temp:

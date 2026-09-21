@@ -7,6 +7,8 @@ from .storage import now, write_json, read_json
 
 def project_data(project):
     """Resolve shared data while preserving project-owned outputs and configuration."""
+    if project.get('inputDataRoot'):
+        return {**project, 'path': project['inputDataRoot']}
     path = project.get('settings', {}).get('dataPath')
     return {**project, 'path': str(Path(path).parent)} if path else project
 
@@ -62,10 +64,22 @@ def normalize(frame, kind):
     return frame.sort_values(keys), kind
 
 
-def read_table(project, kind='prices'):
+def read_table(project, kind='prices', *, symbols=None, start=None, end=None):
     import pandas as pd
     path = Path(project_data(project)['path']) / 'data' / f'{kind}.parquet'
     partitions = list((path.parent / kind).glob('*.parquet'))
+    if symbols is not None or start or end:
+        codes = set(map(symbol, symbols)) if symbols is not None else None
+        frames = []
+        for part in ([path] if path.exists() else []) + partitions:
+            if codes is not None and part != path and re.fullmatch(r'(SH|SZ|BJ)\d{6}', part.stem) and part.stem not in codes:
+                continue
+            filters = [('symbol', 'in', sorted(codes))] if codes is not None else []
+            date_key = 'date' if kind == 'prices' else 'announcementDate'
+            if start: filters.append((date_key, '>=', pd.Timestamp(start)))
+            if end: filters.append((date_key, '<=', pd.Timestamp(end)))
+            frames.append(pd.read_parquet(part, filters=filters or None))
+        return normalize(pd.concat(frames, ignore_index=True), kind)[0] if frames else pd.DataFrame()
     if partitions:
         frames = ([pd.read_parquet(path)] if path.exists() else []) + [pd.read_parquet(part) for part in partitions]
         return normalize(pd.concat(frames, ignore_index=True), kind)[0]
@@ -144,8 +158,9 @@ def import_files(project, params, progress):
             continue
         if {'symbol', 'startDate', 'endDate'}.issubset(frame):
             from .history import import_membership
-            count = import_membership(project, frame)
-            summaries.append({'file': str(path), 'kind': 'membership', 'importedRows': count, 'totalRows': count})
+            count = import_membership(project, frame, params.get('poolId'), str(params.get('membershipSource', 'import')))
+            summaries.append({'file': str(path), 'kind': 'membership', 'importedRows': count, 'totalRows': count,
+                              'membershipRef': dict(project['universe']['membershipRef'])})
             continue
         frame, kind = normalize(frame, dataset)
         saved = merge_table(project, frame, kind)
@@ -194,6 +209,7 @@ def _bs_prices(bs, remote, start, end):
         start_date=start, end_date=end, frequency='d', adjustflag='2')
     if frame.empty:
         raise ValueError(f'{remote} 来源未返回行情')
+    statuses=frame[['date','code','tradestatus']].rename(columns={'code':'symbol'}).to_dict('records')
     frame = frame[frame['volume'].ne('') & frame['close'].ne('')].copy()
     raw = _bs_query(bs, bs.query_history_k_data_plus, remote, 'date,open,high,low,close,preclose,turn',
                     start_date=start, end_date=end, frequency='d', adjustflag='3')
@@ -208,6 +224,7 @@ def _bs_prices(bs, remote, start, end):
         frame['nameObservedAt'] = now()[:10]
         frame['listingDate'] = basic.iloc[0]['ipoDate']
         frame['delistingDate'] = basic.iloc[0].get('outDate', '')
+    frame.attrs['tradingStatus']=statuses
     return frame
 
 
@@ -306,7 +323,32 @@ def ensure_security_name(project, bs, remote):
     save_security_names(project,pd.DataFrame([dict(symbol=code,name=basic.iloc[0]['code_name'],effectiveDate=now()[:10],source='BaoStock/query_stock_basic')]))
 
 
+
+def save_trading_status(project, frame):
+    """Preserve source trading state independently of absent suspended-day prices."""
+    import pandas as pd
+    frame=frame[['symbol','date','tradestatus']].copy()
+    frame['symbol']=frame.symbol.map(symbol)
+    frame['date']=pd.to_datetime(frame.date,errors='raise').dt.normalize()
+    frame['tradestatus']=pd.to_numeric(frame.tradestatus,errors='raise')
+    if frame.date.isna().any() or not frame.tradestatus.isin([0,1]).all():
+        raise ValueError('来源交易状态无效')
+    frame['source']='BaoStock/query_history_k_data_plus'
+    frame['observedAt']=now()
+    path=Path(project_data(project)['path'])/'data/trading_status.parquet'
+    path.parent.mkdir(parents=True,exist_ok=True)
+    if path.exists():frame=pd.concat([pd.read_parquet(path),frame],ignore_index=True)
+    frame=frame.drop_duplicates(['symbol','date'],keep='last').sort_values(['symbol','date'])
+    temporary=path.with_suffix('.tmp.parquet')
+    frame.to_parquet(temporary,index=False);temporary.replace(path)
+
+
 def _save_updated_prices(project, frame, code):
+    statuses=frame.attrs.get('tradingStatus')
+    if statuses:
+        import pandas as pd
+        save_trading_status(project,pd.DataFrame(statuses))
+        if frame.empty:return
     if 'observedName' in frame and 'nameObservedAt' in frame:
         names = frame[['observedName','nameObservedAt']].dropna().drop_duplicates().rename(columns={'observedName':'name','nameObservedAt':'effectiveDate'})
         names = names[names.name.ne('')]
@@ -336,7 +378,10 @@ def _update_prices(project, params, progress):
     end = params.get('endDate') or project.get('endDate') or now()[:10]
     if not start:
         raise ValueError('请指定开始日期')
-    source = params.get('source', 'baostock')
+    from .app_settings import source_settings
+    settings=project.get('settings',{});sources=source_settings(settings)
+    source=sources['daily'] if 'dataSources' in settings else params.get('source',sources['daily'])
+    if source=='file':raise ValueError('日线来源为已有数据与文件，请导入数据；不会自动联网更新')
     if source not in {'baostock', 'akshare'}:
         raise ValueError('未知数据源')
     symbols = list(dict.fromkeys(symbol(s) for s in project['universe']['symbols']))
@@ -351,6 +396,10 @@ def _update_prices(project, params, progress):
             end = max(str(end)[:10], str(relevant.date.max())[:10])
     needs_financials = bool(params.get('financials'))
     needs_actions = bool(params.get('corporateActions'))
+    if sources['financials']=='file':
+        if needs_financials and not (existing_path.parent/'financials.parquet').exists():raise ValueError('公告财务来源为文件，尚未导入所需财务')
+        if needs_actions and not (existing_path.parent/'corporate_actions.parquet').exists():raise ValueError('公司行动来源为文件，尚未导入所需记录')
+        needs_financials=False;needs_actions=False
     bs = None
     if source == 'baostock' or needs_financials or needs_actions:
         import baostock as bs
@@ -405,7 +454,7 @@ def _update_prices(project, params, progress):
             if universe_source in {'csi300', 'csi500'}:
                 history.collect(project, bs, start, end, _bs_query,
                                 lambda value, message: progress(value*.1, message), names=[universe_source])
-            benchmarks.collect(project, bs, start, end, _bs_query)
+            if source=='baostock':benchmarks.collect(project, bs, start, end, _bs_query)
         if not symbols and source == 'baostock':
             universe_source = project['universe'].get('source')
             if universe_source in {'csi300', 'csi500'}:
@@ -525,6 +574,13 @@ def preview(project):
             warnings.append('行情缺少 listingDate，最短上市天数筛选不可用。')
         if 'factor' not in price_dataset['columns']:
             warnings.append('行情未提供复权因子，回测按未复权单位解释价格和数量。')
+    status_path=Path(project_data(project)['path'])/'data/trading_status.parquet'
+    if status_path.exists():
+        states=pd.read_parquet(status_path)
+        datasets.append(dict(name='trading_status',rows=len(states),symbols=int(states.symbol.nunique()),
+            startDate=str(states.date.min())[:10],endDate=str(states.date.max())[:10],columns=list(states.columns),missingValues=0))
+        halted=int(pd.to_numeric(states.tradestatus,errors='coerce').eq(0).sum())
+        warnings.append(f'另存{halted}条来源停牌事实；没有补造价格或成交量，不计入可用行情行。')
     from .history import coverage
     result={'datasets': datasets, 'rows': rows, 'warnings': warnings, 'history':coverage(project),
             'diagnostics':coverage_diagnostics(project,prices)}
@@ -557,6 +613,16 @@ def coverage_diagnostics(project, prices):
         sessions=len(dates),expected=len(index) if known else None,available=int(daily.available.sum()) if len(daily) else 0,
         missing=int(daily.missing.sum()) if known else None,denominatorStatus='known' if known else 'partial_or_unavailable',
         calendarBasis='local_benchmark_and_price_sessions',universeSource=project['universe']['source'])]
+    status_path=Path(project_data(project)['path'])/'data/trading_status.parquet'
+    confirmed=0
+    if status_path.exists():
+        states=pd.read_parquet(status_path)
+        states=states[states.source.eq('BaoStock/query_history_k_data_plus')&pd.to_numeric(states.tradestatus,errors='coerce').eq(0)]
+        status_index=pd.MultiIndex.from_arrays([pd.to_datetime(states.date),states.symbol])
+        actual_index=pd.MultiIndex.from_arrays([prices.date,prices.symbol])
+        confirmed=len(index.intersection(status_index).difference(actual_index))
+    summary[0]['confirmedSuspensionMissingRows']=confirmed
+    summary[0]['unexplainedMissingRows']=max(0,summary[0]['missing']-confirmed) if summary[0]['missing'] is not None else None
     return dict(summary=summary,daily=records(daily),fields=fields,
         message='分母按项目区间内本地指数/行情交易日与当日池计算；明确成员包含未下载证券。全市场、动态条件池及缺历史成员的分母不完整；缺ST/上市资料另列eligibilityUnknown。没有日历证据的日期不推造交易日。')
 

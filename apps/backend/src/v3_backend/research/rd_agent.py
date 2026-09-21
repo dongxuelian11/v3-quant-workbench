@@ -34,6 +34,8 @@ def validate(params):
         value = params.get(key,default)
         if isinstance(value,bool) or not isinstance(value,int) or not 1 <= value <= 3:
             raise ValueError('研究轮数和代码修复次数必须为1至3的整数')
+    groups=params.get('candidateGroups',6)
+    if type(groups) is not int or not 1<=groups<=6:raise ValueError('候选组数必须为1至6')
     bounds = {key:params.get('periods',{}).get(key,params.get(key)) for key in BOUNDARIES}
     if not all(bounds.values()): raise ValueError('原生研究需要明确训练、验证、测试六个时间边界')
     dates = [pd.Timestamp(bounds[key]) for key in BOUNDARIES]
@@ -287,7 +289,7 @@ def terminate_owner(process):
     process.wait(timeout=10)
 
 
-def _snapshot_inputs(project, params, directory, progress):
+def _snapshot_inputs(project, params, directory, progress, budget_db=None, budget_owner=None):
     import pandas as pd
     import numpy as np
     from . import data, engines
@@ -354,11 +356,18 @@ def _snapshot_inputs(project, params, directory, progress):
     backtest.setdefault('template','multi_factor')
     training={**params.get('trainingParameters',{}),'labelHorizon':horizon,'labelMode':mode,'includeTest':False}
     config=dict(runId=directory.name,projectId=project['id'],strategyId=project['strategyId'],objective=params['objective'],
-        action=params['action'],rounds=params.get('rounds',3),codeRepairRounds=1,
+        action=params['action'],rounds=params.get('rounds',3),candidateGroups=min(params.get('candidateGroups',6),params.get('rounds',3)*2),codeRepairRounds=1,
         periods=bounds,datasetPath=linux_path(dataset),factorDataPath=linux_path(factor_path),featureColumns=list(x.columns),
         trainingParameters=training,evaluationBacktest=backtest,embeddingModelPath=EMBEDDING,
         counts={'train':len(segments['train']),'valid':len(segments['valid']),'predictionRows':len(frame),'priceRows':len(prices)},
         priceBasis='OHLC are unadjusted yuan; volume is raw shares; $factor is supplied cumulative adjustment factor rebased to each instrument first observed row. Prices are not multiplied by $factor. No test prices exported.')
+    from .ai_budget import ensure_budget, read_budget
+    from .storage import Store
+    budget_db=budget_db or Store(Path(project['path'])/'.research').db
+    budget_id=params.get('budgetId') or 'rd-'+directory.name
+    if params.get('budgetId'):read_budget(budget_db,budget_id)
+    else:ensure_budget(budget_db,budget_id)
+    config.update(budgetId=budget_id,budgetProjectId=budget_owner if budget_owner is not None or 'budgetProjectId' in params else project['id'],budgetDbPath=linux_path(budget_db),lineageRunId=directory.name)
     write_json(inputs/'owner_project.json',project);write_json(inputs/'evaluation_project.json',frozen)
     write_json(inputs/'config.json',config);write_json(inputs/'feature_parameters.json',feature_params)
     return frozen,config,prices
@@ -391,6 +400,14 @@ def _resume_inputs(store, project, params, directory, progress):
     config={**config,'runId':directory.name,'objective':params['objective'],'action':params['action'],
             'rounds':config['rounds'],'codeRepairRounds':1,'resumePath':state['checkpointPath'],'confirmRepair':params.get('confirmRepair') is True,
             'repairInstructions':params.get('repairInstructions','')}
+    from .ai_budget import read_budget
+    if not config.get('budgetId') or not config.get('lineageRunId'):
+        raise ValueError('旧检查点未记录共享预算，不能以零计数恢复；请明确新建研究方案')
+    if params.get('budgetId',config['budgetId'])!=config['budgetId']:raise ValueError('恢复不能替换方案预算')
+    if params.get('budgetProjectId',config.get('budgetProjectId',project['id']))!=config.get('budgetProjectId',project['id']):raise ValueError('恢复不能替换预算所属项目')
+    budget_db=store.project_store(config.get('budgetProjectId',project['id'])).db
+    read_budget(budget_db,config['budgetId'])
+    config['budgetDbPath']=linux_path(budget_db)
     frozen=read_json(original_inputs/'evaluation_project.json')
     prices=engines.prepare(frozen,directory,progress)
     return frozen,config,prices,original_inputs
@@ -461,10 +478,15 @@ def _experiment(store, project, owner, request_id, suffix, kind, params, progres
         pass
     folder=Path(project['path'])/'.research/runs'/key;folder.mkdir(parents=True,exist_ok=True)
     spec={'parameters':deepcopy(params),'projectSnapshot':project}
+    spec['parameters']['rdRequestId']=request_id
     if candidate: spec['candidateSnapshot']=candidate
     job=dict(id=key,projectId=project['id'],strategyId=project['strategyId'],kind=kind,
              name=owner['name']+' / '+suffix,spec=spec)
-    result=calculate(folder) if calculate else worker.execute(store,job,project,folder,progress)
+    from contextlib import nullcontext
+    from .ai_budget import computation_budget
+    context=computation_budget(owner['budgetDbPath'],owner['budgetId']) if owner.get('budgetId') else nullcontext()
+    with context:
+        result=calculate(folder) if calculate else worker.execute(store,job,project,folder,progress)
     result.setdefault('details',{})['rdOwnerJobId']=owner['id']
     result['details']['rdRequestId']=request_id
     experiment=worker.save_result(store,job,project,result,folder)
@@ -509,6 +531,7 @@ def _metrics(store, project, experiment, prices, config, prefix='', ic=None):
 
 def evaluate_request(store, owner, project, request, config, prices, directory, progress):
     """No nested queue: calculate, save, and link each real evaluation immediately."""
+    owner={**owner,'id':config.get('lineageRunId',owner['id']),'budgetId':config.get('budgetId'),'budgetDbPath':store.project_store(config.get('budgetProjectId',project['id'])).db}
     import pandas as pd
     from . import engines
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',str(request.get('id',''))): raise ValueError('原生评价ID无效')
@@ -623,13 +646,30 @@ def reevaluate_native(store, job, project, directory, progress):
     return result
 
 
+def _budget_requests(bridge,db_path,budget_id):
+    """Native waits for each permit; only Windows opens the shared SQLite WAL."""
+    from .ai_budget import reserve,read_budget
+    for path in sorted((bridge/'budgetRequests').glob('*/request.json')):
+        response_path=path.with_name('response.json')
+        if response_path.exists():continue
+        request=read_json(path)
+        try:
+            budget=reserve(db_path,budget_id,request['category'],request.get('count',1),request.get('operationId'))
+            response=dict(allowed=True,budget=budget)
+        except Exception as exc:
+            response=dict(allowed=False,error=str(exc),errorType=type(exc).__name__)
+        write_json(bridge/'budget.json',read_budget(db_path,budget_id))
+        write_json(response_path,response)
+
+
 def run(store, job, project, directory, progress):
     import pandas as pd
     from . import engines
     directory=Path(directory);bridge=directory/'rd_bridge';bridge.mkdir(parents=True,exist_ok=True)
     params=job['spec']['parameters'];process=None;log=None;config={};input_directory=directory/'rd_inputs'
     native_result={};error=None;state='failed';events=[];seen=set()
-    ai=store.settings()['ai']
+    from .ai_settings import resolve
+    ai=resolve(store,'research')
     def safe(value):
         text=str(value)
         return text.replace(ai['apiKey'],'[redacted]') if ai.get('apiKey') else text
@@ -645,8 +685,16 @@ def run(store, job, project, directory, progress):
         if params.get('resumeExperimentId'):
             frozen,config,prices,input_directory=_resume_inputs(store,project,params,directory,report)
         else:
-            frozen,config,prices=_snapshot_inputs(project,params,directory,report)
+            frozen,config,prices=_snapshot_inputs(project,params,directory,report,budget_db=store.project_store(params.get('budgetProjectId',project['id'])).db,budget_owner=params.get('budgetProjectId',project['id']))
+        service_identity={key:ai.get(key) for key in ('baseUrl','model','temperature')}
+        if config.get('modelService') is not None and config['modelService']!=service_identity:
+            raise ValueError('恢复时研究模型服务或模型配置已改变，请保留原配置或明确开启新研究')
+        config['modelService']=service_identity
+        if not params.get('resumeExperimentId'):write_json(input_directory/'config.json',config)
         write_json(bridge/'config.json',config)
+        from .ai_budget import read_budget
+        budget_db=store.project_store(config.get('budgetProjectId',project['id'])).db
+        write_json(bridge/'budget.json',read_budget(budget_db,config['budgetId']))
         _check_cancel(directory)
         # This marker precedes the final cancel check, closing the launch/cancel race.
         write_json(bridge/'launch.json',{'runId':job['id'],'status':'launching','createdAt':now()})
@@ -676,6 +724,7 @@ def run(store, job, project, directory, progress):
                             'evaluation_waiting':'等待V3真实验证','checkpoint_saved':'原生检查点已保存'}
                     if event.get('event') in labels:
                         progress(.35,labels[event['event']]+('：'+str(event['step']) if event.get('step') else ''))
+            _budget_requests(bridge,budget_db,config['budgetId'])
             for path in sorted((bridge/'evaluations').glob('*/request.json')):
                 response_path=path.with_name('response.json')
                 if response_path.exists(): continue
@@ -721,7 +770,9 @@ def run(store, job, project, directory, progress):
             status='failed' if response.get('error') else 'completed' if response else 'waiting',
             candidateId=response.get('candidateId'),experimentIds=json.dumps(response.get('experimentIds',[])),
             error=response.get('error'),metrics=json.dumps(response.get('metrics',{}))))
-    state_value={'status':state,'checkpointPath':checkpoint,'inputDirectory':str(input_directory),
+    from .ai_budget import read_budget
+    budget=read_budget(store.project_store(config.get('budgetProjectId',project['id'])).db,config['budgetId']) if config.get('budgetId') else None
+    state_value={'budgetExhausted':bool(native_result.get('budgetExhausted')),'completedCandidateGroups':native_result.get('completedCandidateGroups'), 'budget':budget,'budgetId':config.get('budgetId'),'status':state,'checkpointPath':checkpoint,'inputDirectory':str(input_directory),
                  'requiresConfirmation':bool(native_result.get('requiresConfirmation')),'repair':native_result.get('repair'),
                  'bridgeDirectory':str(bridge),'error':error,'feedbackPartition':'valid',
                  'engine':'RD-Agent 0.8 QuantRDLoop/CoSTEER; native Qlib GeneralPTNN for generated models'}
@@ -740,9 +791,10 @@ def run(store, job, project, directory, progress):
 def preview(store, params):
     from .workbench import strategy_project
     project=strategy_project(store,params['projectId'],params.get('strategyId'))
-    ai=store.settings()['ai']
+    from .ai_settings import resolve
+    ai=resolve(store,'research')
     return {'projectId':project['id'],'strategyId':project['strategyId'],'engine':'RD-Agent 0.8 QuantRDLoop + CoSTEER',
-        'actions':['factor','model','joint'],'maxRounds':3,'maxCodeRepairRounds':1,
+        'actions':['factor','model','joint'],'maxRounds':3,'maxCodeRepairRounds':1,'defaultCandidateGroups':6,'maxCandidateGroups':6,'modelRequestLimit':30,'trialLimit':20,
         'factorIds':project.get('settings',{}).get('selectedFactors',[]),
         'modelServiceConfigured':bool(ai.get('baseUrl') and ai.get('model') and (ai.get('apiKey') or re.match(r'^https?://(localhost|127\.0\.0\.1)',ai.get('baseUrl','')))),
         'serviceConnection':'not_checked','embeddingModelPath':EMBEDDING,'runtime':'not_checked',
@@ -780,6 +832,10 @@ def status(store, params):
                     value=reported.get(field)
                     if isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value) and value>=0:
                         usage[field]=usage.get(field,0)+value
+    cfg=read_json(folder/'rd_bridge/config.json',{})
+    if cfg.get('budgetId'):
+        from .ai_budget import read_budget
+        state['budget']=read_budget(store.project_store(cfg.get('budgetProjectId',project['id'])).db,cfg['budgetId'])
     return {**state,**checkpoint,'projectId':project['id'],'runId':key,
             'events':[{field:item[field] for field in ('id','time','event','round','step','action') if field in item}
                       for item in events[-20:]],

@@ -87,3 +87,23 @@ def native_metrics(response):
     for key in ('1day.excess_return_without_cost.annualized_return','1day.excess_return_without_cost.max_drawdown'):
         if key not in result.index: result.loc[key,'0']=float('nan')
     return result
+
+
+def reserve(category,count=1,operation_id=None):
+    from ..ai_budget import BudgetExhausted
+    cfg=config()
+    if not cfg.get('budgetId'):raise ValueError('原生研究缺少方案预算')
+    folder=bridge()/'budgetRequests'/uuid.uuid4().hex
+    write_json(folder/'request.json',dict(category=category,count=count,operationId=operation_id))
+    deadline=time.monotonic()+120
+    while not (folder/'response.json').is_file():
+        if (bridge()/'cancel.json').exists():raise InterruptedError('研究任务已取消')
+        if time.monotonic()>deadline:raise TimeoutError('等待预算许可超时，未发送额外模型请求')
+        time.sleep(.05)
+    response=json.loads((folder/'response.json').read_text(encoding='utf-8'))
+    if not response.get('allowed'):
+        error=BudgetExhausted if response.get('errorType')=='BudgetExhausted' else ValueError
+        raise error(response.get('error','预算许可失败'))
+    result=response['budget']
+    event('budget_reserved',category=category,count=count,used=result['used'],limits=result['limits'])
+    return result

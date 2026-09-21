@@ -47,6 +47,8 @@ def main():
             if not isinstance(loop, V3QuantLoop) or loop.v3_input != {
                     key: config.get(key) for key in loop.v3_input}:
                 raise ValueError('原生检查点所属项目/策略/数据区间/特征/训练配置与当前输入不一致')
+            if getattr(loop,'v3_budget_id',None)!=config.get('budgetId') or getattr(loop,'v3_lineage_id',None)!=config.get('lineageRunId'):
+                raise ValueError('原生检查点与方案预算或原始轮次身份不一致')
             if getattr(loop,'v3_repair',{}).get('requiresConfirmation'):
                 if config.get('confirmRepair') is not True:raise ValueError('此检查点需要明确确认修复后才能继续')
                 loop.v3_repair['requiresConfirmation']=False
@@ -67,7 +69,7 @@ def main():
         protocol.event('native_run_started', runId=run_id, resumed=bool(config.get('resumePath')),
                        engine='RD-Agent 0.8 QuantRDLoop + Factor/Model CoSTEER')
         # Upstream run resets loop_idx to zero; loop_n includes already completed loops.
-        asyncio.run(loop.run(loop_n=int(config.get('rounds', 1))))
+        asyncio.run(loop.run(loop_n=min(int(config.get('candidateGroups',6)),int(config.get('rounds',3))*2)))
         result.update(status='completed', summary='本阶段原生研究轮次结束，候选等待讨论。')
     except BaseException as exc:
         from .service import redact, last_provider_failure
@@ -75,12 +77,15 @@ def main():
         failure=last_provider_failure()
         if failure and 'Failed to create chat completion' in message:
             message=failure['message']+'；本次模型请求已达到现有重试上限。'
+        from ..ai_budget import budget_failure
+        result['budgetExhausted']=budget_failure(exc) is not None
         result.update(status='cancelled' if isinstance(exc, (InterruptedError, KeyboardInterrupt)) else 'failed',
                       error=message, errorType=type(exc).__name__, summary='原生研究未完成，已保留可用检查点和产物。')
         protocol.event('native_run_failed', errorType=type(exc).__name__, error=result['error'])
     finally:
         if loop is not None:
-            result['rounds'] = len(loop.trace.hist)
+            result['completedCandidateGroups']=len(loop.trace.hist)
+            result['rounds'] = (len(loop.trace.hist)+1)//2
             for exp, feedback in loop.trace.hist:
                 response = getattr(exp, 'v3_response', {})
                 if response.get('candidateId'):
@@ -101,6 +106,8 @@ def main():
         repair=protocol.bridge()/'repair.json'
         if repair.is_file():
             result.update(requiresConfirmation=True,repair=json.loads(repair.read_text(encoding='utf-8')))
+        budget_file=protocol.bridge()/'budget.json'
+        result['budget']=json.loads(budget_file.read_text(encoding='utf-8')) if budget_file.exists() else None
         protocol.write_json(protocol.bridge() / 'result.json', result)
     return 0 if result['status'] == 'completed' else 1
 

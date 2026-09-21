@@ -165,6 +165,9 @@ def _train(model_code_path, dataset_path, output, model_parameters, config, star
         estimator=ObservedGeneralPTNN(**training,batch_size=batch,n_jobs=0,metric='loss',loss='mse',
             pt_model_uri=module_name+'.v3_model_cls',pt_model_kwargs=kwargs)
         history={};checkpoint=output/'model.pt'
+        if config.get('_researchBudget'):
+            from .protocol import reserve
+            reserve('trainingTasks')
         estimator.fit(dataset_class(),evals_result=history,save_path=str(checkpoint))
         if not history.get('valid') or not np.isfinite(history['valid']).all():raise ValueError('原生训练验证损失非有限，模型未通过适配')
         prediction_rows=[]

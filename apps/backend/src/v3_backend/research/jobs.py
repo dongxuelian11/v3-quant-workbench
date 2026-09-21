@@ -6,11 +6,12 @@ import os
 import subprocess
 import sys
 import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .storage import Store, identifier, now, read_json, write_json
 
-KINDS = {'data.import', 'data.update', 'factor.analyze', 'backtest.run', 'model.train', 'optimize.run', 'selection.run', 'simulation.advance', 'rdagent.run', 'reports.import', 'reports.ocr', 'reports.refresh'}
+KINDS = {'data.import', 'data.update', 'factor.analyze', 'backtest.run', 'model.train', 'optimize.run', 'selection.run', 'screener.run', 'simulation.advance', 'rdagent.run', 'reports.import', 'reports.ocr', 'reports.refresh'}
 TERMINAL = {'completed', 'failed', 'cancelled', 'interrupted'}
 
 
@@ -23,7 +24,7 @@ def validate_spec(spec):
         instrument(p.get('instrument'))
     required = {'data.import': ['files'], 'data.update': ['startDate'], 'factor.analyze': ['factorIds'],
                 'backtest.run': ['template'], 'model.train': ['model', 'factorIds'],
-                'selection.run': [], 'simulation.advance': ['accountId'], 'rdagent.run': ['objective','action'],
+                'selection.run': [], 'screener.run': ['plan'], 'simulation.advance': ['accountId'], 'rdagent.run': ['objective','action'],
                 'optimize.run': ['target', 'sampler', 'baseParameters', 'searchSpace'],
                 'reports.import': [], 'reports.ocr': ['reportId', 'pages'], 'reports.refresh': []}[kind]
     if kind=='data.update' and p.get('quoteOnly'):required=[]
@@ -75,7 +76,11 @@ class Jobs:
                     self._save(job,status='failed',cleanupPending=True,message='上次原生进程清理未确认，暂停新任务：'+str(exc))
                     continue
             if job['status'] in {'queued', 'running'}:
-                self._save(job, status='interrupted', message='上次运行中断，可用原参数重新运行')
+                exited = read_json(recovery_folder / 'process-exit.json', {}) if recovery_folder else {}
+                if exited.get('cleanupConfirmed') and (recovery_folder / 'result.json').is_file():
+                    self._save(job, status='failed', registrationPending=True, message='上次进程已退出，结果尚未登记；可恢复登记')
+                else:
+                    self._save(job, status='interrupted', message='上次运行中断，可用原参数重新运行')
 
     def _save(self, job, **changes):
         job = {**job, **changes, 'updatedAt': now()}
@@ -108,8 +113,17 @@ class Jobs:
                 db.execute("UPDATE records SET body=? WHERE kind='conversation' AND id=?",
                            (json.dumps(conversation, ensure_ascii=False, allow_nan=False), key))
 
-    def _records(self, filters):
+    def _records(self, filters, recent_since=None):
         clauses, values = ['kind=?'], ['job']
+        if recent_since is not None:
+            visible = ["json_extract(body, '$.createdAt') >= ?", "json_extract(body, '$.status') IN ('queued','running')",
+                       "json_extract(body, '$.registrationPending') = 1", "json_extract(body, '$.cleanupPending') = 1"]
+            values.append(recent_since)
+            active = list(self.processes)
+            if active:
+                visible.append('id IN (' + ','.join('?' for _ in active) + ')')
+                values.extend(active)
+            clauses.append('(' + ' OR '.join(visible) + ')')
         if filters.get('projectId') is not None:
             clauses.append('project=?')
             values.append(filters['projectId'])
@@ -138,7 +152,11 @@ class Jobs:
         return [json.loads(row[0]) for row in rows]
 
     def list(self, filters=None):
-        jobs = self._records(filters or {})
+        filters = filters or {}
+        if type(filters.get('allHistory', False)) is not bool:
+            raise ValueError('allHistory 必须为布尔值')
+        since = None if filters.get('allHistory') else (datetime.fromisoformat(now()) - timedelta(days=30)).isoformat()
+        jobs = self._records(filters, recent_since=since)
         available = {}
         for job in jobs:
             key = job.get('projectId')
@@ -165,7 +183,7 @@ class Jobs:
             for key in dict.fromkeys(keys if keys is not None else selected):
                 job = selected.get(key)
                 # A cancelled process can still be writing its final status.
-                if not job or job['status'] not in TERMINAL or key in self.processes:
+                if not job or job['status'] not in TERMINAL or key in self.processes or job.get('registrationPending') or job.get('cleanupPending'):
                     skipped.append(key)
                     continue
                 try:
@@ -181,6 +199,20 @@ class Jobs:
 
     def submit(self, spec, frozen_project=None):
         spec = copy.deepcopy(spec)
+        replay_project = None
+        if isinstance(spec, dict) and spec.get('inputExperimentId'):
+            if spec.get('kind') not in {'factor.analyze','model.train','backtest.run','optimize.run'} or not spec.get('projectId'):
+                raise ValueError('此任务不支持原输入复现')
+            original = self.store.experiment(spec['projectId'], spec['inputExperimentId'])
+            if original.get('kind') != spec['kind']:
+                raise ValueError('原输入复现必须使用原实验的任务类型')
+            from .input_snapshot import restore
+            replay_project, parameters, _ = restore(self.store, self.store.project(spec['projectId']), spec['inputExperimentId'])
+            if spec.get('strategyId') not in (None, replay_project.get('strategyId')):
+                raise ValueError('原输入复现不能改换研究策略')
+            spec['strategyId'] = replay_project.get('strategyId')
+            spec['parameters'] = parameters
+            spec.pop('candidateId', None)
         validate_spec(spec)
         if spec['kind'] == 'reports.refresh':
             spec['parameters'].setdefault('_refreshId', identifier())
@@ -193,7 +225,7 @@ class Jobs:
                     old_target=instrument(prior['instrument'])
                     if (target['kind'],target['symbol'])==(old_target['kind'],old_target['symbol']) and all(prior.get(key)==spec['parameters'].get(key) for key in ('startDate','endDate')):
                         return existing
-        for key in ('projectSnapshot','positionsSnapshot','strategySnapshots','candidateSnapshot'):
+        for key in ('projectSnapshot','positionsSnapshot','strategySnapshots','dailyPlanSnapshots','candidateSnapshot'):
             spec.pop(key,None)
         if spec['kind'] == 'simulation.advance':
             if not spec['parameters'].get('endDate'):
@@ -216,21 +248,32 @@ class Jobs:
             spec['candidateSnapshot'] = candidate
         from .workbench import strategy_project, get_strategy
         project_id = spec.get('projectId')
-        project = strategy_project(self.store, project_id, spec['strategyId'], active=spec['kind']=='selection.run') if project_id and spec.get('strategyId') else copy.deepcopy(self.store.project(project_id))
-        if frozen_project is not None:
+        project = replay_project or (strategy_project(self.store, project_id, spec['strategyId'], active=spec['kind']=='selection.run') if project_id and spec.get('strategyId') else copy.deepcopy(self.store.project(project_id)))
+        if frozen_project is not None and replay_project is None:
             if frozen_project.get('id')!=project_id or frozen_project.get('strategyId')!=spec.get('strategyId'):
                 raise ValueError('冻结研究范围与任务不一致')
             project=copy.deepcopy(frozen_project)
         from .preparation import KINDS as prepared_kinds, scope
-        if spec['kind'] in prepared_kinds:
+        if spec['kind'] in prepared_kinds and replay_project is None:
             scope(project,spec['parameters'],spec['kind'])
+        if replay_project is None:
+            from .app_settings import source_settings
+            project.setdefault('settings',{})['dataSources']=source_settings(self.store.settings())
         self._freeze_universe(project)
         spec['projectSnapshot'] = project
         if project_id and project.get('strategyId'):
             spec['strategyId'] = project['strategyId']
         if spec['kind'] == 'selection.run':
             from .positions import get
-            spec['positionsSnapshot'] = get(self.store.project(None) if spec['parameters'].get('strategies') else project)
+            spec['positionsSnapshot'] = get(self.store.project(None) if ('strategies' in spec['parameters'] or 'dailyPlanIds' in spec['parameters']) else project)
+            if 'dailyPlanIds' in spec['parameters']:
+                if 'strategies' in spec['parameters'] or spec.get('strategyId'):
+                    raise ValueError('每日方案与旧策略引用不能混用')
+                if spec['parameters'].get('allowPartial'):
+                    raise ValueError('每日组合不能使用已有数据预览')
+                from .daily_plans import freeze
+                spec['dailyPlanSnapshots']=freeze(self.store,spec['parameters']['dailyPlanIds'],project['settings']['dataSources'])
+                for reference in spec['dailyPlanSnapshots']:self._freeze_universe(reference['project'])
             references = spec['parameters'].get('strategies', [])
             if 'strategies' in spec['parameters']:
                 import math
@@ -251,14 +294,18 @@ class Jobs:
                     if not strategy.get('enabled') or not strategy.get('active'):
                         raise ValueError('所选策略尚未启用')
                     scoped = strategy_project(self.store,reference['projectId'],reference['strategyId'],active=True)
+                    scoped.setdefault('settings',{})['dataSources']=copy.deepcopy(project['settings']['dataSources'])
                     self._freeze_universe(scoped)
                     frozen.append({**reference,'project':scoped})
                 spec['strategySnapshots'] = frozen
         with self.lock:
             if self.closed:
                 raise ValueError('任务服务已关闭')
+            from .resources import compute_settings
+            spec['effectiveResources'] = compute_settings(self.store.settings().get('compute'), os.cpu_count())
             job = dict(id=identifier(), projectId=spec.get('projectId'), kind=spec['kind'], name=spec.get('name') or spec['kind'],
-                       strategyId=spec.get('strategyId'), status='queued', progress=0, message='等待执行', createdAt=now(), updatedAt=now(), spec=spec)
+                       strategyId=spec.get('strategyId'), status='queued', progress=0, message='等待执行', createdAt=now(), updatedAt=now(), spec=spec,
+                       effectiveResources=spec['effectiveResources'])
             job = self._save(job)
             self._start_next(spec.get('projectId'))
             return self.store.get('job', job['id'])
@@ -274,18 +321,36 @@ class Jobs:
             query.pop('watchlistId')
 
     def _start_next(self, project_id):
-        if self.closed or self.processes:
+        from .resources import compute_settings, compatible
+        if self.closed:
             return
-        queued = [job for job in self.store.list('job') if job['status'] == 'queued']
-        if not queued:
-            return
-        job = queued[-1]
+        records = self.store.list('job')
+        running = [job for job in records if job['id'] in self.processes]
+        if len(running) != len(self.processes):
+            return  # Missing process ownership must not grant another slot.
+        queued = sorted((job for job in records if job['status']=='queued'), key=lambda j:(
+            j.get('queuePriority',1 if j.get('spec',{}).get('parameters',{}).get('scheduledUpdateId') else 0),j.get('createdAt','')))
+        for job in queued:
+            config = job.get('effectiveResources') or compute_settings(None, os.cpu_count())
+            active = [r.get('effectiveResources') or compute_settings(None, os.cpu_count()) for r in running]
+            limit = min([config['maxConcurrentJobs']] + [r['maxConcurrentJobs'] for r in active])
+            if len(running) >= limit or sum(r['threadsPerJob'] for r in active) + config['threadsPerJob'] > max(1, os.cpu_count() or 1):
+                continue
+            if not compatible(job, running):
+                continue
+            self._launch(job, config)
+            if job['id'] in self.processes:
+                running.append(job)
+
+    def _launch(self, job, config):
         project_id = job.get('projectId')
         directory = Path(self.store.project(project_id)['path']) / '.research' / 'runs' / job['id']
         directory.mkdir(parents=True, exist_ok=True)
         write_json(directory / 'request.json', {'appData': str(self.store.root), 'job': job})
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'
+        from .resources import environment
+        env.update(environment(config))
         env['PYTHONPATH'] = str(Path(__file__).resolve().parents[2]) + os.pathsep + env.get('PYTHONPATH', '')
         log = (directory / 'worker.log').open('wb')
         try:
@@ -295,11 +360,67 @@ class Jobs:
         except Exception as exc:
             log.close()
             self._save(job, status='failed', message=str(exc))
-            self._start_next(project_id)
             return
         self.processes[job['id']] = process
-        self._save(job, status='running', message='子进程运行中')
-        threading.Thread(target=self._watch, args=(job['id'], process, directory, log), daemon=True).start()
+        try:
+            self._save(job, status='running', message='子进程运行中', effectiveResources=config)
+        finally:
+            threading.Thread(target=self._watch, args=(job['id'], process, directory, log), daemon=True).start()
+
+    def _register_result(self, job, directory, returncode):
+        result = read_json(directory / 'result.json')
+        if result and result.get('experiment') and (returncode == 0 or job['kind'] == 'rdagent.run'):
+            experiment = result['experiment']
+            if experiment.get('id') != job['id'] or experiment.get('projectId') != job.get('projectId'):
+                raise ValueError('结果文件与任务或项目不一致，不能登记')
+            for artifact in experiment.get('artifacts', []):
+                path = self.store.artifact_path(job.get('projectId'), artifact)
+                if not path.is_file():
+                    raise ValueError(f"结果文件缺失，不能登记完成：{artifact.get('name', path.name)}")
+            try:
+                existing = self.store.experiment(job.get('projectId'), experiment['id'])
+            except ValueError as exc:
+                if str(exc) != f"experiment 不存在: {experiment['id']}":
+                    raise
+                existing = None
+            # Registration can succeed before the final job update fails. Repeating
+            # recovery must keep subsequent user edits to the registered experiment.
+            if existing is None:
+                self.store.save_experiment(job.get('projectId'), experiment)
+            if experiment.get('candidateId'):
+                from .candidates import link_experiment
+                link_experiment(self.store, job.get('projectId'), experiment['candidateId'], experiment['id'], experiment['candidateRevision'])
+            status = result.get('runtimeStatus', 'completed' if returncode == 0 else 'failed')
+            if job['status'] in {'cancelled', 'interrupted'}:
+                status = job['status']
+            return self._save(job, status=status, experimentId=experiment['id'], registrationPending=False,
+                              registrationError=None, progress=1 if status == 'completed' else job.get('progress',0),
+                              message='已完成' if status == 'completed' else result.get('error') or job['message'])
+        return self._save(job, status=job['status'] if job['status'] in {'cancelled','interrupted'} else 'failed',
+                          registrationPending=False, registrationError=None,
+                          message=(result or {}).get('error', f'子进程退出 {returncode}，没有可登记结果'))
+
+    def recover_result(self, key):
+        with self.lock:
+            if key in self.processes:
+                raise ValueError('进程停止尚未确认，不能恢复登记')
+            job = self.store.get('job', key)
+            directory = Path(self.store.project(job.get('projectId'))['path']) / '.research/runs' / key
+            exited = read_json(directory / 'process-exit.json', {})
+            if not exited.get('cleanupConfirmed') or 'returncode' not in exited:
+                raise ValueError('缺少进程退出确认，不能恢复登记')
+            if not read_json(directory / 'result.json', {}).get('experiment'):
+                raise ValueError('没有已完成的结果文件可登记')
+            try:
+                return self._register_result(job, directory, exited['returncode'])
+            except Exception as exc:
+                try:
+                    self._save(job, status='failed', registrationPending=True, registrationError=str(exc),
+                               message='恢复登记失败，原结果保留：'+str(exc))
+                except Exception:
+                    self.emit({**job, 'status':'failed', 'registrationPending':True, 'registrationError':str(exc),
+                               'message':'数据库登记失败，原结果保留'})
+                raise
 
     def _watch(self, key, process, directory, log):
         previous = None
@@ -308,50 +429,51 @@ class Jobs:
                 process.wait(timeout=.25)
                 break
             except subprocess.TimeoutExpired:
-                update = read_json(directory / 'progress.json')
-                if update:
-                    prepared=read_json(directory/'preparation.json')
-                    if prepared:update={**update,'preparation':prepared}
-                if update and update != previous:
-                    with self.lock:
-                        job = self.store.get('job', key)
-                        if job['status'] == 'running':
-                            self._save(job, progress=update['progress'], message=update['message'], **({'preparation':update['preparation']} if update.get('preparation') else {}))
-                    previous = update
+                try:
+                    update = read_json(directory / 'progress.json')
+                    if update and update != previous:
+                        with self.lock:
+                            job = self.store.get('job', key)
+                            if job['status'] == 'running':
+                                self._save(job, progress=update['progress'], message=update['message'])
+                        previous = update
+                except Exception as exc:
+                    # Keep watching the real process even if status persistence fails.
+                    self.emit(dict(id=key, status='running', message='任务状态登记失败：'+str(exc), registrationError=str(exc)))
         log.close()
-        prepared=read_json(directory/'preparation.json')
-        if prepared:
-            with self.lock:self._save(self.store.get('job',key),preparation=prepared)
-        if self.store.get('job',key)['kind']=='rdagent.run' or (directory/'rd_native_children.json').exists():
+        native = (directory / 'rd_native_children.json').exists()
+        try:
+            job = self.store.get('job', key)
+            native = native or job['kind'] == 'rdagent.run'
+        except Exception:
+            job = read_json(directory / 'request.json', {}).get('job', {})
+            native = native or job.get('kind') == 'rdagent.run'
+        if native:
             from .rd_agent import stop
             try:
                 stop(directory)
             except Exception as exc:
                 with self.lock:
-                    self._save(self.store.get('job',key),status='failed',cleanupPending=True,
+                    self._save(job, status='failed', cleanupPending=True,
                                message='原生研究进程清理未确认，队列保留占用：'+str(exc))
                 return
         with self.lock:
-            job = self.store.get('job', key)
-            result = read_json(directory / 'result.json')
-            if job['kind']=='rdagent.run' and result and result.get('experiment'):
-                experiment=result['experiment'];self.store.save_experiment(job.get('projectId'),experiment)
-                status=result.get('runtimeStatus','completed' if process.returncode==0 else 'failed')
-                if job['status'] in {'cancelled','interrupted'}: status=job['status']
-                self._save(job,status=status,experimentId=experiment['id'],progress=1 if status=='completed' else job['progress'],
-                           cleanupPending=False,message='已完成' if status=='completed' else result.get('error') or job['message'])
-            elif job['status'] == 'running':
-                if process.returncode == 0 and result and result.get('experiment'):
-                    experiment = result['experiment']
-                    self.store.save_experiment(job.get('projectId'), experiment)
-                    if experiment.get('candidateId'):
-                        from .candidates import link_experiment
-                        link_experiment(self.store, job.get('projectId'), experiment['candidateId'], experiment['id'], experiment['candidateRevision'])
-                    self._save(job, status='completed', progress=1, message='已完成', experimentId=experiment['id'])
-                else:
-                    self._save(job, status='failed', message=(result or {}).get('error', f'子进程退出 {process.returncode}，请查看 {directory / "worker.log"}'))
-            self.processes.pop(key, None)
-            self._start_next(job.get('projectId'))
+            try:
+                write_json(directory / 'process-exit.json', dict(returncode=process.returncode, cleanupConfirmed=True, exitedAt=now()))
+                prepared = read_json(directory / 'preparation.json')
+                if prepared:
+                    job = {**job, 'preparation': prepared}
+                self._register_result(job, directory, process.returncode)
+            except Exception as exc:
+                failure = dict(status='failed', registrationPending=True, registrationError=str(exc),
+                               message='进程已退出，结果登记失败；可恢复登记：'+str(exc))
+                try:
+                    self._save(job, **failure)
+                except Exception:
+                    self.emit({**job, **failure})
+            finally:
+                self.processes.pop(key, None)
+                self._start_next(job.get('projectId'))
 
     def cancel(self, key):
         with self.lock:

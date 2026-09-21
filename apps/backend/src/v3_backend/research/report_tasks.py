@@ -6,6 +6,7 @@ from threading import Event, RLock, Thread
 from . import reports
 from .jobs import validate_spec
 from .storage import identifier, now, read_json
+from .research_costs import work_counts, reproduction_budget
 
 
 def validate_step_dates(plan):
@@ -33,6 +34,7 @@ class ReportTasks:
         self.service, self.store, self.jobs = service, service.store, service.jobs
         self.lock, self.stop = RLock(), Event()
         self.emitted = {}
+        self.update_checked_minute = None
         for run in self.store.list('reproduction_run'):
             if run['status'] == 'running':
                 run.update(status='interrupted', message='应用曾中断，请明确继续；已完成步骤不会重复提交')
@@ -50,6 +52,7 @@ class ReportTasks:
                     self._save_run(run)
 
     def _save_run(self, run):
+        run['budget'] = reproduction_budget(self.store, run)
         self.store.put('reproduction_run', run, run['projectId'])
         if self.emitted.get(run['id']) != run['status']:
             self.emitted[run['id']] = run['status']
@@ -59,6 +62,13 @@ class ReportTasks:
     def _loop(self):
         while not self.stop.wait(1):
             with self.lock:
+                minute=now()[:16]
+                if minute!=self.update_checked_minute:
+                    self.update_checked_minute=minute
+                    from .scheduled_updates import tick
+                    try:tick(self.service)
+                    except Exception as exc:
+                        self.service.emit(dict(kind='data.update.notice',status='failed',message='盘后更新暂不可用：'+str(exc)))
                 for run in self.store.list('reproduction_run'):
                     if run['status'] == 'running':
                         try:
@@ -167,6 +177,7 @@ class ReportTasks:
                      createdAt=old['createdAt'] if old else now(), updatedAt=now())
         value.setdefault('objective', '')
         value.setdefault('missingConditions', [])
+        value['plannedWork'] = work_counts(step['spec'] for step in steps)
         validate_step_dates(value)
         return portable.put('reproduction', value, project_id)
 
@@ -198,11 +209,13 @@ class ReportTasks:
             run.update(status='running', message='继续冻结版本的未完成步骤')
         else:
             for existing in self.store.list('reproduction_run', plan['projectId']):
-                if existing['planId'] == plan['id'] and existing['revision'] == plan['revision'] and existing['status'] in {'running', 'completed'}:
+                if existing['planId'] == plan['id'] and existing['revision'] == plan['revision']:
                     return existing
             if not plan['steps'] or plan['missingConditions']:
                 raise ValueError('请先补全复现步骤与缺失条件')
             validate_step_dates(plan)
+            if work_counts(step['spec'] for step in plan['steps'])['trials'] > 20:
+                raise ValueError('全方案试参总数超过20次，请先调整方案；不会自动拆分或扩大预算')
             if any(not step.get('citations') for step in plan['steps']):
                 raise ValueError('运行前每个步骤必须有真实研报原文引用')
             from .workbench import strategy_project
@@ -220,6 +233,10 @@ class ReportTasks:
                        steps=[dict(stepId=s['id'], status='pending') for s in plan['steps']], createdAt=now())
             run['runId'] = run['id']
             run['planSnapshot']['publishedAt'] = published
+            from .ai_budget import ensure_budget
+            run['budgetId']=params.get('budgetId') or ('report-'+run['id'])
+            run['budgetProjectId']=params.get('budgetProjectId',plan['projectId'])
+            ensure_budget(self.store.project_store(run['budgetProjectId']).db,run['budgetId'])
         self._save_run(run)
         self._advance(run)
         return run
@@ -270,6 +287,16 @@ class ReportTasks:
                         boundary = run['planSnapshot'].get('publishedAt') or reports.get(self.store, run['planSnapshot']['reportId']).get('publishedAt')
                         if not selected.get('trainEnd') or not selected.get('validEnd') or max(selected['trainEnd'], selected['validEnd']) > boundary or selected.get('validation', {}).get('mode') == 'rolling':
                             raise ValueError('发布后独立验证只能引用训练与选参结束不晚于发布日期的固定模型')
+                    budget = reproduction_budget(self.store, run)
+                    if budget['reserved']['trials'] + work_counts([spec])['trials'] > budget['trialLimit']:
+                        raise ValueError('本方案试参预算已用尽；失败和重跑计入预算，已有结果保留')
+                    if run.get('budgetId') and spec['kind']=='optimize.run':
+                        from .ai_budget import reserve
+                        reserve(self.store.project_store(run.get('budgetProjectId',run['projectId'])).db,run['budgetId'],
+                                'trials',work_counts([spec])['trials'],operation_id='report-submit-'+identifier())
+                    if run.get('budgetId'):
+                        spec.setdefault('parameters',{}).update(budgetId=run['budgetId'],
+                            budgetProjectId=run.get('budgetProjectId',run['projectId']))
                     job = self.jobs.submit(spec, frozen_project=run['projectSnapshot'])
                     state.update(jobId=job['id'], status=job['status'])
                 except Exception as exc:

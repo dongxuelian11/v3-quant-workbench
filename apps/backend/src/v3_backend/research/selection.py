@@ -92,7 +92,11 @@ def estimate_orders(snapshot, weights, market, costs, config, groups, executable
     return pd.DataFrame(rows, columns=['symbol','side','quantity','estimatedPrice','estimatedAmount','estimatedFees','reason','currentWeight','targetWeight']), after, cash, conflicts
 
 
-def run(project, params, output, progress, snapshot=None, strategy_snapshots=None, score_only=False):
+def run(project, params, output, progress, snapshot=None, strategy_snapshots=None, score_only=False, daily_plan_snapshots=None, store=None):
+    output=Path(output);output.mkdir(parents=True,exist_ok=True)
+    if daily_plan_snapshots is not None:
+        if store is None:raise ValueError('每日方案需要共享研究存储')
+        return run_daily(store,project,params,output,progress,snapshot,daily_plan_snapshots)
     if strategy_snapshots is not None:
         return run_multi(project, params, output, progress, snapshot, strategy_snapshots)
     import joblib
@@ -134,7 +138,7 @@ def run(project, params, output, progress, snapshot=None, strategy_snapshots=Non
         state = read_json(state_path, {})
         model_path = Path(project['path'])/state.get('path', '.research/missing-model')
         artifacts = []
-        model_context = {'universe':project['universe'],'dataPath':str(Path(data.project_data(project)['path']).resolve()), 'source':read_json(Path(data.project_data(project)['path'])/'data/source.json',{}).get('source','import')}
+        model_context = {'universe':project['universe'],'dataPath':project.get('inputCacheIdentity',{}).get('sourceRoot') or str(Path(data.project_data(project)['path']).resolve()), 'source':read_json(Path(data.project_data(project)['path'])/'data/source.json',{}).get('source','import')}
         native_model=model_params.get('model') in {'native_torch','native_generated_predictions'}
         if native_model:
             from .rd_agent import native_code,fit_native_asof,predict_native
@@ -370,6 +374,10 @@ def run_multi(project, params, output, progress, snapshot, strategy_snapshots):
         candidate = result['scores'].rename_axis('symbol').reset_index()
         candidate = candidate.merge(result['features'].droplevel(0).rename_axis('symbol'),left_on='symbol',right_index=True,how='left')
         all_artifacts.append(engines.save_table(output, f'strategy_{index}_candidates', candidate))
+    return finish_multi(project,params,output,snapshot,proposals,all_artifacts)
+
+
+def finish_multi(project,params,output,snapshot,proposals,all_artifacts):
     dates = {result['date'] for _,result in proposals}
     if len(dates) != 1:
         raise ValueError('启用策略最新完成行情日期不一致，请更新数据后生成')
@@ -406,3 +414,52 @@ def run_multi(project, params, output, progress, snapshot, strategy_snapshots):
                 parameters={**params,'strategies':[{key:value for key,value in ref.items() if key!='project'} for ref,_ in proposals]},summary='多策略合并选股与全局净调仓清单',
                 details=dict(dataDate=str(date)[:10],valuationDate=str(date)[:10],bookAsOfDate=snapshot.get('asOfDate'),positionsSnapshot=snapshot,strategies=[{'projectId':ref['projectId'],'strategyId':ref['strategyId'],'allocation':ref['allocation'],'configuration':ref['project'],'model':result['state']} for ref,result in proposals],
                              executable=not conflicts,conflicts=conflicts,unallocatedCashWeight=1-sum(ref['allocation'] for ref,_ in proposals),warnings=list(dict.fromkeys(['按已完成日收盘估算，下一交易日实际成交条件需确认。']+[warning for _,result in proposals for warning in result['warnings']]))))
+
+
+def run_daily(store,project,params,output,progress,snapshot,references):
+    from copy import deepcopy
+    from . import screening_run
+    if not references:raise ValueError('请选择至少一个启用每日方案')
+    if snapshot is None:raise ValueError('每日方案缺少全局持仓快照')
+    proposals=[];artifacts=[]
+    for i,reference in enumerate(references):
+        plan=deepcopy(reference['planSnapshot'])
+        # Daily use advances the date, retaining the saved screening configuration.
+        plan['date']=params.get('date') or update_end_date()
+        target=output/('daily_'+str(i));target.mkdir(parents=True,exist_ok=True)
+        screened=screening_run.run(store,reference['project'],dict(plan=plan,allowPartial=False),target,
+            lambda v,m:progress((i+v)/len(references)*.8,m),daily_snapshot=snapshot)
+        context=screened['_daily'];frame=context['frame'];prices=context['prices'];date=context['date']
+        selected=frame[frame.status.eq('included')].set_index('symbol')
+        scores=selected.score.astype(float)
+        # Pure boolean conditions have no score: equal selection strength is explicit.
+        if plan['mode']=='conditions' and scores.isna().all():scores=pd.Series(1.,index=selected.index)
+        if not np.isfinite(scores).all():raise ValueError('每日候选评分缺失，不能生成目标')
+        strategy=context['strategy'] or {}
+        if context['strategy'] and context['targets'] is None:scores=scores.sort_values(ascending=False).head(int(strategy.get('topN',30)))
+        config={**DEFAULTS,**strategy.get('portfolio',{}),'turnoverLimit':None}
+        returns=prices.pivot(index='date',columns='symbol',values='close').sort_index().pct_change(fill_method=None)
+        expected=None
+        if config['returnSource']=='model':
+            if context['model'] is None or strategy.get('code'):raise ValueError('模型预期收益要求真实月度模型预测')
+            horizon=context['model']['state']['parameters'].get('labelHorizon',5)
+            expected=(1+context['model']['scores'].reindex(scores.index))**(252/int(horizon))-1
+        built=construct_portfolio(scores,returns.loc[:date],config,industries=industries(context['project'],date,scores.index),expected_returns=expected)
+        if context['targets'] is not None:
+            desired=pd.Series(context['targets'],dtype=float)
+            desired=desired.where(desired.index.isin(scores.index),0.)
+            weights,conflicts=constrain_merged(desired,pd.Series(dtype=float),pd.Series(dtype=float),industries(context['project'],date,desired.index),config)
+            built.update(weights=weights,conflicts=conflicts,executable=not conflicts)
+        latest=prices[prices.date.eq(date)].set_index('symbol').copy()
+        if 'rawClose' not in latest:latest['rawClose']=latest.close/latest.get('factor',1.)
+        ref=dict(projectId=reference['project'].get('id'),strategyId=reference['id'],allocation=reference['allocation'],project=context['project'],dailyPlanId=reference['id'],planVersion=reference['planVersion'])
+        result=dict(weights=built['weights'],scores=scores,market=latest,date=date,project=context['project'],
+            state=context['model']['state'] if context['model'] else {},warnings=built['warnings'],conflicts=built['conflicts'])
+        proposals.append((ref,result))
+        artifacts.extend({**a,'name':f'daily_{i}_'+a['name']} for a in screened['artifacts'])
+        if context['model']:artifacts.extend({**a,'name':f'daily_{i}_'+a['name']} for a in context['model']['artifacts'])
+    result=finish_multi(project,params,output,snapshot,proposals,artifacts)
+    result['summary']='每日固定方案合并与全局净调仓清单'
+    result['parameters']=deepcopy(params)
+    result['details']['dailyPlans']=[{k:deepcopy(v) for k,v in r.items() if k!='project'} for r in references]
+    return result

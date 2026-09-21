@@ -25,7 +25,13 @@ def get(store, report_id):
 def _folder(store, report_id):
     if not isinstance(report_id, str) or not re.fullmatch(r'(?:[0-9a-f]{32}|eastmoney-AP[0-9]+)', report_id):
         raise ValueError('研报 ID 无效')
-    return store.root / 'shared' / 'reports' / report_id
+    try:
+        return Path(store.get('report_location',report_id)['path'])
+    except ValueError:
+        legacy=store.root/'shared'/'reports'/report_id
+        folder=legacy if legacy.exists() else store.data_root()/'reports'/report_id
+        store.put('report_location',dict(id=report_id,path=str(folder)))
+        return folder
 
 
 def document(store, report_id):

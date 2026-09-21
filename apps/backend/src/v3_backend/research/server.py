@@ -18,6 +18,10 @@ class Service:
         self.store = Store(app_data)
         self.emit = emit
         self.jobs = Jobs(self.store, emit)
+        from .read_operations import ReadOperations
+        self.read_operations = ReadOperations()
+        self._read_context = threading.local()
+        self._project_write_lock = threading.RLock()
         from .ai_execution import Executions
         self.executions = Executions(self,emit)
         from .report_tasks import ReportTasks
@@ -33,28 +37,27 @@ class Service:
         count = max(1, sum(a['type'] == 'parquet' for a in experiment['artifacts']))
         row_limit = max(1, 500 // count)
         for artifact in experiment['artifacts']:
+            self.check_read_cancel()
             if artifact['type'] != 'parquet':
                 continue
-            frame = pd.read_parquet(self.store.artifact_path(project_id, artifact))
+            from .table_reader import preview
+            path = self.store.artifact_path(project_id, artifact)
+            frame = preview(path, row_limit, check_cancel=self.check_read_cancel)
             table_name = artifact['name'].removeprefix('holdout_')
-            if table_name in {'trades', 'holdings', 'target_weights', 'unfilled'} and 'symbol' in frame:
-                for symbol in frame.symbol.dropna().astype(str).unique():
-                    replay.setdefault(symbol, dict(symbol=symbol, tradeCount=0, buyCount=0, sellCount=0))
-                if table_name == 'trades':
-                    for symbol, group in frame.groupby('symbol'):
-                        item = replay[str(symbol)]
-                        item['tradeCount'] = len(group)
-                        if 'side' in group:
-                            item['buyCount'] = int(group.side.eq('buy').sum())
-                            item['sellCount'] = int(group.side.eq('sell').sum())
-                        elif 'direction' in group:
-                            item['buyCount'] = int(group.direction.eq(1).sum())
-                            item['sellCount'] = int(group.direction.eq(0).sum())
+            tables.append({'name': artifact['name'], 'columns': list(frame.columns), 'rows': records(frame)})
+            if table_name in {'trades', 'holdings', 'target_weights', 'unfilled'}:
+                from .table_reader import replay_counts
+                for code, counts in replay_counts(path, table_name == 'trades', check_cancel=self.check_read_cancel).items():
+                    item = replay.setdefault(code, dict(symbol=code, tradeCount=0, buyCount=0, sellCount=0))
+                    for key in ('tradeCount', 'buyCount', 'sellCount'):
+                        item[key] += counts[key]
+            if table_name == 'portfolio':
+                selected = [c for c in ('date', 'return', 'netReturn', 'cost') if c in frame]
+                frame = pd.read_parquet(path, columns=selected)
             if table_name == 'portfolio' and 'date' in frame and not frame.empty:
                 dates = pd.to_datetime(frame.date).dropna()
                 if not dates.empty:
                     date_range = dict(startDate=str(dates.min())[:10], endDate=str(dates.max())[:10])
-            tables.append({'name': artifact['name'], 'columns': list(frame.columns), 'rows': records(frame.head(row_limit))})
             if table_name == 'portfolio' and 'date' in frame and ('return' in frame or 'netReturn' in frame):
                 # Paper accounts record cost in yuan; their netReturn already includes it.
                 net = (1 + frame['netReturn']).cumprod() if 'netReturn' in frame else (1 + frame['return'] - frame['cost']).cumprod()
@@ -92,9 +95,66 @@ class Service:
             details['dateRange'] = date_range
         return dict(experiment=experiment, tables=tables, series=series, details=details)
 
-    def request(self, method, params):
+    def check_read_cancel(self):
+        self.read_operations.check(getattr(self._read_context, 'operation', None))
+
+    def request(self, method, params, *, read_operation=None):
+        if method == 'reads.cancel':
+            return self.read_operations.cancel((params or {}).get('readId'))
+        operation = read_operation or self.read_operations.begin(method, params or {})
+        previous = getattr(self._read_context, 'operation', None)
+        self._read_context.operation = operation or previous
+        try:
+            self.check_read_cancel()
+            # Do not turn a completed export into cancellation after its atomic replace.
+            return self._request(method, params)
+        finally:
+            self._read_context.operation = previous
+            self.read_operations.finish(operation)
+
+    def _request(self, method, params):
+        from copy import deepcopy
         p = params or {}
         store = self.store
+        if method == 'localAssistant.apply':
+            from .assistant_actions import apply
+            return apply(self,p)
+        if method.startswith('localAssistant.'):
+            from .local_assistant import dispatch
+            return dispatch(self,method,p)
+        if method in {'workspace.project.get','workspace.project.save'}:
+            from .workbench import project_display
+            return project_display(store,p,save=method.endswith('.save'))
+        if method=='jobs.priority':
+            priority=p.get('priority')
+            if type(priority) is not int or not -10<=priority<=10:raise ValueError('等待优先级须为-10至10，越小越优先')
+            with self.jobs.lock:
+                job=store.get('job',p['jobId'])
+                if job['status']!='queued':raise ValueError('只有等待中的任务可调整顺序')
+                self.jobs._save(job,queuePriority=priority)
+                self.jobs._pump()
+                return store.get('job',job['id'])
+        if method=='ai.connectionTest':
+            from .ai_settings import connection_test
+            return connection_test(self,p)
+        if method.startswith('researchPresets.'):
+            from .research_presets import dispatch
+            return dispatch(store,method,p)
+        if method.startswith('dailyPlans.'):
+            from .daily_plans import dispatch
+            return dispatch(self,method,p)
+        if method in {'storage.inspect','storage.clearCache'}:
+            from .storage_tools import dispatch
+            return dispatch(self,method,p)
+        if method in {'settings.export','settings.importPreview','settings.import','diagnostics.preview'}:
+            from .settings_package import dispatch
+            return dispatch(store,method,p)
+        if method.startswith('screeners.') or method == 'watchlists.add':
+            from .screeners import dispatch as screener_dispatch
+            return screener_dispatch(self, method, p)
+        if method.startswith('history.memberships.'):
+            from .membership_sources import dispatch as membership_dispatch
+            return membership_dispatch(store, method, p)
         if method == 'ai.conversations.uiState':
             from .report_ai import save_ui_state
             return save_ui_state(self, p)
@@ -110,10 +170,15 @@ class Service:
             return self.executions.dispatch(method,p)
         if method=='market.intraday':
             from .intraday import read
-            return read(store.project(None),p)
+            from .app_settings import source_settings
+            target=store.project(None)
+            target['settings']={**target.get('settings',{}),'dataSources':source_settings(store.settings())}
+            return read(target,p)
         if method in {'market.instruments','market.quote','market.members'}:
             from . import quotes
             target=store.project(p.get('projectId')) if p.get('projectId') and method!='market.quote' else store.project(None)
+            from .app_settings import source_settings
+            target['settings']={**target.get('settings',{}),'dataSources':source_settings(store.settings())}
             return {'market.instruments':quotes.catalog,'market.quote':quotes.status,'market.members':quotes.members}[method](target,p)
         if method.startswith('ai.projectSummary.'):
             from .project_summary import dispatch as summary_dispatch
@@ -134,7 +199,23 @@ class Service:
         if method == 'projects.open':
             return store.open_project(p['path'])
         if method == 'projects.save':
-            return store.save_project(p['project'])
+            with self._project_write_lock:
+                project = deepcopy(p['project'])
+                latest=store.project(project['id'])
+                if p.get('preserveMembershipRef'):
+                    ref = latest['universe'].get('membershipRef')
+                    project['universe'].pop('membershipRef', None)
+                    if ref is not None:project['universe']['membershipRef'] = deepcopy(ref)
+                if 'aiInstructions' in latest.get('settings',{}):
+                    project.setdefault('settings',{})['aiInstructions']=latest['settings']['aiInstructions']
+                return store.save_project(project)
+        if method=='projects.aiInstructions.save':
+            if not isinstance(p.get('text'),str):raise ValueError('项目AI补充说明须为文字')
+            with self._project_write_lock:
+                project=store.project(p['projectId'])
+                project.setdefault('settings',{})['aiInstructions']=p['text']
+                store.save_project(project)
+                return dict(projectId=project['id'],text=p['text'])
         if method == 'projects.summary':
             from .data import preview
             project = store.project(p.get('projectId'))
@@ -147,10 +228,24 @@ class Service:
                 raise ValueError('股票池格式无效')
             template = dict(id=p.get('id') or identifier(), name=p['name'], universe=universe)
             return store.put('template', template)
-        if method == 'settings.get':
-            return store.settings()
-        if method == 'settings.save':
-            return store.settings(p['settings'])
+        if method in {'settings.get', 'settings.save'}:
+            import os
+            from .resources import compute_settings
+            from .app_settings import validate as validate_settings, source_settings, capabilities
+            if method == 'settings.save':
+                changes = validate_settings(p['settings'],store.settings())
+                changes.pop('effectiveResources', None)
+                changes.pop('dataSourceCapabilities', None)
+                changes.pop('effectiveStorage', None)
+                if 'compute' in changes:
+                    compute_settings(changes['compute'], os.cpu_count())
+                value = store.settings(changes)
+            else:
+                value = store.settings()
+            return {**value, 'dataSources':source_settings(value), 'dataSourceCapabilities':capabilities(),
+                    'effectiveStorage':{'dataDirectory':str(store.data_root()),'newProjectDirectory':value.get('storage',{}).get('newProjectDirectory'),
+                        'message':'目录更改用于后续共享行情、新研报和新项目；不移动已有资料，旧项目沿用原路径。'},
+                    'effectiveResources': compute_settings(value.get('compute'), os.cpu_count())}
         if method in {'positions.get', 'positions.save', 'positions.import'}:
             from . import positions
             project = store.project(p.get('projectId'))
@@ -166,6 +261,8 @@ class Service:
             return self.jobs.list(p)
         if method == 'jobs.clear':
             return self.jobs.clear(p)
+        if method == 'jobs.recoverResult':
+            return self.jobs.recover_result(p['jobId'])
         if method == 'jobs.cancel':
             return self.jobs.cancel(p['jobId'])
         if method == 'factors.list':
@@ -209,12 +306,22 @@ class Service:
             experiment = store.experiment(p.get('projectId'), p['experimentId'])
             artifact = next((a for a in experiment['artifacts'] if a['name'] == 'processing_coverage' and a['type'] == 'parquet'), None)
             if artifact:
-                frame = pd.read_parquet(store.artifact_path(p.get('projectId'), artifact))
-                if 'date' in frame:
+                from .table_reader import calendar
+                dates = calendar(store.artifact_path(p.get('projectId'), artifact), check_cancel=self.check_read_cancel)
+                if dates is not None:
                     # Coverage retains sessions even when every factor value is missing.
-                    dates = sorted(pd.to_datetime(frame['date'], errors='raise').dt.strftime('%Y-%m-%d').unique().tolist())
                     return dict(tradingDates=dates, source='experiment_processing_sessions', message='该实验输入处理的交易日期；保留指标缺失的交易日')
             return dict(tradingDates=None, source='unavailable', message='旧实验未保存可核对的交易日历，不能从指标非空日期推断')
+        if method == 'experiments.analysis':
+            from .analysis_reader import read
+            experiment = store.experiment(p.get('projectId'), p['experimentId'])
+            artifact = next((a for a in experiment['artifacts'] if a['name'] == p['table'] and a['type'] == 'parquet'), None)
+            if artifact is None:
+                raise ValueError('实验中没有此数据表')
+            coverage = next((a for a in experiment['artifacts'] if a['name'] == 'processing_coverage' and a['type'] == 'parquet'), None)
+            return read(store.artifact_path(p.get('projectId'), artifact), artifact['name'], p,
+                        store.artifact_path(p.get('projectId'), coverage) if coverage else None,
+                        check_cancel=self.check_read_cancel)
         if method == 'experiments.table':
             import pandas as pd
             from .data import records, symbol
@@ -222,34 +329,8 @@ class Service:
             artifact = next((item for item in experiment['artifacts'] if item['name'] == p['table'] and item['type'] == 'parquet'), None)
             if artifact is None:
                 raise ValueError('实验中没有此数据表')
-            frame = pd.read_parquet(store.artifact_path(p.get('projectId'), artifact))
-            if artifact['name'] == 'trades' and 'tradeId' not in frame:
-                frame['tradeId'] = [str(i) for i in range(len(frame))]
-            for parameter, choices in (('factorId', ('factor', 'factorId')),
-                                       ('tradeId', ('tradeId',)),
-                                       ('modelWindowId', ('window', 'windowId', 'modelWindowId'))):
-                if p.get(parameter) not in (None, ''):
-                    column = next((c for c in choices if c in frame), None)
-                    if column is None:
-                        raise ValueError('此表没有对应的筛选字段: ' + parameter)
-                    frame = frame[frame[column].astype(str) == str(p[parameter])]
-            instrument = next((name for name in ('symbol', 'instrument', 'asset') if name in frame), None)
-            date_column = 'date' if 'date' in frame else 'datetime' if 'datetime' in frame else None
-            if p.get('symbol'):
-                if instrument is None:
-                    raise ValueError('此表没有股票代码列')
-                frame = frame[frame[instrument] == symbol(p['symbol'])]
-            if p.get('startDate') or p.get('endDate'):
-                if date_column is None:
-                    raise ValueError('此表没有日期列')
-                dates = pd.to_datetime(frame[date_column], utc=True)
-                if p.get('startDate'):
-                    frame = frame[dates >= pd.to_datetime(p['startDate'], utc=True)]
-                    dates = dates.loc[frame.index]
-                if p.get('endDate'):
-                    frame = frame[dates < pd.to_datetime(p['endDate'], utc=True).normalize() + pd.Timedelta(days=1)]
-            offset, limit = max(0, int(p.get('offset', 0))), max(1, min(500, int(p.get('limit', 200))))
-            return dict(name=artifact['name'], columns=list(frame.columns), rows=records(frame.iloc[offset:offset + limit]), total=len(frame), offset=offset, limit=limit)
+            from .table_reader import page
+            return page(store.artifact_path(p.get('projectId'), artifact), p, artifact['name'], check_cancel=self.check_read_cancel)
         if method == 'experiments.compare':
             refs = p.get('experiments') or [{'projectId':p.get('projectId'),'experimentId':key} for key in p.get('experimentIds',[])]
             if len(refs) > 10:
@@ -266,8 +347,13 @@ class Service:
                 if key in p:
                     value[key] = p[key]
             return store.save_experiment(p.get('projectId'), value)
+        if method == 'experiments.dependencies':
+            return store.experiment_dependencies(p.get('projectId'), p['experimentId'])
         if method == 'experiments.delete':
             store.experiment(p.get('projectId'), p['experimentId'])
+            dependencies = store.experiment_dependencies(p.get('projectId'), p['experimentId'])
+            if dependencies:
+                raise ValueError('此结果仍被引用，不能删除：' + '、'.join(str(item['name']) for item in dependencies[:8]))
             import shutil
             root = (Path(store.project(p.get('projectId'))['path']) / '.research' / 'runs').resolve()
             target = (root / p['experimentId']).resolve()
@@ -291,16 +377,24 @@ class Service:
         from pathlib import Path
         from .storage import read_json
         project=self.store.project(p.get('projectId'));query=deepcopy(p);warning=None
+        if not p.get('experimentId'):
+            from .app_settings import source_settings
+            project['settings']={**project.get('settings',{}),'dataSources':source_settings(self.store.settings())}
         if p.get('experimentId'):
             experiment=self.store.experiment(p.get('projectId'),p['experimentId'])
+            if experiment.get('inputSnapshot'):
+                from .input_snapshot import restore
+                project, _, _ = restore(self.store, project, experiment['id'])
             snapshot=read_json(Path(project['path'])/'.research/runs'/experiment['id']/'project.json')
-            if snapshot:
+            if snapshot and not experiment.get('inputSnapshot'):
+                if not experiment.get('inputSnapshot'):
+                    warning='旧实验未固定实际行情输入；兼容图表读取可能包含后续更新，不能作为原输入复现。'
                 settings=deepcopy(snapshot.get('settings',{}));path=settings.get('dataPath')
                 if path:
                     original=Path(snapshot['path']);stored=Path(path)
                     if stored.is_relative_to(original):settings['dataPath']=str(Path(project['path'])/stored.relative_to(original))
                 project={**snapshot,'path':project['path'],'id':project['id'],'settings':settings}
-            else:warning='旧实验未保存项目数据来源快照；此图兼容读取当前项目数据，不能视为已固定的实验行情。'
+            elif not experiment.get('inputSnapshot'):warning='旧实验未保存项目数据来源快照；此图兼容读取当前项目数据，不能视为已固定的实验行情。'
             parameters=experiment.get('parameters',{})
             for key,choose in (('startDate',max),('endDate',min)):
                 if parameters.get(key):query[key]=choose(str(query.get(key) or parameters[key])[:10],str(parameters[key])[:10])
@@ -328,32 +422,20 @@ class Service:
         return {'path':str(path)}
 
     def export(self, p):
-        import pandas as pd
-        import re
-        experiment = self.store.experiment(p.get('projectId'), p['experimentId'])
+        from .result_export import export
         output = Path(self.store.project(p.get('projectId'))['path']) / 'exports'
         output.mkdir(exist_ok=True)
-        tables = [(artifact['name'], pd.read_parquet(self.store.artifact_path(p.get('projectId'), artifact))) for artifact in experiment['artifacts'] if artifact['type'] == 'parquet']
-        if not tables:
-            tables = [('metrics', pd.DataFrame(list(experiment['metrics'].items()), columns=['metric', 'value']))]
-        if p['format'] == 'xlsx':
-            path = output / f'{experiment["id"]}.xlsx'
-            with pd.ExcelWriter(path, engine='openpyxl') as writer:
-                for index, (name, frame) in enumerate(tables):
-                    safe_name = re.sub(r'[\\/*?:\[\]]', '_', name)
-                    # Excel's worksheet limit must never silently truncate full exports.
-                    for chunk, offset in enumerate(range(0, max(1, len(frame)), 1048575)):
-                        frame.iloc[offset:offset + 1048575].to_excel(writer, sheet_name=f'{index}_{chunk}_{safe_name}'[:31], index=False)
-        elif p['format'] == 'csv':
-            # One CSV is directly usable by the desktop exportFile contract; optional table chooses any full artifact.
-            selected = next((frame for name, frame in tables if name == p.get('table')), tables[0][1])
-            path = output / f'{experiment["id"]}.csv'
-            selected.to_csv(path, index=False, encoding='utf-8-sig')
-        else:
-            raise ValueError('只支持 CSV/XLSX 导出')
-        return {'path': str(path)}
+        if p.get('experimentIds'):
+            from .result_export import export_comparison
+            return export_comparison(self.store,p.get('projectId'),p['experimentIds'],output,p['format'],
+                check_cancel=self.check_read_cancel)
+        experiment = self.store.experiment(p.get('projectId'), p['experimentId'])
+        return export(self.store, p.get('projectId'), experiment, output, p['format'], p.get('table'), check_cancel=self.check_read_cancel)
 
     def close(self):
+        from .local_assistant import close as close_local_assistant
+        close_local_assistant(self)
+        self.read_operations.cancel_all()
         self.report_tasks.close()
         self.executions.close()
         self.jobs.close()
@@ -378,23 +460,32 @@ def main():
 
     service = Service(args.app_data, lambda event: send({'event': event}))
 
-    def dispatch(request):
+    def dispatch(request, read_operation=None):
         try:
-            result = service.request(request['method'], request.get('params', {}))
+            result = service.request(request['method'], request.get('params', {}), read_operation=read_operation)
             send({'id': request['id'], 'result': result})
         except Exception as exc:
             send({'id': request.get('id'), 'error': {'message': str(exc)}})
 
     pool = ThreadPoolExecutor(max_workers=12)
+    reads = ThreadPoolExecutor(max_workers=2, thread_name_prefix='research-read')
     try:
         for request in read_frames(sys.stdin.buffer):
-            if request.get('method') in {'ai.chat','ai.projectSummary.refresh','formula.evaluate','market.quote.import'} or request.get('method') in {'data.bars','market.quote'} and request.get('params',{}).get('period')=='trading_days' or request.get('method') in {'market.instruments','market.members','market.overview','market.intraday','market.quote'} and (request.get('params',{}).get('refresh') or request.get('params',{}).get('loadIfMissing')):
+            if request.get('method') in {'storage.inspect', 'experiments.get', 'experiments.table', 'experiments.analysis', 'experiments.calendar', 'experiments.compare', 'exports.create', 'exports.table'}:
+                # Register before queuing so a later cancel also reaches queued requests.
+                try:
+                    operation = service.read_operations.begin(request['method'], request.get('params') or {})
+                    reads.submit(dispatch, request, operation)
+                except Exception as exc:
+                    send({'id': request.get('id'), 'error': {'message': str(exc)}})
+            elif request.get('method','').startswith('localAssistant.') or request.get('method') in {'ai.connectionTest','ai.chat','ai.projectSummary.refresh','formula.evaluate','market.quote.import'} or request.get('method') in {'data.bars','market.quote'} and request.get('params',{}).get('period')=='trading_days' or request.get('method') in {'market.instruments','market.members','market.overview','market.intraday','market.quote'} and (request.get('params',{}).get('refresh') or request.get('params',{}).get('loadIfMissing')):
                 pool.submit(dispatch, request)
             else:
                 dispatch(request)
     finally:
         service.close()
         pool.shutdown(wait=True, cancel_futures=True)
+        reads.shutdown(wait=True, cancel_futures=True)
 
 
 if __name__ == '__main__':

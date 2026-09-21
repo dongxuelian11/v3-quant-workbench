@@ -181,6 +181,7 @@ class V3ModelRunner(Developer):
         for key in ('labelHorizon', 'labelMode'):
             if key in config.get('trainingParameters', {}):
                 training[key] = config['trainingParameters'][key]
+        training['_researchBudget']=True
         try:
             result = train_generated_model(workspace.workspace_path / 'model.py', dataset_path, folder,
                                            dict(task.hyperparameters or {}), training)
@@ -210,13 +211,17 @@ class V3QuantLoop(QuantRDLoop):
             factor_runner=prefix+'V3FactorRunner', model_runner=prefix+'V3ModelRunner')
         super().__init__(settings)
         self.v3_run_id = protocol.config()['runId']
+        self.v3_budget_id=protocol.config()['budgetId']
+        self.v3_lineage_id=protocol.config()['lineageRunId']
         self.v3_input = {key: protocol.config().get(key) for key in
                          ('projectId', 'strategyId', 'periods', 'featureColumns', 'trainingParameters')}
 
     async def direct_exp_gen(self, prev_out):
+        group=int(prev_out[self.LOOP_IDX_KEY])+1
+        protocol.reserve('candidateGroups',operation_id=self.v3_lineage_id+':group:'+str(group))
         result = await super().direct_exp_gen(prev_out)
         # Persist identity in the native checkpoint before coding/running starts.
-        result['exp_gen'].v3_evaluation_id = uuid.uuid4().hex
+        result['exp_gen'].v3_evaluation_id = self.v3_lineage_id+'_group_'+str(group)
         return result
 
     def coding(self, prev_out):
@@ -227,6 +232,7 @@ class V3QuantLoop(QuantRDLoop):
             for task in prev_out['direct_exp_gen']['exp_gen'].sub_tasks:
                 marker='\n用户确认的本次修复说明：'+instructions
                 if marker not in task.description:task.description+=marker
+        protocol.reserve('codeAttempts')
         try:
             return super().coding(prev_out)
         finally:
@@ -238,11 +244,23 @@ class V3QuantLoop(QuantRDLoop):
     async def _run_step(self, li, force_subproc=False):
         step_index=self.step_idx[li]
         name = self.steps[step_index]
-        protocol.event('native_step_started', round=li+1, step=name)
+        protocol.event('native_step_started', round=li//2+1, candidateGroup=li+1, step=name)
         try:
             await super()._run_step(li, force_subproc=False)
         except Exception as exc:
-            protocol.event('native_step_failed', round=li+1, step=name)
+            protocol.event('native_step_failed', round=li//2+1, candidateGroup=li+1, step=name)
+            # Upstream increments step_idx even on errors. Save the failed step,
+            # retaining the same candidate identity and shared counters on resume.
+            self.step_idx[li]=step_index
+            from ..ai_budget import budget_failure
+            if budget_failure(exc):
+                self.dump(self.session_folder/'budget'/f'{li}-{step_index}.pkl')
+                protocol.event('research_budget_exhausted',round=li//2+1,candidateGroup=li+1,step=name)
+                raise
+            from .service import last_provider_failure
+            if last_provider_failure():
+                self.dump(self.session_folder/'service'/f'{li}-{step_index}.pkl')
+                raise
             if isinstance(exc,(CoderError,FactorEmptyError,ModelEmptyError)) or name=='coding':
                 from .service import redact,last_provider_failure
                 # Service errors are a separate failure, not permission to rewrite code.
@@ -260,7 +278,7 @@ class V3QuantLoop(QuantRDLoop):
                     for path in sorted(paths,key=lambda path:path.stat().st_mtime,reverse=True)[:4]:
                         code.append({'path':str(path),'content':redact(path.read_text(encoding='utf-8',errors='replace'))[:16000]})
                 except OSError:pass
-                self.v3_repair={'requiresConfirmation':True,'round':li+1,'step':name,'error':error,
+                self.v3_repair={'requiresConfirmation':True,'round':li//2+1,'candidateGroup':li+1,'step':name,'error':error,
                     'errorType':type(exc).__name__,'maxAttempts':1,
                     'resumeStep':self.steps[resume_index],
                     'code':code,'codeScope':'本次运行最近保存的工作区代码；可能含本轮依赖工作区，缺文件时不补造',
@@ -271,7 +289,7 @@ class V3QuantLoop(QuantRDLoop):
                 protocol.event('repair_confirmation_required',**self.v3_repair,checkpointPath=str(path.resolve()))
                 raise RepairRequired('代码首次尝试失败，已暂停并保存错误、修复建议和检查点；需要明确确认后继续。') from exc
             raise
-        protocol.event('native_step_completed', round=li+1, step=name)
+        protocol.event('native_step_completed', round=li//2+1,candidateGroup=li+1, step=name)
 
     def dump(self, path):
         super().dump(path)

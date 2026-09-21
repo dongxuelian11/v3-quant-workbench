@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { Experiment, JobEvent, JobKind, JsonObject, ProjectConfig, StrategyConfig, WorkspacePanel, WorkspaceState } from "../../../../../packages/contracts/src/research";
-import { ResearchContext, request, useResearch, jobTitle, type Page, type ResearchState } from "./state";
+import { ResearchContext, request, useResearch, jobTitle, errorText, type Page, type ResearchState } from "./state";
 import { Empty } from "./ui";
-export interface WorkspaceActions { createProject: () => void; openProjectDirectory: () => Promise<void>; updatePanel: (id: string, patch: Partial<WorkspacePanel>) => void; open: (panel: Omit<WorkspacePanel, "id"> & { id?: string }, split?: "right" | "below") => void; strategies: StrategyConfig[]; reload: () => Promise<void>; active?: WorkspacePanel; preferences: WorkspaceState; savePreferences: (patch: Partial<WorkspaceState>) => Promise<void>; linkStock: (symbol: string) => void; }
+export interface WorkspaceActions { createProject: () => void; openProjectDirectory: () => Promise<void>; updatePanel: (id: string, patch: Partial<WorkspacePanel>) => void; open: (panel: Omit<WorkspacePanel, "id"> & { id?: string }, split?: "right" | "below") => void; strategies: StrategyConfig[]; reload: () => Promise<void>; active?: WorkspacePanel; preferences: WorkspaceState; globalPreferences?:WorkspaceState; saveGlobalPreferences?:(patch:Partial<WorkspaceState>)=>Promise<void>; savePreferences: (patch: Partial<WorkspaceState>) => Promise<void>; linkStock: (symbol: string) => void; }
 const ObjectPanelContext = createContext<WorkspacePanel | null>(null);
 export function useObjectPanel() { return useContext(ObjectPanelContext); }
 export const WorkspaceContext = createContext<WorkspaceActions | null>(null);
@@ -76,16 +76,18 @@ export function ObjectScope({ panel, children }: { panel: WorkspacePanel; childr
   async function save(patch: Partial<ProjectConfig>) {
     syncGeneration.current++;
     const beforeSettings=current.current?.settings??{};
-    const settingsPatch = patch.settings ? changedSettings(current.current?.settings ?? {}, patch.settings) : {};
+    const suppliedSettings=patch.settings;
+    const settingsBaseline=suppliedSettings?Object.fromEntries(Object.keys(suppliedSettings).map(key=>[key,beforeSettings[key]])):{};
+    const settingsPatch = suppliedSettings ? changedSettings(settingsBaseline, suppliedSettings) : {};
     if(panel.strategyId){for(const field of ["startDate","endDate"] as const)if(Object.prototype.hasOwnProperty.call(patch,field))settingsPatch[field]=patch[field]??"";}
     const key = `${panel.projectId}:${panel.strategyId}`;
     const next = (strategySaves.get(key) ?? saveQueue.current).catch(() => {}).then(async () => {
       if (!current.current) return;
       if (panel.strategyId) {
-        const saved = await request<StrategyConfig>("strategies.save", { projectId: panel.projectId, strategy: { id: panel.strategyId, ...(patch.universe ? { universe: patch.universe } : {}) }, settingsPatch });
+        const saved = await request<StrategyConfig>("strategies.save", { projectId: panel.projectId, ...(patch.universe?{preserveMembershipRef:true}:{}), strategy: { id: panel.strategyId, ...(patch.universe ? { universe: patch.universe } : {}) }, settingsPatch });
         const baseProject = root.projects.find(p=>p.id===panel.projectId)??current.current;
         const p = { ...current.current, ...patch, settings:saved.settings, universe:saved.universe, ...strategyDates(baseProject,saved) }; current.current = p; setProject(p); await w.reload();
-      } else { const latest=(await request<ProjectConfig[]>("projects.list")).find(p=>p.id===panel.projectId);if(!latest)throw new Error("研究项目不存在，请重新打开。");const saved = await request<ProjectConfig>("projects.save", { project: { ...latest, ...patch,...(patch.settings?{settings:mergeSettingsChanges(latest.settings,beforeSettings,patch.settings)}:{}) } }); current.current = saved; setProject(saved);await w.reload(); }
+      } else { const latest=(await request<ProjectConfig[]>("projects.list")).find(p=>p.id===panel.projectId);if(!latest)throw new Error("研究项目不存在，请重新打开。");const saved = await request<ProjectConfig>("projects.save", { ...(patch.universe?{preserveMembershipRef:true}:{}), project: { ...latest, ...patch,...(patch.settings?{settings:mergeSettingsChanges(latest.settings,settingsBaseline,patch.settings)}:{}) } }); current.current = saved; setProject(saved);await w.reload(); }
     }); saveQueue.current = next; strategySaves.set(key, next); await next;
   }
   async function submit(kind: JobKind, parameters: JsonObject, name?: string) { await saveQueue.current; const event = await request<JobEvent>("jobs.submit", { spec: { projectId: panel.projectId, strategyId: panel.strategyId, kind, parameters, name } }); root.setNotice(`已提交：${event.name}`); return event; }
@@ -113,6 +115,9 @@ export function useDraftAutosave(snapshot: () => Partial<ProjectConfig>) {
     queue.current = queue.current.catch(() => {}).then(() => state.current.save(patch)).then(()=>{saved.current=next;}).catch(error => { saved.current = ""; throw error; }).finally(()=>{inFlight.current--;if(submitted.current===next)submitted.current="";});
     await queue.current;window.dispatchEvent(new Event("v3-drafts-saved"));
   });
-  useEffect(() => { const dirty = () => inFlight.current>0||!!value.current && value.current !== saved.current; dirtyDrafts.set(dirty,scope); pendingDrafts.add(flush.current); return () => { void state.current.act(async()=>{try{await flush.current();}finally{dirtyDrafts.delete(dirty);pendingDrafts.delete(flush.current);}}); }; }, []);
-  useEffect(() => { if (!serialized || serialized === saved.current&&!inFlight.current) return; timer.current = setTimeout(() => void state.current.act(flush.current), 700); return () => { if (timer.current) clearTimeout(timer.current); }; }, [serialized]);
+  useEffect(() => { const dirty = () => inFlight.current>0||!!value.current && value.current !== saved.current; const registeredFlush=()=>flush.current();dirtyDrafts.set(dirty,scope); pendingDrafts.add(registeredFlush); return () => { void (async()=>{try{await registeredFlush();}finally{dirtyDrafts.delete(dirty);pendingDrafts.delete(registeredFlush);}})().catch(error=>state.current.setError(errorText(error))); }; }, []);
+  useEffect(() => { if (!serialized || serialized === saved.current&&!inFlight.current) return; timer.current = setTimeout(() => void flush.current().catch(error=>state.current.setError(errorText(error))), 700); return () => { if (timer.current) clearTimeout(timer.current); }; }, [serialized]);
+  return { isDirty:()=>inFlight.current>0||!!value.current&&value.current!==saved.current,
+    acceptSaved:(patch:Partial<ProjectConfig>)=>{if(timer.current)clearTimeout(timer.current);saved.current=JSON.stringify(patch);value.current=saved.current;} };
+
 }

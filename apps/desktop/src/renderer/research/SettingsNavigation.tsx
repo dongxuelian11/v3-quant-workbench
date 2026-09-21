@@ -1,0 +1,8 @@
+import React from 'react';
+import type { WorkspaceState } from '../../../../../packages/contracts/src/research';
+import { orderedNavigation } from './navigation';
+export function SettingsNavigation({value,save}:{value:WorkspaceState['navigation'];save:(value:WorkspaceState['navigation'])=>void}) {
+  const items=orderedNavigation(value),pinned=value?.pinned??[],hidden=value?.hidden??[];
+  function move(index:number,delta:number){const order=items.map(([id])=>id);[order[index],order[index+delta]]=[order[index+delta],order[index]];save({...value,order});}
+  return <section><h4>导航入口</h4><p className="r-note">固定入口排在前面；隐藏后仍可从“打开工具”搜索进入。</p>{items.map(([id,title],index)=><div className="r-setting-row" key={id}><strong>{title}</strong><div className="r-toolbar"><label><input aria-label={`显示导航${title}`} type="checkbox" checked={!hidden.includes(id)} onChange={event=>save({...value,hidden:event.target.checked?hidden.filter(key=>key!==id):[...hidden,id],pinned:event.target.checked?pinned:pinned.filter(key=>key!==id)})}/>显示</label><label><input aria-label={`固定导航${title}`} type="checkbox" checked={pinned.includes(id)} disabled={hidden.includes(id)} onChange={event=>save({...value,pinned:event.target.checked?[...pinned,id]:pinned.filter(key=>key!==id)})}/>固定</label><button aria-label={`${title}导航上移`} disabled={index===0||pinned.includes(id)!==pinned.includes(items[index-1][0])} onClick={()=>move(index,-1)}>↑</button><button aria-label={`${title}导航下移`} disabled={index===items.length-1||pinned.includes(id)!==pinned.includes(items[index+1][0])} onClick={()=>move(index,1)}>↓</button></div></div>)}<button onClick={()=>save({order:[],hidden:[],pinned:[]})}>恢复默认导航</button></section>;
+}

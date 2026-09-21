@@ -7,6 +7,7 @@ from concurrent.futures import Future
 from threading import RLock
 from .storage import now,read_json,write_json,identifier
 from . import data
+from .app_settings import source_settings
 
 INDEX_NAMES={'SH000001':'上证指数','SZ399001':'深证成指','SZ399006':'创业板指','SH000688':'科创50',
              'SH000016':'上证50','SH000300':'沪深300','SH000905':'中证500','SH000852':'中证1000'}
@@ -63,6 +64,7 @@ def _baostock(operation):
 
 
 def catalog(project,params):
+    sources=source_settings(project.get('settings',{}))
     kind=params.get('kind')
     if kind is not None and kind not in KINDS:raise ValueError('行情目录类型无效')
     kinds=[kind] if kind else ['stock','index','industry','concept']
@@ -90,17 +92,21 @@ def catalog(project,params):
                 known=known.drop_duplicates('symbol',keep='last')
                 cached={'items':[dict(kind='stock',symbol=r['symbol'],name=r.get('name',r.get('code_name','')),source='local/securities') for r in known.to_dict('records')],
                         'updatedAt':datetime.fromtimestamp(local.stat().st_mtime).astimezone().isoformat()}
-        if params.get('refresh') or params.get('loadIfMissing') and not cached:
+        category='daily' if key=='stock' else 'boards'
+        if sources[category]!='file' and (params.get('refresh') or params.get('loadIfMissing') and not cached):
             try:
                 if key=='stock':
-                    frame=_baostock(lambda bs:data._bs_query(bs,bs.query_stock_basic))
-                    frame=frame[frame.type.eq('1') & frame.status.eq('1')]
+                    if sources['daily']=='akshare':
+                        frame=_ak('stock_zh_a_spot_em').rename(columns={'代码':'code','名称':'code_name'})
+                    else:
+                        frame=_baostock(lambda bs:data._bs_query(bs,bs.query_stock_basic))
+                        frame=frame[frame.type.eq('1') & frame.status.eq('1')]
                     rows=[]
                     for r in frame.to_dict('records'):
-                        try:rows.append(instrument(dict(kind=key,symbol=r['code'],name=r['code_name'],source='baostock')))
+                        try:rows.append(instrument(dict(kind=key,symbol=r['code'],name=r['code_name'],source=sources['daily'])))
                         except ValueError:continue
                 else:
-                    rows,source_notes=board_catalog(key,prefer_sina=any(r.get('source')=='akshare/sina' for r in cached.get('items',[])))
+                    rows,source_notes=board_catalog(key,prefer_sina=sources['quoteFallback'] and any(r.get('source')=='akshare/sina' for r in cached.get('items',[])),allow_fallback=sources['quoteFallback'])
                 if not rows:raise ValueError('来源未返回目录，旧目录保留')
                 cached={'items':rows,'updatedAt':now(), 'sourceNotes':source_notes if key!='stock' else []};write_json(path,cached)
             except (ValueError,OSError) as exc:
@@ -119,9 +125,9 @@ def catalog(project,params):
         message='；'.join(errors.values()) if errors else '缺少目录，请刷新：'+','.join(missing) if missing else '没有匹配的标的' if not items else '')
 
 
-def board_catalog(kind,prefer_sina=False):
+def board_catalog(kind,prefer_sina=False,allow_fallback=True):
     """Keep provider sector identities separate: Sina groups are not Eastmoney indices."""
-    providers=['sina','eastmoney'] if prefer_sina else ['eastmoney','sina'];notes=[]
+    providers=(['sina','eastmoney'] if prefer_sina else ['eastmoney','sina']) if allow_fallback else ['eastmoney'];notes=[]
     for provider in providers:
         try:
             if provider=='eastmoney':
@@ -175,37 +181,44 @@ def _normalize(frame,item,source):
 
 def _fetch(item,start,end):
     import pandas as pd
-    source='baostock';warning=None
+    sources=source_settings({'dataSources':item.get('_dataSources',{})})
+    category='microcap' if item['symbol']=='TDX880823' else 'boards' if item['kind'] in {'industry','concept'} else 'daily'
+    if sources[category]=='file':raise ValueError('当前类别仅使用已有或导入数据，不自动联网')
     if item['symbol']=='TDX880823':
         from .tdx_quotes import read_source
         frame,source=read_source(start,end)
         frame=_normalize(frame,item,source)
         return frame[frame.date.between(start,end)],source,None
-    if item['kind'] in {'stock','index'}:
-        remote=item['symbol'][:2].lower()+'.'+item['symbol'][2:]
-        try:
-            if item['kind']=='stock':frame=_baostock(lambda bs:data._bs_prices(bs,remote,start,end))
-            else:frame=_baostock(lambda bs:data._bs_query(bs,bs.query_history_k_data_plus,remote,'date,code,open,high,low,close,volume,amount',start_date=start,end_date=end,frequency='d',adjustflag='3'))
-            frame=_normalize(frame,item,source)
-            if item['kind']=='index' and (frame.date.min()>pd.Timestamp(start)+pd.Timedelta(days=7) or frame.date.max()<pd.Timestamp(end)-pd.Timedelta(days=7)):
-                raise ValueError('BaoStock指数区间覆盖不足')
-        except Exception as exc:
-            warning=str(exc);source='akshare/eastmoney'
-            if item['kind']=='index':
-                try:frame=_ak('index_zh_a_hist',symbol=item['symbol'][2:],start_date=start.replace('-',''),end_date=end.replace('-',''),period='daily')
-                except ValueError:
-                    frame=_ak('stock_zh_index_daily_tx',symbol=item['symbol'].lower(),start_date=start.replace('-',''),end_date=end.replace('-',''))
-                    frame=frame.rename(columns={'amount':'volume'});frame['amount']=float('nan');source='akshare/tencent'
-            else:frame=_ak('stock_zh_a_hist',symbol=item['symbol'][2:],start_date=start.replace('-',''),end_date=end.replace('-',''),period='daily',adjust='')
-            frame=_normalize(frame,item,source)
-    else:
-        if item['symbol'].startswith('SINA_'):
-            raise ValueError('新浪板块目前提供实时强弱和当前成员，未提供该板块历史曲线；可查看成员个股行情。不会用今天成员合成历史指数。')
-        source='akshare/eastmoney'
+    if item['kind'] in {'industry','concept'}:
+        if item['symbol'].startswith('SINA_'):raise ValueError('新浪板块未提供该板块历史曲线，不以当前成员合成历史指数')
         frame=_ak('stock_board_'+item['kind']+'_hist_em',symbol=item['symbol'],start_date=start.replace('-',''),end_date=end.replace('-',''),
-                  period='日k' if item['kind']=='industry' else 'daily',adjust='')
-        frame=_normalize(frame,item,source)
-    return frame[frame.date.between(start,end)],source,warning
+            period='日k' if item['kind']=='industry' else 'daily',adjust='')
+        return _normalize(frame,item,'akshare/eastmoney'),'akshare/eastmoney',None
+    primary=sources['daily'];providers=[primary]
+    if sources['quoteFallback']:providers.append('akshare' if primary=='baostock' else 'baostock')
+    errors=[]
+    for provider in providers:
+        try:
+            source=provider
+            if provider=='baostock':
+                remote=item['symbol'][:2].lower()+'.'+item['symbol'][2:]
+                if item['kind']=='stock':frame=_baostock(lambda bs:data._bs_prices(bs,remote,start,end))
+                else:frame=_baostock(lambda bs:data._bs_query(bs,bs.query_history_k_data_plus,remote,'date,code,open,high,low,close,volume,amount',start_date=start,end_date=end,frequency='d',adjustflag='3'))
+            else:
+                source='akshare/eastmoney'
+                if item['kind']=='index':
+                    try:frame=_ak('index_zh_a_hist',symbol=item['symbol'][2:],start_date=start.replace('-',''),end_date=end.replace('-',''),period='daily')
+                    except ValueError:
+                        if not sources['quoteFallback']:raise
+                        frame=_ak('stock_zh_index_daily_tx',symbol=item['symbol'].lower(),start_date=start.replace('-',''),end_date=end.replace('-',''))
+                        frame=frame.rename(columns={'amount':'volume'});frame['amount']=float('nan');source='akshare/tencent'
+                else:frame=_ak('stock_zh_a_hist',symbol=item['symbol'][2:],start_date=start.replace('-',''),end_date=end.replace('-',''),period='daily',adjust='')
+            frame=_normalize(frame,item,source)
+            if provider=='baostock' and item['kind']=='index' and (frame.date.min()>pd.Timestamp(start)+pd.Timedelta(days=7) or frame.date.max()<pd.Timestamp(end)-pd.Timedelta(days=7)):
+                raise ValueError('BaoStock指数区间覆盖不足')
+            return frame[frame.date.between(start,end)],source,'；'.join(errors) or None
+        except (ValueError,OSError) as exc:errors.append(str(exc))
+    raise ValueError('；'.join(errors))
 
 
 def update(project,params,progress):
@@ -236,6 +249,11 @@ def import_quote(project,params):
 def _update(project,params,progress):
     import pandas as pd
     item=instrument(params.get('instrument'));path=_path(project,item);old=read(project,item)
+    sources=source_settings(project.get('settings',{}))
+    category='microcap' if item['symbol']=='TDX880823' else 'boards' if item['kind'] in {'industry','concept'} else 'daily'
+    if sources[category]=='file':
+        progress(1,'仅使用已有或导入行情，未联网')
+        return status(project,{'instrument':item})
     start=str(params.get('startDate') or (pd.Timestamp.now()-pd.DateOffset(years=1)).date())[:10]
     end=str(params.get('endDate') or pd.Timestamp.now().date())[:10]
     if pd.Timestamp(start)>pd.Timestamp(end):raise ValueError('行情开始日期晚于结束日期')
@@ -254,13 +272,13 @@ def _update(project,params,progress):
     progress(.1,'正在补取 '+item.get('name',item['symbol'])+' 缺失区间，仅此标的')
     frame=old;source=stamp.get('source','本地已有行情');warning=stamp.get('warning')
     for left,right in intervals:
-        incoming,source,warning=_fetch(item,left,right)
+        incoming,source,warning=_fetch({**item,'_dataSources':source_settings(project.get('settings',{}))},left,right)
         if incoming.empty:continue
         if item['kind']=='stock' and not frame.empty:
             if source=='akshare/eastmoney':
                 # This fallback is unadjusted; preserve actual historical raw quotes.
                 for key in ('open','high','low','close'):frame[key]=frame['raw'+key.title()]
-                frame['factor']=1.;warning='AKShare备用来源为未复权行情，已保留原始价格。'
+                frame['factor']=1.;warning='AKShare来源为未复权行情，已保留原始价格。'
             else:
                 overlap=frame.set_index('date').join(incoming.set_index('date')[['close']],rsuffix='_new',how='inner')
                 if len(overlap):
@@ -316,9 +334,11 @@ def _refresh_quote(project,item,params):
 
 def status(project,params):
     import pandas as pd
+    sources=source_settings(project.get('settings',{}))
     item=instrument(params['instrument']);path=_path(project,item);error=None
     unsupported=item['symbol'].startswith('SINA_')
-    if params.get('refresh') and not unsupported:
+    category='microcap' if item['symbol']=='TDX880823' else 'boards' if item['kind'] in {'industry','concept'} else 'daily'
+    if params.get('refresh') and not unsupported and sources[category]!='file':
         current=pd.Timestamp.now(tz='Asia/Shanghai');today=current.strftime('%Y-%m-%d')
         calendar=read_json(Path(data.project_data(project)['path'])/'data/trading-calendar.json',{})
         known=calendar.get('start','9999')<=today<=calendar.get('end','')
@@ -338,7 +358,7 @@ def members(project,params):
     if item['kind'] not in {'industry','concept'}:raise ValueError('当前成员查询仅支持行业或概念板块')
     path=_root(project)/'members'/(item['kind']+'-'+item['symbol']+'.json');cached=read_json(path,{})
     failure=None
-    if params.get('refresh'):
+    if params.get('refresh') and source_settings(project.get('settings',{}))['boards']!='file':
         try:
             sina=item['symbol'].startswith('SINA_')
             if sina:

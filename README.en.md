@@ -1,10 +1,10 @@
 # V3 Quant Research Workbench
 
-[简体中文](README.md) · [Windows installer](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.7.2) · [Status and approved roadmap](docs/V3_REBUILD.md)
+[简体中文](README.md) · [Windows installer](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.8.0) · [Status and approved roadmap](docs/V3_REBUILD.md)
 
 A Windows desktop for Shanghai and Shenzhen A-share research. Its Chinese-language interface connects open-source Python engines for data preparation, factors, models, daily strategies, backtests and research reports in one local workspace.
 
-**Current version: 1.7.2, research preview.** Selected real-data and installed-application journeys have been checked; data-source and AI execution limitations remain. A complete A-share historical database or report corpus is not included. Download or import data after installation. The next daily-research workspace and reliability improvements are approved but not implemented.
+**Current version: 1.8.0, research preview.** Adds fixed-input replay, standalone screening, versioned daily plans, a settings center and a local command-assistant entry point. A complete A-share historical database or report corpus is not included. The 1,000-stock five-year performance run, complete report/RD-Agent online workflows, the full local-assistant UI journey and some desktop scenarios remain unverified. This release does not mark completion of the entire roadmap.
 
 ## Features
 
@@ -22,7 +22,7 @@ Minute data is for charting. Training, backtests and paper accounts use daily da
 
 ## Install and start researching
 
-Download `v3-quant-workbench-1.7.2-x64.exe` from the [v1.7.2 release](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.7.2) for Windows x64. Python and core research dependencies are bundled. OCR models are installed on demand; AI model weights are not bundled.
+Download `v3-quant-workbench-1.7.2-x64.exe` from the [v1.7.2 release](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.8.0) for Windows x64. Python and core research dependencies are bundled. OCR models are installed on demand; AI model weights are not bundled.
 
 1. Open or create a project from the clean startup page and specify securities and dates.
 2. Download available data or import files, then inspect actual coverage.

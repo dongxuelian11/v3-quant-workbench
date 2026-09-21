@@ -88,7 +88,7 @@ class Store:
             raise ValueError('此目录已有项目，请打开项目')
         folder.mkdir(parents=True, exist_ok=True)
         project = dict(id=identifier(), name=name, objective=objective, path=str(folder),
-                       createdAt=now(), updatedAt=now(), startDate='', endDate='', settings={'dataPath': str(self.root / 'shared' / 'data')},
+                       createdAt=now(), updatedAt=now(), startDate='', endDate='', settings={'dataPath': str(self.data_root() / 'data')},
                        universe=dict(name='我的股票池', symbols=[], source='manual', excludeST=True, minListingDays=60))
         return self.save_project(project, new=True)
 
@@ -116,7 +116,7 @@ class Store:
         if not key:
             folder = self.root / 'shared'
             folder.mkdir(parents=True, exist_ok=True)
-            return dict(id=None, name='共享研究', objective='', path=str(folder), settings={}, startDate='', endDate='', universe=dict(name='共享行情', source='manual', symbols=[], excludeST=False, minListingDays=0))
+            return dict(id=None, name='共享研究', objective='', path=str(folder), settings={'dataPath':str(self.data_root()/'data')}, startDate='', endDate='', universe=dict(name='共享行情', source='manual', symbols=[], excludeST=False, minListingDays=0))
         registered = self.get('project', key)
         project = read_json(Path(registered['path']) / 'project.json')
         if not project or project.get('id') != key:
@@ -156,6 +156,43 @@ class Store:
             artifact['path'] = self.artifact_path(project_id, artifact).relative_to(project_root).as_posix()
         return self.project_store(project_id).put('experiment', value, project_id or '')
 
+    def experiment_dependencies(self, project_id, experiment_id):
+        """Find persisted consumers across projects before removing their inputs."""
+        def references(value, inherited_project=None):
+            if isinstance(value, list):
+                return any(references(item, inherited_project) for item in value)
+            if not isinstance(value, dict):
+                return False
+            scope = value.get('projectId', inherited_project)
+            for key, item in value.items():
+                if key in {'experimentId', 'inputExperimentId', 'modelExperimentId', 'sourceExperimentId'}:
+                    if item == experiment_id and scope == project_id:
+                        return True
+                if key == 'experimentIds' and scope == project_id and experiment_id in (item or []):
+                    return True
+                if isinstance(item, (dict, list)) and references(item, scope):
+                    return True
+            return False
+
+        scopes = [(self, None)] + [(self.project_store(None), None)]
+        for project in self.list('project'):
+            scopes.append((self.project_store(project['id']), project['id']))
+        found = []
+        for store, scope in scopes:
+            with store.connect() as db:
+                rows = db.execute('SELECT kind,id,body FROM records').fetchall()
+            for kind, key, body in rows:
+                if kind in {'conversation', 'workspace'}:
+                    continue
+                if kind == 'experiment' and key == experiment_id and scope == project_id:
+                    continue
+                value = json.loads(body)
+                if kind == 'job' and value.get('status') not in {'queued', 'running', 'interrupted'} and not (value.get('registrationPending') or value.get('cleanupPending')):
+                    continue
+                if references(value, scope):
+                    found.append(dict(kind=kind, id=key, projectId=scope, name=value.get('name', key)))
+        return found
+
     def artifact_path(self, project_id, artifact):
         root = Path(self.project(project_id)['path']).resolve()
         path = Path(artifact['path'])
@@ -170,6 +207,9 @@ class Store:
         if not resolved.is_relative_to(root):
             raise ValueError('实验工件必须位于项目目录内')
         return resolved
+
+    def data_root(self):
+        return Path(self.settings().get('storage',{}).get('dataDirectory') or self.root/'shared').resolve()
 
     def settings(self, value=None):
         path = self.root / 'settings.json'

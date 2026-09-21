@@ -40,7 +40,7 @@ export class ResearchBackground {
   serviceStopped(): void { this.jobs.clear(); this.executions.clear(); this.reproductions.clear(); this.update(); }
 
   beginRequest(method: string): () => void {
-    if (method !== "jobs.submit" && method !== "ai.chat" && method !== "ai.chat.start" && method !== "reproductions.run") return () => {};
+    if (method !== "jobs.submit" && method !== "screener.run" && method !== "screeners.run" && method !== "ai.chat" && method !== "ai.chat.start" && method !== "reproductions.run") return () => {};
     this.requests++;
     this.update();
     let ended = false;

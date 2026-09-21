@@ -36,6 +36,11 @@ def with_calendar(project,params,frame):
         if (positions>=0).all() and anchor+((positions.min()-anchor)//count)*count>=0:
             return {**params,'_tradingDates':existing}
     if cached.get('start','9999')>start or cached.get('end','')<end:
+        from .app_settings import source_settings
+        if project.get('inputDataRoot'):
+            raise ValueError('该实验固定输入未包含足够交易日历，自定义周期暂不可用；不会补写原实验输入')
+        if source_settings(project.get('settings',{}))['daily']!='baostock':
+            raise ValueError('当前来源未提供本适配器所需的完整交易日历；请导入日历或明确选择BaoStock，不自动切换来源')
         try:
             start=min(start,cached.get('start',start));end=max(end,cached.get('end',end))
             result=quotes._baostock(lambda bs:data._bs_query(bs,bs.query_trade_dates,start_date=start,end_date=end))

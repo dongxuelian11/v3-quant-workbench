@@ -119,7 +119,7 @@ def advance_day(account, date, prices, decision, costs, actions=None, exchange=N
 def make_decision(project, params, account, signal_date, prices, scores, features, nav, portfolio_config):
     """Shared close-of-day strategy and constrained raw target builder; no mutation."""
     from .strategy import decide_day
-    from .portfolio import construct_portfolio
+    from .portfolio import construct_portfolio, risk_estimate
     from .selection import constrain_merged
     from .history import industries
     signal_date=pd.Timestamp(signal_date)
@@ -146,7 +146,10 @@ def make_decision(project, params, account, signal_date, prices, scores, feature
     for symbol in weights.index.union(current.index):
         if symbol not in previous.index or not pd.notna(previous.loc[symbol,'rawClose']):raise ValueError('目标缺信号日原始价格: '+symbol)
         quantities[symbol]=float(weights.get(symbol,0))*nav/float(previous.loc[symbol,'rawClose'])
+    returns=history.pivot(index='date',columns='symbol',values='close').pct_change(fill_method=None)
+    contributions, risk = risk_estimate(returns, weights, portfolio_config)
     return dict(date=str(signal_date.date()),quantities=quantities,quantityBasis='signal_date',nextState=choice['nextState'],
+        targetRiskContributions=contributions.to_dict(), riskEstimate=risk,
         reasons=choice['reasons'],targetWeights=weights.to_dict(),ruleTargets=raw.to_dict() if raw is not None else {},conflicts=conflicts,warnings=warnings)
 
 
@@ -158,6 +161,7 @@ def run_backtest(project, params, prices, scores, trading_dates, schedule, costs
     account=create(float(params.get('capital',1000000)),{r['symbol']:{k:v for k,v in r.items() if k!='symbol'} for r in params.get('initialPositions',[])})
     dates=pd.DatetimeIndex(sorted(prices.date.unique()))
     report=[];positions={};account_snapshots={};trades=[];unfilled=[];targets=[];rule_targets=[];rules=[];events=[];conflicts=[];warnings=[]
+    risk_rows=[]
     prior_nav=None
     exchange=raw_exchange(prices,costs,[])
     for index,day in enumerate(trading_dates):
@@ -175,6 +179,24 @@ def run_backtest(project, params, prices, scores, trading_dates, schedule, costs
         today=prices[prices.date.eq(day)].set_index('symbol')
         result=advance_day(account,day,prices,decision,costs,actions,exchange)
         account=result['account'];trades+=result['trades'];unfilled+=result['unfilled'];events+=result['events']
+        if decision is not None:
+            from .portfolio import risk_estimate
+            actual = pd.Series({s:(h['quantity']+h.get('pendingQuantity',0))*float(today.loc[s,'rawClose'])/result['nav']
+                for s,h in account['holdings'].items() if h['quantity'] or h.get('pendingQuantity',0)}, dtype=float)
+            returns=history.pivot(index='date',columns='symbol',values='close').pct_change(fill_method=None)
+            actual_rc, actual_meta = risk_estimate(returns, actual, portfolio_config)
+            target_rc = decision['targetRiskContributions']
+            for code in sorted(set(decision['targetWeights']) | set(actual.index)):
+                target = target_rc.get(code, 0. if decision['riskEstimate']['status']=='available' else float('nan'))
+                observed = actual_rc.get(code, 0. if actual_meta['status']=='available' else float('nan'))
+                risk_rows.append(dict(date=day, signalDate=signal_date, symbol=code,
+                    targetWeight=decision['targetWeights'].get(code,0.), actualWeight=float(actual.get(code,0.)),
+                    targetRiskContribution=target, actualRiskContribution=observed, contributionDeviation=observed-target,
+                    targetRiskStatus=decision['riskEstimate']['status'], actualRiskStatus=actual_meta['status'],
+                    targetObservations=decision['riskEstimate']['observations'], actualObservations=actual_meta['observations'],
+                    sampleStart=actual_meta['sampleStart'], sampleEnd=actual_meta['sampleEnd'],
+                    targetSampleStart=decision['riskEstimate']['sampleStart'], targetSampleEnd=decision['riskEstimate']['sampleEnd'],
+                    estimator='LedoitWolf', annualizationDays=252, actualWeightBasis='post_trade_close'))
         cost=sum(t['cost'] for t in result['trades'])
         report.append(dict(date=day,account=result['nav'],cash=account['cash'],value=result['marketValue'],
             receivables=account['receivables'],pendingShareValue=result['pendingShareValue'],
@@ -189,4 +211,4 @@ def run_backtest(project, params, prices, scores, trading_dates, schedule, costs
         prior_nav=result['nav']
         progress(.35+.5*(index+1)/len(trading_dates),'原始股数账户 '+str(day.date()))
     return dict(report=pd.DataFrame(report).set_index('date'),positions=positions,trades=trades,unfilled=unfilled,
-                targets=targets,rule_targets=rule_targets,rules=rules,events=events,conflicts=conflicts,warnings=warnings,account=account,accountSnapshots=account_snapshots)
+                targets=targets,risk=risk_rows,rule_targets=rule_targets,rules=rules,events=events,conflicts=conflicts,warnings=warnings,account=account,accountSnapshots=account_snapshots)

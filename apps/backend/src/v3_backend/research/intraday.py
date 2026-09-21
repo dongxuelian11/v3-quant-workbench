@@ -42,11 +42,11 @@ def fetch(item,period,params):
     if item['kind'] in {'stock','index'}:
         for field,target in [('startDate','start_date'),('endDate','end_date')]:
             if params.get(field):args[target]=str(params[field]).replace('T',' ')[:19]+(' 00:00:00' if field=='startDate' else ' 23:59:59') if len(str(params[field]))==10 else str(params[field]).replace('T',' ')[:19]
-    if item['kind'] in {'stock','index'} and params.get('_preferredSource')=='akshare/sina':
+    if item['kind'] in {'stock','index'} and params.get('_preferredSource')=='akshare/sina' and params.get('_quoteFallback',True):
         return normalize(quotes._ak('stock_zh_a_minute',_timeout=45,symbol=item['symbol'].lower(),period=minutes,adjust=''),item,period,source='akshare/sina',volume_multiplier=1)
     try:return normalize(quotes._ak(function,_timeout=45,**args),item,period)
     except (ValueError,OSError) as primary:
-        if item['kind'] not in {'stock','index'}:raise
+        if item['kind'] not in {'stock','index'} or not params.get('_quoteFallback',True):raise
         try:return normalize(quotes._ak('stock_zh_a_minute',_timeout=45,symbol=item['symbol'].lower(),period=minutes,adjust=''),item,period,source='akshare/sina',volume_multiplier=1)
         except (ValueError,OSError) as secondary:raise ValueError(str(primary)+'；新浪备用源：'+str(secondary)) from None
 
@@ -103,6 +103,9 @@ def _refresh(path,item,period,params,key):
 
 def read(project,params):
     import pandas as pd
+    from .app_settings import source_settings
+    sources=source_settings(project.get('settings',{}))
+    params={**params,'_quoteFallback':sources['quoteFallback']}
     item=quotes.instrument(params['instrument']);period=params.get('period','intraday')
     if period not in PERIODS:raise ValueError('不支持的分钟周期')
     if item['symbol']=='TDX880823':
@@ -122,7 +125,7 @@ def read(project,params):
     closed=today not in calendar.get('dates',[]) if known else current.weekday()>=5
     checked=read_json(path.with_suffix('.json'),{}).get('updatedAt','')[:10]==now()[:10]
     skip_auto=bool(params.get('autoRefresh') and path.exists() and closed and checked)
-    if params.get('refresh') and not skip_auto:
+    if params.get('refresh') and not skip_auto and sources['intraday']!='file' and (item['kind'] not in {'industry','concept'} or sources['boards']!='file'):
         interval=float(params.get('refreshIntervalSeconds',60))
         if not math.isfinite(interval) or interval<=0:raise ValueError('刷新间隔必须是正数秒')
         key=(str(path.resolve()),params.get('startDate'),params.get('endDate'))

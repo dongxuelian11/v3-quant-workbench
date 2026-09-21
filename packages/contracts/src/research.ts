@@ -1,6 +1,22 @@
 /** Small shared boundary for the open-source research application. */
+export interface DataSourceSettings {
+  daily: "baostock" | "akshare" | "file";
+  financials: "baostock" | "file";
+  boards: "akshare" | "file";
+  intraday: "akshare" | "file";
+  microcap: "tdx" | "file";
+  quoteFallback: boolean;
+}
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
+export interface MembershipVersion {
+  membershipRef: { poolId: string; version: string; source: string };
+  observedAt?: string | null;
+  rows: number;
+  symbols: number;
+  startDate: string | null;
+  endDate: string | null;
+}
 
 export interface UniverseConfig {
   name: string;
@@ -9,6 +25,7 @@ export interface UniverseConfig {
   excludeST: boolean;
   minListingDays: number;
   query?: MarketQuery;
+  membershipRef?: { poolId: string; version: string; source: string };
 }
 export interface ProjectConfig {
   id: string;
@@ -23,9 +40,11 @@ export interface ProjectConfig {
   layout?: JsonObject;
   settings: JsonObject;
 }
-export type JobKind = "data.update" | "data.import" | "factor.analyze" | "backtest.run" | "model.train" | "optimize.run" | "selection.run" | "rdagent.run" | "simulation.advance" | "reports.import" | "reports.ocr" | "reports.refresh";
+export type JobKind = "data.update" | "data.import" | "factor.analyze" | "backtest.run" | "model.train" | "optimize.run" | "selection.run" | "screener.run" | "rdagent.run" | "simulation.advance" | "reports.import" | "reports.ocr" | "reports.refresh";
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
-export interface JobSpec { projectId?: string; strategyId?: string; candidateId?: string; kind: JobKind; name?: string; parameters: JsonObject; }
+export interface ComputeSettings { profile: "interactive" | "balanced" | "compute"; maxConcurrentJobs?: number; threadsPerJob?: number; }
+export interface EffectiveResources extends ComputeSettings { maxConcurrentJobs: number; threadsPerJob: number; availableCpus: number; requested: ComputeSettings; qlibKernels: number; optunaParallelTrials: number; limitations: string[]; }
+export interface JobSpec { projectId?: string; strategyId?: string; candidateId?: string; inputExperimentId?: string; effectiveResources?: EffectiveResources; kind: JobKind; name?: string; parameters: JsonObject; }
 export interface JobEvent {
   id: string;
   projectId?: string;
@@ -39,6 +58,9 @@ export interface JobEvent {
   updatedAt: string;
   experimentId?: string;
   resultAvailable?: boolean;
+  registrationPending?: boolean;
+  registrationError?: string;
+  effectiveResources?: EffectiveResources;
   preparation?: JsonObject;
   spec: JobSpec;
 }
@@ -61,6 +83,7 @@ export interface ReproductionEvent {
 }
 export type ResearchServiceEvent = JobEvent | ResearchAIEvent | ReproductionEvent;
 export interface Experiment {
+  inputSnapshot?: { version: 1; path: string; status: string; [key: string]: JsonValue };
   id: string;
   projectId?: string;
   strategyId?: string;
@@ -77,6 +100,13 @@ export interface Experiment {
   summary: string;
 }
 export interface ResearchTable { name: string; columns: string[]; rows: JsonObject[]; fieldLabels?: Record<string, string>; }
+export interface ExperimentAnalysis extends ResearchTable {
+  total: number;
+  returned: number;
+  aggregation: { method: "complete" | "preview" | "minmax"; sampled: boolean; sourceRows: number };
+  calendarSource?: "experiment_processing_sessions" | "unavailable" | null;
+  message?: string;
+}
 export interface ExperimentDetails {
   experiment: Experiment;
   tables: ResearchTable[];
@@ -157,6 +187,7 @@ export interface WorkspacePanel extends ResearchObjectRef {
   experimentRefs?: ResearchObjectRef[];
   linkGroup?: string;
   chartViews?: ChartViewState[];
+  quoteList?: { visible: boolean; width: number; kind: QuoteInstrument['kind']; categories: Partial<Record<QuoteInstrument['kind'], { query: string; offset: number; watchlistId: string }>> };
 }
 export interface WorkspaceWindow {
   id: string;
@@ -168,8 +199,13 @@ export interface WorkspaceWindow {
   activePanelId?: string;
 }
 export interface WorkspaceState {
+  navigation?: { order?: string[]; hidden?: string[]; pinned?: string[] };
   chartDefaults?: JsonObject;
-  theme: "light" | "dark";
+  theme: "light" | "dark" | "system";
+  zoomFactor?: number;
+  readingFontSize?: number;
+  shortcuts?: Partial<Record<"commandSearch" | "settings" | "sidebar" | "assistant" | "quoteList", string>>;
+  layoutPresets?: Record<string, { sidebarVisible?: boolean; aiVisible?: boolean; sidebarWidth?: number; aiWidth?: number; density?: "comfortable" | "compact"; rightPanel?: "ai" | "parameters"; layout?: "single" | "columns" | "rows" }>;
   density: "comfortable" | "compact";
   sidebarWidth: number;
   aiWidth: number;
@@ -183,6 +219,15 @@ export interface WorkspaceState {
   rightPanel?: "ai" | "parameters";
   closedProjectIds?: string[];
   conversationViews?: Record<string, { draft: string; scrollTop: number; atBottom: boolean }>;
+}
+export interface ResearchPreset {
+  id: string;
+  name: string;
+  category: "factorProcessing" | "costs" | "portfolio" | "validation";
+  value: JsonObject;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
 }
 export interface WorkspaceWindowBridge {
   current(): Promise<{ id: string; main: boolean; state?: WorkspaceWindow; visible?: boolean; minimized?: boolean }>;
@@ -228,12 +273,22 @@ export interface MarketTable extends ResearchTable {
   coverage: DataCoverage[];
   fieldLabels?: Record<string, string>;
 }
+export type MarketStrengthRow = JsonObject & {
+  strengthChangeRatio?: number | null;
+  strengthDays?: 1 | 5 | 20;
+  strengthStartDate?: string | null;
+  strengthEndDate?: string | null;
+  strengthStatus?: "ready" | "missing" | "partial" | "unsupported";
+  strengthMessage?: string;
+  strengthSource?: string;
+}
 export interface MarketOverview {
   asOfDate: string | null;
   summary: Record<string, number | null>;
-  indices: JsonObject[];
-  industries: JsonObject[];
-  concepts?: JsonObject[];
+  indices: MarketStrengthRow[];
+  industries: MarketStrengthRow[];
+  concepts?: MarketStrengthRow[];
+  strength?: { days: 1 | 5 | 20; asOfDate: string | null; calendarSource: string; covered: number; total: number; message: string };
   breadth: JsonObject[];
   coverage: DataCoverage[];
   source?: string;
@@ -339,6 +394,38 @@ export interface Watchlist {
   asOfDate?: string;
   source?: string;
 }
+export interface ResearchAssetRef {
+  snapshotOwner?: "shared";
+  id: string; kind: "factor" | "strategy" | "model"; name: string; projectId?: string;
+  projectName?: string; revision: string; snapshot: JsonObject; experimentId?: string;
+  available: boolean; reason?: string;
+}
+export interface ScreenerCondition {
+  id: string; field: string;
+  operator: "gt" | "gte" | "lt" | "lte" | "eq" | "ne" | "between" | "rank_top" | "rank_bottom" | "cross_up" | "cross_down" | "contains" | "in";
+  value?: JsonValue; upper?: number; compareField?: string; window?: number;
+  occurrence?: "current" | "all" | "any";
+}
+export interface ScreenerConditionGroup { id: string; match: "all" | "any"; children: (ScreenerCondition | ScreenerConditionGroup)[]; }
+export interface ScreenerPlan {
+  id: string; name: string; mode: "conditions" | "factors" | "strategy"; version: number;
+  universe: UniverseConfig; date?: string; dataProjectId?: string;
+  conditions: ScreenerConditionGroup; preconditions?: ScreenerConditionGroup;
+  factors: { id: string; direction: 1 | -1; weight: number }[];
+  assets: ResearchAssetRef[]; rankingReference: "base" | "prefilter"; limit?: number;
+  favorite?: boolean; archived?: boolean; updatedAt?: string; lastUsedAt?: string;
+}
+export interface ScreenerWorkspace { activePlanId?: string; draft?: ScreenerPlan; lastExperimentId?: string; view?: "screen" | "watchlist"; conditionsCollapsed?: boolean; detailHeight?: number; }
+export interface DailyResearchPlan {
+  id: string; name: string; planId: string; planVersion: number; planSnapshot: ScreenerPlan;
+  allocation: number; enabled: boolean; updatedAt: string;
+  latestVersion?: number; sourceChanged?: boolean; sourceUnavailable?: boolean;
+}
+export interface ScreenerResult extends ResearchTable {
+  experimentId: string; asOfDate: string; status: "complete" | "preview";
+  total: number; offset: number; limit: number; counts: { scope: number; valid: number; included: number; missing: number };
+  configChanged: boolean; message?: string; diff?: JsonObject;
+}
 export interface SavedScreener { id: string; name: string; query: MarketQuery; updatedAt?: string; }
 export interface ResearchConversation {
   id: string; name: string;
@@ -402,9 +489,11 @@ export interface ReproductionPlan {
   objective: string;
   missingConditions: string[];
   steps: ReproductionStep[];
+  plannedWork?: ResearchWorkCounts;
   createdAt: string;
   updatedAt: string;
 }
+export interface ResearchWorkCounts { trials: number; trainingTasks: number; backtestTasks: number; rollingTasks: number; }
 export interface ReproductionRun {
   runId: string;
   planId: string;
@@ -412,6 +501,7 @@ export interface ReproductionRun {
   status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
   steps: { stepId: string; jobId?: string; experimentId?: string; status: "pending" | JobStatus }[];
   message?: string;
+  budget?: { trialLimit: number; reserved: ResearchWorkCounts; planned: ResearchWorkCounts; message: string };
 }
 export interface ResearchUIBlock {
   id: string;
@@ -464,7 +554,11 @@ export interface ResearchCandidateCode {
   content: string;
 }
 export type PortfolioMethod = "equal" | "score" | "risk_parity" | "mean_variance";
-export interface FilePickerOptions { purpose?: "research" | "positions" | "membership" | "report" | "quote"; }
+export interface FilePickerOptions { purpose?: "research" | "positions" | "membership" | "report" | "quote" | "settings"; }
+/** Unique per read/export request. Cancellation is cooperative, including queued reads. */
+export interface ReadCancellation { readId: string; }
+/** A request was signalled; a result already committed can still complete successfully. */
+export interface ReadCancellationResult { requested: boolean; }
 export interface ResearchBridge {
   desktop: {
     windowState(): Promise<{ maximized: boolean }>;
@@ -473,11 +567,39 @@ export interface ResearchBridge {
   };
   request<T = unknown>(method: string, params?: object): Promise<T>;
   onEvent(listener: (event: JobEvent) => void): () => void;
-  chooseDirectory(options?: { purpose?: "project" | "tdx" }): Promise<string | null>;
+  chooseDirectory(options?: { purpose?: "project" | "tdx" | "data" | "projectDefault" }): Promise<string | null>;
   chooseFiles(options?: FilePickerOptions): Promise<string[]>;
   readReportDocument(reportId: string): Promise<Uint8Array>;
   openExternal(url: string): Promise<void>;
-  exportFile(request: { suggestedName: string; content?: string; dataUrl?: string; sourcePath?: string; html?: string; format: "csv" | "xlsx" | "png" | "pdf" }): Promise<string | null>;
+  exportFile(request: { suggestedName: string; content?: string; dataUrl?: string; sourcePath?: string; html?: string; format: "csv" | "xlsx" | "png" | "pdf" | "json" }): Promise<string | null>;
   workspace?: WorkspaceWindowBridge;
+}
+export interface LocalAssistantAction {
+  kind: "navigation" | "filter_patch" | "run" | "search" | "clarify" | "handoff";
+  namespace: "market" | "screeners" | "dailyPlans" | "positions" | "research";
+  objectIds: string[];
+  screen?: "overview" | "screeners" | "daily" | "positions" | "research";
+  query?: string;
+  conditions?: ScreenerConditionGroup;
+  question?: string;
+  message: string;
+}
+export interface LocalAssistantInterpretation {
+  status: "proposed" | "needs_clarification" | "unsupported" | "unavailable";
+  action: LocalAssistantAction | null;
+  model: string;
+  executed: false;
+  elapsedMs: number;
+  message?: string;
+}
+export interface LocalAssistantApplied {
+  kind: "navigation" | "search" | "handoff" | "clarify" | "draft" | "jobs";
+  screen?: LocalAssistantAction["screen"];
+  objectIds?: string[];
+  query?: string;
+  message?: string;
+  draft?: ScreenerPlan;
+  previousDraft?: ScreenerPlan;
+  jobs?: JobEvent[];
 }
 declare global { interface Window { v3Research?: ResearchBridge; } }

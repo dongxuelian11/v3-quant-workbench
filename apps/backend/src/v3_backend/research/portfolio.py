@@ -130,6 +130,27 @@ def _solve_weights(method, initial, covariance, expected, current, lower, upper,
         return None, {}, ['组合求解失败：' + str(exc)]
 
 
+def risk_estimate(returns, weights, config):
+    """Risk shares from complete pre-signal observations, never zero-fill gaps."""
+    from sklearn.covariance import LedoitWolf
+    settings = {**DEFAULTS, **config}
+    weights = pd.Series(weights, dtype=float)
+    weights = weights[weights.abs() > TOL]
+    sample = returns.sort_index().tail(settings['lookback']).reindex(columns=weights.index).replace([np.inf, -np.inf], np.nan).dropna()
+    meta = dict(observations=len(sample), requiredObservations=settings['minObservations'],
+                sampleStart=str(sample.index.min()) if len(sample) else None,
+                sampleEnd=str(sample.index.max()) if len(sample) else None,
+                covarianceAnnualization=252, estimator='LedoitWolf', status='unavailable')
+    shares = pd.Series(np.nan, index=weights.index)
+    if len(weights) and len(sample) >= settings['minObservations']:
+        covariance = LedoitWolf().fit(sample.to_numpy()).covariance_ * 252
+        raw = weights.to_numpy() * (covariance @ weights.to_numpy())
+        if raw.sum() > 1e-30:
+            shares = pd.Series(raw / raw.sum(), index=weights.index)
+            meta['status'] = 'available'
+    return shares, meta
+
+
 def construct_portfolio(scores: pd.Series, returns: pd.DataFrame, config: dict,
                         current_weights: pd.Series | None = None,
                         industries: pd.Series | None = None,
