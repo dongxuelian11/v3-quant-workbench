@@ -37,7 +37,7 @@ export function ResultsPanel() {
 
       setComparisonExporting(true);
       try{
-        const file=format==='xlsx'?await request<{path:string}>('experiments.export',{projectId:s.project?.id,experimentIds:comparison.map(item=>item.experiment.id),format}):null;
+        const file=format==='xlsx'?await request<{path:string}>('exports.create',{projectId:s.project?.id,experimentIds:comparison.map(item=>item.experiment.id),format}):null;
         const path=await window.v3Research!.exportFile({format,suggestedName:`实验比较-${comparison.length}项.${format}`,...(file?{sourcePath:file.path}:format==='csv'?{content:comparisonCsv(comparison)}:{html:comparisonHtml(comparison)})});
         if(path)s.setNotice(`已导出比较：${path}`);
       }finally{setComparisonExporting(false);}

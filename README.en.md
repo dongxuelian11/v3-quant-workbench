@@ -22,7 +22,7 @@ Minute data is for charting. Training, backtests and paper accounts use daily da
 
 ## Install and start researching
 
-Download `v3-quant-workbench-1.7.2-x64.exe` from the [v1.7.2 release](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.8.0) for Windows x64. Python and core research dependencies are bundled. OCR models are installed on demand; AI model weights are not bundled.
+Download `v3-quant-workbench-1.8.0-x64.exe` from the [v1.8.0 release](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.8.0) for Windows x64. Python and core research dependencies are bundled. OCR models are installed on demand; AI model weights are not bundled.
 
 1. Open or create a project from the clean startup page and specify securities and dates.
 2. Download available data or import files, then inspect actual coverage.
@@ -43,13 +43,13 @@ Configure the AI endpoint, model and key in application settings. Research does 
 
 ## Verification and limitations
 
-Installed-app checks covered a real 20-page text report, OCR of image-derived pages, reproduction-plan editing and execution, comparison and native exports. All 43 trades in a six-stock real-data backtest were checked against saved dates, sides and prices. Version 1.7.2 fixed and rechecked plan refresh, preservation of unsaved edits and synchronization when reopening tabs.
+Earlier 1.7.2 installed-app checks covered a real 20-page text report, OCR of image-derived pages, reproduction-plan editing and execution, comparison and native exports. All 43 trades in a six-stock real-data backtest were checked against saved dates, sides and prices. Version 1.7.2 fixed and rechecked plan refresh, preservation of unsaved edits and synchronization when reopening tabs.
 
 This does not establish full-market data completeness, strategy effectiveness or defect-free operation:
 
 - Online retrieval of the exact TDX microcap index `880823` failed during verification. Local TDX data and file import remain available; no different index is substituted.
 - Free-provider history, memberships, industries, financial revisions and alternative datasets have source-dependent coverage. No complete research database from 2015 onward is preloaded.
-- Ling read a real report and saved a plan, but also returned missing parameters and invalid references. Supervision is required. Some installed OpenUI checks replayed a real plan offline rather than proving a stable autonomous online workflow.
+- In earlier releases, Ling read a real report and saved a plan, but also returned missing parameters and invalid references. Supervision is required. Some installed OpenUI checks replayed a real plan offline rather than proving a stable autonomous online workflow.
 - Complete multi-round RD-Agent recovery and the tray menu's Stop action remain unverified. Background continuation after closing the window and return from the tray were checked.
 - Closing immediately after requesting a run, before submission, may save only the plan; reopen it and explicitly run. PDF export contains metric/table previews, not all raw rows.
 
