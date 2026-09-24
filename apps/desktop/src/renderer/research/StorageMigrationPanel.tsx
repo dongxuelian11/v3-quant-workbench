@@ -86,18 +86,14 @@ export function StorageMigrationPanel({ refreshEffectiveStorage, onSettled }: Pr
     }
   }
 
-  async function acceptMigration(value: StorageMigrationState | null, knownStorage?: EffectiveStoragePaths | null) {
+  async function acceptMigration(value: StorageMigrationState | null) {
     setMigration(value);
     setNotice("");
     if (value) setPreview(null);
     if (!value || !terminalStatuses.includes(value.status)) return;
     requestIds.current.delete(value.targetDirectory);
-    if (knownStorage !== undefined) {
-      setCurrentDirectory(knownStorage?.dataDirectory ?? null);
-      setCurrentDirectoryLoading(false);
-    } else {
-      await readCurrentDirectory();
-    }
+    // Read after the terminal state so a just-completed switch cannot leave the old path visible.
+    await readCurrentDirectory();
     onSettled();
   }
 
@@ -110,13 +106,13 @@ export function StorageMigrationPanel({ refreshEffectiveStorage, onSettled }: Pr
     setStatusLoading(true);
     const revision = ++statusRevision.current;
     try {
-      const storage = await readCurrentDirectory();
+      await readCurrentDirectory();
       const restored = await request<StorageMigrationState | null>(
         "storage.migration.status",
         migration?.id ? { migrationId: migration.id } : {}
       );
       if (revision !== statusRevision.current) return;
-      await acceptMigration(restored, storage);
+      await acceptMigration(restored);
       if (restored?.targetDirectory) setTargetDirectory(restored.targetDirectory);
       if (!restored) setNotice("当前没有可恢复的迁移任务。");
     } catch (reason) {
