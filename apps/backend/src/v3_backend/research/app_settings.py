@@ -16,6 +16,7 @@ def source_settings(settings):
 
 def validate(changes, current):
     result=deepcopy(changes)
+    if any(key in result for key in ('_dataLocations','_dataMigrationId')):raise ValueError('数据迁移记录只能由迁移流程修改')
     if 'dataUpdates' in result:
         value=result['dataUpdates']
         if not isinstance(value,dict) or set(value)-{'enabled','watchlistIds','dailyPlanIds'}:raise ValueError('盘后更新设置格式无效')

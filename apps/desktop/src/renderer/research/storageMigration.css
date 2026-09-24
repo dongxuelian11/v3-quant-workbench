@@ -1,0 +1,26 @@
+.r-storage-migration-dialog { width: min(920px, 94vw); max-height: 88vh; overflow: auto; }
+.r-storage-migration-current,.r-storage-migration-state,.r-storage-migration-preview,.r-storage-migration-target { margin: 12px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.r-storage-migration-path { overflow-wrap: anywhere; }
+.r-storage-migration-paths { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.r-storage-migration-metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+.r-storage-migration-metrics>div { padding: 10px; background: var(--surface-muted,rgba(127,127,127,.08)); border-radius: 6px; }
+.r-storage-migration-metrics dt { color: var(--muted); font-size: 12px; }
+.r-storage-migration-metrics dd { margin: 4px 0 0; font-weight: 600; }
+.r-storage-migration-table-wrap { max-width: 100%; overflow: auto; }
+.r-storage-migration-table-wrap table { width: 100%; border-collapse: collapse; }
+.r-storage-migration-table-wrap th,.r-storage-migration-table-wrap td { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.r-storage-migration-references li { display: grid; grid-template-columns: minmax(120px,1fr) minmax(140px,1fr) minmax(180px,2fr); gap: 8px; padding: 6px 0; }
+.r-storage-migration-progress { display: block; width: 100%; margin: 10px 0; }
+.r-storage-migration-target input { min-width: 0; flex: 1; }
+@media (max-width: 700px) {
+  .r-storage-migration-dialog { width: 96vw; }
+  .r-storage-migration-paths,.r-storage-migration-metrics { grid-template-columns: 1fr; }
+  .r-storage-migration-references li { grid-template-columns: 1fr; }
+}
+.r-dialog.r-storage-migration-dialog .r-toolbar { justify-content: flex-start; align-items: center; gap: 12px; }
+.r-dialog.r-storage-migration-dialog > header { position: sticky; top: 0; z-index: 1; background: var(--surface, #fff); justify-content: space-between; }
+.r-dialog.r-storage-migration-dialog > header > div { min-width: 0; flex: 1; }
+.r-dialog.r-storage-migration-dialog > header > button { flex: 0 0 auto; width: auto; font-size: 14px; padding: 6px 12px; white-space: nowrap; }
+.r-dialog.r-storage-migration-dialog h2,.r-dialog.r-storage-migration-dialog h3 { font-size: 16px; margin: 0 0 8px; }
+.r-dialog.r-storage-migration-dialog p { margin: 6px 0; }
+.r-dialog.r-storage-migration-dialog section { margin: 10px 0; }

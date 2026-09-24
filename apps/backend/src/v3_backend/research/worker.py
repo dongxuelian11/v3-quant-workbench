@@ -183,19 +183,21 @@ def run(directory):
         write_json(directory / 'progress.json', {'progress': min(.99, max(0, value)), 'message': message})
 
     try:
-        project = job['spec'].get('projectSnapshot') or store.project(job.get('projectId'))
-        write_json(directory / 'project.json', project)
-        result = execute(store, job, project, directory, progress)
-        experiment=save_result(store, job, project, result, directory)
-        if job['kind']=='data.import' and result['details']['status']!='completed':
-            write_json(directory/'result.json',{'experiment':experiment,'runtimeStatus':'failed','error':result['summary']+'；成功结果已保留，可单独重试失败文件'})
-            return 1
-        if job['kind']=='rdagent.run':
-            state=result.get('details',{}).get('status','failed')
-            write_json(directory/'result.json',{'experiment':experiment,'runtimeStatus':state,
-                'error':result.get('details',{}).get('error')})
-            return 0 if state=='completed' else 1
-        return 0
+        from .storage_migration import location_scope
+        with location_scope(store):
+            project = job['spec'].get('projectSnapshot') or store.project(job.get('projectId'))
+            write_json(directory / 'project.json', project)
+            result = execute(store, job, project, directory, progress)
+            experiment=save_result(store, job, project, result, directory)
+            if job['kind']=='data.import' and result['details']['status']!='completed':
+                write_json(directory/'result.json',{'experiment':experiment,'runtimeStatus':'failed','error':result['summary']+'；成功结果已保留，可单独重试失败文件'})
+                return 1
+            if job['kind']=='rdagent.run':
+                state=result.get('details',{}).get('status','failed')
+                write_json(directory/'result.json',{'experiment':experiment,'runtimeStatus':state,
+                    'error':result.get('details',{}).get('error')})
+                return 0 if state=='completed' else 1
+            return 0
     except Exception as exc:
         traceback.print_exc()
         write_json(directory / 'result.json', {'error': str(exc)})

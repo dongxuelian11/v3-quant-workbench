@@ -155,8 +155,10 @@ class ReportTasks:
             db.execute("UPDATE records SET body=? WHERE kind='conversation' AND id=?",(json.dumps(conversation,ensure_ascii=False,allow_nan=False),owner['conversationId']))
 
     def _loop(self):
+        from .storage_migration import location_scope
         while not self.stop.wait(1):
-            with self.lock:
+            with self.lock,location_scope(self.store):
+                if getattr(self.service,'migrations',None) and self.service.migrations.pause.is_set():continue
                 minute=now()[:16]
                 if minute!=self.update_checked_minute:
                     self.update_checked_minute=minute

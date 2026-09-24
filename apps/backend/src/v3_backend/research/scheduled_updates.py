@@ -6,6 +6,7 @@ from .storage import now
 
 
 def tick(service, clock=None):
+    if getattr(service,'migrations',None) and service.migrations.pause.is_set():return
     store=service.store;config=store.settings().get('dataUpdates',{})
     if not config.get('enabled'):return
     clock=clock or datetime.now(ZoneInfo('Asia/Shanghai'))

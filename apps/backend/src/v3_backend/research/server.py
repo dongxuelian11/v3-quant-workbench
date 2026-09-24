@@ -18,6 +18,8 @@ class Service:
         self.store = Store(app_data)
         self.emit = emit
         self.jobs = Jobs(self.store, emit)
+        from .storage_migration import MigrationManager
+        self.migrations=MigrationManager(self)
         from .read_operations import ReadOperations
         self.read_operations = ReadOperations()
         self._read_context = threading.local()
@@ -107,7 +109,9 @@ class Service:
         try:
             self.check_read_cancel()
             # Do not turn a completed export into cancellation after its atomic replace.
-            return self._request(method, params)
+            from .storage_migration import location_scope
+            with self.migrations.request_scope(method,params),location_scope(self.store):
+                return self._request(method, params)
         finally:
             self._read_context.operation = previous
             self.read_operations.finish(operation)
@@ -143,6 +147,8 @@ class Service:
         if method.startswith('dailyPlans.'):
             from .daily_plans import dispatch
             return dispatch(self,method,p)
+        if method in {'storage.migration.preview','storage.migration.start','storage.migration.status','storage.migration.resume','storage.migration.cancel'}:
+            return getattr(self.migrations,method.rsplit('.',1)[-1])(p) if method!='storage.migration.status' else self.migrations.status()
         if method in {'storage.inspect','storage.clearCache'}:
             from .storage_tools import dispatch
             return dispatch(self,method,p)
@@ -447,6 +453,7 @@ class Service:
     def close(self):
         from .local_assistant import close as close_local_assistant
         close_local_assistant(self)
+        self.migrations.close()
         self.read_operations.cancel_all()
         self.report_tasks.close()
         self.executions.close()
@@ -483,7 +490,7 @@ def main():
     reads = ThreadPoolExecutor(max_workers=2, thread_name_prefix='research-read')
     try:
         for request in read_frames(sys.stdin.buffer):
-            if request.get('method') in {'storage.inspect', 'experiments.get', 'experiments.table', 'experiments.analysis', 'experiments.calendar', 'experiments.compare', 'experiments.previousComparison', 'exports.create', 'exports.table', 'simulation.table', 'simulation.accounts.export', 'simulation.accounts.curve'}:
+            if request.get('method') in {'storage.migration.preview','storage.migration.start','storage.inspect', 'experiments.get', 'experiments.table', 'experiments.analysis', 'experiments.calendar', 'experiments.compare', 'experiments.previousComparison', 'exports.create', 'exports.table', 'simulation.table', 'simulation.accounts.export', 'simulation.accounts.curve'}:
                 # Register before queuing so a later cancel also reaches queued requests.
                 try:
                     operation = service.read_operations.begin(request['method'], request.get('params') or {})

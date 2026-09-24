@@ -26,9 +26,12 @@ def _folder(store, report_id):
     if not isinstance(report_id, str) or not re.fullmatch(r'(?:[0-9a-f]{32}|eastmoney-AP[0-9]+)', report_id):
         raise ValueError('研报 ID 无效')
     try:
-        return Path(store.get('report_location',report_id)['path'])
+        from .storage_migration import resolve_location
+        return resolve_location(store.get('report_location',report_id)['path'],store.settings().get('_dataLocations',[]))
     except ValueError:
         legacy=store.root/'shared'/'reports'/report_id
+        from .storage_migration import resolve_location
+        legacy=resolve_location(legacy,store.settings().get('_dataLocations',[]))
         folder=legacy if legacy.exists() else store.data_root()/'reports'/report_id
         store.put('report_location',dict(id=report_id,path=str(folder)))
         return folder

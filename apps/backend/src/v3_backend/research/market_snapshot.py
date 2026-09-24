@@ -1,5 +1,6 @@
 """Independent observed market snapshots; research samples never supply breadth."""
 from pathlib import Path
+from .storage_migration import resolve_location
 from threading import RLock
 from concurrent.futures import ThreadPoolExecutor
 from . import quotes, data
@@ -154,7 +155,7 @@ def overview(project, params=None):
     params=params or {}
     days=params.get('strengthDays',1)
     if type(days) is not int or days not in (1,5,20):raise ValueError('市场强弱周期仅支持1、5或20个交易日')
-    root=Path(project['path'])/'market-snapshot'
+    root=resolve_location(Path(project['path'])/'market-snapshot')
     from .app_settings import source_settings
     sources=source_settings(project.get('settings',{}))
     values={};coverage=[];errors={};stamps=[]

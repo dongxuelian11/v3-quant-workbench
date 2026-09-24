@@ -1,5 +1,6 @@
 """Display-only minute quotes, isolated from daily research data."""
 from pathlib import Path
+from .storage_migration import resolve_location
 from threading import RLock
 from concurrent.futures import ThreadPoolExecutor
 import math,time
@@ -117,7 +118,7 @@ def read(project,params):
             coverage=dict(startDate=None,endDate=None,rows=0,updatedAt=None,source='akshare/sina',priceUnit='来源原始单位',volumeUnit='未知',amountUnit='未知'),
             message='新浪板块当前只提供快照和成分，暂无分钟曲线。')
     canonical='1m' if period=='intraday' else period
-    path=Path(project['path'])/'minutes'/item['kind']/item['symbol']/(canonical+'.parquet')
+    path=resolve_location(Path(project['path'])/'minutes')/item['kind']/item['symbol']/(canonical+'.parquet')
     error=None
     current=pd.Timestamp.now(tz='Asia/Shanghai');today=current.strftime('%Y-%m-%d')
     calendar=read_json(Path(data.project_data(project)['path'])/'data/trading-calendar.json',{})

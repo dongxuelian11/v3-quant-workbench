@@ -205,6 +205,13 @@ class Jobs:
         return {'removedIds': removed, 'skippedIds': skipped}
 
     def submit(self, spec, frozen_project=None, *, submission_id=None):
+        from .storage_migration import location_scope
+        from contextlib import nullcontext
+        manager=getattr(self,'migration_manager',None)
+        with manager.request_scope('jobs.submit') if manager else nullcontext(),location_scope(self.store):
+            return self._submit_in_scope(spec,frozen_project,submission_id=submission_id)
+
+    def _submit_in_scope(self, spec, frozen_project=None, *, submission_id=None):
         if submission_id is None:
             return self._submit(spec, frozen_project)
         # Internal AI intent only; not read from the public job spec.
@@ -379,6 +386,11 @@ class Jobs:
             query.pop('watchlistId')
 
     def _start_next(self, project_id):
+        from .storage_migration import location_scope
+        if getattr(self,'migration_pause',None) is not None and self.migration_pause.is_set():return
+        with location_scope(self.store):return self._start_next_in_scope(project_id)
+
+    def _start_next_in_scope(self, project_id):
         from .resources import compute_settings, compatible
         if self.closed:
             return

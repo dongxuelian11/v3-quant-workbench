@@ -1,5 +1,6 @@
 """On-demand quote cache, separate from research datasets and historical membership."""
 from pathlib import Path
+from .storage_migration import resolve_location
 from datetime import datetime
 import json,re,subprocess,sys,tempfile
 import time,math
@@ -30,7 +31,7 @@ def instrument(value):
     return result
 
 
-def _root(project):return Path(project['path'])/'quotes'
+def _root(project):return resolve_location(Path(project['path'])/'quotes')
 def _path(project,item):return _root(project)/item['kind']/(item['symbol']+'.parquet')
 
 
@@ -75,7 +76,7 @@ def catalog(project,params):
             items.append(instrument({'kind':'index','symbol':'TDX880823'}));continue
         path=_root(project)/('catalog-'+key+'.json');cached=read_json(path,{})
         if not cached:
-            snapshot=read_json(Path(project['path'])/'market-snapshot'/({'stock':'stocks','industry':'industries','concept':'concepts'}[key]+'.json'),{})
+            snapshot=read_json(resolve_location(Path(project['path'])/'market-snapshot')/({'stock':'stocks','industry':'industries','concept':'concepts'}[key]+'.json'),{})
             rows=[]
             for row in snapshot.get('rows',[]):
                 try:rows.append(instrument(dict(kind=key,symbol=row['symbol'],name=row.get('name',''),source=row.get('source',snapshot.get('source','')))))

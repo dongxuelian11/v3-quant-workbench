@@ -160,7 +160,14 @@ class Executions:
         self.mutate(cid,eid,consume)
         return messages
 
+    async def _wait_data_migration(self,cid,eid):
+        manager=getattr(self.service,'migrations',None)
+        while manager is not None and manager.pause.is_set():
+            if self.status({'conversationId':cid,'executionId':eid}).get('cancelRequested'):raise asyncio.CancelledError()
+            await asyncio.sleep(.2)
+
     async def run_research(self,cid,eid,spec):
+        await self._wait_data_migration(cid,eid)
         value=self.status({'conversationId':cid,'executionId':eid})
         additions=self.supplements(cid,eid)
         if additions:return {'supplementalMessages':additions,'submitted':False,'instruction':'先理解补充消息，再决定当前步骤；尚未提交任务。'}
@@ -352,6 +359,7 @@ class Executions:
         return answer
 
     async def run_reproduction(self, cid, eid, plan_id, project_id=None, run_id=None, selected_step_ids=None):
+        await self._wait_data_migration(cid,eid)
         value = self.status({'conversationId': cid, 'executionId': eid})
         pid = project_id or value.get('projectId')
         if not pid or not any(key.startswith(pid + ':') for key in value['projectSnapshots']):

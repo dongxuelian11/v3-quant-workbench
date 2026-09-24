@@ -38,13 +38,14 @@ def environment(resources):
 
 
 def conflict_keys(job):
+    from .storage_migration import resolve_location
     spec = job.get('spec', {})
     projects = [spec.get('projectSnapshot', {})] + [s.get('project', {}) for s in spec.get('strategySnapshots', []) + spec.get('dailyPlanSnapshots', [])]
     keys = {'project:' + str(job.get('projectId') or 'global')}
     for project in projects:
         keys.add('project:' + str(project.get('id') or job.get('projectId') or 'global'))
         path = project.get('settings', {}).get('dataPath') or str(Path(project.get('path') or '.') / 'data')
-        keys.add('data:' + os.path.normcase(str(Path(path).resolve())))
+        keys.add('data:' + os.path.normcase(str(resolve_location(path))))
     if job['kind'].startswith('reports.'):
         keys.add('reports')
     return keys

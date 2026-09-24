@@ -6,11 +6,13 @@ from .storage import now, write_json, read_json
 
 
 def project_data(project):
-    """Resolve shared data while preserving project-owned outputs and configuration."""
-    if project.get('inputDataRoot'):
-        return {**project, 'path': project['inputDataRoot']}
-    path = project.get('settings', {}).get('dataPath')
-    return {**project, 'path': str(Path(path).parent)} if path else project
+    """Resolve physical data without rewriting frozen configuration or project identity."""
+    from .storage_migration import resolve_location
+    root=project.get('inputDataRoot')
+    if not root:
+        path=project.get('settings',{}).get('dataPath')
+        root=Path(path).parent if path else project['path']
+    return {**project,'path':str(resolve_location(Path(root)/'data').parent)}
 
 
 def symbol(value):
