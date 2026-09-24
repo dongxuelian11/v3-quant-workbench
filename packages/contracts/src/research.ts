@@ -832,4 +832,46 @@ export interface LocalAssistantApplied {
   previousDraft?: ScreenerPlan;
   jobs?: JobEvent[];
 }
+// Reminder scopes are confirmed copies, never live watchlist references.
+export interface ReminderScopeSnapshot {
+  id: string;
+  kind: "single" | "watchlist";
+  symbols: string[];
+  sourceWatchlist?: { id: string; name: string; updatedAt: string | null };
+  createdAt: string;
+  confirmedAt: string | null;
+}
+export type ReminderPriceMode = "intraday" | "daily_close";
+export interface ReminderRule {
+  id: string; version: number; name: string;
+  status: "draft" | "enabled" | "paused" | "deleted";
+  scope: ReminderScopeSnapshot;
+  condition: { operator: "gte" | "lte"; threshold: number };
+  priceMode: ReminderPriceMode | null;
+  observationKind: "last_trade" | "minute_close" | "daily_close" | null;
+  notificationPolicy: "on_reentry";
+  createdAt: string; updatedAt: string;
+  lastCheckAt: string | null;
+  unavailableReason: string | null;
+}
+export interface ReminderObservation {
+  id: string; symbol: string;
+  kind: "last_trade" | "minute_close" | "daily_close" | null;
+  price: number | null; priceBasis: "raw";
+  source: { provider: string; endpoint: string } | null;
+  sourceTime: string | null; sourceTradeDate: string | null; fetchedAt: string | null;
+  validity: "valid" | "unknown"; reasonCodes: string[];
+}
+export interface ReminderCheck {
+  id: string; ruleId: string; ruleVersion: number; snapshotId: string;
+  checkedAt: string; origin: "manual" | "scheduled";
+  rows: { symbol: string; result: "triggered" | "not_triggered" | "unknown";
+    observation: ReminderObservation; reasonCodes: string[]; notified: boolean }[];
+}
+export interface ReminderHistoryPage { items: ReminderCheck[]; total: number; offset: number; limit: number; }
+export interface ReminderRuntime {
+  sessionId: string; sessionStartedAt: string; running: boolean;
+  lastCheckAt: string | null; message: string;
+}
+
 declare global { interface Window { v3Research?: ResearchBridge; } }

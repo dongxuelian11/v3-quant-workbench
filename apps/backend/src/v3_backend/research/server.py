@@ -16,6 +16,8 @@ from .jobs import Jobs
 class Service:
     def __init__(self, app_data, emit=lambda event: None):
         self.store = Store(app_data)
+        from .reminders import Reminders
+        self.reminders = Reminders(self.store)
         self.emit = emit
         self.jobs = Jobs(self.store, emit)
         from .storage_migration import MigrationManager
@@ -120,6 +122,8 @@ class Service:
         from copy import deepcopy
         p = params or {}
         store = self.store
+        if method.startswith('reminders.'):
+            return self.reminders.dispatch(method, p)
         if method == 'localAssistant.apply':
             from .assistant_actions import apply
             return apply(self,p)

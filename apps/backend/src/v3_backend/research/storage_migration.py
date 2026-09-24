@@ -225,7 +225,10 @@ class MigrationManager:
         if method=='ai.chat.message':
             try:ask=self.service.executions.status(params).get('mode')=='ask'
             except (ValueError,KeyError):pass
-        if ask or method.startswith('storage.migration.') or method in self.SAFE:
+        from .reminders import READ_METHODS, MANAGEMENT_METHODS
+        # Metadata-only reminder operations never access migrated price data.
+        # checks remain gated so future live sources cannot bypass migration pause.
+        if ask or method.startswith('storage.migration.') or method in self.SAFE or method in READ_METHODS | MANAGEMENT_METHODS:
             yield;return
         with self.lock:
             if self.pause.is_set():raise ValueError('数据目录迁移期间已暂停访问与写入，请在设置中继续或取消迁移')
