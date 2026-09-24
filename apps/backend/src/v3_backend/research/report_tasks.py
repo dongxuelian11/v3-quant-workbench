@@ -111,12 +111,22 @@ class ReportTasks:
                     run.update(status='interrupted', message='应用关闭，已完成步骤保留，请明确继续')
                     self._save_run(run)
 
+    def _step_messages(self, run):
+        from .report_ai import safe_step_message
+        jobs={job['id']:job for job in self.store.list('job',run['projectId'])}
+        for step in run['steps']:
+            for attempt in [step,*step.get('attemptHistory',[])]:
+                job=jobs.get(attempt.get('jobId'),{})
+                attempt['message']=safe_step_message(job.get('message',attempt.get('message')),attempt['status'])
+
     def _run_view(self, run):
+        self._step_messages(run)
         run_scope(run)
         run['budget']=reproduction_budget(self.store,run)
         return run
 
     def _save_run(self, run):
+        self._step_messages(run)
         run_scope(run)
         run['budget'] = reproduction_budget(self.store, run)
         self.store.put('reproduction_run', run, run['projectId'])
@@ -292,7 +302,8 @@ class ReportTasks:
                 if not state.get('jobId') and not state.get('submissionId') and link.get('runId')==run['id'] and link.get('stepId')==state['stepId'] and link.get('attempt',1)==state.get('attempt',1):
                     found=job
             if found:
-                state.update(jobId=found['id'],status=found['status'])
+                from .report_ai import safe_step_message
+                state.update(jobId=found['id'],status=found['status'],message=safe_step_message(found.get('message'),found['status']))
                 if found.get('experimentId'):state['experimentId']=found['experimentId']
             elif state.get('jobId') and state['status']!='completed':
                 raise ValueError('复现任务记录缺失，不能自动重新提交：'+state['jobId'])
@@ -470,7 +481,8 @@ class ReportTasks:
                     if self._owner_cancelled(run):
                         self._cancel_run(run);return
                 except Exception as exc:
-                    state.update(status='failed', message=str(exc))
+                    from .report_ai import safe_step_message
+                    state.update(status='failed',message=safe_step_message(exc))
                 self._save_run(run)
         if all(s['status'] not in {'pending', 'queued', 'running'} for s in run['steps']):
             run['status'] = 'completed' if all(s['status'] == 'completed' for s in run['steps']) else 'failed'

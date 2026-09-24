@@ -92,6 +92,37 @@ def validation_message(exc):
     return '参数校验未通过，请核对必填字段、引用原文和依赖设置'
 
 
+def safe_step_message(message, status='failed'):
+    """Render fixed, useful reasons; never echo exception payloads or log tails."""
+    if status in {'pending','queued','running','completed','cancelled','interrupted'}:
+        return {'pending':'等待前置步骤','queued':'等待执行','running':'正在执行','completed':'已完成','cancelled':'任务已取消，已保存结果保留','interrupted':'任务曾中断，已保存参数和结果保留'}[status]
+    text=str(message or '')
+    known=validation_message(ValueError(text))
+    if known!='参数校验未通过，请核对必填字段、引用原文和依赖设置':return known
+    fixed={
+        '请选择有效因子','因子表达式无效或过长','因子没有非空数值，请检查所需数据字段','因子没有可分析样本',
+        '生成因子日期缺失或证券日期重复','单因子模板必须选择一个因子',
+        '复权因子缺失或无效，无法匹配原始价格与复权行情',
+        '前置步骤未成功，未提交计算','本方案试参预算已用尽；失败和重跑计入预算，已有结果保留',
+        '后台任务停止尚未确认','模型实验引用必须指向已完成的直接依赖步骤',
+        '发布后独立验证只能引用训练与选参结束不晚于发布日期的固定模型',
+        '任务失败，详细错误保留在本地任务记录中',
+    }
+    if text in fixed:return text
+    categories=(
+        ('所有因子均不可分析:', '所有因子均不可分析，请检查所需字段和样本区间'),
+        ('生成因子缺datetime/instrument或对应因子列:', '生成因子缺少日期、证券或所需因子列'),
+        ('任务缺少参数:', '任务缺少必需参数，请核对本步骤的运行设置'),
+        ('[Errno 2]', '所需本地文件不存在，请核对输入文件'),
+        ('[Errno 13]', '无法读取所需本地文件，请核对访问权限'),
+        ('子进程退出 ', '计算进程已退出，未取得可登记结果'),
+    )
+    for prefix,summary in categories:
+        if text.startswith(prefix):return summary
+    if text in {summary for _,summary in categories}:return text
+    return '任务失败，详细错误保留在本地任务记录中'
+
+
 @contextmanager
 def tool_step(service, conversation_id, execution_id, tool, **references):
     if not execution_id:

@@ -37,6 +37,30 @@ class SharedAdvanceTests(unittest.TestCase):
         with patch.object(advance,'prepare_sources',side_effect=self.sources):
             result=worker.execute(self.store,job,self.store.project(None),folder,lambda *_:None)
         return job,result
+    def test_adoption_before_open_invalidates_old_pending_buy(self):
+        _,result=self.run_to('2025-01-02');account=result['details']['account']
+        self.assertTrue(account['pendingDecision']['intents'])
+        binding=account['bindings'][0]
+        strategy=self.store.project_store(self.project['id']).get('strategy','default')
+        strategy['settings']['backtest']['dailyCode']="def decide(context):\n return {'targets': {}}"
+        self.store.project_store(self.project['id']).put('strategy',strategy,self.project['id'])
+        preview=self.call('bindings.preview',accountId=account['id'],bindingId=binding['id'])
+        self.call('bindings.adopt',accountId=account['id'],expectedRevision=account['revision'],bindingId=binding['id'],expectedSourceVersion=preview['sourceVersion'])
+        _,result=self.run_to('2025-01-03')
+        self.assertFalse(any(o['quantity'] for o in result['details']['account']['ownership']))
+        trades=self.service.request('simulation.table',dict(accountId=account['id'],table='trades'))['rows']
+        self.assertEqual(trades,[])
+        rejected=self.service.request('simulation.table',dict(accountId=account['id'],table='unfilled'))['rows']
+        self.assertTrue(any('旧版本待执行买入失效' in r['reason'] for r in rejected))
+
+    def test_stop_entries_before_open_invalidates_pending_buy(self):
+        _,result=self.run_to('2025-01-02');account=result['details']['account']
+        self.call('bindings.save',accountId=account['id'],expectedRevision=account['revision'],bindingId=account['bindings'][0]['id'],allowNewEntries=False)
+        _,result=self.run_to('2025-01-03')
+        self.assertFalse(any(o['quantity'] for o in result['details']['account']['ownership']))
+        rejected=self.service.request('simulation.table',dict(accountId=account['id'],table='unfilled'))['rows']
+        self.assertTrue(any('停止新开仓' in r['reason'] for r in rejected))
+
     def test_real_daily_matching_ownership_cashflows_and_replay(self):
         job,result=self.run_to('2025-01-03');a=result['details']['account']
         trades=self.service.request('simulation.table',dict(accountId=a['id'],table='trades'))['rows']

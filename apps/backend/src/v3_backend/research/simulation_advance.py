@@ -285,7 +285,7 @@ def allocate_trades(account,trades,intents,day):
 def pending_for_day(account,day,conflicts,actions):
     pending=deepcopy(account.get('pendingDecision'))
     if not pending:return None,[],{},[]
-    owners={o['id']:o for o in account['ownership']};intents=[];blocked={s for date,s in conflicts if date==day}
+    owners={o['id']:o for o in account['ownership']};intents=[];invalidated=[];blocked={s for date,s in conflicts if date==day}
     for item in pending.get('intents',[]):
         intent=deepcopy(item);owner=owners.get(intent['ownershipId'])
         if owner and owner['management']=='manual' and not intent.get('liquidate'):continue
@@ -295,6 +295,11 @@ def pending_for_day(account,day,conflicts,actions):
         intent['targetQuantity']*=ratio
         current=(owner['quantity']+owner['pendingQuantity']) if owner else 0
         intent['delta']=intent['targetQuantity']-current
+        binding=next((b for b in account['bindings'] if b['id']==intent.get('bindingId')),None)
+        if intent['delta']>1e-7 and (binding is None or intent.get('versionId')!=binding['currentVersionId'] or not binding['allowNewEntries']):
+            reason='绑定已停止新开仓，待执行买入失效' if binding and not binding['allowNewEntries'] else '绑定版本已更新，旧版本待执行买入失效'
+            invalidated.append(dict(date=str(day.date()),signalDate=pending['date'],symbol=intent['symbol'],ownershipId=intent['ownershipId'],bindingId=intent.get('bindingId'),versionId=intent.get('versionId'),side='buy',requestedQuantity=intent['delta'],allowedQuantity=0,reason=reason))
+            continue
         if abs(intent['delta'])<1e-7:continue
         if intent['delta']<0:intent['delta']=-min(-intent['delta'],owner['sellableQuantity'] if owner else 0)
         intents.append(intent)
@@ -310,7 +315,7 @@ def pending_for_day(account,day,conflicts,actions):
         symbol=item['symbol'];held=account['state']['holdings'].get(symbol,{})
         quantities.setdefault(symbol,sum(o['quantity']+o['pendingQuantity'] for o in account['ownership'] if o['symbol']==symbol))
         quantities[symbol]+=item['delta']
-    return dict(date=pending['date'],quantities=quantities,reasons=pending.get('reasons',[]),nextState=account['state'].get('state',{})),intents,costs,rejected
+    return dict(date=pending['date'],quantities=quantities,reasons=pending.get('reasons',[]),nextState=account['state'].get('state',{})),intents,costs,invalidated+rejected
 
 
 def next_decision(store,account,sources,day,output,source_failures):
