@@ -1,0 +1,30 @@
+.r-data-import-dialog {width:min(980px,calc(100vw - 32px));max-height:90vh;overflow:auto;}
+.r-data-import-dialog::backdrop {background:#1118;}
+.r-data-import-dialog>header {align-items:flex-start;border-bottom:1px solid var(--line);padding-bottom:8px;}
+.r-data-import-dialog h2 {font-size:17px;margin:0;}
+.r-data-import-policy,.r-data-import-file,.r-data-import-task {margin:10px 0;padding:10px;border:1px solid var(--line);border-radius:6px;}
+.r-data-import-fields label {display:flex;flex-direction:column;gap:4px;font-size:12px;}
+.r-data-import-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:8px 0;}
+.r-data-import-columns {display:flex;flex-direction:column;gap:5px;margin:8px 0;}
+.r-data-import-columns>label {display:grid;grid-template-columns:minmax(100px,1fr) auto minmax(140px,1fr);gap:8px;align-items:center;font-size:12px;}
+.r-data-import-columns input {min-width:0;}
+.r-data-import-file pre {max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;}
+.r-data-import-policy {display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;}
+.r-data-import-policy legend {padding:0 4px;font-size:12px;}
+.r-data-import-policy p {flex-basis:100%;margin:2px 0;}
+.r-data-import-confirm {flex-basis:100%;font-weight:600;}
+.r-data-import-history {margin-top:14px;border-top:1px solid var(--line);padding-top:8px;}
+.r-data-import-history h3 {font-size:14px;}
+.r-data-import-task .r-toolbar {align-items:center;}
+.r-data-import-task progress {width:90px;}
+.r-data-import-result-status {font-weight:600;}
+.r-data-import-result-list {padding-left:20px;}
+.r-data-import-result-list li {margin:8px 0;}
+.r-data-import-retries {display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px;}
+.r-data-import-retries strong {width:100%;}
+.r-dialog.r-data-import-dialog {padding:18px 22px;}
+.r-dialog.r-data-import-dialog p {margin:6px 0;line-height:1.5;}
+.r-dialog.r-data-import-dialog>header {position:sticky;top:-18px;z-index:2;background:var(--paper);padding:10px 0;justify-content:space-between;}
+.r-dialog.r-data-import-dialog>header h2 {font-size:17px;margin:0;}
+.r-data-import-dialog .r-data-import-task>.r-toolbar,.r-data-import-dialog .r-data-import-file>.r-toolbar {justify-content:flex-start;margin:0 0 6px;}
+.r-data-import-dialog .r-data-import-result-list {margin:6px 0;}
