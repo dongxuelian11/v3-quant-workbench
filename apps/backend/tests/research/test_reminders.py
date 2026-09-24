@@ -11,6 +11,9 @@ class ReminderTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.store = Store(self.temp.name)
         self.api = Reminders(self.store)
+        self.addCleanup(self.api.close)
+        from v3_backend.research.reminder_source import unknown
+        self.api.observe = lambda store, symbol, mode, stop: unknown(symbol, mode, 'source_unavailable')
 
     def create(self, request_id='create'):
         scope = self.api.preview({'symbol': '600000'})

@@ -30,6 +30,7 @@ class Service:
         self.executions = Executions(self,emit)
         from .report_tasks import ReportTasks
         self.report_tasks = ReportTasks(self)
+        self.reminders.start(self)
 
     def experiment_details(self, project_id, experiment_id):
         import pandas as pd
@@ -457,6 +458,7 @@ class Service:
     def close(self):
         from .local_assistant import close as close_local_assistant
         close_local_assistant(self)
+        self.reminders.close()
         self.migrations.close()
         self.read_operations.cancel_all()
         self.report_tasks.close()
@@ -501,7 +503,7 @@ def main():
                     reads.submit(dispatch, request, operation)
                 except Exception as exc:
                     send({'id': request.get('id'), 'error': {'message': str(exc)}})
-            elif request.get('method','').startswith('localAssistant.') or request.get('method') in {'ai.connectionTest','ai.chat','ai.projectSummary.refresh','formula.evaluate','market.quote.import'} or request.get('method') in {'data.bars','market.quote'} and request.get('params',{}).get('period')=='trading_days' or request.get('method') in {'market.instruments','market.members','market.overview','market.intraday','market.quote'} and (request.get('params',{}).get('refresh') or request.get('params',{}).get('loadIfMissing')):
+            elif request.get('method','').startswith('localAssistant.') or request.get('method') in {'reminders.check','ai.connectionTest','ai.chat','ai.projectSummary.refresh','formula.evaluate','market.quote.import'} or request.get('method') in {'data.bars','market.quote'} and request.get('params',{}).get('period')=='trading_days' or request.get('method') in {'market.instruments','market.members','market.overview','market.intraday','market.quote'} and (request.get('params',{}).get('refresh') or request.get('params',{}).get('loadIfMissing')):
                 pool.submit(dispatch, request)
             else:
                 dispatch(request)
