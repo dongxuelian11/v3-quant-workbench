@@ -178,3 +178,70 @@ class DailyPlansTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'表达式已变化'):
                     screening_run.run(store,frozen[0]['project'],dict(plan=bad),Path(store.project(None)['path'])/'.research/runs/bad',lambda *_:None)
             finally:service.close()
+
+    def test_submission_freeze_failure_is_saved_and_other_plan_runs_without_reallocation(self):
+        from copy import deepcopy
+        from v3_backend.research import selection,screeners
+        with tempfile.TemporaryDirectory() as temp:
+            project,dates,store,service,plan,daily=self.setup(Path(temp))
+            try:
+                first=service.request('dailyPlans.save',dict(id=daily['id'],name='方案A',allocation=.5))
+                second=service.request('dailyPlans.save',dict(planId=plan['id'],name='方案B',allocation=.5))
+                broken=deepcopy(store.get('daily_plan',first['id']))
+                broken['planSnapshot']['universe']['watchlistId']='missing-watchlist-A'
+                store.put('daily_plan',broken)
+                params=dict(dailyPlanIds=[first['id'],second['id']],date=str(dates[-1].date()),updateData=False)
+                with patch.object(service.jobs,'_start_next'):
+                    job=service.jobs.submit(dict(kind='selection.run',parameters=params))
+                references=store.get('job',job['id'])['spec']['dailyPlanSnapshots']
+                self.assertEqual(job['status'],'queued')
+                self.assertIn('freezeError',references[0]);self.assertNotIn('project',references[0])
+                self.assertIn('project',references[1]);self.assertEqual(references[1]['allocation'],.5)
+                # Repairing the live source cannot change this submitted input, including on replay.
+                store.put('watchlist',dict(id='missing-watchlist-A',symbols=project['universe']['symbols']))
+                snapshot=dict(cash=100000,rows=[dict(symbol='SH600000',quantity=100,sellableQuantity=100)])
+                for attempt in range(2):
+                    output=Path(store.project(None)['path'])/'.research/runs'/('freeze-partial-'+str(attempt))
+                    with patch.object(screeners,'freeze_run',side_effect=AssertionError('must not refreeze')),patch.object(data,'update',side_effect=AssertionError('no network')):
+                        result=selection.run(store.project(None),params,output,lambda *_:None,snapshot=snapshot,daily_plan_snapshots=deepcopy(references),store=store)
+                    details=result['details'];self.assertFalse(details['executable']);self.assertTrue(details['incomplete'])
+                    self.assertEqual(details['failedDailyPlans'][0]['id'],first['id'])
+                    self.assertEqual(details['failedDailyPlans'][0]['stage'],'freeze')
+                    self.assertEqual(details['failedDailyPlans'][0]['allocation'],.5)
+                    self.assertEqual(details['dailyPlans'][0]['freezeError'],references[0]['freezeError'])
+                    self.assertEqual([x['strategyId'] for x in details['strategies']],[second['id']])
+                    self.assertNotIn('unallocatedCashWeight',details)
+                    contributions=pd.read_parquet(next(a['path'] for a in result['artifacts'] if a['name']=='strategy_contributions'))
+                    self.assertEqual(set(contributions.allocation),{.5})
+                    self.assertTrue(((contributions.targetWeight-contributions.strategyWeight*.5).abs()<1e-12).all())
+                    self.assertTrue(pd.read_parquet(next(a['path'] for a in result['artifacts'] if a['name']=='rebalance')).empty)
+                    self.assertEqual(details['positionsSnapshot'],snapshot)
+                with patch.object(screening_run,'run',side_effect=AssertionError('failed frozen source must not run')):
+                    with self.assertRaisesRegex(ValueError,'所有每日方案均失败.*方案A'):
+                        selection.run(store.project(None),params,Path(temp)/'all-frozen-failed',lambda *_:None,snapshot=snapshot,daily_plan_snapshots=references[:1],store=store)
+            finally:service.close()
+
+    def test_invalid_daily_selection_rejected_before_freeze_and_universe_error_isolated(self):
+        from copy import deepcopy
+        from v3_backend.research import daily_plans,screeners
+        with tempfile.TemporaryDirectory() as temp:
+            project,dates,store,service,plan,daily=self.setup(Path(temp))
+            try:
+                second=service.request('dailyPlans.save',dict(planId=plan['id'],name='方案B',allocation=.5))
+                def submit(ids):
+                    with patch.object(service.jobs,'_start_next'):
+                        return service.jobs.submit(dict(kind='selection.run',parameters=dict(dailyPlanIds=ids)))
+                with patch.object(screeners,'freeze_run',side_effect=AssertionError('validation must precede freeze')):
+                    for ids in ([daily['id'],daily['id']],['absent'],[]):
+                        with self.assertRaises(ValueError):submit(ids)
+                    disabled=deepcopy(store.get('daily_plan',daily['id']));disabled['enabled']=False;store.put('daily_plan',disabled)
+                    with self.assertRaises(ValueError):submit([daily['id'],second['id']])
+                    disabled.update(enabled=True,allocation=.8);store.put('daily_plan',disabled)
+                    with self.assertRaises(ValueError):submit([daily['id'],second['id']])
+                disabled['allocation']=.5;store.put('daily_plan',disabled)
+                with patch.object(service.jobs,'_freeze_universe',side_effect=[None,ValueError('nested watchlist missing'),None]):
+                    job=submit([daily['id'],second['id']])
+                frozen=job['spec']['dailyPlanSnapshots']
+                self.assertEqual(frozen[0]['freezeError']['message'],'nested watchlist missing')
+                self.assertIn('project',frozen[1])
+            finally:service.close()

@@ -80,7 +80,10 @@ def advance_day(account, date, prices, decision, costs, actions=None, exchange=N
         current=account['holdings'].get(symbol,{}).get('quantity',0)
         current+=sum(e['shares'] for k,e in account['entitlements'].items() if e['symbol']==symbol
             and k+':ex' in account['processedActions'] and k+':listing' not in account['processedActions'])
-        if target!=current:orders.append((symbol,target-current))
+        # Weight-to-share conversion can leave sub-nanoshare floating-point noise.
+        # Use an absolute tolerance so large positions never hide real share changes.
+        if not math.isclose(target,current,rel_tol=0.,abs_tol=1e-8):
+            orders.append((symbol,target-current))
     dealt=defaultdict(float)
     for symbol,delta in sorted(orders,key=lambda r:r[1]>0):
         if symbol not in today.index:

@@ -1,3 +1,4 @@
+import type { ExperimentRef } from "../../../../../packages/contracts/src/research";
 import { useEffect, useRef, useState } from "react";
 import { request, useResearch } from "./state";
 
@@ -28,7 +29,7 @@ export function useResultExport(scope: string) {
     job.cancelled=true;setCancelling(true);
     void s.act(async()=>{await request("reads.cancel",{readId:job.readId});s.setNotice("已请求中止导出；已完成的临时输出可能保留。不会打开保存对话框。");});
   }
-  function run(params:{projectId?:string;experimentId:string;table?:string;format:"csv"|"xlsx"},suggestedName:string) {
+  function run(params:({projectId?:string;experimentId:string;table?:string;format:"csv"|"xlsx"}|{experiments:ExperimentRef[];baselineRef?:ExperimentRef;format:"csv"|"xlsx"}),suggestedName:string) {
     if(current.current)return;
     const job={readId:crypto.randomUUID(),cancelled:false,saving:false};current.current=job;
     setBusy(true);setCancelling(false);setSaving(false);

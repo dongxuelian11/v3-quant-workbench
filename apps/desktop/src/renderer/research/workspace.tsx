@@ -98,7 +98,7 @@ export function ObjectScope({ panel, children }: { panel: WorkspacePanel; childr
 }
 const pendingDrafts = new Set<() => Promise<void>>();
 const dirtyDrafts = new Map<() => boolean,string>();
-function hasPendingDrafts(scope:string) { return [...dirtyDrafts].some(([check,key]) => key===scope&&check()); }
+export function hasPendingDrafts(scope:string) { return [...dirtyDrafts].some(([check,key]) => key===scope&&check()); }
 export async function flushDrafts() { await Promise.all([...pendingDrafts].map(flush => flush())); }
 /** Valid drafts autosave; activation and native moves flush the same pending values. */
 export function useDraftAutosave(snapshot: () => Partial<ProjectConfig>) {
@@ -112,10 +112,11 @@ export function useDraftAutosave(snapshot: () => Partial<ProjectConfig>) {
     if (timer.current) clearTimeout(timer.current);
     if (!value.current || value.current === saved.current&&!inFlight.current || value.current === submitted.current) return queue.current;
     const next = value.current; const patch = callback.current();submitted.current=next;inFlight.current++;
-    queue.current = queue.current.catch(() => {}).then(() => state.current.save(patch)).then(()=>{saved.current=next;}).catch(error => { saved.current = ""; throw error; }).finally(()=>{inFlight.current--;if(submitted.current===next)submitted.current="";});
+    queue.current = queue.current.catch(() => {}).then(() => state.current.save(patch)).then(()=>{saved.current=next;}).catch(error => { saved.current = ""; throw error; }).finally(()=>{inFlight.current--;if(submitted.current===next)submitted.current="";window.dispatchEvent(new Event("v3-drafts-changed"));});
     await queue.current;window.dispatchEvent(new Event("v3-drafts-saved"));
   });
   useEffect(() => { const dirty = () => inFlight.current>0||!!value.current && value.current !== saved.current; const registeredFlush=()=>flush.current();dirtyDrafts.set(dirty,scope); pendingDrafts.add(registeredFlush); return () => { void (async()=>{try{await registeredFlush();}finally{dirtyDrafts.delete(dirty);pendingDrafts.delete(registeredFlush);}})().catch(error=>state.current.setError(errorText(error))); }; }, []);
+  useEffect(() => { window.dispatchEvent(new Event("v3-drafts-changed")); }, [serialized]);
   useEffect(() => { if (!serialized || serialized === saved.current&&!inFlight.current) return; timer.current = setTimeout(() => void flush.current().catch(error=>state.current.setError(errorText(error))), 700); return () => { if (timer.current) clearTimeout(timer.current); }; }, [serialized]);
   return { isDirty:()=>inFlight.current>0||!!value.current&&value.current!==saved.current,
     acceptSaved:(patch:Partial<ProjectConfig>)=>{if(timer.current)clearTimeout(timer.current);saved.current=JSON.stringify(patch);value.current=saved.current;} };

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ExperimentDetails, JsonObject } from "../../../../../packages/contracts/src/research";
 import { request, errorText, useResearch } from "./state";
 import { DataTable, Empty, tradeDirection, fieldLabel, tableValue } from "./ui";
@@ -6,6 +6,7 @@ import { PriceChart, type TradeMarker } from "./PriceChart";
 import type { TablePage } from "./PagedTable";
 import { useAnalysisReference } from "./AnalysisViews";
 import { object } from "./configuration";
+import { RuleDiagnostics } from "./RuleDiagnostics";
 
 export function BacktestAssumptions({ detail }: { detail: ExperimentDetails }) {
   if (detail.experiment.kind !== "backtest.run") return null;
@@ -24,6 +25,17 @@ export function BacktestAssumptions({ detail }: { detail: ExperimentDetails }) {
 
 function stockOf(row?: JsonObject) { return String(row?.symbol ?? row?.instrument ?? row?.code ?? ""); }
 function dateOf(row?: JsonObject) { return String(row?.date ?? row?.trade_date ?? "").slice(0, 10); }
+function signalDateOf(row?: JsonObject) {
+  for (const key of ["signalDate", "signal_date"]) {
+    const value = row?.[key];
+    if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+  }
+  return "";
+}
+function orderIdOf(row?: JsonObject) {
+  const value = row?.orderId ?? row?.order_id;
+  return typeof value === "string" && value.trim() ? value : "";
+}
 function marker(row: JsonObject, index?: number): TradeMarker | null {
   const price = row.price ?? row.execution_price ?? row.trade_price;
   const side = tradeDirection(row.side ?? row.direction), date = dateOf(row);
@@ -34,6 +46,9 @@ function marker(row: JsonObject, index?: number): TradeMarker | null {
 
 export function BacktestReplay({ detail, initialRow }: { detail: ExperimentDetails; initialRow?: JsonObject }) {
   const { experiment } = detail; const s=useResearch();const {choose:saveSelection,reference,panel}=useAnalysisReference(detail);
+  const range = object(detail.details.dateRange);
+  const startDate = typeof experiment.parameters.startDate === "string" ? experiment.parameters.startDate : typeof range.startDate === "string" ? range.startDate : undefined;
+  const endDate = typeof experiment.parameters.endDate === "string" ? experiment.parameters.endDate : typeof range.endDate === "string" ? range.endDate : undefined;
   const stocks = useMemo(() => {
     const saved = detail.details.replayStocks;
     if (Array.isArray(saved)) return saved.flatMap(value => {
@@ -43,22 +58,25 @@ export function BacktestReplay({ detail, initialRow }: { detail: ExperimentDetai
     return [...new Set(detail.tables.flatMap(t => t.rows.map(stockOf)).filter(Boolean))].sort().map(symbol => ({ symbol, name: "", count: 0 }));
   }, [detail]);
   const [symbol, setSymbol] = useState((panel?.symbol || stockOf(initialRow)) || stocks.find(s => s.count > 0)?.symbol || stocks[0]?.symbol || "");
+  const selectionGeneration = useRef(0);
   const [search, setSearch] = useState(""); const [tradedOnly, setTradedOnly] = useState(false);
   const [focusDate, setFocusDate] = useState(dateOf(initialRow)); const [focusedTrade,setFocusedTrade]=useState<TradeMarker|undefined>(initialRow?marker(initialRow)??undefined:undefined);
+  const [signalDate, setSignalDate] = useState(signalDateOf(initialRow) || (initialRow ? "" : startDate?.slice(0, 10) || ""));
+  const [linkedOrderId, setLinkedOrderId] = useState(orderIdOf(initialRow));
+  const [linkedExecutionDate, setLinkedExecutionDate] = useState(dateOf(initialRow));
   const [rows, setRows] = useState<JsonObject[]>([]); const [loading, setLoading] = useState(false); const [failure, setFailure] = useState("");
   const [priceBasis, setPriceBasis] = useState<"raw" | "adjusted">("raw");
   const tradeTable = experiment.artifacts.find(a => a.type === "parquet" && /(?:^|_)(trades?|交易)(\.|$)/i.test(a.name))?.name;
-  const range = object(detail.details.dateRange);
-  const startDate = typeof range.startDate === "string" ? range.startDate : undefined;
-  const endDate = typeof range.endDate === "string" ? range.endDate : undefined;
   const filtered = stocks.filter(s => (!tradedOnly || s.count > 0) && `${s.symbol} ${s.name}`.toLowerCase().includes(search.trim().toLowerCase()));
   const index = filtered.findIndex(s => s.symbol === symbol);
   const current = stocks.find(s => s.symbol === symbol);
-  const choose = (next: string) => { saveSelection({symbol:next},{view:"replay",tradeId:undefined}); setSymbol(next); setFocusDate(""); setFocusedTrade(undefined); };
-  const focus=(row:JsonObject,index?:number)=>{setFocusDate(dateOf(row));const trade=marker(row,index)??undefined;setFocusedTrade(trade);saveSelection(row,{view:"replay",tradeId:trade?.id});};
-  useEffect(() => { if (initialRow && stockOf(initialRow)) { setSymbol(stockOf(initialRow)); setFocusDate(dateOf(initialRow));setFocusedTrade(marker(initialRow)??undefined); } }, [initialRow]);
+  const choose = (next: string) => { selectionGeneration.current++; saveSelection({symbol:next},{view:"replay",tradeId:undefined}); setSymbol(next); setFocusDate(""); setFocusedTrade(undefined); setSignalDate(startDate?.slice(0, 10) ?? ""); setLinkedOrderId(""); setLinkedExecutionDate(""); };
+  const focus=(row:JsonObject,index?:number)=>{selectionGeneration.current++;const executionDate=dateOf(row);setFocusDate(executionDate);const trade=marker(row,index)??undefined;setFocusedTrade(trade);setSignalDate(signalDateOf(row));setLinkedOrderId(orderIdOf(row));setLinkedExecutionDate(executionDate);saveSelection(row,{view:"replay",tradeId:trade?.id});};
+  const chooseSignalDate=(date:string)=>{selectionGeneration.current++;setSignalDate(date);setLinkedOrderId("");setLinkedExecutionDate("");setFocusedTrade(undefined);setFocusDate(date);};
+  const resolveSignalDate=(date:string)=>setSignalDate(date);
+  useEffect(() => { if (initialRow && stockOf(initialRow)) { setSymbol(stockOf(initialRow)); setFocusDate(dateOf(initialRow));setFocusedTrade(marker(initialRow)??undefined);setSignalDate(signalDateOf(initialRow));setLinkedOrderId(orderIdOf(initialRow));setLinkedExecutionDate(dateOf(initialRow)); } }, [initialRow, startDate]);
   useEffect(() => {
-    let alive = true; setRows([]); setFailure("");
+    let alive = true; const generation = selectionGeneration.current; setRows([]); setFailure("");
     if (!symbol || !tradeTable) { setLoading(false); return; }
     setLoading(true);
     void (async () => {
@@ -70,7 +88,7 @@ export function BacktestReplay({ detail, initialRow }: { detail: ExperimentDetai
         if (offset >= page.total) break;
         if (!page.rows.length) throw new Error("成交记录读取中断，请重新打开这个实验。");
       }
-      if (alive) { const sorted=all.sort((a,b)=>dateOf(a).localeCompare(dateOf(b)));setRows(sorted);const selected=sorted.find((row,index)=>String(row.tradeId??index)===panel?.tradeId);const initial=selected??sorted[0];if(initial){setFocusDate(dateOf(initial));setFocusedTrade(marker(initial,sorted.indexOf(initial))??undefined);} }
+      if (alive) { const sorted=all.sort((a,b)=>dateOf(a).localeCompare(dateOf(b)));setRows(sorted);const selected=sorted.find((row,index)=>String(row.tradeId??index)===panel?.tradeId);const initial=selected??sorted[0];if(initial && generation === selectionGeneration.current){setFocusDate(dateOf(initial));setFocusedTrade(marker(initial,sorted.indexOf(initial))??undefined);setSignalDate(signalDateOf(initial));setLinkedOrderId(orderIdOf(initial));setLinkedExecutionDate(dateOf(initial));} }
     })().catch(e => { if (alive) setFailure(errorText(e)); }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [experiment.id, experiment.projectId, symbol, tradeTable]);
@@ -97,7 +115,8 @@ export function BacktestReplay({ detail, initialRow }: { detail: ExperimentDetai
         {!Array.isArray(detail.details.replayStocks)&&<p className="r-note">旧实验只返回预览股票，名单完整性未确认。</p>}
       </div></details>
     </div>
-    <PriceChart footer={tradeSummary} key={symbol} symbol={symbol} embedded replayMode priceBasis={priceBasis} initialStartDate={startDate} initialEndDate={endDate} focusDate={focusDate || undefined} trades={markers} focusedTrade={focusedTrade} onTradeClick={trade => {const row=rows.find((r,i)=>String(r.tradeId??i)===trade.id);if(row)focus(row,rows.indexOf(row));}} />
+    <PriceChart footer={tradeSummary} key={symbol} projectId={experiment.projectId} experimentId={experiment.id} symbol={symbol} embedded replayMode priceBasis={priceBasis} initialStartDate={startDate} initialEndDate={endDate} focusDate={focusDate || undefined} trades={markers} focusedTrade={focusedTrade} onBarSelect={chooseSignalDate} onTradeClick={trade => {const row=rows.find((r,i)=>String(r.tradeId??i)===trade.id);if(row)focus(row,rows.indexOf(row));}} />
+    <RuleDiagnostics key={symbol + "|" + signalDate + "|" + linkedOrderId} detail={detail} symbol={symbol} signalDate={signalDate} startDate={startDate} endDate={endDate} linkedOrderId={linkedOrderId || undefined} linkedExecutionDate={linkedExecutionDate || undefined} onSignalDateChange={chooseSignalDate} onSignalDateResolved={resolveSignalDate} />
     {failure ? <p role="alert">{failure}</p> : loading ? <p role="status">正在读取这只股票的全部成交…</p> : !rows.length ? <p className="r-note">该股票在本实验中没有实际成交，不绘制买卖标记。未成交原因可在“完整数据表”的未成交记录中查看。</p> : <div className="r-replay-trades">
 
       <details><summary>全部成交明细 · {rows.length} 笔</summary><div className="r-trade-table-resize"><DataTable table={{ name: "个股交易记录", columns: [...new Set(["date", "direction", "price", "amount", "value", "cost", ...rows.flatMap(row=>Object.keys(row))])], rows }} onRow={row => focus(row,rows.indexOf(row))} /></div></details>

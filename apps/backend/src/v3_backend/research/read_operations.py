@@ -4,7 +4,7 @@ import threading
 CANCELLABLE_READS = frozenset({
     'storage.inspect',
     'experiments.get', 'experiments.table', 'experiments.analysis',
-    'experiments.calendar', 'experiments.compare', 'exports.create',
+    'experiments.calendar', 'experiments.compare', 'experiments.previousComparison', 'exports.create',
 })
 
 

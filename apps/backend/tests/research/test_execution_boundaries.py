@@ -8,6 +8,30 @@ from v3_backend.research.rules import COST_DEFAULTS
 
 
 class ExecutionBoundariesTest(unittest.TestCase):
+    def test_raw_account_ignores_roundoff_but_keeps_real_share_delta(self):
+        from qlib.config import C
+        from v3_backend.research import accounting
+        from v3_backend.research.execution import cost_config
+        C.set(region='cn')
+        dates=pd.bdate_range('2025-01-02',periods=2)
+        prices=pd.DataFrame([dict(date=day,symbol='SH600036',rawOpen=10.,rawClose=10.,
+            rawPreclose=10.,open=10.,close=10.,volume=1000000.,factor=1.,isST=0,tradestatus=1)
+            for day in dates])
+        account=accounting.create(10000.,{'SH600036':dict(quantity=4000,sellableQuantity=4000,costPrice=10.)})
+        for delta in (-4.547473508864641e-13,4.547473508864641e-13,-1.,1.):
+            with self.subTest(delta=delta):
+                decision=dict(date=str(dates[0].date()),quantities={'SH600036':4000.+delta},reasons=[])
+                result=accounting.advance_day(account,dates[1],prices,decision,cost_config({}),collect_orders=True)
+                if abs(delta)<1e-8:
+                    self.assertEqual(result['_diagnosticOrders'],[])
+                    self.assertEqual(result['trades'],[])
+                    self.assertEqual(result['unfilled'],[])
+                    self.assertEqual(result['account']['holdings']['SH600036']['quantity'],4000)
+                    self.assertEqual(result['account']['cash'],10000.)
+                else:
+                    self.assertEqual(len(result['_diagnosticOrders']),1)
+                    self.assertEqual(result['_diagnosticOrders'][0]['requestedQuantity'],1.)
+
     def test_slippage_cent_rounding_then_limit_clamp(self):
         date = pd.Timestamp('2025-01-02')
         for raw_open, previous, expected_buy, expected_sell in (

@@ -47,7 +47,7 @@ def dispatch(service, method, params):
     return describe(store,value)
 
 
-def freeze(store, ids, sources):
+def freeze(store, ids, sources, freeze_universe=None):
     if not isinstance(ids,list) or not ids or any(not isinstance(x,str) for x in ids) or len(set(ids))!=len(ids):
         raise ValueError('请选择不重复的每日方案')
     values=[deepcopy(store.get('daily_plan',key)) for key in ids]
@@ -58,9 +58,16 @@ def freeze(store, ids, sources):
     for value in values:
         if value['allocation']==0:continue
         plan=deepcopy(value['planSnapshot'])
-        target=screeners.freeze_run(store,plan)
-        target.setdefault('settings',{})['dataSources']=deepcopy(sources)
-        # Separate monthly model state for each adopted plan version.
-        target['strategyId']='daily-'+value['id']+'-'+str(value['planVersion'])
-        frozen.append(dict(value,planSnapshot=plan,project=target))
+        reference=dict(value,planSnapshot=plan)
+        try:
+            target=screeners.freeze_run(store,plan)
+            target.setdefault('settings',{})['dataSources']=deepcopy(sources)
+            # Separate monthly model state for each adopted plan version.
+            target['strategyId']='daily-'+value['id']+'-'+str(value['planVersion'])
+            if freeze_universe is not None:freeze_universe(target)
+            reference['project']=target
+        except Exception as exc:
+            # Persist the failed source resolution too; workers must not resolve it again.
+            reference['freezeError']=dict(stage='freeze',message=str(exc) or type(exc).__name__)
+        frozen.append(reference)
     return frozen

@@ -1,0 +1,20 @@
+.r-previous-comparison,.r-comparison-notices article{border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0;min-width:0;overflow-wrap:anywhere}
+.r-previous-comparison h3,.r-comparison-notices h3{margin:0 0 8px;font-size:14px}
+.r-comparison-description p,.r-comparison-description ul{margin:8px 0;font-size:12px;line-height:1.6}
+.r-comparison-description ul{padding-left:20px}
+.r-comparison-description details{margin:8px 0;padding:0}
+.r-comparison-description summary{cursor:pointer;font-size:12px;padding:4px 0}
+.r-comparison-changes{max-width:100%;overflow:auto}
+.r-comparison-changes table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px}
+.r-comparison-changes th,.r-comparison-changes td{padding:7px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere}
+.r-comparison-description strong{font-size:13px}
+.r-comparison-notices{min-width:0}
+
+.r-draft-result-notice{border-left:3px solid var(--accent,#426bd9);padding:8px 12px;font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+
+.r-comparison-page > details{margin:10px 0;padding:0;border:0}
+.r-comparison-page > .r-field{margin:12px 0 8px;max-width:600px}
+.r-comparison-page > button{margin:0 0 8px}
+.r-comparison-notices .r-comparison-baseline{padding:10px 12px;background:var(--surface-2,#f7f8fa)}
+.r-comparison-baseline p{margin:4px 0 0}
+.r-comparison-description details{margin:8px 0!important;padding:0!important}

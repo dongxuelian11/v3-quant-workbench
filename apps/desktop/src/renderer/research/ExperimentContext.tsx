@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import type { ExperimentDetails, JsonObject, JsonValue, ProjectConfig, StrategyConfig } from "../../../../../packages/contracts/src/research";
 import { useResearch, request, errorText } from "./state";
-import { useObjectPanel, useWorkspace } from "./workspace";
+import { useObjectPanel, useWorkspace, hasPendingDrafts } from "./workspace";
 import { object } from "./configuration";
 import { fieldLabel } from "./ui";
 
@@ -29,6 +29,9 @@ function comparable(config: JsonObject): JsonObject {
 }
 export function SnapshotDifference({ detail }: { detail: ExperimentDetails }) {
   const s = useResearch(), w = useWorkspace();
+  const scope=`${detail.experiment.projectId}:${detail.experiment.strategyId}`;
+  const [pending,setPending]=useState(()=>hasPendingDrafts(scope));
+  useEffect(()=>{const refresh=()=>setPending(hasPendingDrafts(scope));refresh();window.addEventListener("v3-drafts-changed",refresh);window.addEventListener("v3-drafts-saved",refresh);return()=>{window.removeEventListener("v3-drafts-changed",refresh);window.removeEventListener("v3-drafts-saved",refresh);};},[scope]);
   const snapshot = object(detail.details.projectSnapshot);
   const [live,setLive]=useState<{base?:ProjectConfig;strategy?:StrategyConfig}|null>(null),[error,setError]=useState('');
   useEffect(()=>{let alive=true;setLive(null);setError('');void Promise.all([request<ProjectConfig[]>('projects.list'),detail.experiment.strategyId?request<StrategyConfig[]>('strategies.list',{projectId:detail.experiment.projectId}):Promise.resolve([])]).then(([projects,strategies])=>{if(alive)setLive({base:projects.find(p=>p.id===detail.experiment.projectId),strategy:detail.experiment.strategyId?strategies.find(st=>st.id===detail.experiment.strategyId):undefined});}).catch(e=>{if(alive)setError(errorText(e));});return()=>{alive=false;};},[detail.experiment.id,detail.experiment.projectId,detail.experiment.strategyId,s.revision,s.projects,w.strategies]);
@@ -39,7 +42,7 @@ export function SnapshotDifference({ detail }: { detail: ExperimentDetails }) {
   if (!base || detail.experiment.strategyId && !strategy) return <p className="r-note">原项目或策略已不可用；实验冻结配置保留，无法比较当前草稿。</p>;
   const current = strategy ? { ...base, settings: strategy.settings, universe: strategy.universe, startDate: String(strategy.settings.startDate || base.startDate), endDate: String(strategy.settings.endDate || base.endDate) } : base;
   const rows = configurationDifferences(comparable(snapshot), comparable(current as unknown as JsonObject));
-  return <details className="r-snapshot-difference"><summary>本次实验与当前已保存草稿 · {rows.length ? `${rows.length} 项差异` : "所比较配置一致"}</summary><p className="r-note">比较研究区间、股票池、所选因子、处理配置、模型和回测参数；不据此判断原数据文件是否发生修订。编辑当前草稿不会改变本实验。</p>{rows.length > 0 && <div className="r-table-scroll"><table><thead><tr><th>配置</th><th>实验冻结值</th><th>当前已保存草稿</th></tr></thead><tbody>{rows.map(row => <tr key={row.key}><th>{row.key.split(".").map(key => fieldLabel(key)).join(" / ")}</th><td><pre>{display(row.before)}</pre></td><td><pre>{display(row.after)}</pre></td></tr>)}</tbody></table></div>}<details><summary>原始冻结研究配置</summary><pre>{JSON.stringify(comparable(snapshot), null, 2)}</pre></details></details>;
+  return <>{(pending||rows.length>0)&&<p className="r-draft-result-notice" role="status"><strong>{pending?"关联草稿正在修改或保存":"当前草稿与本实验不同"}</strong> · 本页仍是 {new Date(detail.experiment.createdAt).toLocaleString("zh-CN")} 的原实验（{detail.experiment.id.slice(0,8)}），编辑参数不会更新这些结果。</p>}<details className="r-snapshot-difference"><summary>本次实验与当前已保存草稿 · {rows.length ? `${rows.length} 项差异` : "所比较配置一致"}</summary><p className="r-note">比较研究区间、股票池、所选因子、处理配置、模型和回测参数；不据此判断原数据文件是否发生修订。编辑当前草稿不会改变本实验。</p>{rows.length > 0 && <div className="r-table-scroll"><table><thead><tr><th>配置</th><th>实验冻结值</th><th>当前已保存草稿</th></tr></thead><tbody>{rows.map(row => <tr key={row.key}><th>{row.key.split(".").map(key => fieldLabel(key)).join(" / ")}</th><td><pre>{display(row.before)}</pre></td><td><pre>{display(row.after)}</pre></td></tr>)}</tbody></table></div>}<details><summary>原始冻结研究配置</summary><pre>{JSON.stringify(comparable(snapshot), null, 2)}</pre></details></details></>;
 }
 export function PreparationHistory({ detail }: { detail: ExperimentDetails }) {
   return <PreparationRecords preparation={object(detail.details.preparation)} projectId={detail.experiment.projectId} strategyId={detail.experiment.strategyId}/>;

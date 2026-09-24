@@ -279,8 +279,8 @@ class Jobs:
                 if spec['parameters'].get('allowPartial'):
                     raise ValueError('每日组合不能使用已有数据预览')
                 from .daily_plans import freeze
-                spec['dailyPlanSnapshots']=freeze(self.store,spec['parameters']['dailyPlanIds'],project['settings']['dataSources'])
-                for reference in spec['dailyPlanSnapshots']:self._freeze_universe(reference['project'])
+                spec['dailyPlanSnapshots']=freeze(self.store,spec['parameters']['dailyPlanIds'],project['settings']['dataSources'],
+                    freeze_universe=self._freeze_universe)
             references = spec['parameters'].get('strategies', [])
             if 'strategies' in spec['parameters']:
                 import math

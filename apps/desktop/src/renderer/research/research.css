@@ -505,3 +505,67 @@ html, body, #app {
 
 .r-taskbar>.r-task-summary-readonly{display:flex;align-items:center;gap:22px;width:100%;padding:12px 18px;color:#374840}
 .r-taskbar>.r-task-summary-readonly>span{font-size:12px;color:var(--muted)}
+
+
+.r-rule-diagnostics{container-type:inline-size;min-width:0;margin:16px 0;padding:14px 0;border-top:1px solid var(--line)}
+.r-diag-heading,.r-diag-orders>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;min-width:0}
+.r-diag-heading>div,.r-diag-orders>header>div{min-width:0}
+.r-diag-heading h3{margin:0 0 4px}
+.r-diag-heading .r-note,.r-diag-orders .r-note{line-height:1.5;overflow-wrap:anywhere}
+.r-diag-toolbar{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin:10px 0}
+.r-diag-toolbar>label{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
+.r-diag-toolbar input[type=date]{padding:6px 8px}
+.r-diag-toolbar>span{margin-left:auto;color:var(--muted);font-size:12px}
+.r-diag-results,.r-diag-list{min-width:0}
+.r-diag-list{display:grid;gap:8px}
+.r-diag-card{min-width:0;border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--paper)}
+.r-diag-card>header{display:flex;min-width:0}
+.r-diag-titleline{display:flex;align-items:center;gap:7px;flex-wrap:wrap;min-width:0}
+.r-diag-titleline>strong{overflow-wrap:anywhere}
+.r-diag-state{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;padding:2px 7px;font-size:11px;white-space:nowrap}
+.r-diag-state.is-positive{color:#21845c;border-color:#21845c55;background:#21845c12}
+.r-diag-state.is-negative{color:#b24843;border-color:#b2484355;background:#b2484310}
+.r-diag-state.is-unknown{color:#91641e;border-color:#c58d2d66;background:#c58d2d12}
+.r-diag-state.is-muted,.r-diag-skip{color:var(--muted)}
+.r-diag-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:7px 12px;margin:10px 0}
+.r-diag-facts>div,.r-diag-condition dl>div{min-width:0}
+.r-diag-facts dt,.r-diag-condition dt{font-size:11px;color:var(--muted)}
+.r-diag-facts dd,.r-diag-condition dd{margin:2px 0 0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.r-diag-json{min-width:0;margin-top:8px;border-top:1px solid var(--line);padding-top:7px}
+.r-diag-json>strong{font-size:12px}
+.r-diag-json>p{font-size:12px}
+.r-diag-json pre{max-height:160px;overflow:auto;overflow-wrap:anywhere;word-break:break-word;margin:5px 0 0;padding:8px;font-size:11px}
+.r-diag-json ul{margin:5px 0 0;padding-left:20px;font-size:12px;overflow-wrap:anywhere}
+.r-diag-conditions{display:grid;gap:6px;margin-top:6px}
+.r-diag-condition{min-width:0;padding:7px;border-radius:5px;background:var(--surface)}
+.r-diag-condition>header{display:flex;justify-content:space-between;align-items:flex-start;gap:7px;min-width:0}
+.r-diag-condition>header>strong{min-width:0;overflow-wrap:anywhere}
+.r-diag-condition dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:7px 12px;margin:6px 0 0}
+.r-diag-condition pre{max-height:100px;overflow:auto;overflow-wrap:anywhere;word-break:break-word;margin:5px 0 0;padding:7px;font-size:11px}
+.r-diag-order-link{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:7px;border-top:1px solid var(--line);font-size:12px}
+.r-diag-order-link code,.r-diag-orders code{overflow-wrap:anywhere}
+.r-diag-pagination{justify-content:flex-end}
+.r-diag-pagination>span{color:var(--muted);font-size:12px}
+.r-diag-orders{min-width:0;margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+.r-diag-orders h4{font-size:13px;overflow-wrap:anywhere}
+.r-diag-orders h5{font-size:12px;margin:0 0 5px}
+.r-diag-order-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:8px;min-width:0}
+.r-diag-order-table{min-width:0;border:1px solid var(--line);border-radius:6px;padding:8px;overflow:hidden}
+.r-diag-order-table .r-table-section{min-width:0}
+.r-diag-order-table .r-table-scroll{max-width:100%;overflow:auto}
+.r-diag-order-table .r-toolbar{gap:5px}
+.r-diag-order-table .r-toolbar input{min-width:45px}
+@container (max-width:680px){.r-diag-order-grid{grid-template-columns:minmax(0,1fr)}.r-diag-heading{align-items:flex-start}.r-diag-toolbar>span{margin-left:0}.r-diag-condition dl{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.r-diag-record-id{min-width:0;font-size:11px}
+.r-diag-record-id summary{color:var(--muted)}
+.r-diag-record-id p{margin-top:4px;overflow-wrap:anywhere}
+.r-diag-record-id code{overflow-wrap:anywhere;word-break:break-all}
+
+/* Replay remains scrollable when diagnosis cards extend below the chart. */
+.r-backtest-replay{overflow:auto;min-width:0}
+.r-backtest-replay>.r-chart-panel{flex:0 0 auto;min-height:0}
+.r-backtest-replay .r-chart-canvas:not(.r-chart-focus){flex:none;height:clamp(280px,48vh,620px)}
+.r-backtest-replay>.r-rule-diagnostics{flex:0 0 auto}
+.r-diag-record-id{margin:6px 0!important;padding:0!important;border:0!important}
+.r-diag-record-id summary{margin:0!important}

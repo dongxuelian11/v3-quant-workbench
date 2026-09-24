@@ -81,36 +81,54 @@ def export(store, project_id, experiment, output, format, table=None, *, check_c
     return {'path': str(path)}
 
 
-def export_comparison(store, project_id, experiment_ids, output, format, *, check_cancel=None):
-    import json
-    from .storage import read_json
+def export_comparison(store, project_id, experiment_ids, output, format, *, check_cancel=None,
+                      experiments=None, baseline_ref=None):
+    from .comparison import compare, export_rows
     if format not in {'csv', 'xlsx'}:
         raise ValueError('比较表支持 CSV/XLSX 导出')
-    if not isinstance(experiment_ids, list) or len(set(experiment_ids)) < 2:
-        raise ValueError('请选择至少两个不同实验')
-    rows = []
-    for key in dict.fromkeys(experiment_ids):
-        if check_cancel: check_cancel()
-        experiment = store.experiment(project_id, key)
-        root = Path(store.project(project_id)['path']) / '.research/runs' / key
-        snapshot = read_json(root / 'project.json', {})
-        params = experiment.get('parameters', {})
-        row = dict(experimentId=key, name=experiment['name'], kind=experiment['kind'],
-            createdAt=experiment.get('createdAt'), projectId=project_id,
-            startDate=params.get('startDate') or snapshot.get('startDate'),
-            endDate=params.get('endDate') or snapshot.get('endDate'),
-            universe=json.dumps(snapshot.get('universe'), ensure_ascii=False),
-            parameters=json.dumps(params, ensure_ascii=False))
-        row.update({'metric.' + str(key): value if value is None or isinstance(value, (str, int, float, bool))
-                    else json.dumps(value, ensure_ascii=False) for key, value in experiment.get('metrics', {}).items()})
-        rows.append(row)
+    params = dict(projectId=project_id, experimentIds=experiment_ids or [])
+    if experiments is not None:params['experiments']=experiments
+    if baseline_ref is not None:params['baselineRef']=baseline_ref
+    rows = export_rows(compare(store,params,check_cancel))
     path = Path(output) / ('comparison-' + uuid.uuid4().hex + '.' + format)
     temporary = path.with_suffix('.writing.' + format)
     try:
-        frame = pd.DataFrame(rows)
-        if format == 'csv': frame.to_csv(temporary, index=False, encoding='utf-8-sig')
-        else: frame.to_excel(temporary, index=False, sheet_name='实验比较', engine='openpyxl')
-        if check_cancel: check_cancel()
+        # Store text as text in Excel, including user-entered names starting with '='.
+        if format == 'csv':
+            frame = pd.DataFrame(rows)
+            frame.to_csv(temporary,index=False,encoding='utf-8-sig')
+        else:
+            from openpyxl import Workbook
+            from openpyxl.cell import WriteOnlyCell
+            book = Workbook(write_only=True)
+            try:
+                columns = list(rows[0])
+                sections = dict(identity='实验身份',configuration='配置变化',range='范围与口径',
+                                input_evidence='输入证据',comparability='可比性',metrics='指标')
+                for section,title in sections.items():
+                    sheet=book.create_sheet(title)
+                    sheet.append(columns)
+                    for row in rows:
+                        if row['section']!=section:continue
+                        if check_cancel:check_cancel()
+                        cells=[]
+                        for column in columns:
+                            value=row[column]
+                            if isinstance(value,str) and len(value)>32767:
+                                raise ValueError('比较描述超过Excel单元格字符上限，请使用CSV完整导出')
+                            cell=WriteOnlyCell(sheet,value=value)
+                            if isinstance(value,str):cell.data_type='s'
+                            cells.append(cell)
+                        sheet.append(cells)
+                book.save(temporary)
+            finally:
+                for sheet in book.worksheets:
+                    writer=getattr(sheet,'_writer',None)
+                    if writer is not None:
+                        if not sheet.closed:sheet.close()
+                        if Path(writer.out).exists():writer.cleanup()
+                book.close()
+        if check_cancel:check_cancel()
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)

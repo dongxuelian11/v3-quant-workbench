@@ -205,27 +205,55 @@ export interface FactorDefinition {
 /** Saved user holdings; generating a selection never changes this snapshot. */
 export interface PositionRow { symbol: string; quantity: number; sellableQuantity: number; costPrice?: number; }
 export interface Positions { asOfDate: string; cash: number; rows: PositionRow[]; updatedAt?: string; }
-/** A paper account; advancing it never changes the user's actual holdings. */
-export interface SimulationAccount {
-  id: string;
-  name: string;
-  projectId: string;
-  strategyId: string;
-  startDate: string;
-  capital: number;
-  nav: number;
-  cash: number;
-  asOfDate: string | null;
-  status: "ready" | "paused" | "blocked";
-  paused: boolean;
-  revision: number;
-  unresolved: { date: string | null; message: string } | null;
-  pendingDecision: JsonObject | null;
-  state: JsonObject;
-  modelState?: JsonObject | null;
-  createdAt: string;
-  updatedAt: string;
+/** Omitted/null projectId addresses shared storage; explicit IDs address legacy storage only. */
+export interface SimulationAccountRef { accountId: string; projectId?: string | null; }
+export type SimulationBindingSource = { kind: "dailyPlan"; dailyPlanId: string } | { kind: "strategy"; projectId: string; strategyId: string };
+export interface SimulationBindingVersion { id: string; sourceVersion: string | null; createdAt: string; snapshot: JsonObject; }
+export interface SimulationBinding {
+  id: string; source: SimulationBindingSource; name: string; allocation: number;
+  allowNewEntries: boolean; currentVersionId: string; versions: SimulationBindingVersion[];
 }
+export interface SimulationOwnership {
+  id: string; symbol: string; bindingId: string | null; entryVersionId: string | null;
+  management: "rules" | "manual"; quantity: number; sellableQuantity: number;
+  pendingQuantity: number; costBasis: number | null;
+}
+export interface SimulationCashFlow {
+  id: string; accountId: string; date: string; direction: "deposit" | "withdraw";
+  amount: number; navBefore: number; navAfter: number; unitNav: number;
+  unitsBefore: number; unitsAfter: number;
+  createdAt: string; note?: string;
+}
+export type SelectionPositionsSource = { kind: "none" } | { kind: "actual" } | ({ kind: "simulation" } & SimulationAccountRef);
+/** Saved version 1 accounts may lack version 2 fields; absence is not a zero or empty history. */
+export interface SimulationAccount {
+  id: string; name: string; projectId: string | null; strategyId: string | null;
+  startDate: string; capital: number; nav: number; cash: number;
+  asOfDate: string | null; status: "ready" | "paused" | "blocked"; paused: boolean;
+  revision: number; unresolved: { date: string | null; message: string } | null;
+  pendingDecision: JsonObject | null; state: JsonObject; modelState?: JsonObject | null;
+  createdAt: string; updatedAt: string; schemaVersion?: 1 | 2;
+  origin?: SimulationAccountRef & { revision: number; asOfDate: string | null };
+  branchOf?: SimulationAccountRef & { date: string; revision: number };
+  bindings?: SimulationBinding[]; ownership?: SimulationOwnership[];
+  netContributions?: number; unitNav?: number | null; units?: number | null;
+  valuationStatus?: "known" | "unavailable";
+}
+export interface SimulationMutation extends SimulationAccountRef { expectedRevision: number; }
+export interface SimulationBindingSave extends SimulationMutation {
+  bindingId?: string; source?: SimulationBindingSource; allocation?: number; allowNewEntries?: boolean;
+}
+export interface SimulationBindingPreview extends SimulationAccountRef { bindingId?: string; source?: SimulationBindingSource; }
+export interface SimulationBindingPreviewResult { source: SimulationBindingSource; sourceVersion: string; snapshot: JsonObject; }
+export interface SimulationBindingAdopt extends SimulationMutation { bindingId: string; expectedSourceVersion: string; }
+/** Effective at the current settled close, or immediately before startDate if unstarted. */
+export interface SimulationCashFlowCreate extends SimulationMutation {
+  requestId: string; direction: "deposit" | "withdraw"; amount: number; note?: string;
+}
+/** Includes fromDate close; the branch continues AFTER that completed day. */
+export interface SimulationBranchCreate extends SimulationMutation { fromDate: string; name: string; requestId: string; }
+export interface SimulationLegacyImport { source: SimulationAccountRef; expectedRevision: number; name?: string; requestId: string; }
+export interface SimulationAdvance extends SimulationMutation { endDate: string; }
 export interface StrategyConfig {
   id: string;
   projectId: string;

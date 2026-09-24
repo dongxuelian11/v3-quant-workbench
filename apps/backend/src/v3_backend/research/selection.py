@@ -470,6 +470,8 @@ def run_daily(store,project,params,output,progress,snapshot,references):
     proposals=[];artifacts=[];failures=[]
     for i,reference in enumerate(references):
         try:
+            if reference.get('freezeError'):
+                raise ValueError(reference['freezeError']['message'])
             plan=deepcopy(reference['planSnapshot'])
             # Daily use advances the date, retaining the saved screening configuration.
             plan['date']=params.get('date') or update_end_date()
@@ -508,10 +510,11 @@ def run_daily(store,project,params,output,progress,snapshot,references):
             if context['model']:artifacts.extend({**a,'name':f'daily_{i}_'+a['name']} for a in context['model']['artifacts'])
         except Exception as exc:
             failures.append(dict(id=reference.get('id'),name=reference.get('name'),planId=reference.get('planId'),
-                planVersion=reference.get('planVersion'),allocation=reference.get('allocation'),message=str(exc) or type(exc).__name__))
+                planVersion=reference.get('planVersion'),allocation=reference.get('allocation'),
+                stage='freeze' if reference.get('freezeError') else 'run',message=str(exc) or type(exc).__name__))
             progress((i+1)/len(references)*.8,'方案「'+str(reference.get('name') or reference.get('id'))+'」失败，继续运行其余方案')
     if not proposals:
-        summary='；'.join(item['message'] for item in failures)
+        summary='；'.join('方案「'+str(item.get('name') or item.get('id'))+'」：'+item['message'] for item in failures)
         raise ValueError('所有每日方案均失败：'+summary)
     merge_failure=None
     if failures:

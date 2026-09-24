@@ -331,15 +331,19 @@ class Service:
                 raise ValueError('实验中没有此数据表')
             from .table_reader import page
             return page(store.artifact_path(p.get('projectId'), artifact), p, artifact['name'], check_cancel=self.check_read_cancel)
+        if method == 'experiments.previousComparison':
+            from .comparison import previous
+            return previous(store,p,self.check_read_cancel)
         if method == 'experiments.compare':
-            refs = p.get('experiments') or [{'projectId':p.get('projectId'),'experimentId':key} for key in p.get('experimentIds',[])]
-            if len(refs) > 10:
-                raise ValueError('一次最多比较10个实验')
-            results = [self.experiment_details(ref.get('projectId'), ref['experimentId']) for ref in refs]
-            contexts = {json.dumps(result['details'].get('dataContext'), sort_keys=True) for result in results}
-            if len(contexts) > 1:
-                for result in results:
-                    result['details']['comparisonWarning'] = '实验数据日期或覆盖不同，不能视为相同条件下的优劣比较。'
+            from .comparison import compare, warning
+            records = compare(store,p,self.check_read_cancel)
+            results = []
+            for record in records:
+                reference = record['ref']
+                result = self.experiment_details(reference['projectId'],reference['experimentId'])
+                result['details']['comparison'] = record['comparison']
+                result['details']['comparisonWarning'] = warning(record['comparison'])
+                results.append(result)
             return results
         if method == 'experiments.update':
             value = store.experiment(p.get('projectId'), p['experimentId'])
@@ -425,10 +429,10 @@ class Service:
         from .result_export import export
         output = Path(self.store.project(p.get('projectId'))['path']) / 'exports'
         output.mkdir(exist_ok=True)
-        if p.get('experimentIds'):
+        if 'experimentIds' in p or 'experiments' in p:
             from .result_export import export_comparison
-            return export_comparison(self.store,p.get('projectId'),p['experimentIds'],output,p['format'],
-                check_cancel=self.check_read_cancel)
+            return export_comparison(self.store,p.get('projectId'),p.get('experimentIds'),output,p['format'],
+                check_cancel=self.check_read_cancel, experiments=p.get('experiments'), baseline_ref=p.get('baselineRef'))
         experiment = self.store.experiment(p.get('projectId'), p['experimentId'])
         return export(self.store, p.get('projectId'), experiment, output, p['format'], p.get('table'), check_cancel=self.check_read_cancel)
 
@@ -471,7 +475,7 @@ def main():
     reads = ThreadPoolExecutor(max_workers=2, thread_name_prefix='research-read')
     try:
         for request in read_frames(sys.stdin.buffer):
-            if request.get('method') in {'storage.inspect', 'experiments.get', 'experiments.table', 'experiments.analysis', 'experiments.calendar', 'experiments.compare', 'exports.create', 'exports.table'}:
+            if request.get('method') in {'storage.inspect', 'experiments.get', 'experiments.table', 'experiments.analysis', 'experiments.calendar', 'experiments.compare', 'experiments.previousComparison', 'exports.create', 'exports.table'}:
                 # Register before queuing so a later cancel also reaches queued requests.
                 try:
                     operation = service.read_operations.begin(request['method'], request.get('params') or {})
