@@ -4,7 +4,7 @@ from .data import project_data
 from .storage import now, read_json, write_json
 
 
-def import_weights(project, frame):
+def validate_weights(frame):
     """Import complete dated constituent snapshots, with weights in fractions."""
     import pandas as pd
     import numpy as np
@@ -21,6 +21,12 @@ def import_weights(project, frame):
     if frame.duplicated(['benchmark','effectiveDate','symbol']).any():raise ValueError('同一基准快照证券重复')
     if not np.allclose(frame.groupby(['benchmark','effectiveDate']).weight.sum(),1,atol=1e-6,rtol=0):
         raise ValueError('每个基准日期必须提供完整权重且合计为1，不自动归一化残缺快照')
+    return frame
+
+
+def import_weights(project, frame):
+    import pandas as pd
+    frame=validate_weights(frame)
     path=Path(project_data(project)['path'])/'data'/'benchmark_weights.parquet'
     old=pd.read_parquet(path) if path.exists() else frame.iloc[:0]
     keys=set(zip(frame.benchmark,frame.effectiveDate))

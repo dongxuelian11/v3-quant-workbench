@@ -101,6 +101,97 @@ export interface Experiment {
   artifacts: { name: string; path: string; type: string }[];
   summary: string;
 }
+export interface StorageMigrationPreview {
+  sourceDirectory: string;
+  targetDirectory: string;
+  requiredBytes: number;
+  availableBytes: number;
+  fileCount: number;
+  canStart: boolean;
+  blockers: string[];
+  copyGroups: { kind: string; source: string; target: string; bytes: number; files: number }[];
+  references: { kind: string; id: string; field: string; action: "redirect" | "keep" | "blocked"; reason: string }[];
+  affectedJobs: { id: string; name: string; status: string }[];
+}
+export interface StorageMigrationState {
+  id: string;
+  status: "waiting" | "copying" | "verifying" | "switching" | "completed" | "failed" | "cancelled";
+  sourceDirectory: string;
+  targetDirectory: string;
+  filesTotal: number;
+  filesVerified: number;
+  bytesTotal: number;
+  bytesCopied: number;
+  message: string;
+  canResume: boolean;
+  blockers: string[];
+  warnings: string[];
+}
+
+export interface DataImportUnits {
+  volume?: "unknown" | "shares" | "lots";
+  amount?: "unknown" | "CNY" | "ten_thousand_CNY";
+}
+export type DataImportPriceBasis = "unknown" | "unadjusted" | "forward_adjusted" | "backward_adjusted";
+export interface DataImportFileOptions {
+  file: string;
+  dataset?: string;
+  mapping?: Record<string, string>;
+  units?: DataImportUnits;
+  priceBasis?: DataImportPriceBasis;
+}
+export interface DataImportOptions {
+  projectId?: string | null;
+  strategyId?: string;
+  files: string[];
+  dataset?: string;
+  kind?: string;
+  mapping?: Record<string, string>;
+  units?: DataImportUnits;
+  priceBasis?: DataImportPriceBasis;
+  fileOptions?: DataImportFileOptions[];
+  conflictPolicy?: "fill_missing" | "replace";
+  replaceConfirmed?: boolean;
+}
+export interface DataImportPreviewFile {
+  file: string;
+  fileName: string;
+  status: "ready" | "failed";
+  kind?: string;
+  rows?: number;
+  columns?: { source: string; target: string }[];
+  sample?: JsonObject[];
+  units?: DataImportUnits;
+  priceBasis?: DataImportPriceBasis;
+  warnings: string[];
+  message?: string;
+  merge?: { newRows: number; existingRows: number; conflictRows: number; fillableCells: number };
+  conflictPolicySupported?: boolean;
+  supportedConflictPolicies?: ("fill_missing" | "replace")[];
+  outputUnits?: DataImportUnits;
+}
+export interface DataImportPreview { files: DataImportPreviewFile[]; warnings: string[]; }
+export interface DataImportFileResult {
+  file: string;
+  kind?: string;
+  status: "completed" | "failed";
+  message?: string;
+  importedRows?: number;
+  totalRows?: number;
+  newRows?: number;
+  filledCells?: number;
+  conflictRows?: number;
+  replacedRows?: number;
+}
+export interface DataImportResult {
+  imports: DataImportFileResult[];
+  status: "completed" | "partial" | "failed";
+  failedFiles: string[];
+  completedFiles?: number;
+  metadataStatus?: "not_written" | "completed" | "failed";
+  warnings: string[];
+}
+
 export interface ResearchTable { name: string; columns: string[]; rows: JsonObject[]; fieldLabels?: Record<string, string>; }
 export interface ExperimentAnalysis extends ResearchTable {
   total: number;

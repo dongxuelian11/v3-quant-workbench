@@ -88,7 +88,7 @@ def read_table(project, kind='prices', *, symbols=None, start=None, end=None):
     return pd.read_parquet(path)
 
 
-def merge_table(project, frame, kind, return_all=True):
+def merge_table(project, frame, kind, return_all=True, *, conflict_policy="replace", provided_columns=None):
     import pandas as pd
     path = Path(project_data(project)['path']) / 'data' / f'{kind}.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,8 +98,9 @@ def merge_table(project, frame, kind, return_all=True):
         for code, part in frame.groupby('symbol'):
             target = folder / f'{symbol(code)}.parquet'
             prior = pd.read_parquet(target) if target.exists() else pd.read_parquet(path) if path.exists() else None
-            if prior is not None:
-                part = pd.concat([prior[prior.symbol.eq(code)], part], ignore_index=True)
+            from .data_imports import merge_frames,validate_price_groups
+            if provided_columns is not None:validate_price_groups(prior[prior.symbol.eq(code)] if prior is not None else None,part,conflict_policy)
+            part = merge_frames(prior[prior.symbol.eq(code)] if prior is not None else None,part,['symbol','date'],conflict_policy,provided_columns)[0]
             part = normalize(part, kind)[0]
             if prior is not None and target.exists() and prior.reset_index(drop=True).equals(part.reset_index(drop=True)):
                 continue
@@ -107,8 +108,8 @@ def merge_table(project, frame, kind, return_all=True):
             part.to_parquet(temporary, index=False)
             temporary.replace(target)
         return read_table(project, kind) if return_all else frame
-    if path.exists():
-        frame = pd.concat([pd.read_parquet(path), frame], ignore_index=True)
+    from .data_imports import merge_frames
+    frame=merge_frames(pd.read_parquet(path) if path.exists() else None,frame,['symbol','reportDate','announcementDate'],conflict_policy,provided_columns)[0]
     frame, _ = normalize(frame, kind)
     if path.exists() and pd.read_parquet(path).reset_index(drop=True).equals(frame.reset_index(drop=True)):
         return frame
@@ -119,58 +120,8 @@ def merge_table(project, frame, kind, return_all=True):
 
 
 def import_files(project, params, progress):
-    import pandas as pd
-    files = params.get('files', [])
-    if not files:
-        raise ValueError('请选择 CSV 或 Parquet 文件')
-    summaries = []
-    for index, file in enumerate(files):
-        path = Path(file)
-        if path.suffix.lower() == '.parquet':
-            frame = pd.read_parquet(path)
-        elif path.suffix.lower() == '.csv':
-            frame = pd.read_csv(path, dtype={'symbol': str, 'code': str, '股票代码': str})
-        elif path.suffix.lower() in {'.xlsx','.xls'}:
-            frame = pd.read_excel(path,dtype={'symbol':str,'code':str,'股票代码':str})
-        else:
-            raise ValueError('只支持 CSV/Excel/Parquet')
-        frame = frame.rename(columns=params.get('mapping', params.get('fieldMapping', {})))
-        dataset = params.get('dataset', params.get('kind', 'auto'))
-        if dataset=='corporate_actions' or {'cashPerShare','bonusRatio','exDate'}.issubset(frame):
-            from .corporate_actions import import_frame
-            result=import_frame(project,frame)
-            summaries.append({'file':str(path),'kind':'corporate_actions','importedRows':len(frame),'totalRows':result['rows']})
-            continue
-        if dataset=='benchmark_weights' or {'benchmark','weight','effectiveDate','symbol'}.issubset(frame):
-            from .benchmarks import import_weights
-            result=import_weights(project,frame)
-            summaries.append({'file':str(path),'kind':'benchmark_weights','importedRows':len(frame),'totalRows':result})
-            continue
-        if dataset in {'flow', 'fund_flow', 'chips', 'lhb'}:
-            from .alternative_data import import_frame
-            count = import_frame(project, 'fund_flow' if dataset == 'flow' else dataset, frame)
-            summaries.append({'file': str(path), 'kind': dataset, 'result': count})
-            continue
-        if 'industry' in frame and 'symbol' in frame and ('effectiveDate' in frame or 'startDate' in frame):
-            from .history import import_industry
-            count = import_industry(project,frame)
-            summaries.append({'file':str(path),'kind':'industry','importedRows':count,'totalRows':count})
-            continue
-        if {'symbol', 'startDate', 'endDate'}.issubset(frame):
-            from .history import import_membership
-            count = import_membership(project, frame, params.get('poolId'), str(params.get('membershipSource', 'import')))
-            summaries.append({'file': str(path), 'kind': 'membership', 'importedRows': count, 'totalRows': count,
-                              'membershipRef': dict(project['universe']['membershipRef'])})
-            continue
-        frame, kind = normalize(frame, dataset)
-        saved = merge_table(project, frame, kind)
-        summaries.append({'file': str(path), 'kind': kind, 'importedRows': len(frame), 'totalRows': len(saved)})
-        progress((index + 1) / len(files) * 0.9, f'已导入 {path.name}')
-    warnings = ['导入数据的复权口径和历史修订完整性由来源决定。财务按公告日之后交易日生效。']
-    old_source = read_json(Path(project_data(project)['path']) / 'data' / 'source.json', {})
-    write_json(Path(project_data(project)['path']) / 'data' / 'source.json', {'source': 'import', 'updatedAt': now(), 'imports': summaries,
-        'warnings': list(dict.fromkeys(old_source.get('warnings', []) + warnings))})
-    return {'imports': summaries, 'warnings': warnings}
+    from .data_imports import import_files as import_local_files
+    return import_local_files(project,params,progress)
 
 
 def _bs_rows(result):

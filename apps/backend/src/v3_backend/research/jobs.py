@@ -427,7 +427,7 @@ class Jobs:
 
     def _register_result(self, job, directory, returncode):
         result = read_json(directory / 'result.json')
-        if result and result.get('experiment') and (returncode == 0 or job['kind'] == 'rdagent.run'):
+        if result and result.get('experiment') and (returncode == 0 or job['kind'] in {'rdagent.run','data.import'}):
             experiment = result['experiment']
             if experiment.get('id') != job['id'] or experiment.get('projectId') != job.get('projectId'):
                 raise ValueError('结果文件与任务或项目不一致，不能登记')

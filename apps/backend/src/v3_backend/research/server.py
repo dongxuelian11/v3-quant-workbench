@@ -268,6 +268,11 @@ class Service:
         if method == 'factors.list':
             from .engines import factor_catalog
             return factor_catalog()
+        if method == 'data.import.preview':
+            from .data_imports import preview as preview_import
+            from .workbench import strategy_project
+            project=strategy_project(store,p['projectId'],p['strategyId']) if p.get('projectId') and p.get('strategyId') else store.project(p.get('projectId'))
+            return preview_import(project,p)
         if method == 'data.preview':
             from .data import preview
             from .workbench import strategy_project

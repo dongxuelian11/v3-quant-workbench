@@ -72,7 +72,9 @@ def _execute(store, job, project, directory, progress):
         return run(store, project, params, directory, progress)
     if kind == 'data.import':
         details = data.import_files(project, params, progress)
-        return dict(metrics={}, artifacts=[], summary='数据导入完成', details=details)
+        summary=f"导入成功 {details['completedFiles']} 个文件，失败 {len(details['failedFiles'])} 个文件"
+        if details.get('metadataStatus')=='failed':summary+='；来源说明保存失败，数据结果已保留'
+        return dict(metrics={},artifacts=[],summary=summary,details=details)
     if kind == 'data.update':
         if params.get('quoteOnly'):
             from .quotes import update as update_quote
@@ -185,6 +187,9 @@ def run(directory):
         write_json(directory / 'project.json', project)
         result = execute(store, job, project, directory, progress)
         experiment=save_result(store, job, project, result, directory)
+        if job['kind']=='data.import' and result['details']['status']!='completed':
+            write_json(directory/'result.json',{'experiment':experiment,'runtimeStatus':'failed','error':result['summary']+'；成功结果已保留，可单独重试失败文件'})
+            return 1
         if job['kind']=='rdagent.run':
             state=result.get('details',{}).get('status','failed')
             write_json(directory/'result.json',{'experiment':experiment,'runtimeStatus':state,
