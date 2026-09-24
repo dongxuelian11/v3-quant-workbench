@@ -11,6 +11,34 @@ from test_engines import sample_project
 
 
 class JobFlowTest(unittest.TestCase):
+    def test_priority_alias_matches_storage_list_events_and_queue_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);project,dates,_=sample_project(root);service=Service(root/'app')
+            events=[];service.jobs.emit=events.append
+            try:
+                spec=dict(projectId=project['id'],kind='factor.analyze',parameters={'factorIds':['momentum20'],
+                    'startDate':str(dates[0].date()),'endDate':str(dates[-1].date())})
+                with patch.object(service.jobs,'_start_next'):
+                    first=service.request('jobs.submit',dict(spec=spec))
+                    second=service.request('jobs.submit',dict(spec=spec))
+                    changed=service.request('jobs.priority',dict(jobId=second['id'],priority=-1))
+                    listed=service.request('jobs.list',dict(projectId=project['id'],statuses=['queued'],allHistory=True))
+                self.assertEqual(first['priority'],0);self.assertEqual(second['priority'],0)
+                self.assertEqual(changed['priority'],-1)
+                stored=service.store.get('job',second['id'])
+                self.assertEqual(stored['queuePriority'],-1)
+                self.assertNotIn('priority',stored)
+                by_id={job['id']:job for job in listed}
+                self.assertEqual(by_id[first['id']]['priority'],0)
+                self.assertEqual(by_id[second['id']]['priority'],-1)
+                self.assertEqual(events[-1]['priority'],-1)
+                self.assertEqual(service.jobs.public_event({'spec':{'parameters':{'scheduledUpdateId':'scheduled'}}})['priority'],1)
+                launched=[]
+                with patch.object(service.jobs,'_launch',side_effect=lambda job,_config:launched.append(job['id'])):
+                    service.jobs._start_next(project['id'])
+                self.assertEqual(launched[:2],[second['id'],first['id']])
+            finally:service.close()
+
     def test_worker_analysis_persists_and_exports_full_data(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

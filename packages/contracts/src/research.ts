@@ -47,6 +47,8 @@ export interface EffectiveResources extends ComputeSettings { maxConcurrentJobs:
 export interface JobSpec { projectId?: string; strategyId?: string; candidateId?: string; inputExperimentId?: string; effectiveResources?: EffectiveResources; kind: JobKind; name?: string; parameters: JsonObject; }
 export interface JobEvent {
   id: string;
+  /** Queue priority exposed to the UI; absent on older task records. */
+  priority?: number;
   projectId?: string;
   strategyId?: string;
   kind: JobKind;
@@ -112,6 +114,83 @@ export interface ExperimentDetails {
   tables: ResearchTable[];
   series: { name: string; points: { date: string; value: number | null }[] }[];
   details: JsonObject;
+}
+/** Saved observations from declarative backtest rules; dates refer to the signal session. */
+export interface RuleDiagnosticCondition {
+  conditionIndex: number;
+  field: JsonValue;
+  op: JsonValue;
+  threshold: JsonValue;
+  thresholdState?: "present" | "missing" | "positive_infinity" | "negative_infinity";
+  value: JsonValue;
+  valueState: "present" | "missing" | "positive_infinity" | "negative_infinity" | "not_evaluated";
+  conditionState: "true" | "false" | "unknown" | "not_evaluated";
+}
+export interface RuleDiagnosticRow {
+  date: string;
+  executionDate: string;
+  symbol: string;
+  ruleIndex: number;
+  ruleId: string;
+  action: "entry" | "add" | "reduce" | "exit";
+  ruleState: "matched" | "not_matched" | "unknown" | "skipped";
+  skipReason: "not_held" | "already_held" | "exit_priority" | null;
+  beforeWeight: number;
+  targetWeight: number;
+  conditionsJson: string;
+  constraintReasonsJson: string;
+  orderId: string | null;
+  orderState: "no_order" | "filled" | "partial" | "rejected";
+  requestedQuantity: number;
+  filledQuantity: number;
+  orderReasonsJson: string;
+}
+export interface RuleDiagnosticsCapability {
+  version: 1;
+  status: "available" | "not_applicable";
+  artifact: "rule_diagnostics" | null;
+  rowCount: number;
+  scope: "declarative_backtest_rules";
+  dateBasis: "signal_date";
+}
+/** Comparison describes saved experiments without recomputing or ranking them. */
+export interface ExperimentRef { projectId: string | null; experimentId: string; }
+export interface ExperimentChange {
+  field: string;
+  label: string;
+  before: JsonValue;
+  after: JsonValue;
+  beforeKnown: boolean;
+  afterKnown: boolean;
+}
+export interface ComparisonInputSummary {
+  snapshotStatus: "available" | "missing" | "unavailable";
+  sourceExperimentId: string | null;
+  recordedVersionAvailable: boolean;
+  coverage: JsonObject | null;
+}
+export interface ExperimentComparison {
+  version: 1;
+  baselineRef: ExperimentRef;
+  ref: ExperimentRef;
+  configurationChanges: ExperimentChange[];
+  rangeChanges: ExperimentChange[];
+  inputEvidence: {
+    status: "same_recorded_version" | "different_recorded_version" | "unknown";
+    basis: "snapshot_reference" | "recorded_source_version" | "insufficient";
+    message: string;
+    baseline: ComparisonInputSummary;
+    current: ComparisonInputSummary;
+  };
+  comparability: {
+    status: "comparable" | "controlled_change" | "incomparable" | "unknown";
+    reasons: { code: string; field: string | null; message: string }[];
+  };
+}
+export interface PreviousExperimentComparison {
+  currentRef: ExperimentRef;
+  previousRef: ExperimentRef | null;
+  comparison: ExperimentComparison | null;
 }
 export interface FactorDefinition {
   id: string;
@@ -205,7 +284,7 @@ export interface WorkspaceState {
   zoomFactor?: number;
   readingFontSize?: number;
   shortcuts?: Partial<Record<"commandSearch" | "settings" | "sidebar" | "assistant" | "quoteList", string>>;
-  layoutPresets?: Record<string, { sidebarVisible?: boolean; aiVisible?: boolean; sidebarWidth?: number; aiWidth?: number; density?: "comfortable" | "compact"; rightPanel?: "ai" | "parameters"; layout?: "single" | "columns" | "rows" }>;
+  layoutPresets?: Record<string, { sidebarVisible?: boolean; aiVisible?: boolean; sidebarWidth?: number; aiWidth?: number; density?: "comfortable" | "compact"; rightPanel?: "ai" | "parameters" | "jobs"; layout?: "single" | "columns" | "rows" }>;
   density: "comfortable" | "compact";
   sidebarWidth: number;
   aiWidth: number;
@@ -216,7 +295,7 @@ export interface WorkspaceState {
   tablePreferences?: JsonObject;
   sidebarVisible?: boolean;
   aiVisible?: boolean;
-  rightPanel?: "ai" | "parameters";
+  rightPanel?: "ai" | "parameters" | "jobs";
   closedProjectIds?: string[];
   conversationViews?: Record<string, { draft: string; scrollTop: number; atBottom: boolean }>;
 }
@@ -421,9 +500,19 @@ export interface DailyResearchPlan {
   allocation: number; enabled: boolean; updatedAt: string;
   latestVersion?: number; sourceChanged?: boolean; sourceUnavailable?: boolean;
 }
+/** Scope coverage on asOfDate, measured in unique securities, not historical rows. */
+export interface ScreenerCoverage {
+  asOfDate: string;
+  expectedSymbols: number | null;
+  observedSymbols: number;
+  eligibilityUnknown: number;
+  denominatorStatus: "known" | "partial_query_inputs" | "partial_unspecified_manual_pool" | "missing_membership" | "partial_observed_market" | "unknown";
+}
 export interface ScreenerResult extends ResearchTable {
   experimentId: string; asOfDate: string; status: "complete" | "preview";
   total: number; offset: number; limit: number; counts: { scope: number; valid: number; included: number; missing: number };
+  /** Absent for legacy results; never infer full coverage from counts.scope. */
+  coverage?: ScreenerCoverage;
   configChanged: boolean; message?: string; diff?: JsonObject;
 }
 export interface SavedScreener { id: string; name: string; query: MarketQuery; updatedAt?: string; }

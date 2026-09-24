@@ -212,7 +212,7 @@ def project_display(store, params, save=False):
             if key in candidate and not isinstance(candidate[key],bool):raise ValueError('侧栏显示应为开关')
         for key in ('sidebarWidth','aiWidth'):
             if key in candidate and (isinstance(candidate[key],bool) or not isinstance(candidate[key],(int,float)) or not 160<=candidate[key]<=800):raise ValueError('侧栏宽度应为160到800')
-        if 'rightPanel' in candidate and candidate['rightPanel'] not in {'ai','parameters'}:raise ValueError('未知右侧面板')
+        if 'rightPanel' in candidate and candidate['rightPanel'] not in {'ai','parameters','jobs'}:raise ValueError('未知右侧面板')
         overrides=candidate
         portable.put('display_preferences',dict(id='current',overrides=overrides))
     return dict(projectId=project_id,overrides=overrides,effective={**workspace(store),**overrides})

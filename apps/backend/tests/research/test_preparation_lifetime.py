@@ -23,6 +23,74 @@ class PreparationLifetimeTests(unittest.TestCase):
         r=preparation.price_requirements(project,unknown,dates,dates[0],0)[0]
         self.assertEqual(r['missingDates'],['2025-01-01','2025-01-03','2025-01-05'])
 
+    def test_disabled_update_does_not_fetch_missing_market_rows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);(root/'data').mkdir()
+            project={'path':temp,'settings':{'dataSources':{'daily':'file','financials':'file'}},
+                'startDate':'2025-01-02','endDate':'2025-01-03',
+                'universe':{'source':'manual','symbols':['SH600000']}}
+            pd.DataFrame({'symbol':['SH600000'],'date':pd.to_datetime(['2025-01-02']),
+                'open':[10.],'high':[10.],'low':[10.],'close':[10.],'volume':[100]}).to_parquet(root/'data/prices.parquet')
+            job={'kind':'factor.analyze','spec':{'parameters':{'factorIds':['momentum20'],'updateData':False}}}
+            with patch.object(preparation,'lookback',return_value=0),patch.object(preparation,'trading_dates',return_value=['2025-01-02','2025-01-03']),patch.object(data,'update') as update:
+                with self.assertRaisesRegex(ValueError,'未启用数据更新'):
+                    preparation.prepare(None,job,project,root/'disabled',lambda *_:None)
+                update.assert_not_called()
+
+    def test_update_data_false_blocks_calendar_financial_action_and_benchmark_fetches(self):
+        from v3_backend.research import engines
+        dates=pd.bdate_range('2025-01-02',periods=4)
+        def make_project(root,factors,daily_source='file'):
+            data_root=root/'data';benchmarks=data_root/'benchmarks'
+            benchmarks.mkdir(parents=True,exist_ok=True)
+            frame=pd.DataFrame({'symbol':['SH600000']*len(dates),'date':dates,
+                'open':[10.]*len(dates),'high':[10.1]*len(dates),'low':[9.9]*len(dates),
+                'close':[10.,10.1,10.2,10.3],'volume':[1000]*len(dates),'factor':factors})
+            frame.to_parquet(data_root/'prices.parquet',index=False)
+            pd.DataFrame({'date':dates,'close':[100.,101.,102.,103.]}).to_parquet(benchmarks/'SH000300.parquet',index=False)
+            return {'path':str(root),'settings':{'dataPath':str(data_root),'dataSources':
+                {'daily':daily_source,'financials':'baostock'}},'startDate':str(dates[1].date()),
+                'endDate':str(dates[-1].date()),'universe':{'source':'manual','symbols':['SH600000']}}
+        def job(kind,**extra):
+            return {'kind':kind,'spec':{'parameters':{'startDate':str(dates[1].date()),
+                'endDate':str(dates[-1].date()),'factorIds':['momentum20'],
+                'portfolio':{'lookback':0},'updateData':False,**extra}}}
+
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'calendar';root.mkdir();(root/'data').mkdir()
+            with patch.object(preparation.quotes,'_baostock') as fetch:
+                with self.assertRaisesRegex(ValueError,'未启用数据更新.*交易日历'):
+                    preparation.trading_dates(root/'data','2025-01-02','2025-01-06',update_data=False)
+                fetch.assert_not_called()
+
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);project=make_project(root,[1.,1.,1.,1.])
+            financial_factor=next(iter(engines.FINANCIAL))
+            spec=job('factor.analyze',factorIds=[financial_factor])
+            with patch.object(preparation,'lookback',return_value=0),patch.object(preparation.quotes,'_baostock') as fetch,patch.object(data,'update') as update:
+                with self.assertRaisesRegex(ValueError,'未启用数据更新.*公告财务'):
+                    preparation.prepare(None,spec,project,root/'financial-run',lambda *_:None)
+                fetch.assert_not_called();update.assert_not_called()
+
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);project=make_project(root,[1.,1.,.5,.5])
+            spec=job('backtest.run',template='single_factor')
+            with patch.object(preparation,'lookback',return_value=0),patch.object(preparation.quotes,'_baostock') as fetch,patch.object(data,'update') as update:
+                with self.assertRaisesRegex(ValueError,'未启用数据更新.*公司行动记录'):
+                    preparation.prepare(None,spec,project,root/'action-run',lambda *_:None)
+                fetch.assert_not_called();update.assert_not_called()
+
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);project=make_project(root,[1.,1.,1.,1.],'baostock')
+            calendar={'start':str(dates[0].date()),'end':str(dates[-1].date()),'dates':dates.strftime('%Y-%m-%d').tolist()}
+            preparation.write_json(Path(project['settings']['dataPath'])/'trading-calendar.json',calendar)
+            (Path(project['settings']['dataPath'])/'benchmarks'/'SH000300.parquet').unlink()
+            spec=job('backtest.run',template='single_factor')
+            with patch.object(preparation,'lookback',return_value=0),patch.object(preparation.quotes,'_baostock') as fetch,patch.object(data,'update') as update:
+                with self.assertRaisesRegex(ValueError,'未启用数据更新.*基准行情'):
+                    preparation.prepare(None,spec,project,root/'benchmark-run',lambda *_:None)
+                fetch.assert_not_called();update.assert_not_called()
+
     def test_prepare_does_not_fetch_prelisting_but_keeps_real_gap(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);(root/'data').mkdir()

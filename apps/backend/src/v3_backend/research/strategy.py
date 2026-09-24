@@ -20,7 +20,7 @@ def asof_prices(prices, day):
     return prices
 
 
-def decide_day(context, config):
+def decide_day(context, config, *, collect_diagnostics=False):
     """Return unconstrained target weights; never execute or mutate the account.
 
     Rules contain action entry/add/reduce/exit, conditions [{field,op,value}],
@@ -72,9 +72,12 @@ def decide_day(context, config):
                 raise ValueError('日线 Python 评分须保留当日股票索引')
             scores = pd.to_numeric(candidate, errors='raise')
             scores.index=scores.index.get_level_values(-1)
-        chosen = scores.replace([math.inf,-math.inf], math.nan).dropna().sort_values(ascending=False).head(int(config.get('topN',30)))
+        candidate_scores = scores.replace([math.inf,-math.inf], math.nan).dropna().sort_values(ascending=False)
+        chosen = candidate_scores.head(int(config.get('topN',30)))
         # Portfolio construction supplies the final exposure and weighting.
-        return dict(date=str(day.date()), scores=chosen, targets=None, reasons=events, nextState=state)
+        # Keep research candidates separate from the shared account/backtest selection.
+        return dict(date=str(day.date()), scores=chosen, candidateScores=candidate_scores,
+                    targets=None, reasons=events, nextState=state)
     frame = context.get('features', pd.DataFrame(index=scores.index)).copy()
     if isinstance(frame.index,pd.MultiIndex):
         frame = frame[frame.index.get_level_values(0)==day]
@@ -88,6 +91,7 @@ def decide_day(context, config):
     ops = {'gt':lambda a,b:a>b,'gte':lambda a,b:a>=b,'lt':lambda a,b:a<b,
            'lte':lambda a,b:a<=b,'eq':lambda a,b:a==b,'ne':lambda a,b:a!=b}
     protected = set()
+    diagnostics = []
     for index,rule in sorted(enumerate(rules), key=lambda r: {'exit':0,'reduce':1,'add':2,'entry':3}.get(r[1]['action'],9)):
         action=rule['action']
         if action not in {'exit','reduce','add','entry'}:
@@ -97,15 +101,26 @@ def decide_day(context, config):
             raise ValueError('规则 weight 必须在 0—1')
         for symbol,row in frame.iterrows():
             h=holdings.get(symbol,{}); held=float(h.get('quantity',0))>0
-            if action in {'exit','reduce','add'} and not held or action=='entry' and held:
-                continue
-            if action in {'entry','add'} and symbol in protected:
+            skip = ('not_held' if action in {'exit','reduce','add'} and not held else
+                    'already_held' if action=='entry' and held else
+                    'exit_priority' if action in {'entry','add'} and symbol in protected else None)
+            observation = None
+            if collect_diagnostics:
+                from .rule_diagnostics import pending_condition
+                observation = dict(date=str(day.date()), symbol=symbol, ruleIndex=index,
+                    ruleId=str(rule.get('id', index)), action=action, ruleState='skipped' if skip else 'matched',
+                    skipReason=skip, beforeWeight=float(targets.get(symbol, 0)),
+                    targetWeight=float(targets.get(symbol, 0)),
+                    conditions=[pending_condition(i, condition)
+                                for i, condition in enumerate(rule.get('conditions', []))])
+                diagnostics.append(observation)
+            if skip:
                 continue
             values=row.to_dict();values.update(quantity=h.get('quantity',0),costPrice=h.get('costPrice'))
             cost=h.get('costPrice')
             values['returnSinceEntry']=float(latest.loc[symbol,'rawClose'])/cost-1 if cost and symbol in latest.index else None
             matched=True
-            for condition in rule.get('conditions',[]):
+            for condition_index,condition in enumerate(rule.get('conditions',[])):
                 field=condition['field']
                 if field not in values:
                     raise ValueError('规则字段不可用: '+field)
@@ -113,13 +128,26 @@ def decide_day(context, config):
                 if condition.get('op') not in ops:raise ValueError('未知规则比较操作: '+str(condition.get('op')))
                 threshold=condition['value']
                 if isinstance(threshold,bool) or not isinstance(threshold,(int,float)) or not math.isfinite(threshold):raise ValueError('规则比较值必须为有限数字')
-                if value is None or pd.isna(value) or not ops[condition['op']](value,threshold):
-                    matched=False;break
+                missing = value is None or pd.isna(value)
+                passed = False if missing else bool(ops[condition['op']](value,threshold))
+                if observation is not None:
+                    from .rule_diagnostics import condition_value
+                    actual, value_state = condition_value(value)
+                    observation['conditions'][condition_index].update(value=actual, valueState=value_state,
+                        conditionState='unknown' if missing else 'true' if passed else 'false')
+                if not passed:
+                    matched=False
+                    if observation is not None:
+                        observation['ruleState'] = 'unknown' if missing else 'not_matched'
+                    break
             if not matched:continue
             before=targets.get(symbol,0)
             after=0 if action=='exit' else max(0,before-amount) if action=='reduce' else amount if action=='entry' else min(1,before+amount)
             targets[symbol]=after
+            if observation is not None:observation['targetWeight']=float(after)
             if action in {'exit','reduce'}:protected.add(symbol)
-            events.append(dict(date=str(day.date()),symbol=symbol,ruleId=rule.get('id',str(index)),action=action,beforeWeight=before,targetWeight=after,reason=rule.get('name',action)))
+            events.append(dict(date=str(day.date()),symbol=symbol,ruleId=rule.get('id',str(index)),ruleIndex=index,action=action,beforeWeight=before,targetWeight=after,reason=rule.get('name',action)))
     state['lastSignalDate']=str(day.date())
-    return dict(date=str(day.date()),scores=scores,targets=targets,reasons=events,nextState=state)
+    result = dict(date=str(day.date()),scores=scores,targets=targets,reasons=events,nextState=state)
+    if collect_diagnostics:result['ruleDiagnostics']=diagnostics
+    return result

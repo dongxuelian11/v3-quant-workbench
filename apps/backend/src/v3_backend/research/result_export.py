@@ -42,7 +42,8 @@ def export(store, project_id, experiment, output, format, table=None, *, check_c
         else:
             from openpyxl import Workbook
             book = Workbook(write_only=True)
-            for index, artifact in enumerate(artifacts or [None]):
+            selected_artifacts = [a for a in artifacts if a['name'] == table] if table else artifacts
+            for index, artifact in enumerate(selected_artifacts or [None]):
                 name = re.sub(r'[\\/*?:\[\]]', '_', artifact['name'] if artifact else 'metrics')
                 sheet, count, chunk = None, 0, 0
                 for frame in frames(artifact):
@@ -56,6 +57,8 @@ def export(store, project_id, experiment, output, format, table=None, *, check_c
                             sheet = book.create_sheet(f'{index}_{chunk}_{name}'[:31])
                             sheet.append(list(frame.columns))
                             count = 0
+                        if any(isinstance(value,str) and len(value)>32767 for value in row):
+                            raise ValueError('Excel 单元格最多保存32767字符；此成果包含更长的完整诊断，请使用 CSV 导出，避免内容截断')
                         sheet.append([None if pd.api.types.is_scalar(value) and pd.isna(value) else value for value in row])
                         count += 1
             if check_cancel: check_cancel()

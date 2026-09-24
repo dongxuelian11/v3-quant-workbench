@@ -22,7 +22,7 @@ def create(cash, holdings=None, date=None):
                 receivables=0.,pendingShares=0.,entitlements={},processedActions=[],state={})
 
 
-def advance_day(account, date, prices, decision, costs, actions=None, exchange=None):
+def advance_day(account, date, prices, decision, costs, actions=None, exchange=None, *, collect_orders=False):
     """Execute prior-close target quantities and return a new account, never persist.
 
     decision: {date, quantities:{symbol:raw target shares}, reasons, nextState}.
@@ -113,10 +113,33 @@ def advance_day(account, date, prices, decision, costs, actions=None, exchange=N
     value=sum(h['quantity']*float(today.loc[s,'rawClose']) for s,h in account['holdings'].items() if h['quantity'])
     nav=account['cash']+value+account['receivables']+pending
     if exchange.rejections is not rejected:rejected += exchange.rejections[rejection_start:]
-    return dict(account=account,trades=trades,unfilled=rejected,events=events,marketValue=value,pendingShareValue=pending,nav=nav)
+    result = dict(account=account,trades=trades,unfilled=rejected,events=events,marketValue=value,pendingShareValue=pending,nav=nav)
+    if collect_orders:
+        signal_date = str(pd.Timestamp(decision['date']).date()) if decision else None
+        net_orders = []
+        trades_by_symbol = defaultdict(list)
+        rejections_by_order = defaultdict(list)
+        for row in trades:trades_by_symbol[row['symbol']].append(row)
+        for row in rejected:rejections_by_order[(row['symbol'],row.get('side'))].append(row)
+        for symbol, delta in orders:
+            side = 'buy' if delta > 0 else 'sell'
+            order_id = f'{stamp}:{symbol}:{side}'
+            linked_trades = trades_by_symbol[symbol]
+            linked_rejections = rejections_by_order[(symbol, side)]
+            for row in linked_trades + linked_rejections:
+                row.update(signalDate=signal_date, orderId=order_id)
+            filled = sum(t['amount'] for t in linked_trades)
+            reasons = list(dict.fromkeys(r['reason'] for r in linked_rejections))
+            state = 'rejected' if not filled else 'partial' if filled < abs(delta)-1e-6 else 'filled'
+            if state == 'partial' and not reasons:
+                reasons = ['实际成交数量小于净目标数量；撮合器未返回具体限制原因']
+            net_orders.append(dict(symbol=symbol, orderId=order_id, state=state,
+                requestedQuantity=abs(delta), filledQuantity=filled, reasons=reasons))
+        result['_diagnosticOrders'] = net_orders
+    return result
 
 
-def make_decision(project, params, account, signal_date, prices, scores, features, nav, portfolio_config):
+def make_decision(project, params, account, signal_date, prices, scores, features, nav, portfolio_config, *, collect_diagnostics=False):
     """Shared close-of-day strategy and constrained raw target builder; no mutation."""
     from .strategy import decide_day
     from .portfolio import construct_portfolio, risk_estimate
@@ -126,7 +149,7 @@ def make_decision(project, params, account, signal_date, prices, scores, feature
     history=prices[prices.date.le(signal_date)]
     previous=history.sort_values('date').groupby('symbol').tail(1).set_index('symbol')
     choice=decide_day(dict(date=signal_date,prices=history,scores=scores,features=features if features is not None else pd.DataFrame(),
-        holdings=account['holdings'],cash=account['cash'],nav=nav,state=account['state']),params)
+        holdings=account['holdings'],cash=account['cash'],nav=nav,state=account['state']),params, collect_diagnostics=collect_diagnostics)
     current=pd.Series({s:(h['quantity']+h.get('pendingQuantity',0))*float(previous.loc[s,'rawClose'])/nav
         for s,h in account['holdings'].items() if h['quantity'] or h.get('pendingQuantity',0)},dtype=float)
     chosen=choice['scores'];names=chosen.index.union(current.index).union(pd.Index(list(choice['targets'] or {})))
@@ -148,12 +171,14 @@ def make_decision(project, params, account, signal_date, prices, scores, feature
         quantities[symbol]=float(weights.get(symbol,0))*nav/float(previous.loc[symbol,'rawClose'])
     returns=history.pivot(index='date',columns='symbol',values='close').pct_change(fill_method=None)
     contributions, risk = risk_estimate(returns, weights, portfolio_config)
-    return dict(date=str(signal_date.date()),quantities=quantities,quantityBasis='signal_date',nextState=choice['nextState'],
+    decision = dict(date=str(signal_date.date()),quantities=quantities,quantityBasis='signal_date',nextState=choice['nextState'],
         targetRiskContributions=contributions.to_dict(), riskEstimate=risk,
         reasons=choice['reasons'],targetWeights=weights.to_dict(),ruleTargets=raw.to_dict() if raw is not None else {},conflicts=conflicts,warnings=warnings)
+    if collect_diagnostics:decision['ruleDiagnostics']=choice.get('ruleDiagnostics', [])
+    return decision
 
 
-def run_backtest(project, params, prices, scores, trading_dates, schedule, costs, portfolio_config, benchmark, progress, features=None):
+def run_backtest(project, params, prices, scores, trading_dates, schedule, costs, portfolio_config, benchmark, progress, features=None, *, diagnostic_sink=None):
     """Historical orchestration of the same public daily account function."""
     from qlib.backtest.position import Position
     from .execution import raw_exchange
@@ -172,12 +197,16 @@ def run_backtest(project, params, prices, scores, trading_dates, schedule, costs
         if prior_nav is None:prior_nav=initial_nav
         decision=None
         if day in schedule or params.get('rules') or params.get('dailyCode'):
-            decision=make_decision(project,params,account,signal_date,prices,scores,features,prior_nav,portfolio_config)
+            decision=make_decision(project,params,account,signal_date,prices,scores,features,prior_nav,portfolio_config,
+                collect_diagnostics=diagnostic_sink is not None)
             conflicts+=decision['conflicts'];warnings+=decision['warnings'];rules+=decision['reasons']
             rule_targets += [dict(date=day,signalDate=signal_date,symbol=s,ruleWeight=w) for s,w in decision['ruleTargets'].items()]
             targets += [dict(date=day,signalDate=signal_date,symbol=s,targetWeight=w,cash=1-sum(decision['targetWeights'].values()),executable=not bool(decision['conflicts'])) for s,w in decision['targetWeights'].items()]
         today=prices[prices.date.eq(day)].set_index('symbol')
-        result=advance_day(account,day,prices,decision,costs,actions,exchange)
+        result=advance_day(account,day,prices,decision,costs,actions,exchange,collect_orders=diagnostic_sink is not None)
+        if diagnostic_sink is not None and decision is not None:
+            diagnostic_sink(decision,result,day)
+            decision.pop('ruleDiagnostics', None)
         account=result['account'];trades+=result['trades'];unfilled+=result['unfilled'];events+=result['events']
         if decision is not None:
             from .portfolio import risk_estimate

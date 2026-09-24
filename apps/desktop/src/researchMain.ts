@@ -167,7 +167,7 @@ if (primaryInstance) app.whenReady().then(async () => {
   registerIpc();
   workspaces = new WorkspaceWindows(join(appData, "workspace-windows.json"), state => {
     const created = new BrowserWindow({
-      ...state.bounds, minWidth: state.main ? 1080 : 640, minHeight: state.main ? 700 : 460,
+      ...state.bounds, minWidth: 640, minHeight: state.main ? 700 : 460,
       title: state.main ? "V3 研究工作台" : `${state.panels[0]?.title ?? "研究窗口"} · V3`,
       frame: false, backgroundColor: "#f4f5f7", show: false,
       webPreferences: { preload: join(__dirname, "researchPreload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },

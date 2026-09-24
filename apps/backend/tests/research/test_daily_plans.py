@@ -89,6 +89,78 @@ class DailyPlansTests(unittest.TestCase):
                         selection.run(store.project(None),params,Path(store.project(None)['path'])/'.research/runs/failed',lambda *_:None,snapshot=snapshot,daily_plan_snapshots=changed,store=store)
             finally:service.close()
 
+    def test_daily_failure_isolated_update_choice_and_remaining_allocation_are_deterministic(self):
+        import numpy as np
+        from v3_backend.research import selection,daily_plans,screening_run
+        with tempfile.TemporaryDirectory() as temp:
+            project,dates,store,service,plan,daily=self.setup(Path(temp))
+            try:
+                first=service.request('dailyPlans.save',dict(id=daily['id'],name='方案A',allocation=.5))
+                second=service.request('dailyPlans.save',dict(planId=plan['id'],name='方案B',allocation=.5,enabled=True))
+                references=daily_plans.freeze(store,[first['id'],second['id']],{'daily':'file','financials':'file'})
+                snapshot=dict(cash=100000,rows=[])
+                params=dict(dailyPlanIds=[first['id'],second['id']],date=str(dates[-1].date()),updateData=False)
+                real_run=screening_run.run;received_updates=[]
+                def fail_first(*args,**kwargs):
+                    received_updates.append(args[2].get('updateData'))
+                    if len(received_updates)==1:raise ValueError('方案A受控失败')
+                    screened=real_run(*args,**kwargs)
+                    context=screened['_daily']
+                    included=set(context['frame'].loc[context['frame'].status.eq('included'),'symbol'])
+                    held=next(code for code in references[1]['project']['universe']['symbols'] if code not in included)
+                    snapshot['rows']=[dict(symbol=held,quantity=100,sellableQuantity=100)]
+                    self.assertIn(held,context['prices'].symbol.unique())
+                    return screened
+                output=Path(store.project(None)['path'])/'.research/runs/partial'
+                with patch.object(screening_run,'run',side_effect=fail_first),patch.object(data,'update',side_effect=AssertionError('unexpected data download')):
+                    partial=selection.run(store.project(None),params,output,lambda *_:None,snapshot=snapshot,daily_plan_snapshots=references,store=store)
+                self.assertEqual(received_updates,[False,False])
+                self.assertEqual(partial['details']['status'],'partial')
+                self.assertTrue(partial['details']['incomplete'])
+                self.assertFalse(partial['details']['executable'])
+                self.assertNotIn('unallocatedCashWeight',partial['details'])
+                self.assertEqual(partial['details']['failedDailyPlans'][0]['id'],first['id'])
+                self.assertEqual(partial['details']['failedDailyPlans'][0]['allocation'],.5)
+                self.assertEqual([row['strategyId'] for row in partial['details']['strategies']],[second['id']])
+                contributions=pd.read_parquet(next(a['path'] for a in partial['artifacts'] if a['name']=='strategy_contributions'))
+                self.assertEqual(set(contributions.allocation),{.5})
+                np.testing.assert_allclose(contributions.targetWeight,contributions.strategyWeight*.5)
+                targets=pd.read_parquet(next(a['path'] for a in partial['artifacts'] if a['name']=='target_weights'))
+                orders=pd.read_parquet(next(a['path'] for a in partial['artifacts'] if a['name']=='rebalance'))
+                self.assertTrue(targets.empty)
+                self.assertTrue(orders.empty)
+                self.assertFalse(((orders.symbol=='SH600000')&(orders.side=='sell')).any())
+                self.assertTrue(any(a['name'].startswith('daily_1_') for a in partial['artifacts']))
+                with patch.object(screening_run,'run',side_effect=ValueError('方案受控失败')):
+                    with self.assertRaisesRegex(ValueError,'所有每日方案均失败'):
+                        selection.run(store.project(None),params,Path(store.project(None)['path'])/'.research/runs/all-failed',
+                            lambda *_:None,snapshot=snapshot,daily_plan_snapshots=references,store=store)
+            finally:service.close()
+
+    def test_daily_merge_failure_preserves_completed_research_without_position_valuation(self):
+        from v3_backend.research import selection,daily_plans
+        with tempfile.TemporaryDirectory() as temp:
+            project,dates,store,service,plan,daily=self.setup(Path(temp))
+            try:
+                reference=daily_plans.freeze(store,[daily['id']],{'daily':'file','financials':'file'})
+                reference[0]['project']['universe']['symbols']=[code for code in reference[0]['project']['universe']['symbols'] if code!='SH600000']
+                source=Path(data.project_data(project)['path'])/'data/prices/SH600000.parquet'
+                source.unlink()
+                snapshot=dict(cash=100000,rows=[dict(symbol='SH600000',quantity=100,sellableQuantity=100)])
+                params=dict(dailyPlanIds=[daily['id']],date=str(dates[-1].date()),updateData=False)
+                with patch.object(data,'update',side_effect=AssertionError('unexpected data download')):
+                    result=selection.run(store.project(None),params,Path(store.project(None)['path'])/'.research/runs/merge-missing-price',
+                        lambda *_:None,snapshot=snapshot,daily_plan_snapshots=reference,store=store)
+                self.assertEqual(result['details']['status'],'partial')
+                self.assertTrue(result['details']['incomplete'])
+                self.assertFalse(result['details']['executable'])
+                self.assertIn('估值价格缺失',result['details']['mergeFailure'])
+                self.assertTrue(any(a['name'].startswith('daily_0_') for a in result['artifacts']))
+                orders=pd.read_parquet(next(a['path'] for a in result['artifacts'] if a['name']=='rebalance'))
+                self.assertTrue(orders.empty)
+                self.assertNotIn('unallocatedCashWeight',result['details'])
+            finally:service.close()
+
     def test_account_code_uses_real_holdings_and_builtin_revision_is_guarded(self):
         from v3_backend.research import selection,daily_plans
         with tempfile.TemporaryDirectory() as temp:

@@ -26,22 +26,20 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        if: github.event_name != 'pull_request'
         with:
           python-version-file: .python-version
           cache: pip
           cache-dependency-path: apps/backend/requirements-research.txt
       - name: Install desktop dependencies
         run: npm ci --no-audit --no-fund
-      - name: Install research dependencies for integration
-        if: github.event_name != 'pull_request'
+      - name: Install research dependencies
         shell: pwsh
         run: |
           python -m pip install setuptools wheel
           python -m pip install --no-build-isolation -r apps/backend/requirements-research.txt
           "V3_RESEARCH_PYTHON=$env:pythonLocation/python.exe" >> $env:GITHUB_ENV
+          "V3_TEST_PYTHON=$env:pythonLocation/python.exe" >> $env:GITHUB_ENV
       - name: Build desktop
         run: npm run build
       - name: Check research calculations and persistence
-        if: github.event_name != 'pull_request'
         run: npm test

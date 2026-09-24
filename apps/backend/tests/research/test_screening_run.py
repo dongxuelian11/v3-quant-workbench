@@ -37,6 +37,32 @@ class ScreeningRunTests(unittest.TestCase):
             self.assertEqual(frame.loc[frame.status.eq('included'),'symbol'].tolist(),[expected])
             self.assertAlmostEqual(float(frame.loc[frame.symbol.eq(expected),'score'].iloc[0]),1.)
 
+    def test_all_market_coverage_keeps_unknown_denominator_null(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);project,dates,store=sample_project(root)
+            project['universe']=dict(source='all',symbols=[],excludeST=False,minListingDays=0)
+            result=screening_run.run(store,project,dict(plan=self.plan(project,dates[-1]),allowPartial=True),
+                Path(project['path'])/'.research/runs/all-coverage',lambda *_:None)
+            coverage=result['details']['coverage']
+            self.assertEqual(coverage['asOfDate'],str(dates[-1].date()))
+            self.assertIsNone(coverage['expectedSymbols'])
+            self.assertEqual(coverage['denominatorStatus'],'partial_observed_market')
+            self.assertEqual(coverage['observedSymbols'],12)
+
+    def test_manual_coverage_counts_pool_members_without_downloaded_prices(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);project,dates,store=sample_project(root)
+            symbols=[f'SH{600000+i}' for i in range(12)]
+            project['universe']=dict(source='manual',symbols=symbols,excludeST=False,minListingDays=0)
+            missing=Path(data.project_data(project)['path'])/'data/prices/SH600011.parquet'
+            missing.unlink()
+            result=screening_run.run(store,project,dict(plan=self.plan(project,dates[-1]),allowPartial=True),
+                Path(project['path'])/'.research/runs/manual-coverage',lambda *_:None)
+            coverage=result['details']['coverage']
+            self.assertEqual(coverage['expectedSymbols'],12)
+            self.assertEqual(coverage['observedSymbols'],12)
+            self.assertEqual(coverage['denominatorStatus'],'known')
+
     def test_public_worker_complete_preview_and_prior_complete_diff(self):
         import time
         from v3_backend.research.server import Service
@@ -58,9 +84,17 @@ class ScreeningRunTests(unittest.TestCase):
                     self.assertEqual(job['status'],'completed',job.get('message'))
                     return service.request('screeners.result',dict(planId=plan['id'],experimentId=job['experimentId']))
                 first=run(False);self.assertEqual(first['status'],'complete');self.assertEqual(first['counts']['included'],12)
+                self.assertEqual(first['coverage']['expectedSymbols'],12)
+                self.assertIsInstance(first['rows'][0]['conditions'],list)
+                self.assertIsInstance(first['rows'][0]['contributions'],dict)
                 preview=run(True);self.assertEqual(preview['status'],'preview');self.assertFalse(preview['diff']['available'])
                 again=run(False);self.assertEqual(again['diff']['previousExperimentId'],first['experimentId'])
                 self.assertEqual(again['diff']['added'],[]);self.assertEqual(again['diff']['removed'],[])
+                from v3_backend.research.storage import read_json,write_json
+                details_path=Path(service.store.project(None)['path'])/'.research/runs'/first['experimentId']/'details.json'
+                saved=read_json(details_path,{});saved.pop('coverage',None);write_json(details_path,saved)
+                legacy=service.request('screeners.result',dict(planId=plan['id'],experimentId=first['experimentId']))
+                self.assertNotIn('coverage',legacy)
             finally:service.close()
 
     def test_prefilter_and_st_exclusion_precede_ranking(self):

@@ -44,7 +44,7 @@ export function ResultsPanel() {
       return;
     }
     if (format !== "pdf") {
-      exporter.run({ projectId: detail.experiment.projectId, experimentId: detail.experiment.id, format, ...(detail.experiment.kind === "selection.run" ? { table: "rebalance" } : {}) }, `${detail.experiment.name}.${format}`);
+      exporter.run({ projectId: detail.experiment.projectId, experimentId: detail.experiment.id, format, ...(format === "csv" && detail.experiment.kind === "selection.run" ? { table: "rebalance" } : {}) }, `${detail.experiment.name}.${format}`);
     } else {
       const tableHtml = detail.tables.map(t => `<h2>${escapeHtml(t.name)}</h2><table><thead><tr>${t.columns.map(c => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead><tbody>${t.rows.map(r => `<tr>${t.columns.map(c => `<td>${escapeHtml(valueText(r[c]))}</td>`).join("")}</tr>`).join("")}</tbody></table>`).join("");
       const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{font:13px "Microsoft YaHei",sans-serif;color:#263536;padding:32px}table{border-collapse:collapse;font-size:10px;width:100%}td,th{border-bottom:1px solid #ddd;padding:5px;text-align:left}pre{white-space:pre-wrap}h1{color:#267774}</style><h1>${escapeHtml(detail.experiment.name)}</h1><p>${escapeHtml((s.project?.name ?? "全局研究"))} · ${escapeHtml(detail.experiment.createdAt)}</p><p>${escapeHtml(detail.experiment.summary)}</p><h2>指标</h2><pre>${escapeHtml(Object.entries(detail.experiment.metrics).map(([key,value])=>`${fieldLabel(key,detail.experiment.kind)}：${tableValue(value,key,detail.experiment.kind)}`).join("\n"))}</pre><h2>参数</h2><pre>${escapeHtml(JSON.stringify(detail.experiment.parameters, null, 2))}</pre>${tableHtml}<p>研究报告 · 表格为返回的预览行，完整数据请导出 CSV / Excel。</p></html>`;

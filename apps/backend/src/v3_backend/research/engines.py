@@ -787,9 +787,17 @@ def backtest(project, params, output, progress, prices=None, store=None):
     benchmark_name = params.get('benchmark') or ('csi500' if project['universe']['source']=='csi500' else 'csi300')
     benchmark_returns = benchmarks.returns(project, benchmark_name, trading_dates)
     from .accounting import run_backtest
-    daily = run_backtest(project, {**params, '_modelHorizon': experiment['parameters'].get('labelHorizon',5) if template=='model_score' else 5},
-        prices, score, trading_dates, schedule, costs, portfolio_config, benchmark_returns, progress,
-        features=values if template!='model_score' else None)
+    from contextlib import nullcontext
+    from .rule_diagnostics import Writer, execution_table
+    diagnostics_enabled = bool(params.get('rules')) and not params.get('dailyCode')
+    with Writer(output) if diagnostics_enabled else nullcontext() as diagnostic_writer:
+        daily = run_backtest(project, {**params, '_modelHorizon': experiment['parameters'].get('labelHorizon',5) if template=='model_score' else 5},
+            prices, score, trading_dates, schedule, costs, portfolio_config, benchmark_returns, progress,
+            features=values if template!='model_score' else None,
+            diagnostic_sink=diagnostic_writer.write_day if diagnostic_writer else None)
+    diagnostic_capability = diagnostic_writer.capability() if diagnostic_writer else dict(
+        version=1, status='not_applicable', artifact=None, rowCount=0,
+        scope='declarative_backtest_rules', dateBasis='signal_date')
     report, positions = daily['report'], daily['positions']
     trade_rows, rejected, targets = daily['trades'], daily['unfilled'], daily['targets']
     conflicts, portfolio_warnings = daily['conflicts'], daily['warnings']
@@ -822,7 +830,7 @@ def backtest(project, params, output, progress, prices=None, store=None):
                                  pendingShareValue=owned.get('pendingQuantity',0)*position.get_stock_price(code),
                                  price=position.get_stock_price(code), adjustedAmount=owned['quantity']/factor, adjustedPrice=position.get_stock_price(code)*factor,
                                  actualWeight=position.get_stock_weight_dict(only_stock=False).get(code,0),marketValue=position.get_stock_amount(code)*position.get_stock_price(code)))
-    artifacts = [save_table(output, 'portfolio', report), save_table(output, 'holdings', pd.DataFrame(holdings)), save_table(output, 'trades', pd.DataFrame(trade_rows)), save_table(output, 'signals', score.rename('score').to_frame())]
+    artifacts = [save_table(output, 'portfolio', report), save_table(output, 'holdings', pd.DataFrame(holdings)), save_table(output, 'trades', execution_table(trade_rows,'trades') if diagnostic_writer else pd.DataFrame(trade_rows)), save_table(output, 'signals', score.rename('score').to_frame())]
     artifacts += [save_table(output,name,frame) for name,frame in benchmark_tables.items()]
     holding_frame = pd.DataFrame(holdings)
     industry_rows, contribution_rows = [], []
@@ -850,10 +858,11 @@ def backtest(project, params, output, progress, prices=None, store=None):
         for group, weight in weights.groupby(groups).sum().items():
             industry_rows.append(dict(date=day,industry=group,actualWeight=weight))
         prior_amounts = amounts
-    artifacts += [save_table(output,'target_weights',pd.DataFrame(targets)),save_table(output,'risk',pd.DataFrame(risk_rows)),save_table(output,'unfilled',pd.DataFrame(rejected)),
+    artifacts += [save_table(output,'target_weights',pd.DataFrame(targets)),save_table(output,'risk',pd.DataFrame(risk_rows)),save_table(output,'unfilled',execution_table(rejected,'unfilled') if diagnostic_writer else pd.DataFrame(rejected)),
                   save_table(output,'industry',pd.DataFrame(industry_rows)),save_table(output,'contribution',pd.DataFrame(contribution_rows))]
     artifacts += [save_table(output,name,pd.DataFrame(daily[key])) for name,key in
         [('rule_targets','rule_targets'),('rule_events','rules'),('account_events','events')]]
+    if diagnostic_writer:artifacts.append(diagnostic_writer.artifact())
     # Corporate actions and execution interact with close-to-close security PnL.
     # Keep the difference visible until attributed, rather than force-close it into a factor.
     reconciled = pd.DataFrame(contribution_rows)
@@ -868,7 +877,7 @@ def backtest(project, params, output, progress, prices=None, store=None):
     artifacts += [save_table(output,name,table) for name,table in attribution_tables.items()]
     progress(.95, 'Qlib 组合回测完成')
     return dict(metrics=metrics, artifacts=artifacts, summary='Qlib 日期规则组合回测',parameters={**params,'costs':costs,'portfolio':portfolio_config,'benchmark':benchmark_name,'topN':top_n},
-                details={'engine': 'pyqlib', 'accountingBasis':'raw_shares_cash', 'accountState':daily['account'], 'annualizationDays':252, 'annualizedReturnMethod':'arithmetic', 'benchmark': benchmark_name, 'signalTiming': 'previous trading session -> next session open', 'rebalance': frequency,
+                details={'ruleDiagnostics':diagnostic_capability, 'engine': 'pyqlib', 'accountingBasis':'raw_shares_cash', 'accountState':daily['account'], 'annualizationDays':252, 'annualizedReturnMethod':'arithmetic', 'benchmark': benchmark_name, 'signalTiming': 'previous trading session -> next session open', 'rebalance': frequency,
                          'strategyPriceBasis':'open/high/low/close are raw yuan; adjustedOHLC is rebased at each signal date',
                          'pricePrecision': .01, 'slippageRounding': 'buy_up_sell_down',
                          'transferFeeMode': 'fixed_configured_rate',

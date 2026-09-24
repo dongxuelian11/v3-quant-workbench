@@ -117,6 +117,12 @@ def result_table(store, experiment):
     return pd.read_parquet(store.artifact_path(None,artifact))
 
 
+def _decode_explanation(row):
+    for key in ('conditions','contributions'):
+        if isinstance(row.get(key),str):row[key]=json.loads(row[key])
+    return row
+
+
 def freeze_run(store, plan):
     target=deepcopy(store.project(None))
     source_id=plan.get('dataProjectId')
@@ -213,19 +219,19 @@ def dispatch(service, method, params):
         details=read_json(folder/'details.json',{})
         try: changed=normalize(store.get('screener',params['planId']))['version']!=experiment['parameters']['plan']['version']
         except ValueError:changed=True
-        return dict(name='screening',columns=list(frame.columns),rows=records(frame.iloc[offset:offset+limit]),total=total,
+        rows=[_decode_explanation(row) for row in records(frame.iloc[offset:offset+limit])]
+        result=dict(name='screening',columns=list(frame.columns),rows=rows,total=total,
                     offset=offset,limit=limit,experimentId=experiment['id'],asOfDate=details.get('asOfDate',''),
                     status=details.get('status','preview'),counts=details.get('counts',{}),configChanged=changed,
                     message=details.get('message',''),diff=details.get('diff',{}))
+        if isinstance(details.get('coverage'),dict):result['coverage']=details['coverage']
+        return result
     if method=='screeners.explain':
         from .data import records,symbol
         experiment=store.experiment(None,params['experimentId']);frame=result_table(store,experiment)
         selected=frame[frame.symbol.eq(symbol(params['symbol']))]
         if selected.empty:return dict(symbol=symbol(params['symbol']),status='outside',reason='不在本次运行范围内')
-        row=records(selected.iloc[:1])[0]
-        for key in ('conditions','contributions'):
-            if isinstance(row.get(key),str):row[key]=json.loads(row[key])
-        return row
+        return _decode_explanation(records(selected.iloc[:1])[0])
     if method=='watchlists.add':
         from .data import symbol
         with store.connect() as db:

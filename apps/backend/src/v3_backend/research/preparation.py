@@ -7,6 +7,10 @@ from .storage import read_json, write_json, identifier, now
 
 KINDS={'factor.analyze','model.train','backtest.run','optimize.run','simulation.advance'}
 
+def require_data_update(params, resource):
+    if params.get('updateData',True) is False:
+        raise ValueError('本次未启用数据更新，缺失'+resource+'需先导入或单独更新后再运行')
+
 
 def scope(project, params, kind):
     import pandas as pd
@@ -50,7 +54,7 @@ def signature(project, params):
             'files':[[str(p),p.stat().st_mtime_ns,p.stat().st_size] for p in sorted(root.rglob('*.parquet'))]}
 
 
-def trading_dates(root,start,end,source='baostock'):
+def trading_dates(root,start,end,source='baostock',update_data=True):
     import pandas as pd
     cached=read_json(root/'trading-calendar.json',{})
     if cached.get('start','9999')<=start and cached.get('end','')>=end:
@@ -61,6 +65,7 @@ def trading_dates(root,start,end,source='baostock'):
     if observed and min(observed)<=start and max(observed)>=end:
         return sorted(d for d in observed if start<=d<=end)
     if source!='baostock':raise ValueError('缺少本地交易日历；当前日线来源 '+source+' 不自动调用BaoStock补取')
+    if not update_data:raise ValueError('本次未启用数据更新，缺少交易日历需先导入或单独更新后再运行')
     frame=quotes._baostock(lambda bs:data._bs_query(bs,bs.query_trade_dates,start_date=start,end_date=end))
     dates=sorted(str(d) for d in frame.loc[frame.is_trading_day.astype(str).eq('1'),'calendar_date'])
     write_json(root/'trading-calendar.json',{'start':start,'end':end,'dates':dates})
@@ -112,6 +117,7 @@ def price_requirements(project, prices, dates, start, warmup):
 def prepare(store, job, project, directory, progress):
     import pandas as pd
     params=deepcopy(job['spec']['parameters']);kind=job['kind'];directory=Path(directory)
+    if type(params.get('updateData',True)) is not bool:raise ValueError('数据更新选项必须为布尔值')
     directory.mkdir(parents=True,exist_ok=True)
     start,end=scope(project,params,kind)
     params.setdefault('startDate',start);params.setdefault('endDate',end)
@@ -158,7 +164,7 @@ def prepare(store, job, project, directory, progress):
         if kind in {'backtest.run','optimize.run','simulation.advance'}:
             warmup=max(warmup, int(input_params.get('portfolio',{}).get('lookback',252)) + 1)
         report['warmupSessions']=warmup
-        expected=set(trading_dates(root,start,end,source=sources['daily']))
+        expected=set(trading_dates(root,start,end,source=sources['daily'],update_data=params.get('updateData',True)))
         requirements=price_requirements(project,prices,expected,start,warmup)
         report['priceRequirements']=requirements
         # Missing pre-listing history cannot be repaired by downloading it.
@@ -181,6 +187,7 @@ def prepare(store, job, project, directory, progress):
             prior=[d for d in prior if d<first]
             if len(prior)<count:
                 if sources['daily']!='baostock':raise ValueError('缺少所需预热行情或日历；当前日线来源 '+sources['daily']+' 不自动调用BaoStock')
+                require_data_update(params,'因子预热交易日历')
                 calendar=quotes._baostock(lambda bs:data._bs_query(bs,bs.query_trade_dates,
                     start_date=str((pd.Timestamp(first)-pd.Timedelta(days=max(366,count*4))).date()),end_date=first))
                 sessions=calendar[calendar.is_trading_day.astype(str).eq('1')].calendar_date
@@ -189,6 +196,8 @@ def prepare(store, job, project, directory, progress):
             fetch_start=min(fetch_start,prior[-count])
         report['inputStart']=fetch_start;report['inputEnd']=end
         if need_prices:
+            if params.get('updateData',True) is False:
+                raise ValueError('本次未启用数据更新，缺失行情须先导入或单独更新后再运行')
             if sources['daily']=='file':raise ValueError('日线来源为已有数据与文件，所需行情缺失；请导入后重试，不自动联网')
             step('历史行情','running',startDate=fetch_start,endDate=end)
             data.update(project,{'startDate':fetch_start,'endDate':end,'source':sources['daily'],'repairGaps':True},progress)
@@ -222,6 +231,7 @@ def prepare(store, job, project, directory, progress):
             missing=missing[[ (r.symbol,str(pd.Timestamp(r.date).date())) not in known for r in missing.itertuples() ]]
             if len(missing):
                 if sources['financials']=='file':raise ValueError('已有公司行动记录缺失；财务来源为文件，不自动联网')
+                require_data_update(params,'公司行动记录')
                 step('公司行动','running')
                 quotes._baostock(lambda bs:corporate_actions.collect(project,bs,sorted(missing.symbol.unique()),fetch_start,end,data._bs_query))
                 actions=corporate_actions.read(project);known=set(zip(actions.symbol,actions.exDate)) if len(actions) else set()
@@ -236,6 +246,7 @@ def prepare(store, job, project, directory, progress):
             needed=set(pd.to_datetime(prices.loc[pd.to_datetime(prices.date).between(start,end),'date']))
             if needed-benchmark_dates:
                 if sources['daily']!='baostock':raise ValueError('已有基准行情缺失，当前日线来源不自动切换BaoStock')
+                require_data_update(params,'基准行情')
                 from . import benchmarks
                 step('基准行情','running')
                 quotes._baostock(lambda bs:benchmarks.collect(project,bs,start,end,data._bs_query))
@@ -249,6 +260,7 @@ def prepare(store, job, project, directory, progress):
             missing_financial=not required.issubset(financial) or bool(set(prices.symbol)-set(financial.get('symbol',[])))
             if missing_financial or sources['financials']!='file' and stale:
                 if sources['financials']=='file':raise ValueError('所需公告财务缺失；财务来源为文件，请先导入，不自动联网')
+                require_data_update(params,'公告财务')
                 step('公告财务','running')
                 def collect_financial(bs):
                     for code in sorted(prices.symbol.unique()):data._financial_update(project,bs,code[:2].lower()+'.'+code[2:],fetch_start,end)

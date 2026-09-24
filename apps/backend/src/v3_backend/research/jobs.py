@@ -82,13 +82,19 @@ class Jobs:
                 else:
                     self._save(job, status='interrupted', message='上次运行中断，可用原参数重新运行')
 
+    @staticmethod
+    def public_event(job):
+        parameters=job.get('spec',{}).get('parameters',{})
+        default=1 if parameters.get('scheduledUpdateId') else 0
+        return {**job,'priority':job.get('queuePriority',default)}
+
     def _save(self, job, **changes):
         job = {**job, **changes, 'updatedAt': now()}
         self.store.put('job', job, job.get('projectId') or '')
         self.store.project_store(job.get('projectId')).put('job', job, job.get('projectId') or '')
         if job['status'] in TERMINAL:
             self._retain_stage_job(job)
-        self.emit(job)
+        self.emit(self.public_event(job))
         return job
 
     def _retain_stage_job(self, job):
@@ -99,6 +105,7 @@ class Jobs:
             'id', 'projectId', 'strategyId', 'kind', 'name', 'status', 'progress',
             'message', 'experimentId', 'createdAt', 'updatedAt',
         ) if key in job}
+        event['priority']=self.public_event(job)['priority']
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             for key, body in db.execute("SELECT id, body FROM records WHERE kind='conversation'").fetchall():
@@ -167,7 +174,7 @@ class Jobs:
                     except (ValueError, OSError):
                         available[key] = set()
                 job['resultAvailable'] = job['experimentId'] in available[key]
-        return jobs
+        return [self.public_event(job) for job in jobs]
 
     def clear(self, filters=None):
         filters = filters or {}
@@ -308,7 +315,7 @@ class Jobs:
                        effectiveResources=spec['effectiveResources'])
             job = self._save(job)
             self._start_next(spec.get('projectId'))
-            return self.store.get('job', job['id'])
+            return self.public_event(self.store.get('job', job['id']))
 
     def _freeze_universe(self, project):
         query = project.get('universe', {}).get('query')
@@ -412,14 +419,14 @@ class Jobs:
             if not read_json(directory / 'result.json', {}).get('experiment'):
                 raise ValueError('没有已完成的结果文件可登记')
             try:
-                return self._register_result(job, directory, exited['returncode'])
+                return self.public_event(self._register_result(job, directory, exited['returncode']))
             except Exception as exc:
                 try:
                     self._save(job, status='failed', registrationPending=True, registrationError=str(exc),
                                message='恢复登记失败，原结果保留：'+str(exc))
                 except Exception:
-                    self.emit({**job, 'status':'failed', 'registrationPending':True, 'registrationError':str(exc),
-                               'message':'数据库登记失败，原结果保留'})
+                    self.emit(self.public_event({**job, 'status':'failed', 'registrationPending':True, 'registrationError':str(exc),
+                               'message':'数据库登记失败，原结果保留'}))
                 raise
 
     def _watch(self, key, process, directory, log):
@@ -439,7 +446,10 @@ class Jobs:
                         previous = update
                 except Exception as exc:
                     # Keep watching the real process even if status persistence fails.
-                    self.emit(dict(id=key, status='running', message='任务状态登记失败：'+str(exc), registrationError=str(exc)))
+                    try:current=self.store.get('job',key)
+                    except Exception:current={}
+                    self.emit(self.public_event({**current,'id':key,'status':'running',
+                        'message':'任务状态登记失败：'+str(exc),'registrationError':str(exc)}))
         log.close()
         native = (directory / 'rd_native_children.json').exists()
         try:
@@ -470,7 +480,7 @@ class Jobs:
                 try:
                     self._save(job, **failure)
                 except Exception:
-                    self.emit({**job, **failure})
+                    self.emit(self.public_event({**job, **failure}))
             finally:
                 self.processes.pop(key, None)
                 self._start_next(job.get('projectId'))
@@ -490,7 +500,7 @@ class Jobs:
                 if process and process.poll() is not None and self.processes.get(key) is process and was_cleanup_pending:
                     self.processes.pop(key,None)
                     self._start_next(job.get('projectId'))
-                return job
+                return self.public_event(job)
             if job['status'] in {'queued', 'running'}:
                 job = self._save(job, status='cancelled', message='用户取消；已保存任务参数和中间文件')
                 process = self.processes.get(key)
@@ -499,7 +509,7 @@ class Jobs:
                         from .rd_agent import terminate_owner
                         terminate_owner(process)
                     else:process.terminate()
-            return job
+            return self.public_event(job)
 
     def close(self):
         with self.lock:

@@ -111,6 +111,7 @@ def run(store, project, params, directory, progress, daily_snapshot=None):
     # Financial fields share the existing announcement-date preparation adapter.
     ids=sorted(set(ids)|{key for key,column in engines.FINANCIAL.items() if column in fields})
     compute=dict(factorIds=ids,customFactors=custom,startDate=start,endDate=asof,
+        updateData=params.get('updateData',True),
         factorProcessing={**(strategy or {}).get('factorProcessing',{}),'directions':{}})
     plan_path=directory/'screening-plan.json'
     plan_path.write_text(json.dumps(plan,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -163,7 +164,7 @@ def run(store, project, params, directory, progress, daily_snapshot=None):
         if not training.get('model'):raise ValueError('模型成果缺少可重训配置，不能改用其他模型')
         monthly_project=deepcopy(fixed)
         monthly_project.update(startDate=prepared['inputStart'],endDate=asof)
-        monthly=select(monthly_project,dict(enabled=True,updateData=False,retrain='monthly',model=training,
+        monthly=select(monthly_project,dict(enabled=True,updateData=False,retrain='monthly',endDate=asof,model=training,
             strategy=dict(template='model_score',topN=max(1,len(codes)),portfolio={'method':'equal'})),
             directory/'daily_model',progress,snapshot=daily_snapshot,score_only=True)
         if pd.Timestamp(monthly['date'])!=pd.Timestamp(asof):raise ValueError('月度模型行情日期与筛选日期不一致')
@@ -266,12 +267,17 @@ def run(store, project, params, directory, progress, daily_snapshot=None):
         frame.loc[ordered.index[int(limit):],['status','reason']]=['excluded','超过入选数量限制']
     counts=dict(scope=int(frame.status.ne('outside').sum()),valid=int(frame.status.isin(['included','excluded']).sum()),
         included=int(frame.status.eq('included').sum()),missing=int(frame.status.eq('missing').sum()))
+    coverage_row=daily.loc[pd.to_datetime(daily.date).eq(day)].iloc[-1]
+    expected_symbols=coverage_row['expected']
+    coverage=dict(asOfDate=asof,expectedSymbols=int(expected_symbols) if pd.notna(expected_symbols) else None,
+        observedSymbols=int(coverage_row['observedPool']),eligibilityUnknown=int(coverage_row['eligibilityUnknown']),
+        denominatorStatus=str(coverage_row['denominatorStatus']))
     known=not daily.empty and daily.denominatorStatus.eq('known').all()
     if not partial and (counts['missing'] or not known):raise ValueError('选股所需输入不完整：'+str(counts['missing'])+'股缺数据；基础范围'+('已知' if known else '覆盖未确认')+'。可明确选择已有数据预览。')
     status='preview' if partial else 'complete'
     message='已有数据预览，未补源，不代表全市场完整覆盖。' if partial else '按固定输入完成；缺数据与范围外证券未当作不满足条件。'
     if strategy:message+=(' 策略采用全局持仓快照。' if daily_snapshot is not None else ' 策略采用空持仓候选上下文，不是现有账户交易建议。')
-    details=dict(asOfDate=asof,status=status,counts=counts,message=message,
+    details=dict(asOfDate=asof,status=status,counts=counts,message=message,coverage=coverage,
         diff=_previous_diff(store,plan,frame) if status=='complete' else dict(available=False,message='预览不与完整结果比较'),preparation=prepared,
         strategyContext=('全局持仓快照' if daily_snapshot is not None else '独立候选评分，使用空持仓上下文；不是现有账户的交易建议') if strategy else None,
         modelScoring='按固定配置月度重训和推理' if monthly is not None else '固定估计器推理' if model_inputs and model_inputs[0]['kind']=='estimator' else '保留测试预测，仅其实际日期可用' if model_inputs else None)

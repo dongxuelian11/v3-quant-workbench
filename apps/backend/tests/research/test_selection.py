@@ -58,6 +58,8 @@ class SelectionTest(unittest.TestCase):
             result = selection.run(project,params,output,lambda *_:None)
             self.assertEqual(result['details']['dataDate'],str(dates[-1])[:10])
             self.assertEqual(len(pd.read_parquet(output/'candidates.parquet')),12)
+            targets = pd.read_parquet(output/'target_weights.parquet')
+            self.assertEqual(int(targets.targetWeight.gt(1e-8).sum()),3)
             self.assertEqual(positions.get(project),snapshot)
             second = output.parent/'second'
             second.mkdir()
@@ -72,6 +74,64 @@ class SelectionTest(unittest.TestCase):
             write_json(third/'request.json',dict(appData=str(Path(directory)/'app'),job=dict(id='third',projectId=project['id'],kind='selection.run',name='选股',spec={'parameters':params})))
             self.assertEqual(run(third),0)
             self.assertEqual(read_json(third/'result.json')['experiment']['kind'],'selection.run')
+
+            custom = output.parent/'custom'
+            custom.mkdir()
+            custom_params = {**params,'strategy':{**params['strategy'],
+                'code':"scores = -scores\nscores.loc[(slice(None), 'SH600000')] = float('nan')\nscores.loc[(slice(None), 'SH600001')] = float('inf')"}}
+            with patch('v3_backend.research.engines.model_estimator',side_effect=AssertionError('unexpected refit')):
+                selection.run(project,custom_params,custom,lambda *_:None)
+            original = pd.read_parquet(output/'candidates.parquet').set_index('symbol').score
+            expected = (-original.drop(['SH600000','SH600001'])).sort_values(ascending=False)
+            observed = pd.read_parquet(custom/'candidates.parquet').set_index('symbol').score
+            pd.testing.assert_series_equal(observed,expected,check_names=False)
+            targets = pd.read_parquet(custom/'target_weights.parquet').set_index('symbol').targetWeight
+            self.assertEqual(set(targets[targets.gt(1e-8)].index),set(expected.head(3).index))
+            self.assertEqual(positions.get(project),snapshot)
+
+
+    def test_shared_decision_keeps_top_n_after_custom_scoring(self):
+        from v3_backend.research.strategy import decide_day
+        prices = pd.DataFrame([dict(date=pd.Timestamp('2025-01-06'),symbol=s,rawClose=10.)
+                               for s in ['SH600000','SH600001','SH600002','SH600003']])
+        scores = pd.Series([1.,2.,3.,4.],index=prices.symbol,name='score')
+        decision = decide_day(dict(date='2025-01-06',prices=prices,scores=scores,
+                                   cash=100000,holdings={}),
+                              dict(topN=2,code='scores = -scores'))
+        self.assertEqual(list(decision['scores'].index),['SH600000','SH600001'])
+        self.assertEqual(list(decision['scores']),[-1.,-2.])
+        self.assertEqual(len(decision['candidateScores']),4)
+        pd.testing.assert_series_equal(scores,pd.Series([1.,2.,3.,4.],index=prices.symbol,name='score'))
+
+    def test_update_data_option_must_be_boolean_before_selection_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project, _, _ = sample_project(Path(directory))
+            params=dict(enabled=True,updateData='false',model=dict(model='ridge'),
+                strategy=dict(template='model_score'))
+            with patch('v3_backend.research.selection.data.update') as update:
+                with self.assertRaisesRegex(ValueError,'数据更新选项必须为布尔值'):
+                    selection.run(project,params,Path(project['path'])/'.research/runs/invalid-update',lambda *_:None)
+                update.assert_not_called()
+
+    def test_same_month_reverse_request_retrains_for_historical_date(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project, dates, _ = sample_project(Path(directory))
+            dates = pd.DatetimeIndex(dates)
+            later = dates[-1]
+            earlier = next(date for date in reversed(dates[:-1]) if date.strftime('%Y-%m') == later.strftime('%Y-%m'))
+            params = dict(enabled=True,updateData=False,retrain='monthly',endDate=str(later.date()),
+                          model=dict(model='ridge',factorIds=['momentum20'],labelHorizon=5),
+                          strategy=dict(template='model_score',topN=3,portfolio={'method':'equal'}))
+            snapshot = dict(cash=100000,rows=[])
+            first = selection.run(project,params,Path(project['path'])/'.research/runs/cache-later',lambda *_:None,snapshot=snapshot)
+            self.assertEqual(first['details']['dataDate'],str(later.date()))
+            historical_params={**params,'endDate':str(earlier.date())}
+            with patch('v3_backend.research.selection.engines.model_estimator',
+                       wraps=selection.engines.model_estimator) as estimate:
+                historical = selection.run(project,historical_params,Path(project['path'])/'.research/runs/cache-earlier',lambda *_:None,snapshot=snapshot)
+            self.assertEqual(estimate.call_count,1)
+            self.assertEqual(historical['details']['dataDate'],str(earlier.date()))
+            self.assertLess(pd.Timestamp(historical['details']['trainingEnd']),earlier)
 
 
 if __name__ == '__main__':

@@ -132,8 +132,8 @@ class Service:
                 job=store.get('job',p['jobId'])
                 if job['status']!='queued':raise ValueError('只有等待中的任务可调整顺序')
                 self.jobs._save(job,queuePriority=priority)
-                self.jobs._pump()
-                return store.get('job',job['id'])
+                self.jobs._start_next(job.get('projectId'))
+                return self.jobs.public_event(store.get('job',job['id']))
         if method=='ai.connectionTest':
             from .ai_settings import connection_test
             return connection_test(self,p)

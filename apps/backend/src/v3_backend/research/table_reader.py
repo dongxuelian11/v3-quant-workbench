@@ -62,7 +62,7 @@ def page(path, params, name, *, check_cancel=None):
         if any(c not in available for c in selected):
             raise ValueError('请求的数据列不存在')
         filters = []
-        for parameter, choices in [('factorId', ('factor', 'factorId')), ('tradeId', ('tradeId',)),
+        for parameter, choices in [('factorId', ('factor', 'factorId')), ('tradeId', ('tradeId',)), ('orderId', ('orderId',)),
                                     ('modelWindowId', ('window', 'windowId', 'modelWindowId')),
                                     ('symbol', ('symbol', 'instrument', 'asset'))]:
             if params.get(parameter) not in (None, ''):
