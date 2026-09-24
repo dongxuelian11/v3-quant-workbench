@@ -53,6 +53,26 @@ def ownership_from_state(state):
         costBasis=h.get('costBasis')) for s,h in state['holdings'].items() if h['quantity'] or h.get('pendingQuantity',0)]
 
 
+def retain_valuation_source(account, owner):
+    """Detach rule control without discarding the holding's market-data origin."""
+    if not owner.get('bindingId') or not owner.get('entryVersionId'):return
+    binding=next((b for b in account['bindings'] if b['id']==owner['bindingId']),None)
+    version=next((v for v in binding['versions'] if v['id']==owner['entryVersionId']),None) if binding else None
+    if version is None:raise ValueError('原持仓版本缺失，无法保留估值来源；未转为手工')
+    sources=account.setdefault('holdingValuationSources',[])
+    source=next((v for v in sources if v['bindingId']==binding['id'] and v['versionId']==version['id']),None)
+    if source is None:
+        from . import data
+        from pathlib import Path
+        project=deepcopy(version['snapshot']['project'])
+        data_path=str(Path(data.project_data(project)['path'])/'data')
+        project['settings']={'dataPath':data_path,'dataSources':deepcopy(project.get('settings',{}).get('dataSources',{}))}
+        source=dict(id=identifier(),bindingId=binding['id'],versionId=version['id'],source=deepcopy(binding['source']),
+            sourceVersion=version['sourceVersion'],project=project,createdAt=now())
+        sources.append(source)
+    owner['valuationSourceId']=source['id']
+
+
 def validate_ownership(account):
     ids=[o['id'] for o in account['ownership']]
     if len(set(ids))!=len(ids):raise ValueError('持仓归属ID重复')
@@ -290,7 +310,9 @@ def dispatch(store,method,params):
                     selected=[x for x in account['ownership'] if x['id'] in ids]
                     if len(selected)!=len(ids):raise ValueError('持仓归属不存在')
                     if operation.endswith('transferToManual'):
-                        for item in selected:item.update(management='manual',bindingId=None,entryVersionId=None)
+                        for item in selected:
+                            retain_valuation_source(account,item)
+                            item.update(management='manual',bindingId=None,entryVersionId=None)
                         if account.get('pendingDecision'):
                             pending=account['pendingDecision']
                             pending['intents']=[i for i in pending.get('intents',[]) if i['ownershipId'] not in ids]

@@ -136,3 +136,15 @@ class RecoveryTests(unittest.TestCase):
             result=self.resume()
         self.assertEqual(result['context'],[reference])
         self.assertEqual(result['projectSnapshots'][self.pid+':original'],frozen)
+
+    def test_same_service_queued_replay_retries_scheduler_without_duplicate_job(self):
+        spec=dict(kind='optimize.run',projectId=self.pid,parameters=dict(trials=3,target='backtest',sampler='grid',baseParameters={},searchSpace={'topN':[1,2,3]}))
+        with patch('v3_backend.research.preparation.scope'),patch.object(self.service.jobs,'_start_next',side_effect=RuntimeError('scheduler unavailable')):
+            with self.assertRaisesRegex(RuntimeError,'scheduler unavailable'):
+                self.service.jobs.submit(spec,frozen_project=self.project,submission_id='queued-recovery')
+        self.assertEqual(self.service.store.get('job','queued-recovery')['status'],'queued')
+        with patch.object(self.service.jobs,'_start_next') as schedule:
+            result=self.service.jobs.submit(spec,frozen_project=self.project,submission_id='queued-recovery')
+            schedule.assert_called_once_with(self.pid)
+        self.assertEqual(result['id'],'queued-recovery')
+        self.assertEqual(len(self.service.store.list('job')),1)

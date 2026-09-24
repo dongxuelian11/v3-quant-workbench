@@ -593,6 +593,7 @@ export interface ReportSubscription {
 }
 export type ReproductionVariant = "original" | "adapted" | "post_publication" | "execution";
 export interface ReproductionStep {
+  missingConditions?: string[];
   id: string;
   name: string;
   variant: ReproductionVariant;
@@ -611,17 +612,33 @@ export interface ReproductionPlan {
   objective: string;
   missingConditions: string[];
   steps: ReproductionStep[];
+  readiness?: { runnableStepIds: string[]; blockedSteps: { stepId: string; missingConditions: string[]; blockedByStepIds: string[] }[] };
   plannedWork?: ResearchWorkCounts;
   createdAt: string;
   updatedAt: string;
 }
 export interface ResearchWorkCounts { trials: number; trainingTasks: number; backtestTasks: number; rollingTasks: number; }
+export interface ReproductionStepAttempt {
+  message?: string;
+  stepId: string;
+  jobId?: string;
+  experimentId?: string;
+  status: "pending" | JobStatus;
+  attempt?: number;
+  submissionId?: string;
+}
 export interface ReproductionRun {
+  selectedStepIds?: string[];
+  excludedStepIds?: string[];
+  executionScope?: "full" | "subset";
   runId: string;
   planId: string;
   revision: number;
   status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
-  steps: { stepId: string; jobId?: string; experimentId?: string; status: "pending" | JobStatus }[];
+  steps: (ReproductionStepAttempt & { attemptHistory?: ReproductionStepAttempt[] })[];
+  executionOwner?: { conversationId: string; executionId: string };
+  executionActive?: boolean;
+  cancelPending?: boolean;
   message?: string;
   budget?: { trialLimit: number; reserved: ResearchWorkCounts; planned: ResearchWorkCounts; message: string };
 }

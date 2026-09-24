@@ -9,6 +9,17 @@ from .execution import cost_config, raw_exchange
 from .portfolio import DEFAULTS
 
 
+def unsettled_entitlement_symbols(state):
+    """Historical paid/listed entitlements do not keep an empty holding source alive."""
+    pending=set();done=set(state.get('processedActions',[]))
+    for key,entry in state.get('entitlements',{}).items():
+        cash,shares=entry.get('cash'),entry.get('shares')
+        known=all(isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v) and v>=0 for v in (cash,shares))
+        if not known or (cash>0 and (key+':ex' not in done or key+':pay' not in done)) or (shares>0 and (key+':ex' not in done or key+':listing' not in done)):
+            pending.add(entry['symbol'])
+    return pending
+
+
 def prepare_sources(store,account,params,output,progress):
     from . import preparation,input_snapshot,corporate_actions
     from .selection import completed_prices
@@ -70,9 +81,15 @@ def prepare_sources(store,account,params,output,progress):
                 failed_path=output/'inputs'/binding['id']/version['id']/'failure.json'
                 if not failed_path.exists():write_json(failed_path,dict(message=error))
                 failures.append(dict(bindingId=binding['id'],versionId=version['id'],message=error,stage='prepare'))
-    for index,project in enumerate(account.get('valuationSources',[])):
+    entitlement_symbols=unsettled_entitlement_symbols(account['state'])
+    held_symbols={o['symbol'] for o in account['ownership'] if o['quantity'] or o['pendingQuantity']}|entitlement_symbols
+    valuation_sources=[('manual:'+str(index),'valuation_'+str(index),project,sorted(held_symbols)) for index,project in enumerate(account.get('valuationSources',[]))]
+    for source in account.get('holdingValuationSources',[]):
+        held=sorted({o['symbol'] for o in account['ownership'] if o.get('valuationSourceId')==source['id'] and (o['quantity'] or o['pendingQuantity'] or o['symbol'] in entitlement_symbols)})
+        if held:valuation_sources.append(('holding:'+source['id'],'holding_valuation_'+source['id'],source['project'],held))
+    for source_key,folder_name,project,held in valuation_sources:
         from .storage import read_json,write_json
-        local=output/'inputs'/('valuation_'+str(index))
+        local=output/'inputs'/folder_name
         manifest=local/'inputs/snapshot.json'
         try:
             if (local/'failure.json').exists():raise ValueError(read_json(local/'failure.json')['message'])
@@ -83,7 +100,6 @@ def prepare_sources(store,account,params,output,progress):
             else:
                 if (local/'inputs').exists():raise ValueError('固定估值输入尚未完整保存，不能切回当前数据')
                 capture_project=deepcopy(project)
-                held=sorted({o['symbol'] for o in account['ownership'] if o['quantity'] or o['pendingQuantity']}|{e['symbol'] for e in account['state'].get('entitlements',{}).values()})
                 capture_project['universe']=dict(source='manual',symbols=held,excludeST=False,minListingDays=0)
                 start=min(account['startDate'],account['asOfDate'] or account['startDate'])
                 preparation.trading_dates(Path(data.project_data(project)['path'])/'data',start,params['endDate'],source='file',update_data=False)
@@ -91,7 +107,7 @@ def prepare_sources(store,account,params,output,progress):
                     dict(actualCoverage={'symbols':held}),output_root=store.project(None)['path'])
             prices=completed_prices(data.read_table(fixed))
             calendar=preparation.trading_dates(Path(data.project_data(fixed)['path'])/'data',account['startDate'],params['endDate'],source='file',update_data=False)
-            sources['manual:'+str(index)]=dict(project=fixed,prices=prices,calendar=calendar,inputSnapshot=reference,actions=corporate_actions.read(fixed))
+            sources[source_key]=dict(project=fixed,prices=prices,calendar=calendar,inputSnapshot=reference,actions=corporate_actions.read(fixed))
         except Exception as exc:
             error=str(exc) or type(exc).__name__
             if not (local/'failure.json').exists():write_json(local/'failure.json',dict(message=error))

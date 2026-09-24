@@ -17,9 +17,12 @@ class FakeJobs:
     def __init__(self, store):
         self.store, self.calls = store, []
 
-    def submit(self, spec, frozen_project=None):
+    def submit(self, spec, frozen_project=None, *, submission_id=None):
+        if submission_id:
+            try:return self.store.get('job',submission_id)
+            except ValueError:pass
         self.calls.append(deepcopy(spec))
-        job = dict(id=identifier(), kind=spec['kind'], spec=deepcopy(spec), projectId=spec.get('projectId'), status='queued', message='queued')
+        job = dict(id=submission_id or identifier(), kind=spec['kind'], spec=deepcopy(spec), projectId=spec.get('projectId'), status='queued', message='queued')
         self.store.put('job', job, spec.get('projectId') or '')
         return job
 
@@ -150,7 +153,7 @@ class ReportsTests(unittest.TestCase):
         self.assertEqual(run['steps'][1]['status'], 'failed')
         self.assertNotIn('jobId', run['steps'][1])
         changed = self.tasks.dispatch('reproductions.save', {'projectId': self.project['id'], 'plan': {**plan, 'name': '编辑后的版本'}})
-        resumed = self.tasks.dispatch('reproductions.run', {**params, 'runId': run['runId']})
+        resumed = self.tasks.dispatch('reproductions.run', {**params, 'runId': run['runId'], 'retryFailed':True})
         self.assertEqual(resumed['revision'], 1)
         self.assertEqual(changed['revision'], 2)
         self.assertEqual(len(self.jobs.calls), 3)

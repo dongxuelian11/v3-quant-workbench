@@ -280,7 +280,7 @@ class Executions:
                     if getattr(part, 'part_kind', '') == 'retry-prompt':
                         content = part.content
                         if isinstance(content, list):
-                            fields = {'plan','reportId','name','steps','missingConditions','objective','strategyId','id','revision','variant','spec','kind','parameters','projectId','dependsOn','differences','citations','page','excerpt','project_id_ref'}
+                            fields = {'plan','reportId','name','steps','missingConditions','selectedStepIds','selected_step_ids','objective','strategyId','id','revision','variant','spec','kind','parameters','projectId','dependsOn','differences','citations','page','excerpt','project_id_ref'}
                             paths = ['.'.join(str(x) for x in row.get('loc', ()) if type(x) is int or x in fields) + '（' + str(row.get('type', 'validation_error'))[:48] + '）' for row in content if isinstance(row, dict)]
                             reason = '工具参数缺少字段或类型不符：' + '、'.join(p for p in paths if p)[:160]
                         else:
@@ -351,7 +351,7 @@ class Executions:
         validate_output(self.service, answer, pid, value['context'], value.get('steps', []))
         return answer
 
-    async def run_reproduction(self, cid, eid, plan_id, project_id=None, run_id=None):
+    async def run_reproduction(self, cid, eid, plan_id, project_id=None, run_id=None, selected_step_ids=None):
         value = self.status({'conversationId': cid, 'executionId': eid})
         pid = project_id or value.get('projectId')
         if not pid or not any(key.startswith(pid + ':') for key in value['projectSnapshots']):
@@ -362,27 +362,47 @@ class Executions:
         params = {'projectId': pid, 'planId': plan_id,'budgetId':value.get('budgetId'),'budgetProjectId':value.get('projectId')}
         if run_id:
             params['runId'] = run_id
-        run = await asyncio.to_thread(self.service.report_tasks.dispatch, 'reproductions.run', params)
-        params['runId'] = run['runId']
+        if selected_step_ids is not None:params['selectedStepIds']=selected_step_ids
+        def track(run):
+            def update(state,current):
+                for step in run['steps']:
+                    if step.get('jobId'):
+                        if step['jobId'] not in state.setdefault('stageJobIds',[]):state['stageJobIds'].append(step['jobId'])
+                        existing=next((s for s in current['steps'] if s.get('jobId')==step['jobId']),None)
+                        if existing is None:current['steps'].append(dict(step))
+                        else:existing.update(step)
+                current['activeJobIds']=[s['jobId'] for s in run['steps'] if s.get('jobId') and s['status'] in {'queued','running'}]
+                current.setdefault('reproductionRunIds',[])
+                if run['runId'] not in current['reproductionRunIds']:current['reproductionRunIds'].append(run['runId'])
+            self.mutate(cid,eid,update)
+        submission=asyncio.create_task(asyncio.to_thread(self.service.report_tasks.run_for_execution,params,cid,eid))
+        submission.add_done_callback(lambda task:task.exception() if not task.cancelled() else None)
         try:
+            run=await asyncio.shield(submission)
+            params['runId']=run['runId']
             while True:
-                def track(state, current):
-                    if current.get('cancelRequested'):
-                        raise asyncio.CancelledError()
-                    for step in run['steps']:
-                        if step.get('jobId'):
-                            if step['jobId'] not in state.setdefault('stageJobIds', []):
-                                state['stageJobIds'].append(step['jobId'])
-                            if not any(s.get('jobId') == step['jobId'] for s in current['steps']):
-                                current['steps'].append(dict(step))
-                    current['activeJobIds'] = [s['jobId'] for s in run['steps'] if s.get('jobId') and s['status'] in {'queued', 'running'}]
-                self.mutate(cid, eid, track)
-                if run['status'] != 'running':
-                    return {key: run[key] for key in ('runId', 'planId', 'revision', 'status', 'steps', 'message') if key in run}
+                track(run)
+                if self.status({'conversationId':cid,'executionId':eid}).get('cancelRequested'):raise asyncio.CancelledError()
+                if run['status']!='running':
+                    return {key:run[key] for key in ('runId','planId','revision','status','steps','message','selectedStepIds','excludedStepIds','executionScope') if key in run}
                 await asyncio.sleep(.3)
-                run = await asyncio.to_thread(self.service.report_tasks.dispatch, 'reproductions.status', params)
+                run=await asyncio.to_thread(self.service.report_tasks.dispatch,'reproductions.status',params)
         except BaseException:
-            await asyncio.to_thread(self.service.report_tasks.dispatch, 'reproductions.cancel', params)
+            # Cancelling an await never stops its worker thread. Persist the stop first,
+            # then wait for submission and retain/cancel every child it actually created.
+            self.mutate(cid,eid,lambda state,current:current.update(cancelRequested=True))
+            try:
+                run=await asyncio.wait_for(asyncio.shield(submission),timeout=2)
+            except asyncio.TimeoutError as exc:
+                raise ValueError('研报提交仍在停止，后台终止尚未确认；运行关联已保存') from exc
+            params['runId']=run['runId']
+            stopping=asyncio.create_task(asyncio.to_thread(self.service.report_tasks.dispatch,'reproductions.cancel',params))
+            stopping.add_done_callback(lambda task:task.exception() if not task.cancelled() else None)
+            try:
+                cancelled=await asyncio.wait_for(asyncio.shield(stopping),timeout=2)
+            except asyncio.TimeoutError as exc:
+                raise ValueError('研报后台终止尚未确认，请稍后查看运行状态') from exc
+            track(cancelled)
             raise
 
     async def run(self,cid,eid,message):
@@ -423,9 +443,9 @@ class Executions:
                     """仅在用户明确要求执行时提交当前研究步骤，等待真实完成并返回结果。"""
                     return await self.run_research(cid,eid,spec)
                 @agent.tool_plain
-                async def run_reproduction_plan(plan_id: str, project_id_ref: str | None = None, run_id: str | None = None) -> dict:
-                    """仅用户明确要求执行或恢复时运行真实复现计划，等待依赖任务结束，不启用策略。"""
-                    return await self.run_reproduction(cid, eid, plan_id, project_id_ref, run_id)
+                async def run_reproduction_plan(plan_id: str, project_id_ref: str | None = None, run_id: str | None = None, selected_step_ids: list[str] | None = None) -> dict:
+                    """仅用户明确要求执行或恢复时运行复现。子集必须用户明确选择且依赖闭合，不自动筛选/补选；恢复保留冻结范围。"""
+                    return await self.run_reproduction(cid, eid, plan_id, project_id_ref, run_id, selected_step_ids)
             conversation=get_conversation(self.service.store,cid)
             from . import project_summary
             summary=project_summary.get(self.service.store,pid) if pid else None

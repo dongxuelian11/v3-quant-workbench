@@ -219,6 +219,9 @@ class Jobs:
             if existing is not None:
                 if existing.get('submissionIntent') != intent:
                     raise ValueError('任务提交标识对应不同的执行意图或研究范围')
+                if existing['status'] == 'queued':
+                    self._start_next(existing.get('projectId'))
+                    existing = self.store.get('job', submission_id)
                 return self.public_event(existing)
             return self._submit(spec, frozen_project, submission_id=submission_id, submission_intent=intent)
 
