@@ -9,11 +9,13 @@ export function Field({ label, children }: { label: string; children: React.Reac
 export function Heading({ title, description, children }: { title: string; description?: string; children?: React.ReactNode }) { return <header className="r-heading"><div><h1>{title}</h1>{description && <p>{description}</p>}</div>{children}</header>; }
 const fieldLabels: Record<string, string> = { quantiles:"分组数",labelMode:"收益标签口径",periods:"持有周期（交易日）", name: "名称", rows: "行数", symbols: "股票数", startDate: "开始日期", endDate: "结束日期", missingValues: "缺失值", date: "日期", trade_date: "成交日期", symbol: "证券", instrument: "证券", code: "证券代码", open: "开盘", high: "最高", low: "最低", close: "收盘", volume: "成交量", amount: "成交额", side: "方向", direction: "方向", price: "成交价", execution_price: "成交价", trade_price: "成交价", quantity: "数量", shares: "股数", weight: "权重", cash: "现金", equity: "资产净值", net_value: "净值", nav: "净值", returns: "收益率", daily_return: "日收益率", benchmark: "基准", drawdown: "回撤", turnover: "换手率", commission: "佣金", fee: "费用", fees: "费用", slippage: "滑点", factor: "因子", factor_id: "因子", quantile: "分组", period: "周期", holding: "持仓", holdings: "持仓", type: "类型", path: "文件路径", createdAt: "创建日期", status: "状态", ic: "IC", rank_ic: "Rank IC", mean_ic: "平均 IC", ic_std: "IC 标准差", icir: "ICIR", total_return: "累计收益率", annual_return: "年化收益率", sharpe: "夏普比率", max_drawdown: "最大回撤" };
 const resultMetricLabels: Record<string, string> = {
+  unitNav:"单位净值",units:"账户份额",unitsBefore:"变动前份额",unitsAfter:"变动后份额",netContributions:"累计净投入（元）",navBefore:"变动前资产（元）",navAfter:"变动后资产（元）",effectivePhase:"生效时点",costBasis:"成本总额（元）",ownershipId:"归属编号",bindingId:"绑定编号",versionId:"规则版本",entryVersionId:"入场版本",accountId:"账户编号",signalDate:"信号日",executionDate:"执行日",expiryDate:"到期日",tradeId:"成交编号",orderId:"订单编号",cash_flows:"资金流水",ownership:"持仓归属",trade_allocations:"成交分摊",binding_events:"绑定事件",
+
   targetExposure: "目标仓位（比例，0–1）", estimatedCash: "估算现金（元）",
   estimatedActualWeight: "估算实际权重", riskContribution: "风险贡献", estimatedFees: "估算费用",
   actualWeight: "实际权重", pnl: "持仓损益", returnContribution: "收益贡献", targetRiskContribution: "目标风险贡献", actualRiskContribution: "实际风险贡献", contributionDeviation: "风险贡献偏差", baseValue: "基础值",
   allowedQuantity:"允许成交股数", totalReturn:"累计收益率", completedDays:"本次新增交易日", unfilled:"未成交记录", rule_events:"命中规则", account_events:"账户事件", model_events:"模型事件", signals:"信号记录",
-  historicalBackfill:"历史补算", netReturn:"当日净收益率", account:"账户资产", receivables:"应收现金", pendingShareValue:"待到账股份市值", pendingQuantity:"待到账股数", targetQuantity:"目标股数", economicAmount:"权益股数", requestedQuantity:"委托股数",
+  historicalBackfill:"历史补算", netReturn:"当日净收益率", account:"账户资产", receivables:"应收现金", pendingShareValue:"待到账股份市值", pendingQuantity:"待到账股数", targetQuantity:"目标股数", currentQuantity:"当前股数", requestedDelta:"建议调整股数", economicAmount:"权益股数", requestedQuantity:"委托股数",
   candidates: "候选股票", target_weights: "目标组合", rebalance: "调仓清单", positions: "实际持仓", currentWeight: "当前权重", targetWeight: "目标权重", estimatedPrice: "估算价格", estimatedAmount: "估算金额", sellableQuantity: "可卖数量", costPrice: "成本价", reason: "原因", score: "评分", industry: "行业", tracking_error: "跟踪误差", monthly_returns: "月度收益", risk_contributions: "风险贡献", return_contributions: "收益贡献", industry_weights: "行业权重", trials: "寻优试参", windows: "验证窗口",
   mean: "日均收益", std: "日收益波动", annualized_return: "年化收益（算术）", excess_annualized_return: "年化超额收益（算术）", benchmark_total_return: "基准累计收益", information_ratio: "信息比率",
   total_cost_ratio: "费用比例合计", "valid:mse": "验证 MSE", "valid:r2": "验证 R²",
@@ -26,6 +28,8 @@ export function fieldLabel(key: string, tableName = ""): string {
   const scoped=key.match(/^(valid|test|train|holdout):(.+)$/);
   if(scoped)return `${({valid:"验证",test:"测试",train:"训练",holdout:"留出"} as Record<string,string>)[scoped[1]]} · ${fieldLabel(scoped[2],tableName)}`;
   const labels: Record<string, Record<string, string>> = {
+    "资金流水": {amount:"资金金额",direction:"资金方向"},
+    cash_flows: {amount:"资金金额",direction:"资金方向"},
     "每日账户": {value:"持仓市值（元）",cost:"当日交易费用（元）"},
     portfolio: {value:"持仓市值（元）",cost:"当日交易费用（元）"},
     "simulation.advance": {nav:"账户资产（元）",cash:"可用现金（元）",totalReturn:"累计收益率",completedDays:"本次新增交易日"},
@@ -58,6 +62,10 @@ export function tradeDirection(value: unknown): string | null {
 }
 export function valueText(v: unknown, key = "") {
   if (v == null) return "—";
+  if (key === "status" && v === "proposal") return "只读建议";
+  if (key === "effectivePhase") return ({before_start:"起始日前资金",after_close:"已完成日收盘后"} as Record<string,string>)[String(v)] ?? String(v);
+  if (key === "direction" && (v === "deposit" || v === "withdraw")) return v === "deposit" ? "入金" : "出金";
+
   if (key === "side" || key === "direction") return tradeDirection(v) ?? String(v);
   if (typeof v === "number") return Number.isFinite(v) ? v.toLocaleString("zh-CN", { maximumFractionDigits: 6 }) : "—";
   if (typeof v === "object") return JSON.stringify(v);
@@ -71,9 +79,9 @@ export function valueText(v: unknown, key = "") {
   return text;
 }
 const priceFields = new Set(["rawClose","rawOpen","rawHigh","rawLow","rawPreclose","preclose","close","open","high","low","price","execution_price","trade_price","costPrice","estimatedPrice","adjustedPrice","chip_cost","chip_low70","chip_high70","chip_low90","chip_high90","epsTTM"]);
-const moneyFields = new Set(["account","receivables","pendingShareValue","turnoverAmount","fundNetAmount","netProfit","MBRevenue","cash","equity","estimatedCash","estimatedAmount","netAmount","buyAmount","sellAmount","pnl","commission","fee","fees","estimatedFees"]);
-const shareFields = new Set(["allowedQuantity","targetQuantity","pendingQuantity","economicAmount","requestedQuantity","volume","totalShare","liqaShare","quantity","shares","sellableQuantity"]);
-const dimensionlessFields = new Set(["information_ratio","sharpe","sharpe_ratio","sortino","sortino_ratio","calmar","calmar_ratio","ic","rank_ic","mean_ic","ic_std","icir","IC","RankIC","ICIR","pearsonIC","rankIC","correlation","r2"]);
+const moneyFields = new Set(["netContributions","navBefore","navAfter","costBasis","account","receivables","pendingShareValue","turnoverAmount","fundNetAmount","netProfit","MBRevenue","cash","equity","estimatedCash","estimatedAmount","netAmount","buyAmount","sellAmount","pnl","commission","fee","fees","estimatedFees"]);
+const shareFields = new Set(["currentQuantity","requestedDelta","allowedQuantity","targetQuantity","pendingQuantity","economicAmount","requestedQuantity","volume","totalShare","liqaShare","quantity","shares","sellableQuantity"]);
+const dimensionlessFields = new Set(["unitNav","units","unitsBefore","unitsAfter","information_ratio","sharpe","sharpe_ratio","sortino","sortino_ratio","calmar","calmar_ratio","ic","rank_ic","mean_ic","ic_std","icir","IC","RankIC","ICIR","pearsonIC","rankIC","correlation","r2"]);
 const fractionFields = new Set(["linkedReturnContribution","totalReturn","netReturn","share","factorReturn","mean","std","tracking_error","volatility","annualized_volatility","meanChangeRatio","changeRatio","chip_benefit","chip_concentration70","chip_concentration90","chip_cost_deviation","roeAvg","npMargin","netProfitMargin","gpMargin","YOYEquity","YOYAsset","YOYNI","YOYEPSBasic","YOYPNI","YOYRevenue","YOYLiability","liabilityToAsset","CAToAsset","NCAToAsset","tangibleAssetToAsset","CFOToOR","CFOToNP","CFOToGr","CFOToSales","CFOToAsset","CFOToProfit","weight","currentWeight","targetWeight","actualWeight","estimatedActualWeight","allocation","targetExposure","return","returns","daily_return","total_return","annual_return","max_drawdown","drawdown","turnover","annualized_return","excess_annualized_return","benchmark_total_return","total_cost_ratio","returnContribution","riskContribution","targetRiskContribution","actualRiskContribution","contributionDeviation"]);
 export function tableNumber(value: unknown, key: string): number | null {
   key=key.replace(/^(?:valid|test|train|holdout):/, "");

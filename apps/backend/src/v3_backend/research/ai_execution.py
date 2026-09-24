@@ -75,15 +75,23 @@ class Executions:
         if pid and any(ref.get('projectId') not in (None,pid) for ref in refs):raise ValueError('项目会话不能引用其他项目')
         mode=params.get('mode','assist')
         if mode not in {'ask','assist','research'}:raise ValueError('未知会话模式')
-        snapshots={}
-        if pid:snapshots[pid+':']=deepcopy(self.service.store.project(pid))
-        from .workbench import strategy_project
-        for ref in refs:
-            if ref.get('projectId'):
-                source=ref['projectId'];strategy=ref.get('strategyId')
-                snapshots[source+':'+(strategy or '')]=strategy_project(self.service.store,source,strategy) if strategy else deepcopy(self.service.store.project(source))
-        prior=conversation.get('state',{}).get('executionRequests',{}).get(request)
+        state=conversation.get('state',{})
+        prior=state.get('executionRequests',{}).get(request)
         if prior:return prior
+        previous=state.get('execution',{})
+        continuing=(previous.get('status') in {'paused','failed','cancelled'} or previous.get('pendingMessages')) and previous.get('mode')==mode and previous.get('projectId')==pid
+        snapshots={}
+        if continuing:
+            refs=deepcopy(previous.get('context',[]))
+            snapshots=deepcopy(previous.get('projectSnapshots',{}))
+            if pid and pid+':' not in snapshots:raise ValueError('原执行缺少冻结项目上下文，请新建会话')
+        else:
+            if pid:snapshots[pid+':']=deepcopy(self.service.store.project(pid))
+            from .workbench import strategy_project
+            for ref in refs:
+                if ref.get('projectId'):
+                    source=ref['projectId'];strategy=ref.get('strategyId')
+                    snapshots[source+':'+(strategy or '')]=strategy_project(self.service.store,source,strategy) if strategy else deepcopy(self.service.store.project(source))
         eid=identifier()
         budget_db=self.service.store.project_store(pid).db
         def begin(state,current):
@@ -95,7 +103,6 @@ class Executions:
             for item in pending:
                 if current.get('status')=='cancelled':item['requiresConfirmation']=True
                 if resume_all or item['id'] in selected:item.pop('requiresConfirmation',None)
-            continuing=(current.get('status')=='paused' or pending) and current.get('mode')==mode and current.get('projectId')==pid
             submitted=deepcopy(current.get('submitted',{})) if continuing else {}
             budget=model_budget(current.get('modelBudget') if continuing else None)
             budget_id=current.get('budgetId') if continuing else None
@@ -109,7 +116,9 @@ class Executions:
             budget.update(limit=shared['limits']['modelRequests'],used=shared['used']['modelRequests'],scope='research_plan')
             state['execution']={'id':eid,'requestId':request,'conversationId':cid,'projectId':pid,'status':'running',
                 'startedAt':now(),'updatedAt':now(),'message':'正在理解请求','steps':[],'activeJobIds':[],
-                'pendingMessages':pending,'deliveredMessageIds':[],'consumedMessageIds':[],'cancelRequested':False,'submitted':submitted,'context':refs,'mode':mode,'projectSnapshots':snapshots,'modelBudget':budget,'budgetId':budget_id}
+                'pendingMessages':pending,'deliveredMessageIds':[],'consumedMessageIds':[],'cancelRequested':False,'submitted':submitted,'context':refs,'mode':mode,'projectSnapshots':snapshots,'modelBudget':budget,'budgetId':budget_id,
+                'submissionIntents':deepcopy(current.get('submissionIntents',{})) if continuing else {}}
+            if continuing and 'frozenContext' in current:state['execution']['frozenContext']=deepcopy(current['frozenContext'])
             state.setdefault('messages',[]).append({'id':request,'role':'user','content':message,'experimentRefs':refs})
         value=self.mutate(cid,None,begin)
         with self.lock:self.futures[eid]=asyncio.run_coroutine_threadsafe(self.run(cid,eid,message),self.loop)
@@ -175,6 +184,12 @@ class Executions:
             scope_key=(spec.get('projectId') or '')+':'+(spec.get('strategyId') or '')
             frozen=current.get('projectSnapshots',{}).get(scope_key)
             if spec.get('projectId') and frozen is None:raise ValueError('请先明确关联要执行的策略或项目')
+            if not job_id:
+                intent=current.get('submissionIntents',{}).get(token)
+                if not intent:
+                    intent={'id':identifier()}
+                    self.mutate(cid,eid,lambda state,execution:execution.setdefault('submissionIntents',{}).__setitem__(token,intent))
+                key=intent['id']
             if not job_id and current.get('budgetId'):
                 budget_db=self.service.store.project_store(current.get('projectId')).db
                 spec.setdefault('parameters',{}).update(budgetId=current['budgetId'],budgetProjectId=current.get('projectId'))
@@ -183,7 +198,7 @@ class Executions:
                 elif spec['kind']=='optimize.run':
                     from .research_costs import work_counts
                     reserve(budget_db,current['budgetId'],'trials',work_counts([spec])['trials'],operation_id='submit-'+key)
-            job=self.service.store.get('job',job_id) if job_id else self.service.jobs.submit(spec,frozen_project=frozen)
+            job=self.service.store.get('job',job_id) if job_id else self.service.jobs.submit(spec,frozen_project=frozen,submission_id=key)
             def submitted(state,execution):
                 execution['submitted'][token]=job['id']
                 if job['id'] not in execution['activeJobIds']:execution['activeJobIds'].append(job['id'])
@@ -393,11 +408,14 @@ class Executions:
             client=AsyncOpenAI(base_url=config['baseUrl'],api_key=config.get('apiKey') or 'local-no-key',max_retries=0,
                 http_client=httpx.AsyncClient(event_hooks={'request':[count_request]}))
             model=OpenAIChatModel(config['model'],provider=OpenAIProvider(openai_client=client))
-            context=ai.attached_context(self.service,value['context']) if value['context'] else ai._project_context(self.service,pid,value['projectSnapshots'].get((pid or '')+':')) if pid else {}
-            for item in context.get('attachedObjects',[]):
-                ref=item.get('reference',{});frozen=value['projectSnapshots'].get((ref.get('projectId') or '')+':'+(ref.get('strategyId') or ''))
-                if frozen and ref.get('strategyId') and item.get('strategy'):
-                    item['strategy']['settings']=deepcopy(frozen['settings']);item['strategy']['universe']=deepcopy(frozen['universe'])
+            context=deepcopy(value.get('frozenContext'))
+            if context is None:
+                context=ai.attached_context(self.service,value['context']) if value['context'] else ai._project_context(self.service,pid,value['projectSnapshots'].get((pid or '')+':')) if pid else {}
+                for item in context.get('attachedObjects',[]):
+                    ref=item.get('reference',{});frozen=value['projectSnapshots'].get((ref.get('projectId') or '')+':'+(ref.get('strategyId') or ''))
+                    if frozen and ref.get('strategyId'):
+                        item['strategy']={'id':ref['strategyId'],'name':frozen.get('strategyName'),'settings':deepcopy(frozen['settings']),'universe':deepcopy(frozen['universe'])}
+                self.mutate(cid,eid,lambda state,execution:execution.update(frozenContext=deepcopy(context)))
             agent=ai._create_agent(self.service,pid,model,value['context'] or None,cid,value['mode'],execution=True,frozen_context=context)
             if value['mode']!='ask':
                 @agent.tool_plain

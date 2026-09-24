@@ -41,9 +41,9 @@ def validate_spec(spec):
     if kind == 'backtest.run' and p['template'] not in {'single_factor', 'multi_factor', 'model_score'}:
         raise ValueError('未知组合模板')
     if kind == 'simulation.advance':
-        if not spec.get('projectId') or not isinstance(p['accountId'], str) or not p['accountId']:
+        if not isinstance(p['accountId'], str) or not p['accountId']:
             raise ValueError('请选择模拟账户及所属项目')
-        if p.get('projectId') not in (None, spec['projectId']):
+        if p.get('projectId') not in (None, spec.get('projectId')):
             raise ValueError('模拟账户项目与任务不一致')
     if kind == 'rdagent.run':
         from .rd_agent import validate
@@ -204,7 +204,25 @@ class Jobs:
                 removed.append(key)
         return {'removedIds': removed, 'skippedIds': skipped}
 
-    def submit(self, spec, frozen_project=None):
+    def submit(self, spec, frozen_project=None, *, submission_id=None):
+        if submission_id is None:
+            return self._submit(spec, frozen_project)
+        # Internal AI intent only; not read from the public job spec.
+        import hashlib
+        intent = hashlib.sha256(json.dumps({'spec': {key: value for key, value in spec.items() if key != 'name'}, 'project': frozen_project},
+            sort_keys=True, ensure_ascii=False, allow_nan=False).encode('utf-8')).hexdigest()
+        with self.lock:
+            try:
+                existing = self.store.get('job', submission_id)
+            except ValueError:
+                existing = None
+            if existing is not None:
+                if existing.get('submissionIntent') != intent:
+                    raise ValueError('任务提交标识对应不同的执行意图或研究范围')
+                return self.public_event(existing)
+            return self._submit(spec, frozen_project, submission_id=submission_id, submission_intent=intent)
+
+    def _submit(self, spec, frozen_project=None, *, submission_id=None, submission_intent=None):
         spec = copy.deepcopy(spec)
         replay_project = None
         if isinstance(spec, dict) and spec.get('inputExperimentId'):
@@ -232,20 +250,31 @@ class Jobs:
                     old_target=instrument(prior['instrument'])
                     if (target['kind'],target['symbol'])==(old_target['kind'],old_target['symbol']) and all(prior.get(key)==spec['parameters'].get(key) for key in ('startDate','endDate')):
                         return existing
-        for key in ('projectSnapshot','positionsSnapshot','strategySnapshots','dailyPlanSnapshots','candidateSnapshot'):
+        for key in ('projectSnapshot','positionsSnapshot','strategySnapshots','dailyPlanSnapshots','candidateSnapshot','accountSnapshot','positionsSourceResolved'):
             spec.pop(key,None)
         if spec['kind'] == 'simulation.advance':
             if not spec['parameters'].get('endDate'):
                 raise ValueError('推进模拟账户前请明确选择结束日期')
             from .simulation import dispatch
             account = dispatch(self.store, 'simulation.accounts.get', {
-                'projectId': spec['projectId'], 'accountId': spec['parameters']['accountId']})
+                'projectId': spec.get('projectId'), 'accountId': spec['parameters']['accountId']})
             if spec.get('strategyId') not in (None, account['strategyId']):
                 raise ValueError('模拟任务策略与账户不一致')
             if account['paused']:
                 raise ValueError('模拟账户已暂停，请先恢复')
             spec['strategyId'] = account['strategyId']
-            spec['parameters']['projectId'] = spec['projectId']
+            spec['parameters']['projectId'] = spec.get('projectId')
+            if not spec.get('projectId'):
+                from .simulation_accounts import revision
+                revision(account,spec['parameters'].get('expectedRevision'))
+                spec['accountSnapshot']=copy.deepcopy(account)
+                if not account['bindings'] and not any(h['quantity'] or h.get('pendingQuantity',0) for h in account['state']['holdings'].values()):
+                    from .preparation import trading_dates
+                    from .data import project_data
+                    from .selection import update_end_date
+                    end=min(str(spec['parameters']['endDate'])[:10],update_end_date())
+                    spec['accountSnapshot']['calendarSnapshot']=trading_dates(Path(project_data(self.store.project(None))['path'])/'data',account['startDate'],end,source='file',update_data=False)
+                spec['parameters']['_advanceJobId']=identifier()
             spec['parameters'].setdefault('startDate',account['startDate'])
         if spec.get('candidateId'):
             from .candidates import get
@@ -261,7 +290,7 @@ class Jobs:
                 raise ValueError('冻结研究范围与任务不一致')
             project=copy.deepcopy(frozen_project)
         from .preparation import KINDS as prepared_kinds, scope
-        if spec['kind'] in prepared_kinds and replay_project is None:
+        if spec['kind'] in prepared_kinds and replay_project is None and not (spec['kind']=='simulation.advance' and not project_id):
             scope(project,spec['parameters'],spec['kind'])
         if replay_project is None:
             from .app_settings import source_settings
@@ -272,7 +301,25 @@ class Jobs:
             spec['strategyId'] = project['strategyId']
         if spec['kind'] == 'selection.run':
             from .positions import get
-            spec['positionsSnapshot'] = get(self.store.project(None) if ('strategies' in spec['parameters'] or 'dailyPlanIds' in spec['parameters']) else project)
+            source=copy.deepcopy(spec['parameters'].get('positionsSource',{'kind':'none'}))
+            if not isinstance(source,dict) or source.get('kind') not in {'none','actual','simulation'}:raise ValueError('持仓来源无效')
+            spec['positionsSourceResolved']=source
+            if source['kind']=='simulation':
+                if spec.get('projectId'):raise ValueError('共享账户研究请从全局每日研究入口运行')
+                if spec.get('strategyId') or spec['parameters'].get('dailyPlanIds') or spec['parameters'].get('strategies'):
+                    raise ValueError('账户研究使用已绑定固定版本，请取消自由方案选择')
+                from .simulation_accounts import get as get_account
+                account=get_account(self.store,source)
+                if account.get('schemaVersion')!=2:raise ValueError('旧账户请先显式迁入后使用固定规则研究')
+                spec['accountSnapshot']=copy.deepcopy(account)
+                spec['positionsSnapshot']=dict(cash=account['cash'],asOfDate=account['asOfDate'],rows=[dict(symbol=s,**h) for s,h in account['state']['holdings'].items()])
+                spec['positionsSourceResolved'].update(revision=account['revision'],asOfDate=account['asOfDate'])
+            elif source['kind']=='actual':
+                spec['positionsSnapshot']=get(self.store.project(None) if ('strategies' in spec['parameters'] or 'dailyPlanIds' in spec['parameters']) else project)
+            else:
+                spec['positionsSnapshot']=dict(cash=float(project.get('settings',{}).get('backtest',{}).get('capital',1000000)),rows=[],asOfDate=None)
+            if source['kind']=='simulation':
+                spec['parameters'].pop('dailyPlanIds',None);spec['parameters'].pop('strategies',None)
             if 'dailyPlanIds' in spec['parameters']:
                 if 'strategies' in spec['parameters'] or spec.get('strategyId'):
                     raise ValueError('每日方案与旧策略引用不能混用')
@@ -310,9 +357,10 @@ class Jobs:
                 raise ValueError('任务服务已关闭')
             from .resources import compute_settings
             spec['effectiveResources'] = compute_settings(self.store.settings().get('compute'), os.cpu_count())
-            job = dict(id=identifier(), projectId=spec.get('projectId'), kind=spec['kind'], name=spec.get('name') or spec['kind'],
+            job = dict(id=submission_id or identifier(), projectId=spec.get('projectId'), kind=spec['kind'], name=spec.get('name') or spec['kind'],
                        strategyId=spec.get('strategyId'), status='queued', progress=0, message='等待执行', createdAt=now(), updatedAt=now(), spec=spec,
                        effectiveResources=spec['effectiveResources'])
+            if submission_id is not None:job['submissionIntent'] = submission_intent
             job = self._save(job)
             self._start_next(spec.get('projectId'))
             return self.public_event(self.store.get('job', job['id']))

@@ -276,6 +276,9 @@ class Service:
         if method.startswith('candidates.'):
             from .candidates import dispatch as candidate_dispatch
             return candidate_dispatch(store, method, p)
+        if method in {'simulation.table','simulation.accounts.export','simulation.accounts.curve'}:
+            from .simulation_reads import dispatch as simulation_read
+            return simulation_read(store,method,p,self.check_read_cancel)
         if method.startswith('simulation.accounts.') or method == 'simulation.table':
             from .simulation import dispatch as simulation_dispatch
             return simulation_dispatch(store, method, p)
@@ -475,7 +478,7 @@ def main():
     reads = ThreadPoolExecutor(max_workers=2, thread_name_prefix='research-read')
     try:
         for request in read_frames(sys.stdin.buffer):
-            if request.get('method') in {'storage.inspect', 'experiments.get', 'experiments.table', 'experiments.analysis', 'experiments.calendar', 'experiments.compare', 'experiments.previousComparison', 'exports.create', 'exports.table'}:
+            if request.get('method') in {'storage.inspect', 'experiments.get', 'experiments.table', 'experiments.analysis', 'experiments.calendar', 'experiments.compare', 'experiments.previousComparison', 'exports.create', 'exports.table', 'simulation.table', 'simulation.accounts.export', 'simulation.accounts.curve'}:
                 # Register before queuing so a later cancel also reaches queued requests.
                 try:
                     operation = service.read_operations.begin(request['method'], request.get('params') or {})

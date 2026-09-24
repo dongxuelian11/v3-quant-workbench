@@ -221,7 +221,7 @@ export interface SimulationOwnership {
 export interface SimulationCashFlow {
   id: string; accountId: string; date: string; direction: "deposit" | "withdraw";
   amount: number; navBefore: number; navAfter: number; unitNav: number;
-  unitsBefore: number; unitsAfter: number;
+  unitsBefore: number; unitsAfter: number; effectivePhase: "before_start" | "after_close";
   createdAt: string; note?: string;
 }
 export type SelectionPositionsSource = { kind: "none" } | { kind: "actual" } | ({ kind: "simulation" } & SimulationAccountRef);
@@ -254,6 +254,11 @@ export interface SimulationCashFlowCreate extends SimulationMutation {
 export interface SimulationBranchCreate extends SimulationMutation { fromDate: string; name: string; requestId: string; }
 export interface SimulationLegacyImport { source: SimulationAccountRef; expectedRevision: number; name?: string; requestId: string; }
 export interface SimulationAdvance extends SimulationMutation { endDate: string; }
+export interface SimulationAccountExport extends SimulationMutation { format: "csv" | "xlsx"; table?: string; }
+export interface SimulationAccountCurve {
+  rows: { date: string; unitNav: number | null; nav: number | null }[];
+  total: number;
+}
 export interface StrategyConfig {
   id: string;
   projectId: string;

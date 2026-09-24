@@ -8,9 +8,10 @@ from . import data, history
 from .storage import read_json, write_json, now
 
 
-def capture(store, project, params, directory, prepared):
+def capture(store, project, params, directory, prepared, *, output_root=None):
     import pandas as pd
     directory = Path(directory)
+    storage_root = Path(output_root or project['path'])
     root = directory / 'inputs'
     target = root / 'data'
     target.mkdir(parents=True, exist_ok=False)
@@ -141,7 +142,7 @@ def capture(store, project, params, directory, prepared):
                         destination = root / 'files' / (str(len(files)) + path.suffix)
                         destination.parent.mkdir(exist_ok=True)
                         shutil.copy2(path, destination)
-                        files[str(path)] = destination.relative_to(Path(project['path'])).as_posix()
+                        files[str(path)] = destination.relative_to(storage_root).as_posix()
                     value[key] = files[str(path)]
                 else: freeze_files(item)
     freeze_files(frozen_params)
@@ -162,9 +163,10 @@ def capture(store, project, params, directory, prepared):
             destination = root / 'prerequisites' / str(model_index) / (str(index) + path.suffix)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
-            artifact['path'] = destination.relative_to(Path(project['path'])).as_posix()
+            artifact['path'] = destination.relative_to(storage_root).as_posix()
         prerequisites[model_id] = model
     frozen = deepcopy(project)
+    if output_root is not None:frozen['path'] = str(storage_root)
     frozen['inputDataRoot'] = str(root)
     frozen.setdefault('settings', {})['dataPath'] = str(target)
     frozen['inputPrerequisites'] = prerequisites
@@ -180,7 +182,7 @@ def capture(store, project, params, directory, prepared):
         relative = path.relative_to(root).as_posix()
         if path.is_file() and relative not in listed:
             inventory.append(dict(path=relative))
-    reference = dict(version=1, path=root.relative_to(Path(project['path'])).as_posix(), status='available',
+    reference = dict(version=1, path=root.relative_to(storage_root).as_posix(), status='available',
                      startDate=start, endDate=end, createdAt=now(), files=inventory)
     write_json(root / 'snapshot.json', dict(reference=reference, project=frozen, parameters=frozen_params,
                dependencies=versions, seeds={'lightgbm': 42, 'optuna': 42}, prerequisiteExperimentIds=list(prerequisites)))

@@ -10,7 +10,7 @@ from .storage import identifier, now
 from .portfolio import DEFAULTS
 from .execution import cost_config
 
-TABLES=('portfolio','holdings','trades','unfilled','account_events','signals','target_weights','rule_events','model_events')
+TABLES=('cash_flows','ownership','trade_allocations','binding_events','portfolio','holdings','trades','unfilled','account_events','signals','target_weights','rule_events','model_events')
 
 
 def _get(store, project_id, account_id):
@@ -30,6 +30,9 @@ def _commit(portable, account, previous_revision, day=None):
         if day is not None:
             db.execute('INSERT INTO records VALUES (?,?,?,?)',('simulation_day',day['id'],account['projectId'],json.dumps(day,ensure_ascii=False,allow_nan=False)))
         db.execute('UPDATE records SET body=? WHERE kind=? AND id=?',(body,'simulation',account['id']))
+        if account.get('schemaVersion')==2 and day is not None:
+            from .simulation_accounts import checkpoint
+            checkpoint(db,account)
 
 
 def _days(portable, account_id):
@@ -43,11 +46,21 @@ def dispatch(store, method, params):
     project_id=params.get('projectId')
     if method=='simulation.accounts.list':
         projects=[store.project(project_id)] if project_id else store.list('project')
-        result=[]
+        result=[] if project_id else store.project_store(None).list('simulation')
         for project in projects:
             result.extend(store.project_store(project['id']).list('simulation',project['id']))
         return result
-    if not project_id:raise ValueError('模拟账户需要项目')
+    if method=='simulation.accounts.importLegacy' or not project_id:
+        from . import simulation_accounts
+        if method=='simulation.accounts.get':return simulation_accounts.get(store,params)
+        if method=='simulation.table':
+            name=params['table']
+            if name not in TABLES:raise ValueError('未知模拟表')
+            rows=simulation_accounts.rows(store,params,name)
+            if params.get('symbol'):rows=[row for row in rows if row.get('symbol')==params['symbol']]
+            offset=max(0,int(params.get('offset',0)));limit=min(500,max(1,int(params.get('limit',200))))
+            return dict(name=name,columns=list(dict.fromkeys(k for row in rows for k in row)),rows=rows[offset:offset+limit],total=len(rows),offset=offset,limit=limit)
+        return simulation_accounts.dispatch(store,method,params)
     portable=store.project_store(project_id)
     if method=='simulation.accounts.create':
         strategy=get_strategy(store,project_id,params.get('strategyId'))
@@ -66,6 +79,9 @@ def dispatch(store, method, params):
     account=_get(store,project_id,params['accountId'])
     if method=='simulation.accounts.get':return account
     if method=='simulation.accounts.save':
+        if 'expectedRevision' in params:
+            from .simulation_accounts import revision
+            revision(account,params['expectedRevision'])
         revised=deepcopy(account)
         if 'name' in params:
             revised['name']=str(params['name']).strip()

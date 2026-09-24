@@ -1,0 +1,39 @@
+.simulation-page .r-toolbar { flex-wrap: wrap; gap: 8px; }
+.simulation-page .r-toolbar select { max-width: min(100%, 460px); }
+.simulation-page .simulation-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,280px),1fr)); gap: 12px; }
+.simulation-page .simulation-card { padding: 12px; border: 1px solid var(--border, #c6c9d0); border-radius: 8px; min-width: 0; }
+.simulation-page .simulation-card h3 { margin: 0 0 8px; }
+.simulation-page .simulation-danger { border-inline-start: 3px solid #bd672b; padding-inline-start: 12px; }
+.simulation-page .simulation-code { overflow: auto; max-height: 240px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.simulation-page .simulation-table { width: 100%; border-collapse: collapse; }
+.simulation-page .simulation-table th, .simulation-page .simulation-table td { padding: 7px; text-align: left; border-bottom: 1px solid var(--border, #c6c9d0); vertical-align: top; }
+.simulation-page .simulation-table input[type=number] { width: 85px; }
+.simulation-page .simulation-table small { display: block; overflow-wrap: anywhere; max-width: 320px; }
+.simulation-source .r-toolbar { flex-wrap: wrap; }
+.simulation-source select { max-width: 100%; }
+.simulation-page > details {
+  margin: 2px 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.simulation-page > details > summary {
+  min-height: 40px;
+  padding: 8px 10px;
+  margin: 0;
+  line-height: 1.4;
+}
+.simulation-page > details[open] {
+  margin-block: 6px;
+  padding: 8px 0 10px;
+}
+.simulation-page > details[open] > :not(summary) {
+  margin-inline: 10px;
+}
+.simulation-page > details[open] > :not(summary) + :not(summary) {
+  margin-top: 8px;
+}
+.simulation-page > section,
+.simulation-page > .r-toolbar,
+.simulation-page > .r-metrics {
+  margin-block: 8px;
+}

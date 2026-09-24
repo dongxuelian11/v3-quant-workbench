@@ -34,6 +34,8 @@ def _prepared_execute(store, job, project, directory, progress):
         result['_inputProject'] = project
         result.setdefault('parameters', params)
         return result
+    if job['kind']=='simulation.advance' and not job.get('projectId'):
+        return _execute(store,job,project,directory,progress)
     if job['kind'] not in preparation.KINDS or job['spec']['parameters'].get('model')=='native_generated_predictions' or job['spec']['parameters'].get('rdRequestId'):
         return _execute(store,job,project,directory,progress)
     job=deepcopy(job)
@@ -90,9 +92,21 @@ def _execute(store, job, project, directory, progress):
     if kind == 'optimize.run':
         return engines.optimize(project, params, directory, progress, store)
     if kind == 'selection.run':
+        source=job['spec'].get('positionsSourceResolved')
+        if source and source['kind']=='simulation':
+            from .simulation_advance import research
+            return research(store,params,directory,progress,job['spec']['accountSnapshot'],source)
         from .selection import run as select
-        return select(project, params, directory, progress, snapshot=job['spec'].get('positionsSnapshot'), strategy_snapshots=job['spec'].get('strategySnapshots'), daily_plan_snapshots=job['spec'].get('dailyPlanSnapshots'), store=store)
+        result=select(project, params, directory, progress, snapshot=job['spec'].get('positionsSnapshot'), strategy_snapshots=job['spec'].get('strategySnapshots'), daily_plan_snapshots=job['spec'].get('dailyPlanSnapshots'), store=store)
+        result.setdefault('details',{})['positionsSourceResolved']=source
+        if source and source['kind']=='none':
+            result['details'].update(executable=False,positionsContext='独立候选研究，未读取实际或模拟账户；权重为候选配置，不是账户调仓指令')
+            result['artifacts']=[a for a in result['artifacts'] if a['name'] not in {'positions','rebalance'}]
+        return result
     if kind == 'simulation.advance':
+        if not job.get('projectId'):
+            from .simulation_advance import advance as advance_shared
+            return advance_shared(store,params,directory,progress,job['spec'].get('accountSnapshot'))
         from .simulation import advance
         return advance(store, params, directory, progress, project=project)
     if kind == 'rdagent.run':
