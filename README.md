@@ -1,10 +1,10 @@
 # V3 量化研究工作台
 
-[English](README.en.md) · [下载安装包](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.8.0) · [当前状态与下一轮计划](docs/V3_REBUILD.md)
+[English](README.en.md) · [下载安装包](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.9.0) · [当前状态与下一轮计划](docs/V3_REBUILD.md)
 
 面向 Windows 的沪深 A 股量化研究桌面。通过中文界面连接开源 Python 计算模块，将数据、因子、模型、日线策略、回测和研报放在同一个本地工作区。
 
-**当前版本：1.8.0，研究预览版。** 新增固定输入复现、独立选股器、每日研究方案、设置中心及本地命令助手入口。软件不附带完整 A 股历史数据库或研报全文库；安装后需要获取或导入数据。千股五年性能、完整研报／RD-Agent 在线研究、本地助手完整界面流程与部分桌面场景尚未完成验收，不能视为整轮计划全部完成。
+**当前版本：1.9.0，研究预览版。** 本轮补齐研报步骤子集执行、数据导入与目录迁移、模拟账户旧仓管理修复，以及价格提醒规则、检查历史和启停管理。提醒仅在程序运行时检查，系统通知与指标提醒尚未接通。软件不附带完整 A 股历史数据库或研报全文库；安装后需要获取或导入数据。千股五年性能、完整研报／RD-Agent 在线研究、本地助手完整界面流程与部分桌面场景尚未完成验收，不能视为整轮计划全部完成。
 
 ## 可以做什么
 
@@ -22,7 +22,7 @@
 
 ## 安装与第一次使用
 
-从 [v1.8.0 Release](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.8.0) 下载 `v3-quant-workbench-1.8.0-x64.exe`，适用于 Windows x64。安装包包含 Python 解释器和基础研究依赖，不需要另外安装 Python；OCR 模型按需安装，AI 模型权重不随包提供。
+从 [v1.9.0 Release](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.9.0) 下载 `v3-quant-workbench-1.9.0-x64.exe`，适用于 Windows x64。安装包包含 Python 解释器和基础研究依赖，不需要另外安装 Python；OCR 模型按需安装，AI 模型权重不随包提供。
 
 1. 启动进入干净首页，打开或新建项目，明确股票范围和日期。
 2. 获取免费行情／财务数据，或导入自己的文件，先检查实际覆盖。

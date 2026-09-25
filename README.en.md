@@ -1,10 +1,10 @@
 # V3 Quant Research Workbench
 
-[简体中文](README.md) · [Windows installer](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.8.0) · [Status and approved roadmap](docs/V3_REBUILD.md)
+[简体中文](README.md) · [Windows installer](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.9.0) · [Status and approved roadmap](docs/V3_REBUILD.md)
 
 A Windows desktop for Shanghai and Shenzhen A-share research. Its Chinese-language interface connects open-source Python engines for data preparation, factors, models, daily strategies, backtests and research reports in one local workspace.
 
-**Current version: 1.8.0, research preview.** Adds fixed-input replay, standalone screening, versioned daily plans, a settings center and a local command-assistant entry point. A complete A-share historical database or report corpus is not included. The 1,000-stock five-year performance run, complete report/RD-Agent online workflows, the full local-assistant UI journey and some desktop scenarios remain unverified. This release does not mark completion of the entire roadmap.
+**Current version: 1.9.0, research preview.** Adds fixed-input replay, standalone screening, versioned daily plans, a settings center and a local command-assistant entry point. A complete A-share historical database or report corpus is not included. The 1,000-stock five-year performance run, complete report/RD-Agent online workflows, the full local-assistant UI journey and some desktop scenarios remain unverified. This release does not mark completion of the entire roadmap.
 
 ## Features
 
@@ -22,7 +22,7 @@ Minute data is for charting. Training, backtests and paper accounts use daily da
 
 ## Install and start researching
 
-Download `v3-quant-workbench-1.8.0-x64.exe` from the [v1.8.0 release](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.8.0) for Windows x64. Python and core research dependencies are bundled. OCR models are installed on demand; AI model weights are not bundled.
+Download `v3-quant-workbench-1.9.0-x64.exe` from the [v1.9.0 release](https://github.com/dongxuelian11/v3-quant-workbench/releases/tag/v1.9.0) for Windows x64. Python and core research dependencies are bundled. OCR models are installed on demand; AI model weights are not bundled.
 
 1. Open or create a project from the clean startup page and specify securities and dates.
 2. Download available data or import files, then inspect actual coverage.
@@ -84,3 +84,5 @@ Shared contracts live in `packages/contracts/src/research.ts`, the desktop entry
 Public `main` starts a new history from the rebuilt software. Superseded development branches and releases are backed up locally by the maintainer. The [roadmap](docs/V3_REBUILD.md) separates delivered behavior from approved future work.
 
 Licensed under [Apache-2.0](LICENSE). Upstream components and data retain their own licenses and terms; this software license does not grant redistribution rights to third-party reports or datasets.
+
+Release scope: v1.9.0 improves report step subsets, data import and storage migration, paper-account legacy positions, and price-rule management. Price checks run only while the app is running; system notifications and indicator alerts are not implemented. Live end-to-end AI/research workflows, large-universe performance, and fresh-install/upgrade acceptance remain unfinished. See docs/V3_REBUILD.md for verified, unverified, and deferred work.

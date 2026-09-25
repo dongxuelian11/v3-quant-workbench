@@ -20,3 +20,8 @@
 
 .reminder-conflict{margin:12px 0;padding:10px;border:1px solid #b87918;border-radius:8px;background:#fff8e8}.reminder-conflict p{margin-top:0}
 .reminders-dialog .r-toolbar label{display:inline-flex;align-items:center;gap:7px}.reminders-dialog .reminder-scope label{display:flex;align-items:flex-start;gap:8px;line-height:1.35}.reminders-dialog .r-toolbar input[type=checkbox],.reminders-dialog .reminder-scope input[type=checkbox]{appearance:auto;width:16px;height:16px;min-width:16px;max-width:16px;flex:0 0 16px;margin:2px 0 0;box-sizing:border-box}
+
+.reminders-dialog .r-check-progress{padding:10px 12px;border-left:3px solid #4778d0;background:#f2f6fc;line-height:1.5}
+
+
+.reminders-dialog .r-note{line-height:1.5}
